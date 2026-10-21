@@ -226,7 +226,9 @@ async def test_dispatch_context_lifetime_and_retry_identity(agents, failure) -> 
         return AgentResponse(result="recovered", session_id="fresh")
 
     worker._cli_service.execute.side_effect = execute
-    task = asyncio.create_task(bus.send("main", "worker", "Do work", send_timeout=0.03))
+    # Only the timeout case needs a short request deadline.
+    send_timeout = 0.03 if failure == "timeout" else 1
+    task = asyncio.create_task(bus.send("main", "worker", "Do work", send_timeout=send_timeout))
     await asyncio.wait_for(started.wait(), timeout=1)
     if failure == "cancel":
         task.cancel()
