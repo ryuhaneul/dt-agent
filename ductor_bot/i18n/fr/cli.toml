@@ -1,0 +1,85 @@
+# Chaînes CLI en français (formatées Rich, affichées dans le terminal).
+
+# -- Commande status -----------------------------------------------------------
+
+[status]
+path_sessions = "Sessions :  [cyan]{path}[/cyan]"
+path_logs = "Logs :      [cyan]{path}[/cyan]"
+path_workspace = "Workspace : [cyan]{path}[/cyan]"
+path_config = "Config :    [cyan]{path}[/cyan]"
+path_home = "Home :      [cyan]{path}[/cyan]"
+title_main = "[bold]Statut — main[/bold]"
+title = "[bold]Statut[/bold]"
+running = "[bold green]En cours[/bold green]  pid={pid}  durée : {uptime}"
+not_running = "[dim]Arrêté[/dim]"
+provider = "Provider :  [cyan]{provider}[/cyan] ({model})"
+errors_found = "Erreurs :   [bold red]{count}[/bold red] dans le dernier log"
+errors_none = "Erreurs :   [green]0[/green]"
+paths_header = "[bold]Chemins :[/bold]"
+not_configured = "Non configuré. Exécute scripts/onboard.sh sur l'hôte, puis démarre le bot."
+
+# -- Validation de la config ---------------------------------------------------
+
+[config]
+headless_main = "L'agent principal a besoin d'une messagerie (headless est réservé aux sous-agents)."
+not_configured_container = "[bold yellow]Non configuré. Exécute scripts/onboard.sh sur l'hôte, puis démarre le bot.[/bold yellow]"
+incomplete = "[bold yellow]Config incomplète. Lance [bold]scripts/onboard.sh[/bold].[/bold yellow]"
+matrix_no_homeserver = "[bold yellow]L'URL du homeserver Matrix est requise.{hint}[/bold yellow]"
+matrix_no_user = "[bold yellow]Le user_id Matrix est requis.{hint}[/bold yellow]"
+matrix_no_auth = "[bold yellow]Un mot de passe ou access_token Matrix est requis.{hint}[/bold yellow]"
+matrix_no_target = "[bold yellow]Au moins un allowed_room ou allowed_user est requis.{hint}[/bold yellow]"
+onboarding_hint = " Lance [bold]scripts/onboard.sh[/bold] pour reconfigurer."
+
+# -- Cycle de vie --------------------------------------------------------------
+
+[agents]
+inherited = "hérité"
+restarts = "[dim](redémarrages : {count})[/dim]"
+title = "[bold]Sous-agents ({count})[/bold]"
+help_remove = "Supprimer un sous-agent"
+help_add = "Ajouter un nouveau sous-agent (interactif)"
+help_list = "Lister tous les sous-agents et leur configuration"
+title_help = "[bold]Commandes des agents[/bold]"
+col_agent = "Agent"
+col_status = "Statut"
+col_uptime = "Durée"
+col_provider = "Provider"
+col_model = "Modèle"
+status_running = "[bold green]en cours[/bold green]"
+status_starting = "[yellow]démarrage[/yellow]"
+status_crashed = "[bold red]crashé[/bold red]"
+status_stopped = "[dim]arrêté[/dim]"
+empty = "[dim]Aucun sous-agent configuré.[/dim]"
+add_hint = "[dim]Utilise 'ductor agents add <nom>' pour en créer un.[/dim]"
+
+[agents.add]
+usage = "[bold red]Utilisation : ductor agents add <nom>[/bold red]"
+reserved = "[bold red]Le nom 'main' est réservé.[/bold red]"
+exists = "[bold red]L'agent '{name}' existe déjà.[/bold red]"
+prompt_token = "Token Telegram du bot pour '{name}' :"
+prompt_users = "IDs utilisateurs autorisés (séparés par des virgules) :"
+prompt_groups = "IDs de groupes autorisés (séparés par des virgules, laisser vide pour aucun) :"
+prompt_provider = "Provider :"
+prompt_model = "Modèle (par ex. opus, sonnet, o3) :"
+cancelled = "[dim]Annulé.[/dim]"
+done = "[green]Agent '{name}' ajouté à agents.json.[/green]"
+auto_start = "[dim]Il sera démarré automatiquement au prochain (re)démarrage du bot.[/dim]"
+
+[agents.remove]
+usage = "[bold red]Utilisation : ductor agents remove <nom>[/bold red]"
+not_found = "[bold red]Agent '{name}' introuvable.[/bold red]"
+confirm = "Supprimer l'agent '{name}' ? (Les données du workspace ne seront pas supprimées.)"
+done = "[green]Agent '{name}' supprimé de agents.json.[/green]"
+data_hint = "[dim]Les données du workspace restent dans {path}[/dim]"
+
+# -- Installation d'extras ----------------------------------------------------
+
+[help]
+title_commands = "[bold]Commandes[/bold]"
+col_command = "Commande"
+col_description = "Description"
+ductor = "Démarrer le bot configuré"
+agents = "Gestion des sous-agents (list/add/remove)"
+status = "Afficher le statut du bot, chemins et agents"
+help = "Afficher ce message"
+verbose = "Sortie de log détaillée"

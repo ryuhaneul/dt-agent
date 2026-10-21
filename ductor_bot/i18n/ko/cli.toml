@@ -1,0 +1,85 @@
+# Korean CLI strings (Rich-formatted, shown in terminal).
+
+# -- Status command ------------------------------------------------------------
+
+[status]
+path_sessions = "세션:      [cyan]{path}[/cyan]"
+path_logs = "로그:      [cyan]{path}[/cyan]"
+path_workspace = "워크스페이스: [cyan]{path}[/cyan]"
+path_config = "설정:      [cyan]{path}[/cyan]"
+path_home = "홈:        [cyan]{path}[/cyan]"
+title_main = "[bold]상태 — main[/bold]"
+title = "[bold]상태[/bold]"
+running = "[bold green]실행 중[/bold green]  pid={pid}  가동 시간: {uptime}"
+not_running = "[dim]실행 중이 아니에요[/dim]"
+provider = "Provider:  [cyan]{provider}[/cyan] ({model})"
+errors_found = "오류:      [bold red]{count}[/bold red]건 (최신 로그 기준)"
+errors_none = "오류:      [green]0[/green]"
+paths_header = "[bold]경로:[/bold]"
+not_configured = "설정되지 않았어요. 호스트에서 scripts/onboard.sh를 실행한 뒤 봇을 시작하세요."
+
+# -- Config validation ---------------------------------------------------------
+
+[config]
+headless_main = "메인 에이전트에는 메신저가 필요해요 (headless는 서브 에이전트 전용이에요)."
+not_configured_container = "[bold yellow]설정되지 않았어요. 호스트에서 scripts/onboard.sh를 실행한 뒤 봇을 시작하세요.[/bold yellow]"
+incomplete = "[bold yellow]설정이 불완전해요. [bold]scripts/onboard.sh[/bold]을 실행하세요.[/bold yellow]"
+matrix_no_homeserver = "[bold yellow]Matrix homeserver URL이 필요해요.{hint}[/bold yellow]"
+matrix_no_user = "[bold yellow]Matrix user_id가 필요해요.{hint}[/bold yellow]"
+matrix_no_auth = "[bold yellow]Matrix 비밀번호 또는 access_token이 필요해요.{hint}[/bold yellow]"
+matrix_no_target = "[bold yellow]최소 하나의 allowed_room 또는 allowed_user가 필요해요.{hint}[/bold yellow]"
+onboarding_hint = " 재구성하려면 [bold]scripts/onboard.sh[/bold]을 실행하세요."
+
+# -- Agent management ----------------------------------------------------------
+
+[agents]
+inherited = "상속"
+restarts = "[dim](재시작: {count}회)[/dim]"
+title = "[bold]서브 에이전트 ({count})[/bold]"
+help_remove = "서브 에이전트를 삭제해요"
+help_add = "새 서브 에이전트를 추가해요 (대화형)"
+help_list = "모든 서브 에이전트와 설정을 보여줘요"
+title_help = "[bold]에이전트 명령[/bold]"
+col_agent = "에이전트"
+col_status = "상태"
+col_uptime = "가동 시간"
+col_provider = "Provider"
+col_model = "모델"
+status_running = "[bold green]실행 중[/bold green]"
+status_starting = "[yellow]시작 중[/yellow]"
+status_crashed = "[bold red]크래시[/bold red]"
+status_stopped = "[dim]중지됨[/dim]"
+empty = "[dim]구성된 서브 에이전트가 없어요.[/dim]"
+add_hint = "[dim]'ductor agents add <name>'으로 생성하세요.[/dim]"
+
+[agents.add]
+usage = "[bold red]사용법: ductor agents add <name>[/bold red]"
+reserved = "[bold red]'main' 이름은 예약돼 있어요.[/bold red]"
+exists = "[bold red]에이전트 '{name}'이(가) 이미 존재해요.[/bold red]"
+prompt_token = "'{name}'의 Telegram bot token:"
+prompt_users = "허용된 user ID (쉼표로 구분):"
+prompt_groups = "허용된 group ID (쉼표로 구분, 없으면 비워두세요):"
+prompt_provider = "Provider:"
+prompt_model = "모델 (예: opus, sonnet, o3):"
+cancelled = "[dim]취소됐어요.[/dim]"
+done = "[green]에이전트 '{name}'이(가) agents.json에 추가됐어요.[/green]"
+auto_start = "[dim]다음 봇 (재)시작 시 자동으로 시작돼요.[/dim]"
+
+[agents.remove]
+usage = "[bold red]사용법: ductor agents remove <name>[/bold red]"
+not_found = "[bold red]에이전트 '{name}'을(를) 찾을 수 없어요.[/bold red]"
+confirm = "에이전트 '{name}'을(를) 제거할까요? (workspace 데이터는 삭제되지 않아요.)"
+done = "[green]에이전트 '{name}'이(가) agents.json에서 제거됐어요.[/green]"
+data_hint = "[dim]Workspace 데이터는 {path}에 남아 있어요.[/dim]"
+
+# -- Install extras ------------------------------------------------------------
+
+[help]
+title_commands = "[bold]명령[/bold]"
+col_command = "명령"
+col_description = "설명"
+ductor = "설정된 봇 시작"
+agents = "서브 에이전트 관리 (list/add/remove)"
+status = "봇 상태, 경로, 에이전트 표시"
+help = "이 메시지 표시"
+verbose = "상세 로깅 출력"

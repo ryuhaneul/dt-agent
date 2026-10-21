@@ -1,0 +1,716 @@
+# Indonesian chat strings (Markdown-formatted, sent to Telegram/Matrix/API).
+
+# -- Session management -------------------------------------------------------
+
+[session]
+error_header = "**Error Sesi**"
+error_body = """\
+[{model}] Terjadi kesalahan.
+Sesi Anda telah disimpan -- kirim pesan lain untuk mencoba lagi.
+Gunakan /new untuk memulai sesi baru jika masalah berlanjut."""
+error_cause = "**Penyebab:** {hint}"
+error_detail = "**Detail:** `{detail}`"
+error_auth = "Autentikasi gagal. Di folder repositori pada host, jalankan `./scripts/login.sh <provider>`."
+no_auth = "Provider {provider} belum terautentikasi.\nDi folder repositori pada host, jalankan `./scripts/login.sh {provider}`."
+error_rate = "Batas permintaan tercapai. Tunggu sebentar dan coba lagi."
+error_context = "Panjang konteks terlampaui. Gunakan /new untuk memulai sesi baru."
+
+reset_header = "**Sesi Direset**"
+reset_body = """\
+Sesi direset untuk {provider} di obrolan ini saja.
+Sesi provider lain tetap disimpan.
+Kirim pesan untuk melanjutkan."""
+
+age_warning = "[Sesi telah berjalan selama {age}. Gunakan /new untuk memulai ulang.]"
+
+empty_turn = "_(Agen memperbarui memori secara diam-diam — kirim pesan lain untuk melanjutkan.)_"
+
+recovered = "_Sesi sebelumnya tidak dapat dipulihkan. Sesi baru dimulai secara otomatis._"
+recovery_failed = "Sesi Anda tidak dapat dipulihkan setelah memulai ulang. Coba lagi atau gunakan /new untuk memulai dari awal."
+sigkill = "Eksekusi terganggu. Silakan kirim permintaan yang sama lagi."
+
+not_found = "Sesi '{name}' tidak ditemukan."
+ended = "Sesi '{name}' telah berakhir. Mulai yang baru dengan /session."
+still_running = "Sesi '{name}' masih diproses. Tunggu atau gunakan /stop untuk membatalkan."
+
+# -- Stop/interrupt ------------------------------------------------------------
+
+[stop]
+header = "**Agen Dihentikan**"
+killed = "{provider} dihentikan."
+nothing = "Tidak ada yang sedang berjalan."
+discarded = "{count} pesan yang menunggu di topik ini dibuang."
+
+[interrupt]
+done = "Menghentikan {count} proses."
+nothing = "Tidak ada proses aktif."
+
+[abort_all]
+done = "Menghentikan {count} proses di semua agen."
+nothing = "Tidak ada proses aktif yang ditemukan di agen mana pun."
+
+# -- Timeout -------------------------------------------------------------------
+
+[timeout]
+error_header = "**Waktu Habis**"
+error_body = """\
+[{model}] CLI dihentikan setelah {minutes} menit.
+Sesi Anda telah disimpan -- kirim pesan lain untuk melanjutkan dari terakhir kali.
+Gunakan /new untuk memulai sesi baru."""
+
+result_header = "**Waktu Habis**"
+result_body = """\
+Agen kehabisan waktu setelah {elapsed} detik (batas: {configured} detik).
+Coba prompt yang lebih pendek, atau tanyakan dalam langkah-langkah kecil."""
+
+warning_minutes = "Waktu habis dalam {mins} menit"
+warning_seconds = "Waktu habis dalam {secs} detik"
+extended = "Waktu diperpanjang (+{secs} detik, sisa {remaining})"
+
+generic = "Agen kehabisan waktu. Silakan coba lagi."
+
+# -- Startup / lifecycle -------------------------------------------------------
+
+[startup]
+restart_marker = "penanda restart"
+first_start_header = "**Bot Dimulai**"
+first_start_body = "Pertama kali dimulai — siap digunakan."
+reboot_header = "**Bot Dimulai**"
+reboot_body = "Reboot sistem terdeteksi — kembali online."
+
+restart_default = "Restart selesai."
+restart_header = "**Memulai Ulang**"
+restart_body = "Bot sedang dimatikan dan akan segera kembali."
+stale_updates_skipped = "{count} pesan lama dari saat bot dimulai ulang tidak diproses."
+
+
+matrix_restart = "**Bot dimulai ulang** ({reason})"
+
+[recovery]
+named_header = "**Pemulihan Otomatis**"
+named_body = "Melanjutkan sesi latar **{session}**\n`{preview}`"
+interrupted_header = "**Tugas Terputus**"
+interrupted_body = "Sebuah tugas terputus saat restart.\n`{preview}`\nSilakan kirim ulang untuk melanjutkan."
+
+# -- Memory --------------------------------------------------------------------
+
+[memory]
+header = "**Memori Utama**"
+empty = "Kosong. Agen akan membangun memori saat Anda berinteraksi."
+empty_tip = "*Tips: Minta agen Anda untuk \"mengingat\" sesuatu untuk memulai.*"
+filled_tip = "*Tips: Agen membaca dan memperbarui ini secara otomatis.*"
+
+# -- Status --------------------------------------------------------------------
+
+[status]
+streaming_header = "Tampilan streaming:"
+reasoning_stream = "  Aliran penalaran: {value}"
+tool_progress = "  Progres alat: {value}"
+thinking_indicator = "  Indikator berpikir: {value}"
+on = "aktif"
+off = "nonaktif"
+header = "**Status**"
+no_session = "Tidak ada sesi aktif."
+model_line = "Model: {model}"
+model_line_configured = "Model: {model} (dikonfigurasi: {configured})"
+effort_line = "Upaya penalaran: {effort}"
+topic_line = "Topik: {topic}"
+session_line = "Sesi: `{sid}`"
+messages_line = "Pesan: {count}"
+bg_header = "Tugas latar: {count} berjalan"
+auth_header = "Autentikasi:"
+agents_header = "Agen:"
+
+# -- Technical footer ----------------------------------------------------------
+
+[footer]
+model = "Model: {name}"
+time = "Waktu: {secs} detik"
+
+[diagnose]
+restarts = " | restart: {count}"
+log_unreadable = "(tidak dapat membaca berkas log)"
+header = "**Diagnostik Sistem**"
+version_line = "Versi: `{version}`"
+configured_line = "Dikonfigurasi: {provider} / {model}"
+effective_line = "Runtime efektif: {provider} / {model}"
+log_header = "Log terkini (50 baris terakhir):"
+no_log = "File log tidak ditemukan."
+codex_cache_not_init = "Cache Model Codex: Observer belum diinisialisasi"
+codex_cache_not_loaded = "Cache Model Codex: Belum dimuat"
+codex_cache_info = "Cache Model Codex:\n  Terakhir diperbarui: {updated}\n  Model dicache: {count}\n  Model default: {default}"
+health_header = "**Kesehatan Multi-Agen:**"
+
+# -- Tasks ---------------------------------------------------------------------
+
+[tasks]
+header = "**Tugas Latar**"
+disabled = "Sistem tugas tidak diaktifkan."
+empty = "Tidak ada tugas latar."
+hint = "Tugas dibuat oleh agen untuk pekerjaan yang membutuhkan waktu lama."
+too_many = "Terlalu banyak tugas latar ({max} maks)"
+internal_error = "Kesalahan internal (periksa log)"
+
+cancelled_one = "Membatalkan {count} tugas."
+cancelled_other = "Membatalkan {count} tugas."
+no_running = "Tidak ada tugas yang berjalan."
+task_cancelled = "Tugas `{id}` dibatalkan."
+task_not_running = "Tugas `{id}` tidak berjalan."
+cleaned_one = "Menghapus {count} tugas yang selesai."
+cleaned_other = "Menghapus {count} tugas yang selesai."
+nothing_to_clean = "Tidak ada yang perlu dibersihkan."
+cleanup_confirm_one = "Ini menghapus {count} tugas yang selesai beserta entri daftar dan folder kerjanya (termasuk catatan tugas). Tugas yang dihapus tidak bisa dilanjutkan. Hapus?"
+cleanup_confirm_other = "Ini menghapus {count} tugas yang selesai beserta entri daftar dan folder kerjanya (termasuk catatan tugas). Tugas yang dihapus tidak bisa dilanjutkan. Hapus?"
+
+running_header = "**Berjalan**"
+waiting_header = "**Menunggu jawaban**"
+finished_header = "**Selesai**"
+
+btn_cancel = "Batalkan {name}"
+btn_cancel_all = "Batalkan Semua"
+btn_refresh = "Segarkan"
+btn_delete_finished = "Hapus yang Selesai"
+btn_confirm_delete = "Hapus"
+btn_cancel_delete = "Batal"
+
+summary_running = "Berjalan: {count}"
+summary_waiting = "Menunggu: {count}"
+summary_finished = "Selesai: {count}"
+
+# -- Sessions selector ---------------------------------------------------------
+
+[sessions]
+msgs_one = "{count} pesan"
+msgs_other = "{count} pesan"
+topic_fallback = "Topik #{id}"
+header = "**Sesi**"
+empty = "Tidak ada sesi aktif."
+start_hint = "Mulai dengan `/session <prompt>`."
+followup_hint = "Tindak lanjut: `@<nama> <pesan>`"
+active_count = "Aktif: {count}"
+btn_end = "Akhiri {name}"
+btn_refresh = "Segarkan"
+btn_end_all = "Akhiri Semua"
+topics_header = "Topik:"
+named_header = "Bernama:"
+named_empty = "Tidak ada sesi aktif.\n  Mulai dengan `/session <prompt>`."
+
+ended_all_one = "Semua {count} sesi diakhiri."
+ended_all_none = "Tidak ada sesi aktif."
+ended_one = "Sesi '{name}' diakhiri."
+ended_not_found = "Sesi '{name}' tidak ditemukan."
+unknown_action = "Tindakan tidak dikenal."
+
+# -- Model selector ------------------------------------------------------------
+
+[model]
+invalid_effort = "Upaya penalaran `{effort}` tidak valid untuk `{model}`. Didukung: {supported}."
+no_efforts = "tidak ada"
+next_message = "Kirim @{model} <text> untuk memakai {model} hanya pada pesan itu."
+header = "**Pemilih Model**"
+current = "Saat ini: {model}"
+current_with_effort = "Saat ini: {model} ({effort})"
+configured_default = "Default yang dikonfigurasi: {configured}"
+
+switched = "**Model beralih.**"
+model_line = "Model: {model}"
+model_change = "Model: {old} -> {new}"
+provider_change = "Provider: {old} -> {new}"
+reasoning_line = "Upaya penalaran: {effort}"
+effort_updated = "Upaya penalaran disetel ke {effort}."
+already_running = "Sudah menggunakan {model}. Tidak ada perubahan."
+
+resume_hint = """\
+Melanjutkan sesi `{sid}`.
+Anda telah mengirim {count} {label} dalam sesi provider ini.
+Model saat ini: `{model}`.
+Gunakan /new untuk memulai sesi baru."""
+resume_msg_one = "pesan"
+resume_msg_other = "pesan"
+
+no_auth = "Tidak ada provider yang terautentikasi.\nDi folder repositori pada host, jalankan `./scripts/login.sh <provider>` (claude, codex, gemini, grok)."
+pick_provider = "Pilih provider:"
+select_claude = "Pilih model Claude:"
+select_gemini = "Pilih model Gemini:"
+select_codex = "Pilih model Codex:"
+select_grok = "Pilih model Grok Build:"
+no_codex = "Tidak ada model Codex yang tersedia."
+no_gemini = "Tidak ada model Gemini yang ditemukan dari file lokal Gemini CLI."
+thinking_level = "Upaya penalaran untuk {model}:"
+unknown_action = "Tindakan tidak dikenal."
+btn_back = "<< Kembali"
+switched_while_busy = "**Model beralih.** Proses saat ini masih berjalan — model baru berlaku untuk pesan berikutnya."
+
+# -- Cron selector -------------------------------------------------------------
+
+[cron]
+state_enabled = "diaktifkan"
+state_disabled = "dinonaktifkan"
+last_run = " | terakhir: {status}"
+delivery_failed = " (pengiriman gagal)"
+header = "**Tugas Terjadwal**"
+empty = "Tidak ada cron job yang dikonfigurasi."
+empty_hint = "*Tanya agen Anda: \"Jalankan pemeriksaan cadangan setiap hari pukul 9 pagi\"*"
+job_line = "{number}. **{title}** ({status}){last_run}\n   `{schedule}`"
+status_active = "aktif"
+status_paused = "dijeda"
+btn_disable = "{number}. Nonaktifkan"
+btn_enable = "{number}. Aktifkan"
+btn_prev = "<< Sebelumnya"
+btn_refresh = "Segarkan"
+btn_next = "Berikutnya >>"
+btn_all_on = "Semua ON"
+btn_all_off = "Semua OFF"
+info_active = "{active}/{total} aktif"
+info_page = "halaman {current}/{total}"
+all_enabled = "Semua cron job diaktifkan."
+all_disabled = "Semua cron job dinonaktifkan."
+already_enabled = "Semua cron job sudah aktif."
+already_disabled = "Semua cron job sudah dinonaktifkan."
+toggled = "'{title}' {state}."
+list_changed = "Daftar cron berubah. Silakan coba lagi."
+unknown_action = "Tindakan tidak dikenal. Daftar cron disegarkan."
+
+# -- Welcome (Telegram) -------------------------------------------------------
+
+[welcome]
+header = "**Selamat datang di DT Agent{name}!**"
+tagline = """\
+Deploy dari saku Anda. Otomatisasi dari sofa Anda.
+Claude Code, Codex & Gemini -- langsung dari Telegram."""
+hint_model = "/model — ganti model"
+hint_info = "/info — dokumen & tautan"
+hint_help = "/help — semua perintah"
+
+no_auth = "Belum ada CLI yang terautentikasi.\nDi folder repositori pada host, jalankan `./scripts/login.sh <provider>` (claude, codex, gemini, grok)."
+auth_line = "{providers} terautentikasi.\nModel: **{model}**"
+
+btn_know = "Ayo saling mengenal!"
+btn_system = "Lihat sistemnya!"
+btn_who = "Siapa kamu? Siapa aku?"
+
+prompt_know = """\
+Hei, saya baru menyiapkan DT Agent dan ingin kamu mengenalku. \
+Tanyakan semua yang perlu kamu tahu agar kita bisa bekerja sama dengan baik -- \
+namaku, apa yang kulakukan, apa yang sedang kukerjakan, bagaimana aku suka berkomunikasi. \
+Simpan apa yang kamu pelajari ke memorimu."""
+prompt_system = """\
+Lihat-lihat sistem tempat kamu berjalan. \
+Periksa OS, alat yang terpasang, folder proyek, apa pun yang menarik. \
+Berikan ringkasan singkat tentang apa yang kamu temukan."""
+prompt_who = """\
+Mari mulai! Perkenalkan dirimu -- siapa kamu, apa yang bisa kamu lakukan untukku? \
+Kemudian tanya siapa aku dan apa yang perlu kubantuan."""
+
+# -- Info ----------------------------------------------------------------------
+
+[info]
+header = "**DT Agent**"
+version = "Versi: `{version}`"
+telegram_description = "Agen AI coding (Claude, Codex, Gemini) di Telegram.\nSesi bernama, memori persisten, cron job, webhook, streaming langsung."
+matrix_description = "Agen AI coding (Claude, Codex, Gemini) di Matrix.\nSesi bernama, memori persisten, cron job, webhook, streaming langsung."
+slack_description = "Agen AI coding (Claude, Codex, Gemini) di Slack.\nSesi bernama, memori persisten, cron job, webhook, streaming langsung."
+
+# -- Help (categories) --------------------------------------------------------
+
+[help]
+header = "**Referensi Perintah**"
+cat_daily = "Harian"
+cat_automation = "Otomatisasi"
+cat_multiagent = "Multi-Agen"
+cat_browse = "Jelajah & Info"
+cat_maintenance = "Pemeliharaan"
+footer = "Kirim pesan apa pun untuk mulai bekerja dengan agen Anda."
+matrix_footer = "Gunakan awalan `!` atau `/`. Kirim pesan apa pun untuk memulai."
+slack_footer = "Gunakan perintah seperti `help` atau `/help`. Kirim pesan lain untuk memulai."
+
+# -- Multi-agent ---------------------------------------------------------------
+
+[agents]
+cmd_list = "`{prefix}agents` — daftar semua agen dan statusnya"
+cmd_start = "`{prefix}agent_start <name>` — mulai sub-agen"
+cmd_stop = "`{prefix}agent_stop <name>` — hentikan sub-agen"
+cmd_restart = "`{prefix}agent_restart <name>` — restart sub-agen"
+slack_explanation = "Sub-agen Slack memakai runtime multi-agen yang sama."
+header = "**Agen**"
+empty = "Tidak ada agen."
+not_active = "Mode multi-agen tidak aktif."
+usage_stop = "Penggunaan: /agent_stop <nama>"
+usage_start = "Penggunaan: /agent_start <nama>"
+usage_restart = "Penggunaan: /agent_restart <nama>"
+cannot_stop_main = "Tidak dapat menghentikan agen utama."
+not_running = "Agen '{name}' tidak berjalan."
+stopped = "Agen '{name}' dihentikan."
+restarts = " (restart: {count})"
+error_line = "Kesalahan: {error}"
+
+system_header = "**Sistem Multi-Agen**"
+telegram_explanation = """\
+Sistem multi-agen memungkinkan Anda menjalankan bot tambahan sebagai \
+sub-agen — masing-masing dengan token Telegram, workspace, \
+dan daftar pengguna sendiri. Semua agen berbagi satu proses dan dapat \
+berkomunikasi melalui bus antar-agen."""
+matrix_explanation = """\
+Sistem multi-agen memungkinkan Anda menjalankan bot tambahan sebagai \
+sub-agen — masing-masing dengan workspace dan daftar pengguna sendiri. \
+Semua agen berbagi satu proses dan dapat berkomunikasi \
+melalui bus antar-agen."""
+commands_header = "**Perintah**"
+setup_header = "**Pengaturan**"
+setup_instruction = "Minta agen Anda untuk membuat sub-agen baru atau edit `agents.json` di direktori DT Agent home Anda."
+
+# -- Errors (generic) ---------------------------------------------------------
+
+[error]
+internal = "Terjadi kesalahan internal. Silakan coba lagi."
+shutting_down = "Bot sedang dimatikan. Silakan kirim ulang pesan Anda setelah restart."
+generic = "Kesalahan: {detail}"
+check_logs = "Kesalahan: periksa log untuk detailnya."
+
+# -- Gemini warning ------------------------------------------------------------
+
+[gemini]
+missing_key = """\
+Gemini diatur ke mode autentikasi API key, tetapi `gemini_api_key` di \
+`~/.ductor/config/config.json` bernilai `"null"` atau kosong.
+Mengapa ini diperlukan: ketika DT Agent memanggil Gemini CLI sebagai proses eksternal, \
+Gemini CLI tidak mengekspos API key yang dimasukkan secara internal kepada pemanggil tersebut.
+Atur API key yang valid di `gemini_api_key` dan restart `ductor`."""
+
+# -- New session (handler) -----------------------------------------------------
+
+[new]
+topic_not_found = "Topik \"{name}\" tidak ditemukan."
+topic_reset = "Sesi baru untuk **{name}** ({provider})."
+
+# -- Transport-specific --------------------------------------------------------
+
+[telegram]
+choose_option = "Pilih salah satu opsi:"
+group_rejected = "Bot ini tidak diizinkan untuk grup ini."
+channel_not_whitelisted = "Saluran ini tidak ada di whitelist, saya keluar."
+where_header = "**Lokasi**"
+where_no_tracker = "Pelacak obrolan tidak tersedia."
+where_empty = "Belum ada aktivitas obrolan yang tercatat."
+leave_usage_header = "**Penggunaan**"
+leave_usage = "`/leave <group_id>`"
+leave_invalid_id = "ID grup tidak valid."
+leave_failed = "Gagal keluar: {error}"
+left_group = "Keluar dari grup <code>{group_id}</code>."
+
+[matrix]
+room_rejected = "Bot ini tidak diizinkan untuk ruangan ini."
+
+# -- Session help (transport-specific) -----------------------------------------
+
+[session_help]
+slack_usage = "`/session <prompt>` — mulai sesi latar belakang\n`/sessions` — daftar sesi yang berjalan\n`/stop` — hentikan proses yang aktif"
+header = "**Sesi Latar**"
+telegram_explanation = """\
+Sesi latar menjalankan tugas secara paralel tanpa memblokir \
+obrolan utama. Setiap sesi mendapat nama unik dan berjalan \
+secara independen — Anda dapat memiliki beberapa sesi aktif sekaligus."""
+usage_header = "**Penggunaan**"
+followup_header = "**Tindak lanjut**"
+followup_line = "`@nama-sesi <pesan>` — kirim tindak lanjut ke sesi yang berjalan"
+commands_header = "**Perintah**"
+telegram_sessions_cmd = "`/sessions` — lihat dan kelola semua sesi latar"
+telegram_stop_cmd = "`/stop` — batalkan sesi yang berjalan"
+matrix_session_cmd = "`!session <prompt>` — mulai sesi latar"
+matrix_sessions_cmd = "`!sessions` — lihat dan kelola semua sesi"
+matrix_stop_cmd = "`!stop` — batalkan sesi yang berjalan"
+default_provider = "`/session <prompt>` — provider default"
+claude_single = "`/session <prompt>` — berjalan di Claude"
+claude_model = "`/session @opus <prompt>` — model spesifik"
+codex_single = "`/session <prompt>` — berjalan di Codex"
+grok_single = "`/session <prompt>` — berjalan di Grok Build"
+gemini_single = "`/session <prompt>` — berjalan di Gemini"
+gemini_model = "`/session @flash <prompt>` — model spesifik"
+grok_model = "`/session @grok-4.5 <prompt>` — model spesifik"
+claude_multi = "`/session @opus <prompt>` — Claude (opus)"
+codex_multi = "`/session @codex <prompt>` — Codex"
+grok_multi = "`/session @grok <prompt>` — Grok Build"
+gemini_multi = "`/session @flash <prompt>` — Gemini (flash)"
+explicit = "`/session @provider model <prompt>` — eksplisit"
+
+# -- File browser --------------------------------------------------------------
+
+[file_browser]
+header = "**Penjelajah File**"
+directory_not_found = "Direktori tidak ditemukan."
+empty = "(kosong)"
+btn_back = "<< Kembali"
+btn_request_files = "Kirimkan saya file dari folder ini"
+file_request_prompt = "Daftarkan semua file di {dir}/ dan kirimkan yang saya minta. Kirimkan file menggunakan tag file."
+
+# Matrix variant
+matrix_header = "**File Workspace**"
+matrix_hint = "_Gunakan `!showfiles <dir>` untuk mendaftarkan direktori tertentu._"
+matrix_dir_not_found = "Direktori `{subdir}` tidak ditemukan."
+matrix_permission_denied = "(akses ditolak)"
+matrix_file_count = "{count} file"
+matrix_no_dirs = "(tidak ada direktori workspace yang ditemukan)"
+
+[multiagent]
+async_task_received = "📥 **Tugas async diterima** dari `{sender}`\nSesi: `{session}` · ID Tugas: `{task_id}`\n\n_{preview}_"
+
+[effort]
+select = "Pilih upaya penalaran untuk {model}:"
+unsupported = "Upaya penalaran tidak dapat diatur untuk penyedia `{provider}`."
+
+# -- Completion summary, heartbeat, slot switch, memory lint ------------------
+
+[stream]
+slack_plan_title = "Mengerjakan permintaanmu"
+slack_analyze_title = "Memahami permintaan"
+slack_tools_title = "Gunakan alat jika perlu"
+slack_response_title = "Menyusun jawaban"
+slack_no_tools = "Tidak perlu alat"
+slack_understanding = "Memahami permintaan"
+slack_label_thinking = "Berpikir"
+slack_label_compacting = "Memadatkan"
+slack_label_recovering = "Memulihkan"
+slack_label_timeout_warning = "Batas waktu hampir tiba"
+slack_label_timeout_extended = "Batas waktu diperpanjang"
+more_items = "(+{count} lagi)"
+label_thinking = "BERPIKIR"
+label_compacting = "MEMADATKAN"
+label_recovering = "Mohon tunggu, sedang memulihkan..."
+label_timeout_warning = "BATAS WAKTU HAMPIR TIBA"
+label_timeout_extended = "BATAS WAKTU DIPERPANJANG"
+done = "✓ Selesai · {secs} dtk"
+
+[heartbeat]
+quarantine_stopped = "Pemeriksaan heartbeat dihentikan: sesi CLI percakapan ini tidak dapat dilanjutkan. Pemeriksaan akan dimulai lagi secara otomatis setelah pemulihan sesi berhasil pada percakapan berikutnya dan sesi baru dibuat."
+
+[slot]
+switched_estimated = "beralih (kuota habis, waktu reset tidak diketahui, coba lagi dalam ~1 jam)"
+switched = "beralih (kuota habis, direset {reset})"
+cooldown_unparsable = "cooldown tidak dapat dibaca, stderr asli di bawah"
+
+[memory_lint]
+topic_name = "Pemeriksaan memori"
+
+# -- Inter-agent failure reasons -----------------------------------------------
+
+[interagent]
+queue_wait_timeout = "Waktu tunggu terlampaui, tidak dimulai"
+recipient_gone = "Agen penerima tidak ada lagi"
+
+# -- Why a sub-agent was excluded or did not start -----------------------------
+
+[agent_reason]
+item = "entri #{index}"
+item_unnamed = "entri tanpa nama"
+config_error = "{item}: kesalahan konfigurasi ({error}){detail}"
+name_format = "{item}: format nama salah (ValueError); bidang name"
+create_error = "kesalahan saat membuat agen ({error})"
+start_error = "kesalahan saat memulai agen ({error})"
+feature_missing = "fitur {feature} aktif, tetapi modul {module} tidak ada"
+extras_hint = "extras build image: '{extras}'. Tambahkan fitur ke DUCTOR_EXTRAS di .env root, lalu jalankan docker compose build"
+only_sub = "hanya sub-agen '{sub}' yang dikecualikan"
+
+[notice]
+session_cancelled = "**[{name}] Dibatalkan**"
+session_failed = "**[{name}] Gagal** ({elapsed})"
+session_complete = "**[{name}] Selesai** ({elapsed})"
+no_output = "_Tidak ada keluaran._"
+bg_cancelled = "**Tugas latar dibatalkan**"
+bg_cancelled_body = "Tugas `{task_id}` dibatalkan.\nPrompt: _{prompt}_"
+bg_failed = "**Tugas latar gagal** ({elapsed})"
+bg_failed_body = "Tugas `{task_id}` gagal ({status}).\nPrompt: _{prompt}_"
+bg_complete = "**Tugas latar selesai** ({elapsed})"
+heartbeat_failed = "**Pengiriman heartbeat gagal**\n\nTidak dapat dikirim ke {target}.\n\n---\n{text}"
+target = "Obrolan {chat}"
+target_topic = "Obrolan {chat} / Topik {topic}"
+ia_failed = "**Permintaan antar-agen gagal**\n\nAgen: `{agent}`{session}\nKesalahan: {error}\nPermintaan: _{request}_"
+ia_session = "\nSesi: `{name}`"
+unknown = "tidak diketahui"
+provider_switch = "**Pergantian provider terdeteksi**\n\n{notice}"
+task_done = "**Tugas `{name}` selesai** ({detail})"
+task_cancelled = "**Tugas `{name}` dibatalkan**"
+task_failed = "**Tugas `{name}` gagal**\nAlasan: {reason}"
+task_question = "**Tugas `{task_id}` punya pertanyaan:**\n{question}"
+task_header = "**TUGAS: {title}**"
+cron_delivery_failed = "**Pengiriman cron gagal**\n\nTugas **{title}** tidak dapat dikirim ke {target}.\n\n---\n{text}"
+webhook_header = "**WEBHOOK (TUGAS CRON): {title}**"
+delivery_fallback = "**Pengiriman alternatif**\n\nTransport tujuan '{transport}' tidak tersedia.\n\n---\n{text}"
+processing_error = "Kesalahan saat memproses hasil ({origin})"
+queue_waiting = "<i>[Pesan dalam antrean...]</i>"
+queue_cancelled = "<i>[Pesan dibatalkan.]</i>"
+queue_discarded = "<i>[Pesan dibuang.]</i>"
+queue_cancel_button = "Batalkan pesan"
+file_outside = "Tidak dapat mengirim <code>{name}</code> — berkas berada di luar direktori yang diizinkan.\n\nSolusi: atur <code>\"file_access\": \"all\"</code> di <code>config.json</code>, lalu jalankan <b>/restart</b>."
+file_not_found = "[Berkas tidak ditemukan: {name} (path host yang dicoba: {path})]"
+file_send_failed = "[Gagal mengirim: {name}]"
+download_failed = "Tidak dapat mengunduh berkas itu."
+user_answer = "<i>[JAWABAN PENGGUNA] {answer}</i>"
+task_system_unavailable = "Sistem tugas tidak tersedia."
+
+[run]
+cli_not_found = "[CLI {provider} tidak ditemukan]"
+timed_out = "[{label} melewati batas waktu setelah {secs} dtk]"
+cron_failed = "Pekerjaan cron '{title}' gagal dengan kesalahan ({error_type})."
+cron_no_session = "Pekerjaan cron '{title}' tidak dapat dijalankan di sesi ini."
+status_success = "berhasil"
+status_aborted = "dibatalkan"
+status_timeout = "batas waktu"
+status_cli_not_found = "CLI tidak ditemukan"
+status_exception = "kesalahan"
+status_injection = "tidak dijalankan di sesi"
+status_exit = "kode keluar {code}"
+
+[task_error]
+interrupted = "terhenti karena restart"
+resume_hint = "Untuk melanjutkan percakapan tugas ini, gunakan:"
+bot_restarted = "Bot di-restart saat tugas berjalan"
+timeout = "Batas waktu terlampaui setelah {secs} dtk"
+stale_killed = "proses macet dihentikan setelah {secs} dtk"
+cli_error = "kesalahan CLI"
+
+[crash]
+matrix_no_credentials = "Autentikasi Matrix gagal untuk {user_id}\n  access_token, device_id, atau password belum dikonfigurasi.\n  Atur 'password' di bagian matrix pada config.json."
+matrix_login_failed = "Autentikasi Matrix gagal untuk {user_id}\n  Homeserver: {homeserver}\n  Kesalahan: {error}\n  Periksa kredensial Anda di bagian matrix pada config.json."
+
+[age]
+s = "{n}dtk"
+m = "{n}mnt"
+h = "{n}j"
+d = "{n}h"
+ago_now = "baru saja"
+ago_s = "{n} dtk lalu"
+ago_m = "{n} mnt lalu"
+ago_h = "{n} j lalu"
+ago_d = "{n} h lalu"
+
+[task_status]
+running = "berjalan"
+waiting = "menunggu"
+done = "selesai"
+failed = "gagal"
+cancelled = "dibatalkan"
+
+[session_status]
+running = "berjalan"
+idle = "siaga"
+ended = "berakhir"
+
+[agent_status]
+running = "berjalan"
+starting = "memulai"
+crashed = "crash"
+stopped = "dihentikan"
+
+[agent_role]
+main = "utama"
+sub = "sub"
+
+[auth_status]
+authenticated = "terautentikasi"
+installed = "terpasang"
+not_found = "tidak ditemukan"
+
+[effort_label]
+none = "Tidak ada"
+minimal = "Minimal"
+low = "Rendah"
+medium = "Sedang"
+high = "Tinggi"
+xhigh = "Sangat tinggi"
+max = "Maksimal"
+
+[product_error]
+session_not_found = "Sesi '{name}' tidak ditemukan"
+session_ended = "Sesi '{name}' telah berakhir"
+session_busy = "Sesi '{name}' masih diproses"
+too_many_sessions = "Terlalu banyak sesi (maks. {max})"
+
+[session_notice]
+followup_sent = "**[{name}] Tindak lanjut terkirim**"
+task_queued = "Tugas `{task_id}` masuk antrean."
+started_title = "**Sesi `{name}` dimulai**"
+started_body = "Berjalan di {provider}{model_info}.\nTindak lanjut: `@{name} <message>`"
+
+[supervisor]
+already_running = "Agen '{name}' sudah berjalan."
+not_started = "Agen '{name}' tidak dimulai: {reason}"
+not_found = "Agen '{name}' tidak ditemukan di agents.json."
+started = "Agen '{name}' dimulai."
+restarted = "Agen '{name}' dimulai ulang."
+cannot_restart_main = "Agen utama tidak dapat dimulai ulang dengan perintah ini. Gunakan /restart."
+excluded = "Sub-agen '{name}' dikecualikan: {reason}"
+stopped_after_crashes = "Sub-agen '{name}' dihentikan setelah {max} kali crash: {error}"
+label = "Supervisor"
+
+[cli_error]
+codex_no_final = "Codex gagal sebelum menghasilkan respons akhir."
+gemini_unknown = "Kesalahan Gemini yang tidak dikenal"
+gemini_exited = "Gemini berhenti dengan kode {code}"
+grok_error = "Kesalahan Grok"
+
+[secret]
+usage = "Gunakan /secret list, /secret set KEY, /secret delete KEY, atau /secret cancel. Jangan sertakan nilai dalam perintah."
+prompt = "Balas pesan ini dengan nilai untuk {key} dalam 2 menit. Gunakan /secret cancel untuk membatalkan."
+saved = "{key} disimpan (panjang: {length} karakter)."
+saved_env_note = "{key} juga ada di .env. Kunci penyedia CLI memakai nilai dari .env."
+rejected = "Nilai ditolak: {reason}. Untuk format lain, edit file rahasia secara langsung."
+reason_value_empty = "Nilai kosong"
+reason_value_too_long = "Nilai melebihi {max} karakter"
+reason_value_nul = "Nilai mengandung karakter NUL"
+reason_value_multiline = "Nilai mengandung pergantian baris"
+reason_value_edge_space = "Nilai diawali atau diakhiri spasi"
+reason_value_edge_quote = "Nilai diawali atau diakhiri tanda kutip"
+reason_value_dollar = "Nilai diawali dengan $"
+invalid_key = "Gunakan kunci sepanjang 1–56 huruf besar, angka, atau garis bawah, diawali huruf."
+extra_args = "Jangan sertakan nilai dalam perintah. Kirim sebagai pesan berikutnya setelah /secret set KEY."
+expired = "Waktu pengisian habis. Mulai lagi dengan /secret set KEY."
+expired_value = "Waktu input telah habis. Pesan ini dihapus tanpa disimpan. Kirim /secret set KEY lagi."
+not_text = "Kirim nilai sebagai teks."
+delete_failed = "Pesan tidak dapat dihapus. Hapus sendiri ya."
+quoted_refused = "Pesan ini mengutip nilai rahasia, jadi tidak diproses. Kirim ulang tanpa kutipan."
+save_failed = "Perubahan tidak dapat disimpan. Tidak ada nilai baru yang disimpan. Coba lagi."
+list = "Kunci tersimpan:\n{keys}"
+list_empty = "Belum ada kunci tersimpan."
+confirm_overwrite = "Timpa {key}?"
+confirm_delete = "Hapus {key}?"
+deleted = "{key} dihapus."
+delete_missing = "{key} tidak ditemukan."
+cancelled = "Pengisian rahasia dibatalkan."
+nothing_pending = "Tidak ada pengisian rahasia yang tertunda."
+private_only = "Gunakan /secret dalam obrolan pribadi dengan bot."
+main_only = "Gunakan /secret pada bot utama."
+btn_overwrite = "Timpa"
+btn_delete = "Hapus"
+btn_cancel = "Batal"
+
+
+[accounts]
+error = "Pengelolaan akun gagal. Silakan coba lagi."
+title = "Akun Claude (prioritas teratas di atas)"
+authenticated = "Terautentikasi"
+unauthenticated = "Belum terautentikasi"
+no_cooldown = "Tanpa waktu tunggu"
+cooldown = "Sisa waktu tunggu {hours} jam {minutes} menit (berakhir {time})"
+empty = "Daftar akun kosong; hanya akun bawaan yang digunakan."
+subagent_note = "Prioritas berlaku untuk agen utama dalam beberapa detik dan subagen saat mulai berikutnya. Perubahan waktu tunggu berlaku untuk semua pada panggilan berikutnya."
+main_only = "Pengelolaan akun hanya tersedia di bot agen utama."
+stale = "Kontrol ini sudah kedaluwarsa. Menampilkan status terbaru."
+btn_prefer = "{name}: Utamakan"
+btn_clear = "{name}: Hapus waktu tunggu"
+btn_refresh = "Segarkan"
+
+[usage]
+title = "📊 Penggunaan akun · {time}"
+captured = "data pada {time}"
+queried = "diperiksa pada {time}"
+reset = "Direset ({time})"
+empty = "Belum ada nilai diterima"
+account_empty = "Penggunaan: belum ada nilai diterima"
+failed = "Pemeriksaan gagal ({reason})"
+timeout = "waktu habis"
+login_required = "perlu masuk"
+invalid_response = "format respons tidak valid"
+unsupported = "Pemeriksaan otomatis bot tidak didukung"
+refresh = "Muat ulang"
+loading = "Memeriksa…"
+error = "Gagal menampilkan penggunaan"

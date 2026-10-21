@@ -1,0 +1,591 @@
+"""Tests for workspace initialization."""
+
+from __future__ import annotations
+
+import json
+import logging
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+import pytest
+
+from ductor_bot.workspace import init as init_module
+from ductor_bot.workspace.init import init_workspace, inject_runtime_environment
+from ductor_bot.workspace.paths import DuctorPaths
+
+if TYPE_CHECKING:
+    import pytest
+
+
+def _setup_home_defaults(fw_root: Path) -> None:
+    """Create a minimal home-defaults template for testing.
+
+    Mirrors the repo ``workspace/`` structure (1:1 copy of ~/.ductor/).
+    """
+    ws = fw_root / "workspace"
+
+    # Top-level CLAUDE.md (ductor home)
+    ws.mkdir(parents=True)
+    (ws / "CLAUDE.md").write_text("# Ductor Home CLAUDE.md")
+
+    config_dir = ws / "config"
+    config_dir.mkdir()
+
+    # workspace/CLAUDE.md (main agent rules)
+    inner = ws / "workspace"
+    inner.mkdir()
+    (inner / "CLAUDE.md").write_text("# Framework CLAUDE.md")
+
+    # Subdirectory CLAUDE.md files
+    for subdir in ("memory_system", "cron_tasks", "output_to_user", "telegram_files"):
+        d = inner / subdir
+        d.mkdir()
+        (d / "CLAUDE.md").write_text(f"# {subdir} CLAUDE.md")
+
+    # MAINMEMORY.md (seed-only)
+    (inner / "memory_system" / "MAINMEMORY.md").write_text("# Main Memory\n")
+
+    # tools/ tree
+    tools = inner / "tools"
+    tools.mkdir()
+    (tools / "CLAUDE.md").write_text("# Tools CLAUDE.md")
+    cron_dir = tools / "cron_tools"
+    cron_dir.mkdir()
+    (cron_dir / "CLAUDE.md").write_text("# Cron Tools CLAUDE.md")
+    (cron_dir / "cron_list.py").write_text("# cron_list stub")
+    user_dir = tools / "user_tools"
+    user_dir.mkdir()
+    (user_dir / "CLAUDE.md").write_text("# User Tools CLAUDE.md")
+    (user_dir / "my_tool.py").write_text("# user tool stub")
+    media_dir = tools / "media_tools"
+    media_dir.mkdir()
+    (media_dir / "CLAUDE.md").write_text("# Media Tools CLAUDE.md")
+    (media_dir / "transcribe_audio.py").write_text("# v0.16.0 transcribe_audio stub")
+
+    # config.example.json at framework root (for smart-merge)
+    (fw_root / "config.example.json").write_text('{"provider": "claude", "model": "opus"}')
+
+
+def _make_paths(tmp_path: Path) -> DuctorPaths:
+    fw_root = tmp_path / "framework"
+    _setup_home_defaults(fw_root)
+    return DuctorPaths(
+        ductor_home=tmp_path / "ductor_home",
+        home_defaults=fw_root / "workspace",
+        framework_root=fw_root,
+    )
+
+
+# -- directory creation --
+
+
+def test_creates_workspace_dir(tmp_path: Path) -> None:
+    paths = _make_paths(tmp_path)
+    init_workspace(paths)
+    assert paths.workspace.is_dir()
+
+
+def test_creates_config_dir(tmp_path: Path) -> None:
+    paths = _make_paths(tmp_path)
+    init_workspace(paths)
+    assert paths.config_dir.is_dir()
+
+
+def test_creates_logs_dir(tmp_path: Path) -> None:
+    paths = _make_paths(tmp_path)
+    init_workspace(paths)
+    assert paths.logs_dir.is_dir()
+
+
+def test_creates_cron_tasks_dir(tmp_path: Path) -> None:
+    paths = _make_paths(tmp_path)
+    init_workspace(paths)
+    assert paths.cron_tasks_dir.is_dir()
+
+
+def test_creates_tools_dir(tmp_path: Path) -> None:
+    paths = _make_paths(tmp_path)
+    init_workspace(paths)
+    assert paths.tools_dir.is_dir()
+
+
+# -- Zone 2: framework files always overwritten --
+
+
+def test_copies_claude_md(tmp_path: Path) -> None:
+    paths = _make_paths(tmp_path)
+    init_workspace(paths)
+    target = paths.workspace / "CLAUDE.md"
+    assert target.exists()
+    assert not target.is_symlink()
+    assert target.read_text() == "# Framework CLAUDE.md"
+
+
+def test_copies_agents_md_mirrors_claude_md(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AGENTS.md (Codex rule file) is a copy of CLAUDE.md when RulesSelector is disabled."""
+    # RulesSelector._cleanup_stale_files removes AGENTS.md when Codex is not
+    # authenticated.  Disable deploy_rules so we test the zone-copy logic only.
+    monkeypatch.setattr("ductor_bot.workspace.init.RulesSelector.deploy_rules", lambda _self: None)
+    paths = _make_paths(tmp_path)
+    init_workspace(paths)
+    claude = paths.workspace / "CLAUDE.md"
+    agents = paths.workspace / "AGENTS.md"
+    assert agents.exists()
+    assert not agents.is_symlink()
+    assert agents.read_text() == claude.read_text()
+
+
+def test_framework_files_updated_on_reinit(tmp_path: Path) -> None:
+    """Framework files are overwritten on every init (not user-owned)."""
+    paths = _make_paths(tmp_path)
+    init_workspace(paths)
+
+    # Simulate framework update
+    inner_claude = paths.home_defaults / "workspace" / "CLAUDE.md"
+    inner_claude.write_text("# Updated CLAUDE.md")
+    init_workspace(paths)
+
+    assert (paths.workspace / "CLAUDE.md").read_text() == "# Updated CLAUDE.md"
+
+
+def test_subdirectory_claude_md_updated_on_reinit(tmp_path: Path) -> None:
+    """Subdirectory CLAUDE.md files (Zone 2) are overwritten on every init."""
+    paths = _make_paths(tmp_path)
+    init_workspace(paths)
+
+    # User modifies a subdirectory CLAUDE.md (should be overwritten)
+    mem_claude = paths.memory_system_dir / "CLAUDE.md"
+    mem_claude.write_text("# User modification")
+
+    # Simulate framework update to the template
+    template = paths.home_defaults / "workspace" / "memory_system" / "CLAUDE.md"
+    template.write_text("# Updated memory_system CLAUDE.md")
+
+    init_workspace(paths)
+    assert mem_claude.read_text() == "# Updated memory_system CLAUDE.md"
+
+
+def test_subdirectory_agents_md_created_from_claude_md(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AGENTS.md is auto-created for every CLAUDE.md in subdirectories."""
+    monkeypatch.setattr("ductor_bot.workspace.init.RulesSelector.deploy_rules", lambda _self: None)
+    paths = _make_paths(tmp_path)
+    init_workspace(paths)
+
+    for subdir in ("memory_system", "cron_tasks", "output_to_user", "telegram_files"):
+        agents = paths.workspace / subdir / "AGENTS.md"
+        claude = paths.workspace / subdir / "CLAUDE.md"
+        assert agents.exists(), f"AGENTS.md missing in {subdir}"
+        assert agents.read_text() == claude.read_text()
+
+
+def test_replaces_stale_symlinks_with_copies(tmp_path: Path) -> None:
+    """Old symlinks from previous versions get replaced with real files."""
+    paths = _make_paths(tmp_path)
+    paths.workspace.mkdir(parents=True)
+
+    # Simulate old symlink
+    link = paths.workspace / "CLAUDE.md"
+    src = paths.home_defaults / "workspace" / "CLAUDE.md"
+    link.symlink_to(src)
+    assert link.is_symlink()
+
+    init_workspace(paths)
+    assert not link.is_symlink()
+    assert link.read_text() == "# Framework CLAUDE.md"
+
+
+# -- Zone 3: seed defaults (never overwrite) --
+
+
+def test_seeds_mainmemory(tmp_path: Path) -> None:
+    paths = _make_paths(tmp_path)
+    init_workspace(paths)
+    assert paths.mainmemory_path.exists()
+    assert len(paths.mainmemory_path.read_text()) > 0
+
+
+def test_seeds_tools_claude_md(tmp_path: Path) -> None:
+    paths = _make_paths(tmp_path)
+    init_workspace(paths)
+    tools_claude = paths.tools_dir / "CLAUDE.md"
+    assert tools_claude.exists()
+    assert tools_claude.read_text() == "# Tools CLAUDE.md"
+
+
+def test_seeds_tools_agents_md_mirrors_claude_md(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """tools/AGENTS.md is mirrored from tools/CLAUDE.md, not a separate file."""
+    monkeypatch.setattr("ductor_bot.workspace.init.RulesSelector.deploy_rules", lambda _self: None)
+    paths = _make_paths(tmp_path)
+    init_workspace(paths)
+    tools_claude = paths.tools_dir / "CLAUDE.md"
+    tools_agents = paths.tools_dir / "AGENTS.md"
+    assert tools_agents.exists()
+    assert tools_agents.read_text() == tools_claude.read_text()
+
+
+# -- Zone 3: never overwrite user files --
+
+
+def test_does_not_overwrite_mainmemory(tmp_path: Path) -> None:
+    paths = _make_paths(tmp_path)
+    paths.memory_system_dir.mkdir(parents=True)
+    paths.mainmemory_path.write_text("My custom memories")
+
+    init_workspace(paths)
+    assert paths.mainmemory_path.read_text() == "My custom memories"
+
+
+def test_seeds_tool_subdirectories(tmp_path: Path) -> None:
+    """Tool subdirectories (cron_tools/, etc.) are recursively seeded."""
+    paths = _make_paths(tmp_path)
+    init_workspace(paths)
+    cron_list = paths.tools_dir / "cron_tools" / "cron_list.py"
+    assert cron_list.exists()
+    assert cron_list.read_text() == "# cron_list stub"
+
+
+def test_does_not_overwrite_user_tool_scripts(tmp_path: Path) -> None:
+    """User-modified tool scripts in user_tools/ (Zone 3) are not overwritten."""
+    paths = _make_paths(tmp_path)
+    user_dir = paths.tools_dir / "user_tools"
+    user_dir.mkdir(parents=True)
+    (user_dir / "my_tool.py").write_text("# my custom version")
+
+    init_workspace(paths)
+    assert (user_dir / "my_tool.py").read_text() == "# my custom version"
+
+
+def test_media_tools_scripts_updated_on_reinit(tmp_path: Path) -> None:
+    """media_tools/*.py is Zone 2 (framework-managed) so v0.15.0 users get
+    the v0.16.0 env-var-hook transcribe scripts automatically on upgrade.
+    """
+    paths = _make_paths(tmp_path)
+    init_workspace(paths)
+
+    # Simulate a stale v0.15.0 script in the user's workspace
+    media_dir = paths.tools_dir / "media_tools"
+    deployed = media_dir / "transcribe_audio.py"
+    deployed.write_text("# v0.15.0 stale transcribe_audio (no env-var hook)")
+
+    # Framework updates the template and ductor restarts
+    template = paths.home_defaults / "workspace" / "tools" / "media_tools" / "transcribe_audio.py"
+    template.write_text("# v0.16.0 transcribe_audio with DUCTOR_TRANSCRIBE_COMMAND")
+
+    init_workspace(paths)
+
+    assert deployed.read_text() == "# v0.16.0 transcribe_audio with DUCTOR_TRANSCRIBE_COMMAND"
+
+
+def test_zone2_identical_content_not_backed_up(tmp_path: Path) -> None:
+    """If the deployed Zone 2 .py file matches the template, no .bak is created."""
+    paths = _make_paths(tmp_path)
+    init_workspace(paths)
+
+    media_dir = paths.tools_dir / "media_tools"
+    deployed = media_dir / "transcribe_audio.py"
+    assert deployed.exists()
+
+    # Second init with identical template content — no backup should appear.
+    init_workspace(paths)
+    assert not (media_dir / "transcribe_audio.py.bak").exists()
+
+
+def test_zone2_user_modification_is_backed_up(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """User-modified Zone 2 .py files get a .bak sibling and a WARNING log."""
+    import logging
+
+    paths = _make_paths(tmp_path)
+    init_workspace(paths)
+
+    media_dir = paths.tools_dir / "media_tools"
+    deployed = media_dir / "transcribe_audio.py"
+    deployed.write_text("# USER-MODIFIED transcribe_audio (custom pipeline)")
+
+    template = paths.home_defaults / "workspace" / "tools" / "media_tools" / "transcribe_audio.py"
+    template.write_text("# v0.16.1 framework transcribe_audio")
+
+    with caplog.at_level(logging.WARNING, logger="ductor_bot.workspace.init"):
+        init_workspace(paths)
+
+    backup = media_dir / "transcribe_audio.py.bak"
+    assert backup.exists()
+    assert backup.read_text() == "# USER-MODIFIED transcribe_audio (custom pipeline)"
+    assert deployed.read_text() == "# v0.16.1 framework transcribe_audio"
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert any(
+        "Zone 2 overwrite" in r.getMessage() and str(deployed) in r.getMessage() for r in warnings
+    ), f"Expected Zone 2 overwrite warning, got: {[r.getMessage() for r in warnings]}"
+
+
+def _zone2_user_edit(tmp_path: Path) -> tuple[DuctorPaths, Path, dict[str, str]]:
+    """Deploy, edit a Zone 2 ``.py`` file, and publish a newer framework version of it."""
+    paths = _make_paths(tmp_path)
+    init_workspace(paths)
+    deployed = paths.tools_dir / "media_tools" / "transcribe_audio.py"
+    deployed.write_text("# USER-MODIFIED transcribe_audio (custom pipeline)")
+    template = paths.home_defaults / "workspace" / "tools" / "media_tools" / "transcribe_audio.py"
+    template.write_text("# v0.16.1 framework transcribe_audio")
+    record_path = paths.ductor_home / ".zone2_installed.json"
+    return paths, deployed, json.loads(record_path.read_text())
+
+
+def _assert_zone2_left_unchanged(
+    paths: DuctorPaths,
+    deployed: Path,
+    recorded: dict[str, str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    assert deployed.read_text() == "# USER-MODIFIED transcribe_audio (custom pipeline)"
+    assert not list(deployed.parent.glob("transcribe_audio.py.bak*"))
+    assert json.loads((paths.ductor_home / ".zone2_installed.json").read_text()) == recorded
+    assert any(
+        "Zone 2 update skipped" in r.getMessage() and str(deployed) in r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.WARNING
+    )
+
+
+def test_zone2_backup_rename_failure_keeps_user_edit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    paths, deployed, recorded = _zone2_user_edit(tmp_path)
+    real_replace = Path.replace
+
+    def failing_replace(self: Path, target: Path) -> Path:
+        if self == deployed:
+            raise OSError("read-only directory")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", failing_replace)
+    with caplog.at_level(logging.WARNING, logger="ductor_bot.workspace.init"):
+        init_workspace(paths)
+
+    _assert_zone2_left_unchanged(paths, deployed, recorded, caplog)
+
+
+def test_zone2_compare_failure_keeps_user_edit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    paths, deployed, recorded = _zone2_user_edit(tmp_path)
+    real_digest = init_module._digest
+
+    def failing_digest(path: Path) -> str:
+        if path == deployed:
+            raise OSError("unreadable")
+        return real_digest(path)
+
+    monkeypatch.setattr(init_module, "_digest", failing_digest)
+    with caplog.at_level(logging.WARNING, logger="ductor_bot.workspace.init"):
+        init_workspace(paths)
+
+    _assert_zone2_left_unchanged(paths, deployed, recorded, caplog)
+
+
+def test_zone2_backup_path_failure_keeps_user_edit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    paths, deployed, recorded = _zone2_user_edit(tmp_path)
+
+    def failing_free_backup_path(_target: Path) -> Path:
+        raise OSError("cannot inspect backup names")
+
+    monkeypatch.setattr(init_module, "_free_backup_path", failing_free_backup_path)
+    with caplog.at_level(logging.WARNING, logger="ductor_bot.workspace.init"):
+        init_workspace(paths)
+
+    _assert_zone2_left_unchanged(paths, deployed, recorded, caplog)
+
+
+def test_zone2_update_recovers_after_failed_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths, deployed, _recorded = _zone2_user_edit(tmp_path)
+
+    def failing_digest(_path: Path) -> str:
+        raise OSError("unreadable")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(init_module, "_digest", failing_digest)
+        init_workspace(paths)
+    assert deployed.read_text() == "# USER-MODIFIED transcribe_audio (custom pipeline)"
+
+    init_workspace(paths)
+
+    backup = deployed.parent / "transcribe_audio.py.bak"
+    assert backup.read_text() == "# USER-MODIFIED transcribe_audio (custom pipeline)"
+    assert deployed.read_text() == "# v0.16.1 framework transcribe_audio"
+
+
+def test_ductor_home_claude_md_overwritten(tmp_path: Path) -> None:
+    """The ductor_home/CLAUDE.md is Zone 2 (always overwritten)."""
+    paths = _make_paths(tmp_path)
+    init_workspace(paths)
+
+    home_claude = paths.ductor_home / "CLAUDE.md"
+    assert home_claude.exists()
+    assert home_claude.read_text() == "# Ductor Home CLAUDE.md"
+
+    # Simulate user editing it -- should be overwritten on reinit
+    home_claude.write_text("# User edit")
+    init_workspace(paths)
+    assert home_claude.read_text() == "# Ductor Home CLAUDE.md"
+
+
+# -- config smart-merge --
+
+
+def test_creates_config_from_example(tmp_path: Path) -> None:
+    paths = _make_paths(tmp_path)
+    init_workspace(paths)
+    assert paths.config_path.exists()
+    config = json.loads(paths.config_path.read_text())
+    assert config["provider"] == "claude"
+
+
+def test_config_merge_adds_new_keys(tmp_path: Path) -> None:
+    paths = _make_paths(tmp_path)
+    paths.config_dir.mkdir(parents=True)
+    paths.config_path.write_text('{"provider": "codex"}')
+
+    init_workspace(paths)
+    config = json.loads(paths.config_path.read_text())
+    assert config["provider"] == "codex"  # User value preserved
+    assert config["model"] == "opus"  # New key added from defaults
+
+
+def test_config_merge_preserves_user_values(tmp_path: Path) -> None:
+    paths = _make_paths(tmp_path)
+    paths.config_dir.mkdir(parents=True)
+    paths.config_path.write_text('{"provider": "codex", "model": "sonnet"}')
+
+    init_workspace(paths)
+    config = json.loads(paths.config_path.read_text())
+    assert config["provider"] == "codex"
+    assert config["model"] == "sonnet"
+
+
+# -- idempotency --
+
+
+def test_idempotent_double_init(tmp_path: Path) -> None:
+    paths = _make_paths(tmp_path)
+    init_workspace(paths)
+    init_workspace(paths)  # Second call should not fail
+
+    assert paths.workspace.is_dir()
+    assert (paths.workspace / "CLAUDE.md").exists()
+    assert paths.mainmemory_path.exists()
+
+
+# -- orphan symlink cleanup --
+
+
+def test_cleans_orphan_symlinks(tmp_path: Path) -> None:
+    paths = _make_paths(tmp_path)
+    init_workspace(paths)
+
+    # Create a dangling symlink
+    orphan = paths.workspace / "ORPHAN.md"
+    orphan.symlink_to(tmp_path / "nonexistent.md")
+    assert orphan.is_symlink()
+
+    init_workspace(paths)
+    assert not orphan.exists()
+
+
+# -- runtime environment injection --
+
+
+def test_inject_container_notice(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("ductor_bot.workspace.init.RulesSelector.deploy_rules", lambda _self: None)
+    paths = _make_paths(tmp_path)
+    init_workspace(paths)
+    inject_runtime_environment(paths)
+    content = (paths.workspace / "CLAUDE.md").read_text()
+    assert "DUCTOR CONTAINER" in content
+    assert "mounted host directory" in content
+    agents = (paths.workspace / "AGENTS.md").read_text()
+    assert "DUCTOR CONTAINER" in agents
+
+
+def test_inject_slack_rules_describe_message_commands(tmp_path: Path) -> None:
+    paths = _make_paths(tmp_path)
+    init_workspace(paths)
+    inject_runtime_environment(paths, transport="slack")
+    content = (paths.workspace / "CLAUDE.md").read_text()
+    assert "`help` or `/help`" in content
+    assert "Prefer `/` commands" not in content
+
+
+def test_inject_no_duplicate(tmp_path: Path) -> None:
+    """Calling inject twice does not duplicate the section."""
+    paths = _make_paths(tmp_path)
+    init_workspace(paths)
+    inject_runtime_environment(paths)
+    inject_runtime_environment(paths)
+    content = (paths.workspace / "CLAUDE.md").read_text()
+    assert content.count("## Runtime Environment") == 1
+
+
+def test_inject_refreshed_on_reinit(tmp_path: Path) -> None:
+    """Workspace re-init overwrites Zone 2, then inject writes fresh notice."""
+    paths = _make_paths(tmp_path)
+    init_workspace(paths)
+    inject_runtime_environment(paths)
+    # Re-init overwrites CLAUDE.md (Zone 2), removing the old notice
+    init_workspace(paths)
+    content = (paths.workspace / "CLAUDE.md").read_text()
+    assert "## Runtime Environment" not in content
+    # Fresh inject
+    inject_runtime_environment(paths)
+    content = (paths.workspace / "CLAUDE.md").read_text()
+    assert "DUCTOR CONTAINER" in content
+
+
+@pytest.mark.parametrize("transport", ["telegram", "matrix", "headless"])
+def test_main_identity_describes_both_bot_and_delegation_only_agents(tmp_path, transport):
+    paths = _make_paths(tmp_path)
+    init_workspace(paths)
+    inject_runtime_environment(paths, agent_name="main", transport=transport)
+    content = (paths.workspace / "CLAUDE.md").read_text()
+    assert "--transport headless" in content
+    assert "For a headless sub-agent, the user only asks YOU to delegate" in content
+    assert "originating chat/topic" in content
+    assert "always tell the user they can open" not in content
+
+
+@pytest.mark.parametrize("transport", ["telegram", "matrix", "slack", "headless"])
+def test_sub_identity_matches_its_interface(tmp_path, transport):
+    paths = _make_paths(tmp_path)
+    init_workspace(paths)
+    inject_runtime_environment(paths, agent_name="worker", transport=transport)
+    content = (paths.workspace / "CLAUDE.md").read_text()
+    if transport == "headless":
+        assert "The user cannot chat with you directly" in content
+        assert "return through main to the originating chat/topic" in content
+        assert "You have your own Headless bot" not in content
+        assert "Replies are Telegram messages" not in content
+    else:
+        assert f"You have your own {transport.capitalize()} bot and direct chat" in content
+        assert "The user cannot chat with you directly" not in content
+
+
+def test_bundled_agent_rules_explain_headless_creation_and_routing():
+    from ductor_bot.workspace.paths import DuctorPaths
+    defaults = DuctorPaths(ductor_home=Path("/unused-synthetic-home")).home_defaults / "workspace"
+    tools = (defaults / "tools/agent_tools/RULES.md").read_text()
+    workspace = (defaults / "RULES.md").read_text()
+    assert "--name worker --transport headless" in tools
+    assert "no direct user conversations" in tools
+    assert "asynchronous results retain the original chat" in tools
+    assert "never suggest opening a headless agent's chat" in tools
+    assert "delegation-only (`headless`) sub-agents have no bot" in workspace

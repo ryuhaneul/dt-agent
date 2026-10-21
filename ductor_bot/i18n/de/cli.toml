@@ -1,0 +1,85 @@
+# Deutsche CLI-Strings (Rich-formatiert, Terminal-Ausgabe).
+
+# -- Status-Befehl ------------------------------------------------------------
+
+[status]
+path_sessions = "Sitzungen:  [cyan]{path}[/cyan]"
+path_logs = "Logs:       [cyan]{path}[/cyan]"
+path_workspace = "Workspace:  [cyan]{path}[/cyan]"
+path_config = "Konfig.:    [cyan]{path}[/cyan]"
+path_home = "Home:       [cyan]{path}[/cyan]"
+title_main = "[bold]Status — main[/bold]"
+title = "[bold]Status[/bold]"
+running = "[bold green]Läuft[/bold green]  pid={pid}  Laufzeit: {uptime}"
+not_running = "[dim]Läuft nicht[/dim]"
+provider = "Provider:  [cyan]{provider}[/cyan] ({model})"
+errors_found = "Fehler:    [bold red]{count}[/bold red] im letzten Log"
+errors_none = "Fehler:    [green]0[/green]"
+paths_header = "[bold]Pfade:[/bold]"
+not_configured = "Nicht konfiguriert. Führe scripts/onboard.sh auf dem Host aus und starte dann den Bot."
+
+# -- Config-Validierung -------------------------------------------------------
+
+[config]
+headless_main = "Der Main-Agent braucht einen Messenger (headless gibt es nur für Sub-Agents)."
+not_configured_container = "[bold yellow]Nicht konfiguriert. Führe scripts/onboard.sh auf dem Host aus und starte dann den Bot.[/bold yellow]"
+incomplete = "[bold yellow]Config ist unvollständig. Führe [bold]scripts/onboard.sh[/bold] aus.[/bold yellow]"
+matrix_no_homeserver = "[bold yellow]Matrix Homeserver-URL wird benötigt.{hint}[/bold yellow]"
+matrix_no_user = "[bold yellow]Matrix user_id wird benötigt.{hint}[/bold yellow]"
+matrix_no_auth = "[bold yellow]Matrix Passwort oder access_token wird benötigt.{hint}[/bold yellow]"
+matrix_no_target = "[bold yellow]Mindestens ein allowed_room oder allowed_user wird benötigt.{hint}[/bold yellow]"
+onboarding_hint = " Führe [bold]scripts/onboard.sh[/bold] aus, um neu zu konfigurieren."
+
+# -- Agent management ----------------------------------------------------------
+
+[agents]
+inherited = "übernommen"
+restarts = "[dim](Neustarts: {count})[/dim]"
+title = "[bold]Sub-Agents ({count})[/bold]"
+help_remove = "Sub-Agent entfernen"
+help_add = "Neuen Sub-Agent hinzufügen (interaktiv)"
+help_list = "Alle Sub-Agents und ihre Konfiguration auflisten"
+title_help = "[bold]Agent-Befehle[/bold]"
+col_agent = "Agent"
+col_status = "Status"
+col_uptime = "Laufzeit"
+col_provider = "Provider"
+col_model = "Modell"
+status_running = "[bold green]läuft[/bold green]"
+status_starting = "[yellow]startet[/yellow]"
+status_crashed = "[bold red]abgestürzt[/bold red]"
+status_stopped = "[dim]gestoppt[/dim]"
+empty = "[dim]Keine Sub-Agents konfiguriert.[/dim]"
+add_hint = "[dim]Mit 'ductor agents add <Name>' einen erstellen.[/dim]"
+
+[agents.add]
+usage = "[bold red]Benutzung: ductor agents add <Name>[/bold red]"
+reserved = "[bold red]Name 'main' ist reserviert.[/bold red]"
+exists = "[bold red]Agent '{name}' existiert bereits.[/bold red]"
+prompt_token = "Telegram Bot Token für '{name}':"
+prompt_users = "Erlaubte User IDs (kommagetrennt):"
+prompt_groups = "Erlaubte Gruppen-IDs (kommagetrennt, leer lassen für keine):"
+prompt_provider = "Provider:"
+prompt_model = "Modell (z.B. opus, sonnet, o3):"
+cancelled = "[dim]Abgebrochen.[/dim]"
+done = "[green]Agent '{name}' zu agents.json hinzugefügt.[/green]"
+auto_start = "[dim]Wird beim nächsten Bot-(Neu-)Start automatisch gestartet.[/dim]"
+
+[agents.remove]
+usage = "[bold red]Benutzung: ductor agents remove <Name>[/bold red]"
+not_found = "[bold red]Agent '{name}' nicht gefunden.[/bold red]"
+confirm = "Agent '{name}' entfernen? (Workspace-Daten werden nicht gelöscht.)"
+done = "[green]Agent '{name}' aus agents.json entfernt.[/green]"
+data_hint = "[dim]Workspace-Daten bleiben unter {path}[/dim]"
+
+# -- Extras installieren -------------------------------------------------------
+
+[help]
+title_commands = "[bold]Befehle[/bold]"
+col_command = "Befehl"
+col_description = "Beschreibung"
+ductor = "Den konfigurierten Bot starten"
+agents = "Sub-Agent-Verwaltung (list/add/remove)"
+status = "Bot-Status, Pfade und Agents anzeigen"
+help = "Diese Nachricht anzeigen"
+verbose = "Ausführliche Log-Ausgabe"

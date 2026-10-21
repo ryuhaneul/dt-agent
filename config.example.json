@@ -1,0 +1,144 @@
+{
+    "_comment": "Full example config showing all features. Copy to ~/.ductor/config/config.json and adjust.",
+    "log_level": "INFO",
+    "provider": "claude",
+    "model": "sonnet",
+    "language": "en",
+    "ductor_home": "/ductor",
+    "user_timezone": "Europe/Berlin",
+    "idle_timeout_minutes": 1440,
+    "session_age_warning_hours": 12,
+    "daily_reset_hour": 4,
+    "daily_reset_enabled": false,
+    "max_budget_usd": null,
+    "max_turns": null,
+    "max_session_messages": null,
+    "permission_mode": "bypassPermissions",
+    "cli_timeout": 600.0,
+    "reasoning_effort": "medium",
+    "file_access": "all",
+    "append_system_prompt_files": ["PERSONA.md", "BEHAVIOR.md"],
+    "_comment_project_roots": "Per-topic working dirs. Key: topic name, '<chat_id>:<topic_id>', or '<topic_id>'; value: directory path (~ expanded). Example: {\"my-project\": \"~/code/my-project\"}. Ignored in Docker mode and for named sessions.",
+    "project_roots": {},
+    "gemini_api_key": "null",
+    "transport": "telegram",
+    "transports": ["telegram"],
+    "telegram_token": "YOUR_BOT_TOKEN_HERE",
+    "telegram_dm_topic_auto_name": true,
+    "allowed_user_ids": [123456789],
+    "allowed_group_ids": [-1001234567890, -1009876543210],
+    "group_mention_only": false,
+    "matrix": {
+        "homeserver": "https://matrix-client.matrix.org",
+        "user_id": "@your_bot:matrix.org",
+        "password": "YOUR_MATRIX_PASSWORD",
+        "access_token": "",
+        "device_id": "",
+        "allowed_rooms": ["!roomid1:matrix.org", "#your-room:matrix.org"],
+        "allowed_users": ["@you:matrix.org"],
+        "store_path": "matrix_store"
+    },
+    "slack": {
+        "bot_token": "xoxb-your-slack-bot-token",
+        "app_token": "xapp-your-slack-app-token",
+        "allowed_channels": ["C0123456789"],
+        "allowed_users": ["U0123456789"]
+    },
+    "streaming": {
+        "enabled": true,
+        "min_chars": 200,
+        "max_chars": 4000,
+        "idle_ms": 800,
+        "edit_interval_seconds": 2.0,
+        "max_edit_failures": 3,
+        "append_mode": false,
+        "sentence_break": true,
+        "show_reasoning_stream": true,
+        "show_tool_progress": true,
+        "show_thinking_indicator": true
+    },
+    "heartbeat": {
+        "enabled": true,
+        "interval_minutes": 30,
+        "cooldown_minutes": 5,
+        "quiet_start": 0,
+        "quiet_end": 0,
+        "prompt": "You are running as a background heartbeat check. Review the current workspace context:\n- Read memory_system/MAINMEMORY.md for user interests and personality\n- Check cron_tasks/ for active projects\n- Think about what might be useful, interesting, or fun for the user\n\nIf you have a creative idea, suggestion, interesting fact, or something the user might enjoy:\nReply with your message directly.\n\nIf nothing needs attention right now:\nReply exactly: HEARTBEAT_OK",
+        "ack_token": "HEARTBEAT_OK",
+        "suspend_on_ack": true,
+        "auto_targets": true,
+        "group_targets": [
+            {
+                "enabled": false,
+                "chat_id": -1001234567890,
+                "topic_id": 5,
+                "prompt": "Check server status and report anomalies.",
+                "interval_minutes": 60,
+                "quiet_start": 23,
+                "quiet_end": 7
+            }
+        ]
+    },
+    "cleanup": {
+        "enabled": true,
+        "media_files_days": 30,
+        "output_to_user_days": 30,
+        "api_files_days": 30,
+        "check_hour": 3
+    },
+    "webhooks": {
+        "enabled": true,
+        "host": "127.0.0.1",
+        "port": 8742,
+        "token": "YOUR_WEBHOOK_SECRET",
+        "max_body_bytes": 262144,
+        "rate_limit_per_minute": 30
+    },
+    "api": {
+        "enabled": false,
+        "host": "0.0.0.0",
+        "port": 8741,
+        "token": "YOUR_API_TOKEN",
+        "chat_id": 123456789,
+        "allow_public": false
+    },
+    "cli_parameters": {
+        "claude": ["--verbose"],
+        "codex": [],
+        "gemini": [],
+        "grok": []
+    },
+    "image": {"max_dimension": 2000, "output_format": "webp", "quality": 85},
+    "scene": {"seen_reaction": false, "status_reaction": true, "technical_footer": false},
+    "notifications": {
+        "startup_targets": [{"enabled": false, "chat_id": null, "topic_id": null}]
+    },
+    "transcription": {"audio_command": "", "video_command": ""},
+    "timeouts": {
+        "normal": 600.0,
+        "background": 1800.0,
+        "subagent": 3600.0,
+        "warning_intervals": [60.0, 10.0],
+        "extend_on_activity": true,
+        "activity_extension": 120.0,
+        "max_extensions": 3
+    },
+    "tasks": {
+        "enabled": true,
+        "max_parallel": 5,
+        "timeout_seconds": 3600.0,
+        "finished_retention_hours": 168,
+        "finished_keep_last": 100
+    },
+    "cron_delivery_retry": {
+        "enabled": false,
+        "interval_seconds": 300,
+        "max_attempts": 12
+    },
+    "cron_preflight": {
+        "enabled": false,
+        "timeout_seconds": 15.0,
+        "skip_marker": "HEARTBEAT_OK"
+    },
+    "interagent_port": 8799
+}

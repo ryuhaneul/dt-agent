@@ -1,0 +1,80 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+.eggs/
+/dist/
+/build/
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+/env/
+
+# Type checking & linting
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+dmypy.json
+
+# Testing
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.hypothesis/
+
+# IDE & editors
+.idea/
+.vscode/
+.claude/
+*.swp
+*.swo
+*.swn
+*~
+.project
+.settings/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+secrets.env
+
+# Runtime
+*.pid
+*.log
+*.sock
+
+# Personal / dev-only (not part of the project)
+/start_bot.sh
+/run.py
+
+# Deployment runtime (not in repo)
+config.json
+agents.json
+sessions.json
+named_sessions.json
+tasks.json
+cron_jobs.json
+webhooks.json
+startup_state.json
+inflight_turns.json
+chat_activity.json
+logs/
+
+# Test artifacts
+test_crash_debug.txt
+
+# Local deployment artifacts
+/compose.override.yml
+/overrides/

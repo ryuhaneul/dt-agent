@@ -1,0 +1,721 @@
+# Русские строки чата (Markdown, отправляются в Telegram/Matrix/API).
+# Дружелюбный, тёплый тон — как хороший коллега, не корпоративный робот.
+
+# -- Управление сессиями -------------------------------------------------------
+
+[session]
+error_header = "**Ошибка сессии**"
+error_body = """\
+[{model}] Что-то пошло не так.
+Твоя сессия на месте — просто отправь сообщение ещё раз.
+Используй /new, чтобы начать с чистого листа."""
+error_cause = "**Причина:** {hint}"
+error_detail = "**Подробности:** `{detail}`"
+error_auth = "Ошибка аутентификации. В папке репозитория на хосте выполни `./scripts/login.sh <provider>`."
+no_auth = "Провайдер {provider} не авторизован.\nВ папке репозитория на хосте выполни `./scripts/login.sh {provider}`."
+error_rate = "Лимит запросов исчерпан. Подожди немного и попробуй снова."
+error_context = "Превышен лимит контекста. Используй /new, чтобы начать новую сессию."
+
+reset_header = "**Сессия сброшена**"
+reset_body = """\
+Сессия сброшена для {provider} в этом чате.
+Сессии других провайдеров сохранены.
+Пиши — продолжим!"""
+
+age_warning = "[Сессии уже {age}. Используй /new для свежего старта.]"
+
+empty_turn = "_(Агент молча обновил память — отправь ещё одно сообщение, чтобы продолжить.)_"
+
+recovered = "_Предыдущую сессию не удалось восстановить. Новая сессия запущена автоматически._"
+recovery_failed = "Не удалось восстановить сессию даже после чистого запуска. Попробуй ещё раз или начни заново командой /new."
+sigkill = "Выполнение было прервано. Пожалуйста, отправь тот же запрос ещё раз."
+
+not_found = "Сессия '{name}' не найдена."
+ended = "Сессия '{name}' завершена. Начни новую через /session."
+still_running = "Сессия '{name}' ещё работает. Подожди или останови через /stop."
+
+# -- Остановка/прерывание ------------------------------------------------------
+
+[stop]
+header = "**Агент остановлен**"
+killed = "{provider} остановлен."
+nothing = "Сейчас ничего не работает. Всё тихо."
+discarded = "Отброшено сообщений, ожидавших в этой теме: {count}."
+
+[interrupt]
+done = "Прервано процессов: {count}."
+nothing = "Нет активных процессов."
+
+[abort_all]
+done = "Остановлено {count} процесс(ов) на всех агентах."
+nothing = "Активных процессов не найдено ни на одном агенте."
+
+# -- Таймаут -------------------------------------------------------------------
+
+[timeout]
+error_header = "**Таймаут**"
+error_body = """\
+[{model}] CLI был завершён через {minutes} мин.
+Твоя сессия на месте — отправь сообщение, чтобы продолжить.
+Используй /new для новой сессии."""
+
+result_header = "**Таймаут**"
+result_body = """\
+Агент не уложился за {elapsed}с (лимит: {configured}с).
+Попробуй более короткий промпт или разбей задачу на шаги."""
+
+warning_minutes = "Таймаут через {mins} мин."
+warning_seconds = "Таймаут через {secs}с"
+extended = "Таймаут продлён (+{secs}с, осталось {remaining})"
+
+generic = "Агент не уложился в отведённое время. Попробуй ещё раз."
+
+# -- Запуск / жизненный цикл ---------------------------------------------------
+
+[startup]
+restart_marker = "маркер перезапуска"
+first_start_header = "**Бот запущен**"
+first_start_body = "Первый запуск — готов к работе!"
+reboot_header = "**Бот запущен**"
+reboot_body = "Обнаружена перезагрузка системы — мы снова в строю!"
+
+restart_default = "Перезапуск завершён. Мы вернулись!"
+restart_header = "**Перезапуск**"
+restart_body = "Бот выключается и скоро вернётся."
+stale_updates_skipped = "{count} старых сообщений, пришедших во время перезапуска, не обработаны."
+
+
+matrix_restart = "**Бот перезапущен** ({reason})"
+
+[recovery]
+named_header = "**Авто-восстановление**"
+named_body = "Возобновление фоновой сессии **{session}**\n`{preview}`"
+interrupted_header = "**Прерванная задача**"
+interrupted_body = "Задача была прервана при перезапуске.\n`{preview}`\nОтправь повторно, чтобы продолжить."
+
+# -- Память --------------------------------------------------------------------
+
+[memory]
+header = "**Основная память**"
+empty = "Пусто. Агент будет накапливать память по мере общения."
+empty_tip = "*Совет: попроси агента что-нибудь «запомнить», чтобы начать.*"
+filled_tip = "*Совет: агент читает и обновляет это автоматически.*"
+
+# -- Статус --------------------------------------------------------------------
+
+[status]
+streaming_header = "Видимость стриминга:"
+reasoning_stream = "  Поток рассуждений: {value}"
+tool_progress = "  Прогресс инструментов: {value}"
+thinking_indicator = "  Индикатор размышления: {value}"
+on = "вкл"
+off = "выкл"
+header = "**Статус**"
+no_session = "Нет активной сессии."
+model_line = "Модель: {model}"
+model_line_configured = "Модель: {model} (настроено: {configured})"
+effort_line = "Уровень рассуждений: {effort}"
+topic_line = "Тема: {topic}"
+session_line = "Сессия: `{sid}`"
+messages_line = "Сообщений: {count}"
+bg_header = "Фоновые задачи: {count} работают"
+auth_header = "Аутентификация:"
+agents_header = "Агенты:"
+
+# -- Технический футер ---------------------------------------------------------
+
+[footer]
+model = "Модель: {name}"
+time = "Время: {secs}с"
+
+# -- Обновление ----------------------------------------------------------------
+
+[diagnose]
+restarts = " | перезапусков: {count}"
+log_unreadable = "(не удалось прочитать файл лога)"
+header = "**Диагностика системы**"
+version_line = "Версия: `{version}`"
+configured_line = "Настроено: {provider} / {model}"
+effective_line = "Эффективная среда: {provider} / {model}"
+log_header = "Последние логи (50 строк):"
+no_log = "Лог-файл не найден."
+codex_cache_not_init = "Codex Model Cache: Observer не инициализирован"
+codex_cache_not_loaded = "Codex Model Cache: Не загружен"
+codex_cache_info = "Codex Model Cache:\n  Обновлён: {updated}\n  Моделей в кэше: {count}\n  Модель по умолчанию: {default}"
+health_header = "**Состояние мультиагентной системы:**"
+
+# -- Задачи --------------------------------------------------------------------
+
+[tasks]
+header = "**Фоновые задачи**"
+disabled = "Система задач не активирована."
+empty = "Фоновых задач нет."
+hint = "Задачи создаёт агент для длительной работы."
+too_many = "Слишком много фоновых задач (макс. {max})"
+internal_error = "Внутренняя ошибка (проверь логи)"
+
+cancelled_one = "Отменена {count} задача."
+cancelled_other = "Отменено {count} задач."
+no_running = "Нет работающих задач."
+task_cancelled = "Задача `{id}` отменена."
+task_not_running = "Задача `{id}` не работает."
+cleaned_one = "Удалена {count} завершённая задача."
+cleaned_other = "Удалено {count} завершённых задач."
+nothing_to_clean = "Нечего чистить."
+cleanup_confirm_one = "Будет удалена {count} завершённая задача: запись в списке и рабочая папка (вместе с заметками задачи). Удалённую задачу нельзя продолжить. Удалить?"
+cleanup_confirm_other = "Будет удалено {count} завершённых задач: записи в списке и рабочие папки (вместе с заметками задач). Удалённые задачи нельзя продолжить. Удалить?"
+
+running_header = "**Работают**"
+waiting_header = "**Ожидают ответа**"
+finished_header = "**Завершены**"
+
+btn_cancel = "Отменить {name}"
+btn_cancel_all = "Отменить все"
+btn_refresh = "Обновить"
+btn_delete_finished = "Удалить завершённые"
+btn_confirm_delete = "Удалить"
+btn_cancel_delete = "Отмена"
+
+summary_running = "Работают: {count}"
+summary_waiting = "Ожидают: {count}"
+summary_finished = "Завершены: {count}"
+
+# -- Сессии --------------------------------------------------------------------
+
+[sessions]
+msgs_one = "{count} сообщ."
+msgs_other = "{count} сообщ."
+topic_fallback = "Тема #{id}"
+header = "**Сессии**"
+empty = "Нет активных сессий."
+start_hint = "Начни с `/session <промпт>`."
+followup_hint = "Продолжить: `@<имя> <сообщение>`"
+active_count = "Активных: {count}"
+btn_end = "Завершить {name}"
+btn_refresh = "Обновить"
+btn_end_all = "Завершить все"
+topics_header = "Темы:"
+named_header = "Именованные:"
+named_empty = "Нет активных сессий.\n  Начни с `/session <промпт>`."
+
+ended_all_one = "Все {count} сессий завершены."
+ended_all_none = "Нет активных сессий."
+ended_one = "Сессия '{name}' завершена."
+ended_not_found = "Сессия '{name}' не найдена."
+unknown_action = "Неизвестное действие."
+
+# -- Выбор модели --------------------------------------------------------------
+
+[model]
+invalid_effort = "Недопустимый уровень рассуждений `{effort}` для `{model}`. Поддерживаются: {supported}."
+no_efforts = "нет"
+next_message = "Отправь @{model} <text>, чтобы использовать {model} только для этого сообщения."
+header = "**Выбор модели**"
+current = "Текущая: {model}"
+current_with_effort = "Текущая: {model} ({effort})"
+configured_default = "Настроено по умолчанию: {configured}"
+
+switched = "**Модель переключена.**"
+model_line = "Модель: {model}"
+model_change = "Модель: {old} -> {new}"
+provider_change = "Провайдер: {old} -> {new}"
+reasoning_line = "Уровень рассуждений: {effort}"
+effort_updated = "Уровень рассуждений установлен на {effort}."
+already_running = "Уже работает на {model}. Без изменений."
+
+resume_hint = """\
+Возобновляю сессию `{sid}`.
+Ты уже отправил {count} {label} в этой сессии провайдера.
+Текущая модель: `{model}`.
+Используй /new для новой сессии."""
+resume_msg_one = "сообщение"
+resume_msg_other = "сообщений"
+
+no_auth = "Не найдено ни одного авторизованного провайдера.\nВ папке репозитория на хосте выполни `./scripts/login.sh <provider>` (claude, codex, gemini, grok)."
+pick_provider = "Выбери провайдера:"
+select_claude = "Выбери модель Claude:"
+select_gemini = "Выбери модель Gemini:"
+select_codex = "Выбери модель Codex:"
+select_grok = "Выбери модель Grok Build:"
+no_codex = "Нет доступных моделей Codex."
+no_gemini = "Модели Gemini не обнаружены в локальных файлах CLI."
+thinking_level = "Уровень рассуждений для {model}:"
+unknown_action = "Неизвестное действие."
+btn_back = "<< Назад"
+switched_while_busy = "**Модель переключена.** Текущий процесс ещё работает — новая модель применится к следующему сообщению."
+
+# -- Cron-задачи ---------------------------------------------------------------
+
+[cron]
+state_enabled = "включено"
+state_disabled = "отключено"
+last_run = " | последний: {status}"
+delivery_failed = " (доставка не удалась)"
+header = "**Запланированные задачи**"
+empty = "Cron-задачи не настроены."
+empty_hint = "*Попроси агента: «Делай проверку бэкапа каждый день в 9 утра»*"
+job_line = "{number}. **{title}** ({status}){last_run}\n   `{schedule}`"
+status_active = "активна"
+status_paused = "приостановлена"
+btn_disable = "{number}. Откл."
+btn_enable = "{number}. Вкл."
+btn_prev = "<< Назад"
+btn_refresh = "Обновить"
+btn_next = "Далее >>"
+btn_all_on = "Все ВКЛ"
+btn_all_off = "Все ОТКЛ"
+info_active = "{active}/{total} активных"
+info_page = "стр. {current}/{total}"
+all_enabled = "Все cron-задачи включены."
+all_disabled = "Все cron-задачи отключены."
+already_enabled = "Все cron-задачи уже были включены."
+already_disabled = "Все cron-задачи уже были отключены."
+toggled = "'{title}' {state}."
+list_changed = "Список cron-задач изменился. Попробуй ещё раз."
+unknown_action = "Неизвестное действие. Список cron-задач обновлён."
+
+# -- Приветствие (Telegram) ----------------------------------------------------
+
+[welcome]
+header = "**Добро пожаловать в DT Agent{name}!**"
+tagline = """\
+Деплой из кармана. Автоматизация с дивана.
+Claude Code, Codex и Gemini — прямо из Telegram."""
+hint_model = "/model — сменить модель"
+hint_info = "/info — документация"
+hint_help = "/help — все команды"
+
+no_auth = "CLI ещё не авторизован.\nВ папке репозитория на хосте выполни `./scripts/login.sh <provider>` (claude, codex, gemini, grok)."
+auth_line = "{providers} авторизован.\nМодель: **{model}**"
+
+btn_know = "Давай познакомимся!"
+btn_system = "Осмотри систему!"
+btn_who = "Кто ты? Кто я?"
+
+prompt_know = """\
+Привет, я только что настроил DT Agent и хочу, чтобы ты меня узнал. \
+Спроси всё, что нужно для хорошей совместной работы — \
+моё имя, чем занимаюсь, над чем работаю, как предпочитаю общаться. \
+Сохрани всё в свою память."""
+prompt_system = """\
+Осмотрись в системе, на которой ты работаешь. \
+Проверь ОС, установленные инструменты, папки проектов — всё, что покажется интересным. \
+Дай мне краткую сводку."""
+prompt_who = """\
+Начнём! Представься — кто ты, что умеешь? \
+Потом спроси, кто я и чем могу помочь."""
+
+# -- Информация ----------------------------------------------------------------
+
+[info]
+header = "**DT Agent**"
+version = "Версия: `{version}`"
+telegram_description = "ИИ-агенты для кода (Claude, Codex, Gemini) в Telegram.\nИменованные сессии, постоянная память, cron-задачи, вебхуки, стриминг."
+matrix_description = "ИИ-агенты для кода (Claude, Codex, Gemini) в Matrix.\nИменованные сессии, постоянная память, cron-задачи, вебхуки, стриминг."
+slack_description = "ИИ-агенты для кода (Claude, Codex, Gemini) в Slack.\nИменованные сессии, постоянная память, cron-задачи, вебхуки, стриминг."
+
+# -- Помощь (категории) --------------------------------------------------------
+
+[help]
+header = "**Справка по командам**"
+cat_daily = "Ежедневное"
+cat_automation = "Автоматизация"
+cat_multiagent = "Мультиагентность"
+cat_browse = "Файлы и инфо"
+cat_maintenance = "Обслуживание"
+footer = "Отправь любое сообщение, чтобы начать работу с агентом."
+matrix_footer = "Используй префикс `!` или `/`. Отправь сообщение, чтобы начать."
+slack_footer = "Используй команды вроде `help` или `/help`. Отправь любое другое сообщение, чтобы начать."
+
+# -- Multi-Agent ---------------------------------------------------------------
+
+[agents]
+cmd_list = "`{prefix}agents` — показать всех агентов и их статус"
+cmd_start = "`{prefix}agent_start <name>` — запустить суб-агента"
+cmd_stop = "`{prefix}agent_stop <name>` — остановить суб-агента"
+cmd_restart = "`{prefix}agent_restart <name>` — перезапустить суб-агента"
+slack_explanation = "Суб-агенты Slack используют ту же мультиагентную среду."
+header = "**Агенты**"
+empty = "Нет агентов."
+not_active = "Режим multi-agent не активен."
+usage_stop = "Использование: /agent_stop <имя>"
+usage_start = "Использование: /agent_start <имя>"
+usage_restart = "Использование: /agent_restart <имя>"
+cannot_stop_main = "Главного агента остановить нельзя."
+not_running = "Агент '{name}' не работает."
+stopped = "Агент '{name}' остановлен."
+restarts = " (перезапусков: {count})"
+error_line = "Ошибка: {error}"
+
+system_header = "**Мультиагентная система**"
+telegram_explanation = """\
+Мультиагентная система позволяет запускать дополнительных ботов \
+как суб-агентов — у каждого свой Telegram-токен, рабочее пространство \
+и список пользователей. Все агенты работают в одном процессе и общаются \
+через шину inter-agent."""
+matrix_explanation = """\
+Мультиагентная система позволяет запускать дополнительных ботов \
+как суб-агентов — у каждого своё рабочее пространство и список пользователей. \
+Все агенты работают в одном процессе и общаются \
+через шину inter-agent."""
+commands_header = "**Команды**"
+setup_header = "**Настройка**"
+setup_instruction = "Попроси агента создать нового суб-агента или отредактируй `agents.json` в домашнем каталоге DT Agent."
+
+# -- Ошибки (общие) -----------------------------------------------------------
+
+[error]
+internal = "Произошла внутренняя ошибка. Попробуй ещё раз."
+shutting_down = "Бот завершает работу. Отправь сообщение ещё раз после перезапуска."
+generic = "Ошибка: {detail}"
+check_logs = "Ошибка: подробности в логах."
+
+# -- Предупреждение Gemini -----------------------------------------------------
+
+[gemini]
+missing_key = """\
+Gemini настроен на авторизацию через API-ключ, но `gemini_api_key` в \
+`~/.ductor/config/config.json` равен `"null"` или пуст.
+Почему это нужно: когда DT Agent вызывает Gemini CLI как внешний процесс, \
+Gemini CLI не передаёт внутренне введённый API-ключ вызывающей стороне.
+Укажи настоящий API-ключ в `gemini_api_key` и перезапусти `ductor`."""
+
+# -- Новая сессия (обработчик) -------------------------------------------------
+
+[new]
+topic_not_found = "Тема \"{name}\" не найдена."
+topic_reset = "Новая сессия для **{name}** ({provider})."
+
+# -- Транспорт -----------------------------------------------------------------
+
+[telegram]
+choose_option = "Выбери вариант:"
+group_rejected = "Этот бот не авторизован для этой группы."
+channel_not_whitelisted = "Этот канал не в списке разрешённых, я покидаю его."
+where_header = "**Где**"
+where_no_tracker = "Трекер чатов недоступен."
+where_empty = "Активности в чатах пока не зафиксировано."
+leave_usage_header = "**Использование**"
+leave_usage = "`/leave <group_id>`"
+leave_invalid_id = "Неверный ID группы."
+leave_failed = "Не удалось покинуть группу: {error}"
+left_group = "Покинута группа <code>{group_id}</code>."
+
+[matrix]
+room_rejected = "Этот бот не авторизован для этой комнаты."
+
+# -- Помощь по сессиям ---------------------------------------------------------
+
+[session_help]
+slack_usage = "`/session <prompt>` — запустить фоновую сессию\n`/sessions` — показать запущенные сессии\n`/stop` — остановить текущий запуск"
+header = "**Фоновые сессии**"
+telegram_explanation = """\
+Фоновые сессии выполняют задачи параллельно, не блокируя \
+основной чат. Каждая сессия получает уникальное имя и работает \
+независимо — можно запустить несколько одновременно."""
+usage_header = "**Использование**"
+followup_header = "**Продолжение**"
+followup_line = "`@session-name <сообщение>` — отправить ответ в работающую сессию"
+commands_header = "**Команды**"
+telegram_sessions_cmd = "`/sessions` — просмотр и управление фоновыми сессиями"
+telegram_stop_cmd = "`/stop` — отменить работающую сессию"
+matrix_session_cmd = "`!session <промпт>` — запустить фоновую сессию"
+matrix_sessions_cmd = "`!sessions` — просмотр и управление сессиями"
+matrix_stop_cmd = "`!stop` — отменить работающую сессию"
+default_provider = "`/session <промпт>` — провайдер по умолчанию"
+claude_single = "`/session <промпт>` — на Claude"
+claude_model = "`/session @opus <промпт>` — конкретная модель"
+codex_single = "`/session <промпт>` — на Codex"
+grok_single = "`/session <промпт>` — на Grok Build"
+gemini_single = "`/session <промпт>` — на Gemini"
+gemini_model = "`/session @flash <промпт>` — конкретная модель"
+grok_model = "`/session @grok-4.5 <промпт>` — конкретная модель"
+claude_multi = "`/session @opus <промпт>` — Claude (opus)"
+codex_multi = "`/session @codex <промпт>` — Codex"
+grok_multi = "`/session @grok <промпт>` — Grok Build"
+gemini_multi = "`/session @flash <промпт>` — Gemini (flash)"
+explicit = "`/session @provider model <промпт>` — явно"
+
+# -- Файловый браузер ----------------------------------------------------------
+
+[file_browser]
+header = "**Файловый браузер**"
+directory_not_found = "Каталог не найден."
+empty = "(пусто)"
+btn_back = "<< Назад"
+btn_request_files = "Пришли мне файл из этой папки"
+file_request_prompt = "Перечисли все файлы в {dir}/ и отправь мне тот, который попрошу. Используй file-теги для доставки."
+
+# Вариант для Matrix
+matrix_header = "**Файлы рабочего пространства**"
+matrix_hint = "_Используй `!showfiles <каталог>` для просмотра конкретного каталога._"
+matrix_dir_not_found = "Каталог `{subdir}` не найден."
+matrix_permission_denied = "(доступ запрещён)"
+matrix_file_count = "Файлов: {count}"
+matrix_no_dirs = "(каталоги рабочего пространства не найдены)"
+
+# -- Обработчик обновлений (Telegram) ------------------------------------------
+
+[multiagent]
+async_task_received = "📥 **Получена асинхронная задача** от `{sender}`\nСессия: `{session}` · ID задачи: `{task_id}`\n\n_{preview}_"
+
+[effort]
+select = "Выбери уровень рассуждений для {model}:"
+unsupported = "Уровень рассуждений недоступен для провайдера `{provider}`."
+
+# -- Completion summary, heartbeat, slot switch, memory lint ------------------
+
+[stream]
+slack_plan_title = "Работаю над твоим запросом"
+slack_analyze_title = "Понять запрос"
+slack_tools_title = "Использовать инструменты при необходимости"
+slack_response_title = "Составить ответ"
+slack_no_tools = "Инструменты не нужны"
+slack_understanding = "Разбираю запрос"
+slack_label_thinking = "Думаю"
+slack_label_compacting = "Сжатие"
+slack_label_recovering = "Восстановление"
+slack_label_timeout_warning = "Таймаут близок"
+slack_label_timeout_extended = "Таймаут продлён"
+more_items = "(+{count} ещё)"
+label_thinking = "ДУМАЮ"
+label_compacting = "СЖАТИЕ"
+label_recovering = "Подожди, идёт восстановление..."
+label_timeout_warning = "ТАЙМАУТ БЛИЗОК"
+label_timeout_extended = "ТАЙМАУТ ПРОДЛЁН"
+done = "✓ Готово · {secs}с"
+
+[heartbeat]
+quarantine_stopped = "Проверки heartbeat остановлены: CLI-сессию этого диалога нельзя продолжить. Они автоматически возобновятся, когда в одном из следующих диалогов сессия восстановится и будет создана новая."
+
+[slot]
+switched_estimated = "переключено (квота исчерпана, время сброса неизвестно, повторите примерно через 1 ч)"
+switched = "переключено (квота исчерпана, сброс {reset})"
+cooldown_unparsable = "не удалось разобрать cooldown, исходный stderr ниже"
+
+[memory_lint]
+topic_name = "Проверка памяти"
+
+# -- Inter-agent failure reasons -----------------------------------------------
+
+[interagent]
+queue_wait_timeout = "Превышено время ожидания, не запущено"
+recipient_gone = "Агент-получатель не найден"
+
+# -- Why a sub-agent was excluded or did not start -----------------------------
+
+[agent_reason]
+item = "элемент #{index}"
+item_unnamed = "элемент без имени"
+config_error = "{item}: ошибка конфигурации ({error}){detail}"
+name_format = "{item}: неверный формат имени (ValueError); поле name"
+create_error = "ошибка создания агента ({error})"
+start_error = "ошибка запуска агента ({error})"
+feature_missing = "функция {feature} включена, но модуль {module} отсутствует"
+extras_hint = "extras образа: '{extras}'. Добавь функцию в DUCTOR_EXTRAS в корневом .env и выполни docker compose build"
+only_sub = "исключается только суб-агент '{sub}'"
+
+[notice]
+session_cancelled = "**[{name}] Отменено**"
+session_failed = "**[{name}] Ошибка** ({elapsed})"
+session_complete = "**[{name}] Завершено** ({elapsed})"
+no_output = "_Нет вывода._"
+bg_cancelled = "**Фоновая задача отменена**"
+bg_cancelled_body = "Задача `{task_id}` отменена.\nПромпт: _{prompt}_"
+bg_failed = "**Фоновая задача не выполнена** ({elapsed})"
+bg_failed_body = "Задача `{task_id}` не выполнена ({status}).\nПромпт: _{prompt}_"
+bg_complete = "**Фоновая задача завершена** ({elapsed})"
+heartbeat_failed = "**Не удалось доставить heartbeat**\n\nНе удалось доставить в {target}.\n\n---\n{text}"
+target = "Чат {chat}"
+target_topic = "Чат {chat} / Тема {topic}"
+ia_failed = "**Запрос между агентами не выполнен**\n\nАгент: `{agent}`{session}\nОшибка: {error}\nЗапрос: _{request}_"
+ia_session = "\nСессия: `{name}`"
+unknown = "неизвестно"
+provider_switch = "**Обнаружена смена провайдера**\n\n{notice}"
+task_done = "**Задача `{name}` завершена** ({detail})"
+task_cancelled = "**Задача `{name}` отменена**"
+task_failed = "**Задача `{name}` не выполнена**\nПричина: {reason}"
+task_question = "**У задачи `{task_id}` есть вопрос:**\n{question}"
+task_header = "**ЗАДАЧА: {title}**"
+cron_delivery_failed = "**Не удалось доставить результат cron**\n\nЗадачу **{title}** не удалось доставить в {target}.\n\n---\n{text}"
+webhook_header = "**ВЕБХУК (ЗАДАЧА CRON): {title}**"
+delivery_fallback = "**Запасная доставка**\n\nЦелевой транспорт '{transport}' недоступен.\n\n---\n{text}"
+processing_error = "Ошибка при обработке результата ({origin})"
+queue_waiting = "<i>[Сообщение в очереди...]</i>"
+queue_cancelled = "<i>[Сообщение отменено.]</i>"
+queue_discarded = "<i>[Сообщение отброшено.]</i>"
+queue_cancel_button = "Отменить сообщение"
+file_outside = "Не удалось отправить <code>{name}</code> — файл находится вне разрешённой папки.\n\nРешение: задай <code>\"file_access\": \"all\"</code> в <code>config.json</code>, затем выполни <b>/restart</b>."
+file_not_found = "[Файл не найден: {name} (проверенный путь на хосте: {path})]"
+file_send_failed = "[Не удалось отправить: {name}]"
+download_failed = "Не удалось скачать этот файл."
+user_answer = "<i>[ОТВЕТ ПОЛЬЗОВАТЕЛЯ] {answer}</i>"
+task_system_unavailable = "Система задач недоступна."
+
+[run]
+cli_not_found = "[CLI {provider} не найден]"
+timed_out = "[{label}: таймаут через {secs}с]"
+cron_failed = "Задание cron '{title}' завершилось ошибкой ({error_type})."
+cron_no_session = "Задание cron '{title}' не удалось выполнить в этой сессии."
+status_success = "успешно"
+status_aborted = "прервано"
+status_timeout = "таймаут"
+status_cli_not_found = "CLI не найден"
+status_exception = "ошибка"
+status_injection = "не выполнено в сессии"
+status_exit = "код выхода {code}"
+
+[task_error]
+interrupted = "прервано перезапуском"
+resume_hint = "Чтобы продолжить разговор этой задачи, используй:"
+bot_restarted = "Бот перезапущен во время выполнения задачи"
+timeout = "Таймаут через {secs}с"
+stale_killed = "зависший процесс завершён через {secs}с"
+cli_error = "ошибка CLI"
+
+[crash]
+matrix_no_credentials = "Не удалась аутентификация Matrix для {user_id}\n  Не заданы access_token, device_id и password.\n  Укажи 'password' в разделе matrix файла config.json."
+matrix_login_failed = "Не удалась аутентификация Matrix для {user_id}\n  Homeserver: {homeserver}\n  Ошибка: {error}\n  Проверь учётные данные в разделе matrix файла config.json."
+
+[age]
+s = "{n}с"
+m = "{n}мин"
+h = "{n}ч"
+d = "{n}д"
+ago_now = "только что"
+ago_s = "{n} с назад"
+ago_m = "{n} мин назад"
+ago_h = "{n} ч назад"
+ago_d = "{n} д назад"
+
+[task_status]
+running = "выполняется"
+waiting = "ожидает"
+done = "готово"
+failed = "ошибка"
+cancelled = "отменена"
+
+[session_status]
+running = "выполняется"
+idle = "простаивает"
+ended = "завершена"
+
+[agent_status]
+running = "выполняется"
+starting = "запускается"
+crashed = "аварийно остановлен"
+stopped = "остановлен"
+
+[agent_role]
+main = "главный"
+sub = "суб"
+
+[auth_status]
+authenticated = "авторизован"
+installed = "установлен"
+not_found = "не найден"
+
+[effort_label]
+none = "Нет"
+minimal = "Минимальный"
+low = "Низкий"
+medium = "Средний"
+high = "Высокий"
+xhigh = "Очень высокий"
+max = "Максимальный"
+
+[product_error]
+session_not_found = "Сессия '{name}' не найдена"
+session_ended = "Сессия '{name}' завершена"
+session_busy = "Сессия '{name}' ещё обрабатывает запрос"
+too_many_sessions = "Слишком много сессий (максимум {max})"
+
+[session_notice]
+followup_sent = "**[{name}] Уточнение отправлено**"
+task_queued = "Задача `{task_id}` поставлена в очередь."
+started_title = "**Сессия `{name}` запущена**"
+started_body = "Работает на {provider}{model_info}.\nУточнение: `@{name} <message>`"
+
+[supervisor]
+already_running = "Агент '{name}' уже работает."
+not_started = "Агент '{name}' не запущен: {reason}"
+not_found = "Агент '{name}' не найден в agents.json."
+started = "Агент '{name}' запущен."
+restarted = "Агент '{name}' перезапущен."
+cannot_restart_main = "Главного агента нельзя перезапустить этой командой. Используй /restart."
+excluded = "Суб-агент '{name}' исключён: {reason}"
+stopped_after_crashes = "Суб-агент '{name}' остановлен после {max} сбоев: {error}"
+label = "Супервизор"
+
+[cli_error]
+codex_no_final = "Codex завершился с ошибкой до итогового ответа."
+gemini_unknown = "Неизвестная ошибка Gemini"
+gemini_exited = "Gemini завершился с кодом {code}"
+grok_error = "Ошибка Grok"
+
+[secret]
+usage = "Используй /secret list, /secret set KEY, /secret delete KEY или /secret cancel. Никогда не указывай значение в команде."
+prompt = "Ответь на это сообщение значением для {key} в течение 2 минут. Для отмены используй /secret cancel."
+saved = "{key} сохранён (длина: {length} символов)."
+saved_env_note = "{key} также есть в .env. Ключи провайдеров CLI используют значение из .env."
+rejected = "Значение отклонено: {reason}. Для других форматов отредактируй файл секретов напрямую."
+reason_value_empty = "Значение пустое"
+reason_value_too_long = "Значение длиннее {max} символов"
+reason_value_nul = "Значение содержит символ NUL"
+reason_value_multiline = "Значение содержит разрыв строки"
+reason_value_edge_space = "Значение начинается или заканчивается пробельным символом"
+reason_value_edge_quote = "Значение начинается или заканчивается кавычкой"
+reason_value_dollar = "Значение начинается с $"
+invalid_key = "Используй ключ из 1–56 заглавных латинских букв, цифр или подчёркиваний, начиная с буквы."
+extra_args = "Не указывай значение в команде. Отправь его следующим сообщением после /secret set KEY."
+expired = "Время ввода истекло. Начни снова с /secret set KEY."
+expired_value = "Время ввода истекло. Это сообщение удалено без сохранения. Отправьте /secret set KEY ещё раз."
+not_text = "Отправь значение текстом."
+delete_failed = "Не удалось удалить сообщение. Удали его самостоятельно."
+quoted_refused = "Это сообщение цитирует секретное значение и не было обработано. Отправь его снова без цитаты."
+save_failed = "Не удалось сохранить изменение. Новое значение не сохранено. Попробуй снова."
+list = "Сохранённые ключи:\n{keys}"
+list_empty = "Сохранённых ключей нет."
+confirm_overwrite = "Перезаписать {key}?"
+confirm_delete = "Удалить {key}?"
+deleted = "{key} удалён."
+delete_missing = "{key} не найден."
+cancelled = "Ввод секрета отменён."
+nothing_pending = "Нет ожидающего ввода секрета."
+private_only = "Используй /secret в личном чате с ботом."
+main_only = "Используй /secret с основным ботом."
+btn_overwrite = "Перезаписать"
+btn_delete = "Удалить"
+btn_cancel = "Отмена"
+
+
+[accounts]
+error = "Не удалось выполнить управление аккаунтами. Повторите попытку."
+title = "Аккаунты Claude (приоритет сверху)"
+authenticated = "Авторизован"
+unauthenticated = "Не авторизован"
+no_cooldown = "Без ожидания"
+cooldown = "Осталось {hours} ч {minutes} мин ожидания (сброс в {time})"
+empty = "Список аккаунтов пуст; используется только аккаунт по умолчанию."
+subagent_note = "Приоритет применяется к главному агенту через несколько секунд, к подагентам — при следующем запуске. Изменения ожидания действуют для всех со следующего вызова."
+main_only = "Управление аккаунтами доступно только в боте главного агента."
+stale = "Эта кнопка устарела. Показано актуальное состояние."
+btn_prefer = "{name}: Приоритет"
+btn_clear = "{name}: Снять ожидание"
+btn_refresh = "Обновить"
+
+[usage]
+title = "📊 Использование аккаунтов · {time}"
+captured = "данные на {time}"
+queried = "запрос в {time}"
+reset = "Сброшено ({time})"
+empty = "Данные ещё не получены"
+account_empty = "Использование: данные ещё не получены"
+failed = "Ошибка запроса ({reason})"
+timeout = "время ожидания истекло"
+login_required = "требуется вход"
+invalid_response = "неверный формат ответа"
+unsupported = "Автоматический запрос ботом не поддерживается"
+refresh = "Обновить"
+loading = "Выполняется запрос…"
+error = "Не удалось показать использование"

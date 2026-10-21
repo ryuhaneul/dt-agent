@@ -1,0 +1,329 @@
+"""Tests for the cron_edit.py CLI tool (subprocess-based)."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+TOOL_ADD = (
+    Path(__file__).resolve().parents[2]
+    / "ductor_bot"
+    / "_home_defaults"
+    / "workspace"
+    / "tools"
+    / "cron_tools"
+    / "cron_add.py"
+)
+TOOL_EDIT = (
+    Path(__file__).resolve().parents[2]
+    / "ductor_bot"
+    / "_home_defaults"
+    / "workspace"
+    / "tools"
+    / "cron_tools"
+    / "cron_edit.py"
+)
+
+
+def _run(tmp_path: Path, tool: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+    env = {**os.environ, "DUCTOR_HOME": str(tmp_path)}
+    return subprocess.run(
+        [sys.executable, str(tool), *args],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+
+def _add_job(tmp_path: Path, name: str = "edit-test") -> None:
+    result = _run(
+        tmp_path,
+        TOOL_ADD,
+        [
+            "--name",
+            name,
+            "--title",
+            "Edit Test",
+            "--description",
+            "Original description",
+            "--schedule",
+            "0 9 * * *",
+        ],
+    )
+    assert result.returncode == 0
+
+
+def _job(tmp_path: Path, job_id: str) -> dict[str, Any]:
+    data = json.loads((tmp_path / "cron_jobs.json").read_text())
+    return next(j for j in data["jobs"] if j["id"] == job_id)
+
+
+def test_cron_edit_updates_title_description_schedule(tmp_path: Path) -> None:
+    _add_job(tmp_path, "meta-job")
+
+    result = _run(
+        tmp_path,
+        TOOL_EDIT,
+        [
+            "meta-job",
+            "--title",
+            "Meta Job Updated",
+            "--description",
+            "New description",
+            "--schedule",
+            "30 7 * * 1-5",
+        ],
+    )
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    assert output["updated"] is True
+    assert "title" in output["updated_fields"]
+    assert "description" in output["updated_fields"]
+    assert "schedule" in output["updated_fields"]
+
+    job = _job(tmp_path, "meta-job")
+    assert job["title"] == "Meta Job Updated"
+    assert job["description"] == "New description"
+    assert job["schedule"] == "30 7 * * 1-5"
+
+
+def test_cron_edit_rename_updates_json_and_folder(tmp_path: Path) -> None:
+    _add_job(tmp_path, "old-name")
+    old_dir = tmp_path / "workspace" / "cron_tasks" / "old-name"
+    assert (old_dir / "old-name_MEMORY.md").exists()
+
+    result = _run(tmp_path, TOOL_EDIT, ["old-name", "--name", "new-name"])
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    assert output["job_id"] == "new-name"
+    assert output["folder_renamed"] is True
+    assert output["memory_file_renamed"] is True
+    assert "id" in output["updated_fields"]
+    assert "task_folder" in output["updated_fields"]
+
+    data = json.loads((tmp_path / "cron_jobs.json").read_text())
+    assert any(j["id"] == "new-name" and j["task_folder"] == "new-name" for j in data["jobs"])
+    assert not old_dir.exists()
+
+    new_dir = tmp_path / "workspace" / "cron_tasks" / "new-name"
+    assert new_dir.is_dir()
+    assert (new_dir / "new-name_MEMORY.md").exists()
+    claude = (new_dir / "CLAUDE.md").read_text()
+    agents = (new_dir / "AGENTS.md").read_text()
+    assert "new-name_MEMORY.md" in claude
+    assert agents == claude
+
+
+def test_cron_edit_disable_then_enable(tmp_path: Path) -> None:
+    _add_job(tmp_path, "toggle-job")
+
+    disabled = _run(tmp_path, TOOL_EDIT, ["toggle-job", "--disable"])
+    assert disabled.returncode == 0
+    assert _job(tmp_path, "toggle-job")["enabled"] is False
+
+    enabled = _run(tmp_path, TOOL_EDIT, ["toggle-job", "--enable"])
+    assert enabled.returncode == 0
+    assert _job(tmp_path, "toggle-job")["enabled"] is True
+
+
+def test_cron_edit_updates_provider_model_effort_and_cli_parameters(tmp_path: Path) -> None:
+    _add_job(tmp_path, "codex-job")
+
+    result = _run(
+        tmp_path,
+        TOOL_EDIT,
+        [
+            "codex-job",
+            "--provider",
+            "codex",
+            "--model",
+            "gpt-5.4",
+            "--reasoning-effort",
+            "xhigh",
+            "--cli-parameters",
+            '["--search","--skip-git-repo-check"]',
+        ],
+    )
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    assert output["updated"] is True
+    assert "provider" in output["updated_fields"]
+    assert "model" in output["updated_fields"]
+    assert "reasoning_effort" in output["updated_fields"]
+    assert "cli_parameters" in output["updated_fields"]
+
+    job = _job(tmp_path, "codex-job")
+    assert job["provider"] == "codex"
+    assert job["model"] == "gpt-5.4"
+    assert job["reasoning_effort"] == "xhigh"
+    assert job["cli_parameters"] == ["--search", "--skip-git-repo-check"]
+
+
+def test_cron_edit_can_clear_execution_overrides(tmp_path: Path) -> None:
+    _add_job(tmp_path, "clear-job")
+    seeded = _run(
+        tmp_path,
+        TOOL_EDIT,
+        [
+            "clear-job",
+            "--provider",
+            "codex",
+            "--model",
+            "gpt-5.4",
+            "--reasoning-effort",
+            "high",
+            "--cli-parameters",
+            '["--search"]',
+        ],
+    )
+    assert seeded.returncode == 0
+
+    cleared = _run(
+        tmp_path,
+        TOOL_EDIT,
+        [
+            "clear-job",
+            "--clear-provider",
+            "--clear-model",
+            "--clear-reasoning-effort",
+            "--clear-cli-parameters",
+        ],
+    )
+    assert cleared.returncode == 0
+    output = json.loads(cleared.stdout)
+    assert "provider (cleared)" in output["updated_fields"]
+    assert "model (cleared)" in output["updated_fields"]
+    assert "reasoning_effort (cleared)" in output["updated_fields"]
+    assert "cli_parameters (cleared)" in output["updated_fields"]
+
+    job = _job(tmp_path, "clear-job")
+    assert "provider" not in job
+    assert "model" not in job
+    assert "reasoning_effort" not in job
+    assert "cli_parameters" not in job
+
+
+def test_cron_edit_rejects_invalid_cli_parameters_json(tmp_path: Path) -> None:
+    _add_job(tmp_path, "bad-json")
+
+    result = _run(tmp_path, TOOL_EDIT, ["bad-json", "--cli-parameters", '{"oops":true}'])
+    assert result.returncode == 1
+    output = json.loads(result.stdout)
+    assert "JSON array" in output["error"]
+
+
+def test_cron_edit_no_change_flags_exits_1(tmp_path: Path) -> None:
+    _add_job(tmp_path, "no-change")
+    result = _run(tmp_path, TOOL_EDIT, ["no-change"])
+    assert result.returncode == 1
+    assert "CRON EDIT" in result.stdout
+    assert "Missing changes" in result.stdout
+
+
+def test_cron_edit_nonexistent_exits_1(tmp_path: Path) -> None:
+    (tmp_path / "cron_jobs.json").write_text('{"jobs": []}')
+    result = _run(tmp_path, TOOL_EDIT, ["ghost", "--title", "x"])
+    assert result.returncode == 1
+    output = json.loads(result.stdout)
+    assert "not found" in output["error"]
+
+
+def test_cron_edit_redirects_destination(tmp_path: Path) -> None:
+    _add_job(tmp_path, "route-job")
+
+    result = _run(
+        tmp_path,
+        TOOL_EDIT,
+        ["route-job", "--chat-id", "555", "--topic-id", "42", "--transport", "mx"],
+    )
+    assert result.returncode == 0
+    job = _job(tmp_path, "route-job")
+    assert job["chat_id"] == 555
+    assert job["topic_id"] == 42
+    assert job["transport"] == "mx"
+
+
+def test_cron_edit_clear_topic_id_routes_to_main_thread(tmp_path: Path) -> None:
+    _add_job(tmp_path, "topic-job")
+    _run(tmp_path, TOOL_EDIT, ["topic-job", "--topic-id", "7"])
+
+    result = _run(tmp_path, TOOL_EDIT, ["topic-job", "--clear-topic-id"])
+    assert result.returncode == 0
+    assert _job(tmp_path, "topic-job")["topic_id"] is None
+
+
+def test_cron_edit_toggles_silent_on_success(tmp_path: Path) -> None:
+    _add_job(tmp_path, "silent-job")
+
+    assert _run(tmp_path, TOOL_EDIT, ["silent-job", "--silent-on-success"]).returncode == 0
+    assert _job(tmp_path, "silent-job")["silent_on_success"] is True
+
+    assert _run(tmp_path, TOOL_EDIT, ["silent-job", "--no-silent-on-success"]).returncode == 0
+    assert _job(tmp_path, "silent-job")["silent_on_success"] is False
+
+
+def test_cron_edit_rejects_invalid_transport(tmp_path: Path) -> None:
+    _add_job(tmp_path, "bad-transport")
+    result = _run(tmp_path, TOOL_EDIT, ["bad-transport", "--transport", "carrier-pigeon"])
+    assert result.returncode == 2  # argparse rejects invalid choice
+
+
+def test_cron_edit_help_describes_the_effort_like_the_add_tool(tmp_path: Path) -> None:
+    """The effort applies to Claude, Codex and Grok runs; Gemini ignores it."""
+    for args in ([], ["--help"]):
+        done = _run(tmp_path, TOOL_EDIT, args)
+        text = " ".join((done.stdout + done.stderr).split())
+        assert "Claude, Codex and Grok" in text
+        assert "Gemini ignores it" in text
+        assert "Codex thinking level" not in text
+
+
+@pytest.mark.parametrize("schedule", ["not a cron", "61 * * * *"])
+def test_cron_edit_rejects_an_invalid_expression_and_changes_nothing(
+    tmp_path: Path, schedule: str
+) -> None:
+    _add_job(tmp_path, "keep-me")
+    before = (tmp_path / "cron_jobs.json").read_text()
+
+    result = _run(
+        tmp_path,
+        TOOL_EDIT,
+        ["keep-me", "--schedule", schedule, "--name", "renamed", "--title", "New title"],
+    )
+
+    assert result.returncode == 1
+    assert "Invalid cron expression" in json.loads(result.stdout)["error"]
+    assert (tmp_path / "cron_jobs.json").read_text() == before
+    assert (tmp_path / "workspace" / "cron_tasks" / "keep-me").is_dir()  # not renamed
+    assert not (tmp_path / "workspace" / "cron_tasks" / "renamed").exists()
+
+
+def test_cron_edit_stores_a_valid_expression(tmp_path: Path) -> None:
+    _add_job(tmp_path, "valid-edit")
+
+    result = _run(tmp_path, TOOL_EDIT, ["valid-edit", "--schedule", "*/10 * * * *"])
+
+    assert result.returncode == 0
+    assert _job(tmp_path, "valid-edit")["schedule"] == "*/10 * * * *"
+
+
+def test_cron_edit_keeps_the_run_status_the_manager_saved(tmp_path: Path) -> None:
+    from ductor_bot.cron.manager import CronManager
+
+    _add_job(tmp_path, "status-kept")
+    CronManager(jobs_path=tmp_path / "cron_jobs.json").update_run_status(
+        "status-kept", status="success", delivery_status="ok"
+    )
+
+    result = _run(tmp_path, TOOL_EDIT, ["status-kept", "--name", "status-moved", "--title", "T"])
+
+    assert result.returncode == 0
+    job = _job(tmp_path, "status-moved")
+    assert (job["last_run_status"], job["last_delivery_status"]) == ("success", "ok")

@@ -1,0 +1,717 @@
+# Deutsche Chat-Strings (Markdown, gesendet an Telegram/Matrix/API).
+# Sympathisch, humorvoll — nicht steif, nicht albern.
+
+# -- Session-Verwaltung --------------------------------------------------------
+
+[session]
+error_header = "**Session-Fehler**"
+error_body = """\
+[{model}] Da ist was schiefgelaufen.
+Deine Session ist noch da — schick einfach nochmal eine Nachricht.
+Mit /new startest du komplett frisch."""
+error_cause = "**Ursache:** {hint}"
+error_detail = "**Detail:** `{detail}`"
+error_auth = "Authentifizierung fehlgeschlagen. Führe im Repository-Ordner auf dem Host folgenden Befehl aus: `./scripts/login.sh <provider>`."
+no_auth = "Provider {provider} ist nicht authentifiziert.\nFühre im Repository-Ordner auf dem Host folgenden Befehl aus: `./scripts/login.sh {provider}`."
+error_rate = "Rate-Limit erreicht. Kurz durchatmen und nochmal versuchen."
+error_context = "Kontext-Limit erreicht. Mit /new startest du eine frische Session."
+
+reset_header = "**Session zurückgesetzt**"
+reset_body = """\
+Neustart für {provider} in diesem Chat.
+Andere Provider-Sessions sind noch da.
+Schreib einfach los!"""
+
+age_warning = "[Session ist {age} alt. Mit /new gibt's einen frischen Start.]"
+
+empty_turn = "_(Der Agent hat im Hintergrund das Gedächtnis aktualisiert — schick noch eine Nachricht, um weiterzumachen.)_"
+
+recovered = "_Die vorherige Session konnte nicht wiederhergestellt werden. Es wurde automatisch eine neue gestartet._"
+recovery_failed = "Deine Session konnte auch nach einem Neustart nicht wiederhergestellt werden. Versuch es noch einmal oder starte mit /new neu."
+sigkill = "Die Ausführung wurde unterbrochen. Bitte schick die gleiche Anfrage nochmal."
+
+not_found = "Session '{name}' nicht gefunden."
+ended = "Session '{name}' ist beendet. Starte eine neue mit /session."
+still_running = "Session '{name}' arbeitet noch. Warten oder mit /stop abbrechen."
+
+# -- Stop/Interrupt ------------------------------------------------------------
+
+[stop]
+header = "**Agent gestoppt**"
+killed = "{provider} wurde gestoppt."
+nothing = "Hier läuft gerade nix. Alles ruhig an der Front."
+discarded = "{count} wartende Nachricht(en) in diesem Topic verworfen."
+
+[interrupt]
+done = "{count} Prozess(e) unterbrochen."
+nothing = "Keine aktiven Prozesse."
+
+[abort_all]
+done = "{count} Prozess(e) über alle Agents gestoppt."
+nothing = "Keine aktiven Prozesse auf irgendeinem Agent gefunden."
+
+# -- Timeout -------------------------------------------------------------------
+
+[timeout]
+error_header = "**Zeitüberschreitung**"
+error_body = """\
+[{model}] CLI wurde nach {minutes} Min. beendet.
+Deine Session ist noch da — schick eine Nachricht, um weiterzumachen.
+Mit /new startest du frisch."""
+
+result_header = "**Zeitüberschreitung**"
+result_body = """\
+Der Agent hat nach {elapsed}s aufgegeben (Limit: {configured}s).
+Versuch's mit einem kürzeren Prompt oder in kleineren Schritten."""
+
+warning_minutes = "Zeitüberschreitung in {mins} Min."
+warning_seconds = "Zeitüberschreitung in {secs}s"
+extended = "Zeitlimit verlängert (+{secs}s, noch {remaining} übrig)"
+
+generic = "Agent hat zu lange gebraucht. Bitte nochmal versuchen."
+
+# -- Startup / Lifecycle -------------------------------------------------------
+
+[startup]
+restart_marker = "Neustart-Marker"
+first_start_header = "**Bot gestartet**"
+first_start_body = "Erster Start — Houston, wir sind bereit! 🚀"
+reboot_header = "**Bot gestartet**"
+reboot_body = "System-Reboot erkannt — wir sind zurück! Haben uns kurz hingelegt. 😴"
+
+restart_default = "Neustart abgeschlossen. Wir sind wieder da!"
+restart_header = "**Neustart**"
+restart_body = "Bot fährt runter und ist gleich wieder da. Kurze Kaffeepause! ☕"
+stale_updates_skipped = "{count} alte Nachricht(en) aus der Zeit des Neustarts wurden nicht verarbeitet."
+
+
+matrix_restart = "**Bot neu gestartet** ({reason})"
+
+[recovery]
+named_header = "**Automatische Wiederherstellung**"
+named_body = "Hintergrund-Session **{session}** wird fortgesetzt\n`{preview}`"
+interrupted_header = "**Unterbrochene Aufgabe**"
+interrupted_body = "Eine Aufgabe wurde beim Neustart unterbrochen.\n`{preview}`\nBitte nochmal senden."
+
+# -- Speicher ------------------------------------------------------------------
+
+[memory]
+header = "**Hauptspeicher**"
+empty = "Leer. Der Agent baut sein Gedächtnis auf, während ihr zusammenarbeitet."
+empty_tip = "*Tipp: Sag deinem Agent, er soll sich etwas \"merken\", um loszulegen.*"
+filled_tip = "*Tipp: Der Agent liest und aktualisiert das automatisch.*"
+
+# -- Status --------------------------------------------------------------------
+
+[status]
+streaming_header = "Streaming-Anzeige:"
+reasoning_stream = "  Reasoning-Stream: {value}"
+tool_progress = "  Tool-Fortschritt: {value}"
+thinking_indicator = "  Denk-Anzeige: {value}"
+on = "an"
+off = "aus"
+header = "**Status**"
+no_session = "Keine aktive Session."
+model_line = "Modell: {model}"
+model_line_configured = "Modell: {model} (konfiguriert: {configured})"
+effort_line = "Denkaufwand: {effort}"
+topic_line = "Thema: {topic}"
+session_line = "Session: `{sid}`"
+messages_line = "Nachrichten: {count}"
+bg_header = "Hintergrund-Aufgaben: {count} laufend"
+auth_header = "Authentifizierung:"
+agents_header = "Agenten:"
+
+# -- Technischer Footer --------------------------------------------------------
+
+[footer]
+model = "Modell: {name}"
+time = "Zeit: {secs}s"
+
+[diagnose]
+restarts = " | Neustarts: {count}"
+log_unreadable = "(Logdatei konnte nicht gelesen werden)"
+header = "**System-Diagnose**"
+version_line = "Version: `{version}`"
+configured_line = "Konfiguriert: {provider} / {model}"
+effective_line = "Effektive Laufzeit: {provider} / {model}"
+log_header = "Letzte Logs (50 Zeilen):"
+no_log = "Keine Log-Datei gefunden."
+codex_cache_not_init = "Codex Model Cache: Observer nicht initialisiert"
+codex_cache_not_loaded = "Codex Model Cache: Nicht geladen"
+codex_cache_info = "Codex Model Cache:\n  Zuletzt aktualisiert: {updated}\n  Modelle im Cache: {count}\n  Standard-Modell: {default}"
+health_header = "**Multi-Agent Gesundheit:**"
+
+# -- Aufgaben ------------------------------------------------------------------
+
+[tasks]
+header = "**Hintergrund-Aufgaben**"
+disabled = "Aufgabensystem ist nicht aktiviert."
+empty = "Keine Hintergrund-Aufgaben."
+hint = "Aufgaben werden vom Agent für länger laufende Arbeit erstellt."
+too_many = "Zu viele Hintergrund-Aufgaben ({max} Maximum)"
+internal_error = "Interner Fehler (Logs prüfen)"
+
+cancelled_one = "{count} Aufgabe abgebrochen."
+cancelled_other = "{count} Aufgaben abgebrochen."
+no_running = "Keine laufenden Aufgaben."
+task_cancelled = "Aufgabe `{id}` abgebrochen."
+task_not_running = "Aufgabe `{id}` läuft nicht."
+cleaned_one = "{count} erledigte Aufgabe entfernt."
+cleaned_other = "{count} erledigte Aufgaben entfernt."
+nothing_to_clean = "Nichts aufzuräumen."
+cleanup_confirm_one = "Das löscht {count} erledigte Aufgabe samt Listeneintrag und Aufgabenordner (einschließlich Aufgabennotizen). Eine gelöschte Aufgabe lässt sich nicht fortsetzen. Löschen?"
+cleanup_confirm_other = "Das löscht {count} erledigte Aufgaben samt Listeneinträgen und Aufgabenordnern (einschließlich Aufgabennotizen). Gelöschte Aufgaben lassen sich nicht fortsetzen. Löschen?"
+
+running_header = "**Laufend**"
+waiting_header = "**Wartet auf Antwort**"
+finished_header = "**Fertig**"
+
+btn_cancel = "{name} abbrechen"
+btn_cancel_all = "Alle abbrechen"
+btn_refresh = "Aktualisieren"
+btn_delete_finished = "Erledigte löschen"
+btn_confirm_delete = "Löschen"
+btn_cancel_delete = "Abbrechen"
+
+summary_running = "Laufend: {count}"
+summary_waiting = "Wartend: {count}"
+summary_finished = "Fertig: {count}"
+
+# -- Sessions-Selektor --------------------------------------------------------
+
+[sessions]
+msgs_one = "{count} Nachr."
+msgs_other = "{count} Nachr."
+topic_fallback = "Thema #{id}"
+header = "**Sessions**"
+empty = "Keine aktiven Sessions."
+start_hint = "Starte eine mit `/session <Prompt>`."
+followup_hint = "Nachfassen: `@<Name> <Nachricht>`"
+active_count = "Aktiv: {count}"
+btn_end = "{name} beenden"
+btn_refresh = "Aktualisieren"
+btn_end_all = "Alle beenden"
+topics_header = "Themen:"
+named_header = "Benannt:"
+named_empty = "Keine aktiven Sessions.\n  Starte eine mit `/session <Prompt>`."
+
+ended_all_one = "Alle {count} Session(s) beendet."
+ended_all_none = "Keine aktiven Sessions."
+ended_one = "Session '{name}' beendet."
+ended_not_found = "Session '{name}' nicht gefunden."
+unknown_action = "Unbekannte Aktion."
+
+# -- Modell-Selektor ----------------------------------------------------------
+
+[model]
+invalid_effort = "Ungültiger Denkaufwand `{effort}` für `{model}`. Unterstützt: {supported}."
+no_efforts = "keine"
+next_message = "Sende @{model} <text>, um {model} nur für diese eine Nachricht zu verwenden."
+header = "**Modell-Auswahl**"
+current = "Aktuell: {model}"
+current_with_effort = "Aktuell: {model} ({effort})"
+configured_default = "Konfigurierter Standard: {configured}"
+
+switched = "**Modell gewechselt.**"
+model_line = "Modell: {model}"
+model_change = "Modell: {old} -> {new}"
+provider_change = "Provider: {old} -> {new}"
+reasoning_line = "Denkaufwand: {effort}"
+effort_updated = "Denkaufwand auf {effort} gesetzt."
+already_running = "Läuft bereits mit {model}. Nichts zu ändern."
+
+resume_hint = """\
+Setze Session `{sid}` fort.
+Du hast bereits {count} {label} in dieser Provider-Session gesendet.
+Aktuelles Modell: `{model}`.
+Mit /new startest du eine frische Session."""
+resume_msg_one = "Nachricht"
+resume_msg_other = "Nachrichten"
+
+no_auth = "Kein Provider authentifiziert.\nFühre im Repository-Ordner auf dem Host folgenden Befehl aus: `./scripts/login.sh <provider>` (claude, codex, gemini, grok)."
+pick_provider = "Wähle einen Provider:"
+select_claude = "Claude-Modell auswählen:"
+select_gemini = "Gemini-Modell auswählen:"
+select_codex = "Codex-Modell auswählen:"
+select_grok = "Grok Build-Modell auswählen:"
+no_codex = "Keine Codex-Modelle verfügbar."
+no_gemini = "Keine Gemini-Modelle aus lokalen CLI-Dateien gefunden."
+thinking_level = "Denkaufwand für {model}:"
+unknown_action = "Unbekannte Aktion."
+btn_back = "<< Zurück"
+switched_while_busy = "**Modell gewechselt.** Aktueller Prozess läuft noch — neues Modell gilt ab der nächsten Nachricht."
+
+# -- Cron-Selektor -------------------------------------------------------------
+
+[cron]
+state_enabled = "aktiviert"
+state_disabled = "deaktiviert"
+last_run = " | zuletzt: {status}"
+delivery_failed = " (Zustellung fehlgeschlagen)"
+header = "**Geplante Aufgaben**"
+empty = "Keine Cron-Jobs konfiguriert."
+empty_hint = "*Frag deinen Agent: \"Mach jeden Tag um 9 Uhr einen Backup-Check\"*"
+job_line = "{number}. **{title}** ({status}){last_run}\n   `{schedule}`"
+status_active = "aktiv"
+status_paused = "pausiert"
+btn_disable = "{number}. Deaktivieren"
+btn_enable = "{number}. Aktivieren"
+btn_prev = "<< Zurück"
+btn_refresh = "Aktualisieren"
+btn_next = "Weiter >>"
+btn_all_on = "Alle AN"
+btn_all_off = "Alle AUS"
+info_active = "{active}/{total} aktiv"
+info_page = "Seite {current}/{total}"
+all_enabled = "Alle Cron-Jobs aktiviert."
+all_disabled = "Alle Cron-Jobs deaktiviert."
+already_enabled = "Alle Cron-Jobs waren bereits aktiv."
+already_disabled = "Alle Cron-Jobs waren bereits deaktiviert."
+toggled = "'{title}' {state}."
+list_changed = "Cron-Liste hat sich geändert. Bitte nochmal versuchen."
+unknown_action = "Unbekannte Aktion. Cron-Liste wurde aktualisiert."
+
+# -- Willkommen (Telegram) ----------------------------------------------------
+
+[welcome]
+header = "**Willkommen bei DT Agent{name}!**"
+tagline = """\
+Deploy aus der Hosentasche. Automatisiere vom Sofa aus.
+Claude Code, Codex & Gemini — direkt über Telegram."""
+hint_model = "/model — Modelle wechseln"
+hint_info = "/info — Docs & Links"
+hint_help = "/help — alle Befehle"
+
+no_auth = "Noch kein CLI authentifiziert.\nFühre im Repository-Ordner auf dem Host folgenden Befehl aus: `./scripts/login.sh <provider>` (claude, codex, gemini, grok)."
+auth_line = "{providers} authentifiziert.\nModell: **{model}**"
+
+btn_know = "Lass uns kennenlernen!"
+btn_system = "Schau dich mal um!"
+btn_who = "Wer bist du? Wer bin ich?"
+
+prompt_know = """\
+Hey, ich hab gerade DT Agent eingerichtet und möchte, dass du mich kennenlernst. \
+Frag mich alles, was du wissen musst, damit wir gut zusammenarbeiten können — \
+meinen Namen, was ich mache, woran ich arbeite, wie ich gerne kommuniziere. \
+Speichere, was du lernst, in deinem Gedächtnis."""
+prompt_system = """\
+Schau dich mal auf dem System um, auf dem du läufst. \
+Prüfe das Betriebssystem, installierte Tools, Projektordner, was dir auffällt. \
+Gib mir eine kurze Zusammenfassung."""
+prompt_who = """\
+Los geht's! Stell dich vor — wer bist du, was kannst du für mich tun? \
+Dann frag mich, wer ich bin und wobei ich Hilfe brauche."""
+
+# -- Info ----------------------------------------------------------------------
+
+[info]
+header = "**DT Agent**"
+version = "Version: `{version}`"
+telegram_description = "KI-Coding-Agents (Claude, Codex, Gemini) auf Telegram.\nBenannte Sessions, persistentes Gedächtnis, Cron-Jobs, Webhooks, Live-Streaming."
+matrix_description = "KI-Coding-Agents (Claude, Codex, Gemini) auf Matrix.\nBenannte Sessions, persistentes Gedächtnis, Cron-Jobs, Webhooks, Live-Streaming."
+slack_description = "KI-Coding-Agents (Claude, Codex, Gemini) auf Slack.\nBenannte Sessions, persistentes Gedächtnis, Cron-Jobs, Webhooks, Live-Streaming."
+
+# -- Hilfe (Kategorien) -------------------------------------------------------
+
+[help]
+header = "**Befehlsübersicht**"
+cat_daily = "Alltag"
+cat_automation = "Automatisierung"
+cat_multiagent = "Multi-Agent"
+cat_browse = "Dateien & Info"
+cat_maintenance = "Wartung"
+footer = "Schick einfach eine Nachricht, um loszulegen."
+matrix_footer = "Nutze `!` oder `/` als Prefix. Schick eine Nachricht zum Starten."
+slack_footer = "Nutze Befehle wie `help` oder `/help`. Schick eine andere Nachricht zum Starten."
+
+# -- Multi-Agent ---------------------------------------------------------------
+
+[agents]
+cmd_list = "`{prefix}agents` — alle Agents und ihren Status auflisten"
+cmd_start = "`{prefix}agent_start <name>` — Sub-Agent starten"
+cmd_stop = "`{prefix}agent_stop <name>` — Sub-Agent stoppen"
+cmd_restart = "`{prefix}agent_restart <name>` — Sub-Agent neu starten"
+slack_explanation = "Slack-Sub-Agents nutzen dieselbe Multi-Agent-Laufzeit."
+header = "**Agenten**"
+empty = "Keine Agents."
+not_active = "Multi-Agent-Modus ist nicht aktiv."
+usage_stop = "Benutzung: /agent_stop <Name>"
+usage_start = "Benutzung: /agent_start <Name>"
+usage_restart = "Benutzung: /agent_restart <Name>"
+cannot_stop_main = "Den Haupt-Agent kann man nicht stoppen."
+not_running = "Agent '{name}' läuft nicht."
+stopped = "Agent '{name}' gestoppt."
+restarts = " (Neustarts: {count})"
+error_line = "Fehler: {error}"
+
+system_header = "**Multi-Agent-System**"
+telegram_explanation = """\
+Das Multi-Agent-System ermöglicht es, zusätzliche Bots als \
+Sub-Agents zu betreiben — jeder mit eigenem Telegram-Token, Workspace \
+und Benutzerliste. Alle Agents teilen sich einen Prozess und können \
+über den Inter-Agent-Bus kommunizieren."""
+matrix_explanation = """\
+Das Multi-Agent-System ermöglicht es, zusätzliche Bots als \
+Sub-Agents zu betreiben — jeder mit eigenem Workspace und Benutzerliste. \
+Alle Agents teilen sich einen Prozess und können \
+über den Inter-Agent-Bus kommunizieren."""
+commands_header = "**Befehle**"
+setup_header = "**Einrichtung**"
+setup_instruction = "Bitte deinen Agent, einen neuen Sub-Agent zu erstellen, oder bearbeite `agents.json` in deinem DT Agent Home-Verzeichnis."
+
+# -- Fehler (generisch) -------------------------------------------------------
+
+[error]
+internal = "Ein interner Fehler ist aufgetreten. Bitte versuche es erneut."
+shutting_down = "Der Bot wird heruntergefahren. Bitte sende deine Nachricht nach dem Neustart erneut."
+generic = "Fehler: {detail}"
+check_logs = "Fehler: Logs prüfen für Details."
+
+# -- Gemini-Warnung -----------------------------------------------------------
+
+[gemini]
+missing_key = """\
+Gemini ist auf API-Key-Auth eingestellt, aber `gemini_api_key` in \
+`~/.ductor/config/config.json` ist `"null"` oder leer.
+Warum das nötig ist: Wenn DT Agent die Gemini CLI als externen Prozess aufruft, \
+gibt die Gemini CLI einen intern eingegebenen API-Key nicht an den Aufrufer weiter.
+Setze einen echten API-Key in `gemini_api_key` und starte `ductor` neu."""
+
+# -- Neue Session (Handler) ---------------------------------------------------
+
+[new]
+topic_not_found = "Thema \"{name}\" nicht gefunden."
+topic_reset = "Neue Session für **{name}** ({provider})."
+
+# -- Transport-spezifisch -----------------------------------------------------
+
+[telegram]
+choose_option = "Wähle eine Option:"
+group_rejected = "Dieser Bot ist für diese Gruppe nicht autorisiert."
+channel_not_whitelisted = "Dieser Kanal ist nicht freigeschaltet, ich verlasse ihn."
+where_header = "**Wo**"
+where_no_tracker = "Chat-Tracker nicht verfügbar."
+where_empty = "Noch keine Chat-Aktivität aufgezeichnet."
+leave_usage_header = "**Benutzung**"
+leave_usage = "`/leave <group_id>`"
+leave_invalid_id = "Ungültige Gruppen-ID."
+leave_failed = "Konnte Gruppe nicht verlassen: {error}"
+left_group = "Gruppe <code>{group_id}</code> verlassen."
+
+[matrix]
+room_rejected = "Dieser Bot ist für diesen Raum nicht autorisiert."
+
+# -- Session-Hilfe (transport-spezifisch) --------------------------------------
+
+[session_help]
+slack_usage = "`/session <prompt>` — Hintergrund-Sitzung starten\n`/sessions` — laufende Sitzungen auflisten\n`/stop` — aktiven Lauf stoppen"
+header = "**Hintergrund-Sessions**"
+telegram_explanation = """\
+Hintergrund-Sessions führen Aufgaben parallel aus, ohne den \
+Haupt-Chat zu blockieren. Jede Session bekommt einen eigenen Namen und \
+läuft unabhängig — du kannst mehrere Sessions gleichzeitig aktiv haben."""
+usage_header = "**Benutzung**"
+followup_header = "**Nachfassen**"
+followup_line = "`@session-name <Nachricht>` — Nachricht an eine laufende Session senden"
+commands_header = "**Befehle**"
+telegram_sessions_cmd = "`/sessions` — alle Hintergrund-Sessions anzeigen und verwalten"
+telegram_stop_cmd = "`/stop` — laufende Session abbrechen"
+matrix_session_cmd = "`!session <Prompt>` — Hintergrund-Session starten"
+matrix_sessions_cmd = "`!sessions` — alle Sessions anzeigen und verwalten"
+matrix_stop_cmd = "`!stop` — laufende Session abbrechen"
+default_provider = "`/session <Prompt>` — Standard-Provider"
+claude_single = "`/session <Prompt>` — läuft auf Claude"
+claude_model = "`/session @opus <Prompt>` — bestimmtes Modell"
+codex_single = "`/session <Prompt>` — läuft auf Codex"
+grok_single = "`/session <Prompt>` — läuft auf Grok Build"
+gemini_single = "`/session <Prompt>` — läuft auf Gemini"
+gemini_model = "`/session @flash <Prompt>` — bestimmtes Modell"
+grok_model = "`/session @grok-4.5 <Prompt>` — bestimmtes Modell"
+claude_multi = "`/session @opus <Prompt>` — Claude (opus)"
+codex_multi = "`/session @codex <Prompt>` — Codex"
+grok_multi = "`/session @grok <Prompt>` — Grok Build"
+gemini_multi = "`/session @flash <Prompt>` — Gemini (flash)"
+explicit = "`/session @provider model <Prompt>` — explizit"
+
+# -- Dateibrowser --------------------------------------------------------------
+
+[file_browser]
+header = "**Dateibrowser**"
+directory_not_found = "Verzeichnis nicht gefunden."
+empty = "(leer)"
+btn_back = "<< Zurück"
+btn_request_files = "Schick mir eine Datei aus diesem Ordner"
+file_request_prompt = "Liste alle Dateien in {dir}/ auf und schick mir die, nach der ich frage. Nutze File-Tags für die Zustellung."
+
+# Matrix-Variante
+matrix_header = "**Workspace-Dateien**"
+matrix_hint = "_Nutze `!showfiles <Verzeichnis>` um ein bestimmtes Verzeichnis anzuzeigen._"
+matrix_dir_not_found = "Verzeichnis `{subdir}` nicht gefunden."
+matrix_permission_denied = "(Zugriff verweigert)"
+matrix_file_count = "{count} Datei(en)"
+matrix_no_dirs = "(keine Workspace-Verzeichnisse gefunden)"
+
+[multiagent]
+async_task_received = "📥 **Async-Aufgabe empfangen** von `{sender}`\nSession: `{session}` · Task-ID: `{task_id}`\n\n_{preview}_"
+
+[effort]
+select = "Denkaufwand für {model} wählen:"
+unsupported = "Denkaufwand ist für den Anbieter `{provider}` nicht einstellbar."
+
+# -- Completion summary, heartbeat, slot switch, memory lint ------------------
+
+[stream]
+slack_plan_title = "Bearbeite deine Anfrage"
+slack_analyze_title = "Anfrage verstehen"
+slack_tools_title = "Bei Bedarf Tools nutzen"
+slack_response_title = "Antwort entwerfen"
+slack_no_tools = "Keine Tools nötig"
+slack_understanding = "Anfrage wird verstanden"
+slack_label_thinking = "Denkt nach"
+slack_label_compacting = "Komprimiere"
+slack_label_recovering = "Stelle wieder her"
+slack_label_timeout_warning = "Zeitlimit naht"
+slack_label_timeout_extended = "Zeitlimit verlängert"
+more_items = "(+{count} weitere)"
+label_thinking = "DENKT NACH"
+label_compacting = "KOMPRIMIERE"
+label_recovering = "Bitte warten, Wiederherstellung läuft..."
+label_timeout_warning = "ZEITLIMIT NAHT"
+label_timeout_extended = "ZEITLIMIT VERLÄNGERT"
+done = "✓ Fertig · {secs}s"
+
+[heartbeat]
+quarantine_stopped = "Heartbeat-Prüfungen angehalten: Die CLI-Session dieser Unterhaltung lässt sich nicht fortsetzen. Sobald die Wiederherstellung in einer späteren Unterhaltung gelingt und eine neue Session entsteht, starten die Prüfungen automatisch wieder."
+
+[slot]
+switched_estimated = "gewechselt (Kontingent erschöpft, Rücksetzzeit unbekannt, in ca. 1 Std. erneut versuchen)"
+switched = "gewechselt (Kontingent erschöpft, Reset {reset})"
+cooldown_unparsable = "Cooldown nicht lesbar, stderr-Rohtext folgt"
+
+[memory_lint]
+topic_name = "Speicherprüfung"
+
+# -- Inter-agent failure reasons -----------------------------------------------
+
+[interagent]
+queue_wait_timeout = "Wartezeit überschritten, nicht gestartet"
+recipient_gone = "Empfänger-Agent nicht mehr vorhanden"
+
+# -- Why a sub-agent was excluded or did not start -----------------------------
+
+[agent_reason]
+item = "Eintrag #{index}"
+item_unnamed = "unbenannter Eintrag"
+config_error = "{item}: Konfigurationsfehler ({error}){detail}"
+name_format = "{item}: Namensformat fehlerhaft (ValueError); Feld name"
+create_error = "Fehler beim Erstellen des Agenten ({error})"
+start_error = "Fehler beim Starten des Agenten ({error})"
+feature_missing = "Funktion {feature} ist aktiv, aber das Modul {module} fehlt"
+extras_hint = "Image-Build-Extras: '{extras}'. Füge die Funktion in der Root-.env zu DUCTOR_EXTRAS hinzu und führe dann docker compose build aus"
+only_sub = "nur Sub-Agent '{sub}' wird ausgeschlossen"
+
+[notice]
+session_cancelled = "**[{name}] Abgebrochen**"
+session_failed = "**[{name}] Fehlgeschlagen** ({elapsed})"
+session_complete = "**[{name}] Abgeschlossen** ({elapsed})"
+no_output = "_Keine Ausgabe._"
+bg_cancelled = "**Hintergrund-Aufgabe abgebrochen**"
+bg_cancelled_body = "Aufgabe `{task_id}` wurde abgebrochen.\nPrompt: _{prompt}_"
+bg_failed = "**Hintergrund-Aufgabe fehlgeschlagen** ({elapsed})"
+bg_failed_body = "Aufgabe `{task_id}` ist fehlgeschlagen ({status}).\nPrompt: _{prompt}_"
+bg_complete = "**Hintergrund-Aufgabe abgeschlossen** ({elapsed})"
+heartbeat_failed = "**Heartbeat-Zustellung fehlgeschlagen**\n\nKonnte nicht an {target} zugestellt werden.\n\n---\n{text}"
+target = "Chat {chat}"
+target_topic = "Chat {chat} / Thema {topic}"
+ia_failed = "**Agent-zu-Agent-Anfrage fehlgeschlagen**\n\nAgent: `{agent}`{session}\nFehler: {error}\nAnfrage: _{request}_"
+ia_session = "\nSitzung: `{name}`"
+unknown = "unbekannt"
+provider_switch = "**Provider-Wechsel erkannt**\n\n{notice}"
+task_done = "**Aufgabe `{name}` abgeschlossen** ({detail})"
+task_cancelled = "**Aufgabe `{name}` abgebrochen**"
+task_failed = "**Aufgabe `{name}` fehlgeschlagen**\nGrund: {reason}"
+task_question = "**Aufgabe `{task_id}` hat eine Frage:**\n{question}"
+task_header = "**AUFGABE: {title}**"
+cron_delivery_failed = "**Cron-Zustellung fehlgeschlagen**\n\nAufgabe **{title}** konnte nicht an {target} zugestellt werden.\n\n---\n{text}"
+webhook_header = "**WEBHOOK (CRON-AUFGABE): {title}**"
+delivery_fallback = "**Zustell-Ausweichweg**\n\nZiel-Transport '{transport}' ist nicht verfügbar.\n\n---\n{text}"
+processing_error = "Fehler beim Verarbeiten des Ergebnisses ({origin})"
+queue_waiting = "<i>[Nachricht in der Warteschlange...]</i>"
+queue_cancelled = "<i>[Nachricht abgebrochen.]</i>"
+queue_discarded = "<i>[Nachricht verworfen.]</i>"
+queue_cancel_button = "Nachricht abbrechen"
+file_outside = "<code>{name}</code> konnte nicht gesendet werden — die Datei liegt außerhalb des erlaubten Verzeichnisses.\n\nLösung: Setze <code>\"file_access\": \"all\"</code> in <code>config.json</code> und führe dann <b>/restart</b> aus."
+file_not_found = "[Datei nicht gefunden: {name} (Versuchter Host-Pfad: {path})]"
+file_send_failed = "[Senden fehlgeschlagen: {name}]"
+download_failed = "Die Datei konnte nicht heruntergeladen werden."
+user_answer = "<i>[ANTWORT DES NUTZERS] {answer}</i>"
+task_system_unavailable = "Aufgabensystem nicht verfügbar."
+
+[run]
+cli_not_found = "[{provider}-CLI nicht gefunden]"
+timed_out = "[{label}: Zeitüberschreitung nach {secs}s]"
+cron_failed = "Cron-Job '{title}' ist mit einem Fehler fehlgeschlagen ({error_type})."
+cron_no_session = "Cron-Job '{title}' konnte in dieser Sitzung nicht ausgeführt werden."
+status_success = "Erfolg"
+status_aborted = "abgebrochen"
+status_timeout = "Zeitüberschreitung"
+status_cli_not_found = "CLI nicht gefunden"
+status_exception = "Fehler"
+status_injection = "nicht in der Sitzung ausgeführt"
+status_exit = "Exit-Code {code}"
+
+[task_error]
+interrupted = "durch Neustart unterbrochen"
+resume_hint = "Um die Unterhaltung dieser Aufgabe fortzusetzen, verwende:"
+bot_restarted = "Bot wurde neu gestartet, während die Aufgabe lief"
+timeout = "Zeitüberschreitung nach {secs}s"
+stale_killed = "hängender Prozess nach {secs}s beendet"
+cli_error = "CLI-Fehler"
+
+[crash]
+matrix_no_credentials = "Matrix-Authentifizierung fehlgeschlagen für {user_id}\n  Weder access_token, device_id noch password sind konfiguriert.\n  Setze 'password' im matrix-Abschnitt der config.json."
+matrix_login_failed = "Matrix-Authentifizierung fehlgeschlagen für {user_id}\n  Homeserver: {homeserver}\n  Fehler: {error}\n  Prüfe die Zugangsdaten im matrix-Abschnitt der config.json."
+
+[age]
+s = "{n}s"
+m = "{n}min"
+h = "{n}h"
+d = "{n}d"
+ago_now = "gerade eben"
+ago_s = "vor {n} s"
+ago_m = "vor {n} min"
+ago_h = "vor {n} h"
+ago_d = "vor {n} d"
+
+[task_status]
+running = "läuft"
+waiting = "wartet"
+done = "fertig"
+failed = "fehlgeschlagen"
+cancelled = "abgebrochen"
+
+[session_status]
+running = "läuft"
+idle = "bereit"
+ended = "beendet"
+
+[agent_status]
+running = "läuft"
+starting = "startet"
+crashed = "abgestürzt"
+stopped = "gestoppt"
+
+[agent_role]
+main = "Haupt"
+sub = "Sub"
+
+[auth_status]
+authenticated = "angemeldet"
+installed = "installiert"
+not_found = "nicht gefunden"
+
+[effort_label]
+none = "Keine"
+minimal = "Minimal"
+low = "Niedrig"
+medium = "Mittel"
+high = "Hoch"
+xhigh = "Sehr hoch"
+max = "Maximal"
+
+[product_error]
+session_not_found = "Sitzung '{name}' nicht gefunden"
+session_ended = "Sitzung '{name}' wurde beendet"
+session_busy = "Sitzung '{name}' verarbeitet noch"
+too_many_sessions = "Zu viele Sitzungen (max. {max})"
+
+[session_notice]
+followup_sent = "**[{name}] Nachfrage gesendet**"
+task_queued = "Aufgabe `{task_id}` eingereiht."
+started_title = "**Sitzung `{name}` gestartet**"
+started_body = "Läuft auf {provider}{model_info}.\nNachfrage: `@{name} <message>`"
+
+[supervisor]
+already_running = "Agent '{name}' läuft bereits."
+not_started = "Agent '{name}' nicht gestartet: {reason}"
+not_found = "Agent '{name}' nicht in agents.json gefunden."
+started = "Agent '{name}' gestartet."
+restarted = "Agent '{name}' neu gestartet."
+cannot_restart_main = "Den Haupt-Agent kann man mit diesem Befehl nicht neu starten. Nutze stattdessen /restart."
+excluded = "Sub-Agent '{name}' ausgeschlossen: {reason}"
+stopped_after_crashes = "Sub-Agent '{name}' nach {max} Abstürzen gestoppt: {error}"
+label = "Supervisor"
+
+[cli_error]
+codex_no_final = "Codex ist fehlgeschlagen, bevor eine endgültige Antwort entstand."
+gemini_unknown = "Unbekannter Gemini-Fehler"
+gemini_exited = "Gemini wurde mit Code {code} beendet"
+grok_error = "Grok-Fehler"
+
+[secret]
+usage = "Nutze /secret list, /secret set KEY, /secret delete KEY oder /secret cancel. Schreib den Wert nie in den Befehl."
+prompt = "Antworte innerhalb von 2 Minuten auf diese Nachricht mit dem Wert für {key}. Mit /secret cancel brichst du ab."
+saved = "{key} gespeichert (Länge: {length} Zeichen)."
+saved_env_note = "{key} steht auch in .env. CLI-Anbieterschlüssel verwenden den Wert aus .env."
+rejected = "Wert abgelehnt: {reason}. Für andere Formate bearbeite die Secrets-Datei direkt."
+reason_value_empty = "Der Wert ist leer"
+reason_value_too_long = "Der Wert hat mehr als {max} Zeichen"
+reason_value_nul = "Der Wert enthält ein NUL-Zeichen"
+reason_value_multiline = "Der Wert enthält einen Zeilenumbruch"
+reason_value_edge_space = "Der Wert beginnt oder endet mit Leerraum"
+reason_value_edge_quote = "Der Wert beginnt oder endet mit einem Anführungszeichen"
+reason_value_dollar = "Der Wert beginnt mit $"
+invalid_key = "Nutze einen Schlüssel mit 1–56 Großbuchstaben, Ziffern oder Unterstrichen, beginnend mit einem Buchstaben."
+extra_args = "Schreib den Wert nicht in den Befehl. Sende ihn als nächste Nachricht nach /secret set KEY."
+expired = "Die Eingabezeit ist abgelaufen. Starte neu mit /secret set KEY."
+expired_value = "Die Eingabezeit ist abgelaufen. Diese Nachricht wurde ohne Speichern gelöscht. Sende /secret set KEY erneut."
+not_text = "Bitte sende den Wert als Text."
+delete_failed = "Ich konnte die Nachricht nicht löschen. Bitte lösche sie selbst."
+quoted_refused = "Diese Nachricht zitiert einen geheimen Wert und wurde nicht verarbeitet. Sende sie ohne das Zitat nochmal."
+save_failed = "Die Änderung konnte nicht gespeichert werden. Kein neuer Wert wurde gespeichert. Versuch es nochmal."
+list = "Gespeicherte Schlüssel:\n{keys}"
+list_empty = "Noch keine Schlüssel gespeichert."
+confirm_overwrite = "{key} überschreiben?"
+confirm_delete = "{key} löschen?"
+deleted = "{key} gelöscht."
+delete_missing = "{key} wurde nicht gefunden."
+cancelled = "Secret-Eingabe abgebrochen."
+nothing_pending = "Keine Secret-Eingabe offen."
+private_only = "Nutze /secret im privaten Chat mit dem Bot."
+main_only = "Nutze /secret beim Hauptbot."
+btn_overwrite = "Überschreiben"
+btn_delete = "Löschen"
+btn_cancel = "Abbrechen"
+
+
+[accounts]
+error = "Die Kontenverwaltung ist fehlgeschlagen. Bitte erneut versuchen."
+title = "Claude-Konten (höchste Priorität zuerst)"
+authenticated = "Angemeldet"
+unauthenticated = "Nicht angemeldet"
+no_cooldown = "Keine Wartezeit"
+cooldown = "Noch {hours} Std. {minutes} Min. Wartezeit (Freigabe {time})"
+empty = "Die Kontenliste ist leer; nur das Standardkonto wird verwendet."
+subagent_note = "Die Priorität gilt für den Hauptagenten nach wenigen Sekunden und für Unteragenten beim nächsten Start. Wartezeitänderungen gelten für alle ab dem nächsten Aufruf."
+main_only = "Die Kontenverwaltung ist nur im Bot des Hauptagenten verfügbar."
+stale = "Diese Schaltfläche ist veraltet. Der aktuelle Stand wird angezeigt."
+btn_prefer = "{name}: Bevorzugen"
+btn_clear = "{name}: Wartezeit aufheben"
+btn_refresh = "Aktualisieren"
+
+[usage]
+title = "📊 Kontonutzung · {time}"
+captured = "Stand: {time}"
+queried = "Abfrage: {time}"
+reset = "Zurückgesetzt ({time})"
+empty = "Noch keine Werte empfangen"
+account_empty = "Nutzung: noch keine Werte empfangen"
+failed = "Abfrage fehlgeschlagen ({reason})"
+timeout = "Zeitüberschreitung"
+login_required = "Anmeldung erforderlich"
+invalid_response = "Ungültiges Antwortformat"
+unsupported = "Automatische Bot-Abfrage nicht unterstützt"
+refresh = "Aktualisieren"
+loading = "Abfrage läuft…"
+error = "Nutzungsanzeige fehlgeschlagen"

@@ -1,0 +1,718 @@
+# English chat strings (Markdown-formatted, sent to Telegram/Matrix/API).
+
+# -- Session management -------------------------------------------------------
+
+[session]
+error_header = "**Session Error**"
+error_body = """\
+[{model}] An error occurred.
+Your session has been preserved -- send another message to retry.
+Use /new to start a fresh session if the problem persists."""
+error_cause = "**Cause:** {hint}"
+error_detail = "**Detail:** `{detail}`"
+error_auth = "Authentication failed. In the repository folder on the host, run `./scripts/login.sh <provider>`."
+no_auth = "Provider {provider} is not authenticated.\nIn the repository folder on the host, run `./scripts/login.sh {provider}`."
+error_rate = "Rate limit reached. Wait a moment and try again."
+error_context = "Context length exceeded. Use /new to start a fresh session."
+
+reset_header = "**Session Reset**"
+reset_body = """\
+Session reset for {provider} in this chat only.
+Other provider sessions were preserved.
+Send a message to continue."""
+
+age_warning = "[Session is {age} old. Use /new for a fresh start.]"
+
+# #84: Tool-only turns (e.g. silent memory updates) surface this neutral
+# status line instead of a blank message the user would never see.
+empty_turn = "_(Agent updated memory silently — send another message to continue.)_"
+
+recovered = "_Previous session could not be restored. A new session was started automatically._"
+recovery_failed = "Could not recover your session after a fresh start. Please try again or use /new to start over."
+sigkill = "Execution was interrupted. Please send the same request again."
+
+not_found = "Session '{name}' not found."
+ended = "Session '{name}' has ended. Start a new one with /session."
+still_running = "Session '{name}' is still processing. Wait or use /stop to cancel."
+
+# -- Stop/interrupt ------------------------------------------------------------
+
+[stop]
+header = "**Agent Stopped**"
+killed = "{provider} terminated."
+nothing = "Nothing running right now."
+discarded = "{count} queued message(s) in this topic discarded."
+
+[interrupt]
+done = "Interrupted {count} process(es)."
+nothing = "No active processes."
+
+[abort_all]
+done = "Stopped {count} process(es) across all agents."
+nothing = "No active processes found on any agent."
+
+# -- Timeout -------------------------------------------------------------------
+
+[timeout]
+error_header = "**Timeout**"
+error_body = """\
+[{model}] CLI was terminated after {minutes} min.
+Your session has been preserved -- send another message to continue where it left off.
+Use /new to start a fresh session."""
+
+result_header = "**Timeout**"
+result_body = """\
+The agent timed out after {elapsed}s (limit: {configured}s).
+Try a shorter prompt, or ask in smaller steps."""
+
+warning_minutes = "Timeout in {mins} min"
+warning_seconds = "Timeout in {secs}s"
+extended = "Timeout extended (+{secs}s, {remaining} left)"
+
+generic = "Agent timed out. Please try again."
+
+# -- Startup / lifecycle -------------------------------------------------------
+
+[startup]
+restart_marker = "restart marker"
+first_start_header = "**Bot Started**"
+first_start_body = "First start — ready to go."
+reboot_header = "**Bot Started**"
+reboot_body = "System reboot detected — back online."
+
+restart_default = "Restart completed."
+restart_header = "**Restarting**"
+restart_body = "Bot is shutting down and will be back shortly."
+stale_updates_skipped = "{count} old message(s) from while the bot was restarting were not processed."
+
+
+matrix_restart = "**Bot restarted** ({reason})"
+
+[recovery]
+named_header = "**Auto-Recovery**"
+named_body = "Resuming background session **{session}**\n`{preview}`"
+interrupted_header = "**Interrupted Task**"
+interrupted_body = "A task was interrupted during restart.\n`{preview}`\nPlease re-send to continue."
+
+# -- Memory --------------------------------------------------------------------
+
+[memory]
+header = "**Main Memory**"
+empty = "Empty. The agent will build memory as you interact."
+empty_tip = "*Tip: Ask your agent to \"remember\" something to get started.*"
+filled_tip = "*Tip: The agent reads and updates this automatically.*"
+
+# -- Status --------------------------------------------------------------------
+
+[status]
+streaming_header = "Streaming visibility:"
+reasoning_stream = "  Reasoning stream: {value}"
+tool_progress = "  Tool progress: {value}"
+thinking_indicator = "  Thinking indicator: {value}"
+on = "on"
+off = "off"
+header = "**Status**"
+no_session = "No active session."
+model_line = "Model: {model}"
+model_line_configured = "Model: {model} (configured: {configured})"
+effort_line = "Reasoning effort: {effort}"
+topic_line = "Topic: {topic}"
+session_line = "Session: `{sid}`"
+messages_line = "Messages: {count}"
+bg_header = "Background tasks: {count} running"
+auth_header = "Auth:"
+agents_header = "Agents:"
+
+# -- Technical footer ----------------------------------------------------------
+
+[footer]
+model = "Model: {name}"
+time = "Time: {secs}s"
+
+[diagnose]
+restarts = " | restarts: {count}"
+log_unreadable = "(could not read log file)"
+header = "**System Diagnostics**"
+version_line = "Version: `{version}`"
+configured_line = "Configured: {provider} / {model}"
+effective_line = "Effective runtime: {provider} / {model}"
+log_header = "Recent logs (last 50 lines):"
+no_log = "No log file found."
+codex_cache_not_init = "Codex Model Cache: Observer not initialized"
+codex_cache_not_loaded = "Codex Model Cache: Not loaded"
+codex_cache_info = "Codex Model Cache:\n  Last updated: {updated}\n  Models cached: {count}\n  Default model: {default}"
+health_header = "**Multi-Agent Health:**"
+
+# -- Tasks ---------------------------------------------------------------------
+
+[tasks]
+header = "**Background Tasks**"
+disabled = "Task system is not enabled."
+empty = "No background tasks."
+hint = "Tasks are created by the agent for long-running work."
+too_many = "Too many background tasks ({max} max)"
+internal_error = "Internal error (check logs)"
+
+cancelled_one = "Cancelled {count} task."
+cancelled_other = "Cancelled {count} tasks."
+no_running = "No running tasks."
+task_cancelled = "Task `{id}` cancelled."
+task_not_running = "Task `{id}` not running."
+cleaned_one = "Removed {count} finished task."
+cleaned_other = "Removed {count} finished tasks."
+nothing_to_clean = "Nothing to clean up."
+cleanup_confirm_one = "This deletes {count} finished task: its list entry and its task folder (including task notes). A deleted task cannot be resumed. Delete it?"
+cleanup_confirm_other = "This deletes {count} finished tasks: their list entries and task folders (including task notes). Deleted tasks cannot be resumed. Delete them?"
+
+running_header = "**Running**"
+waiting_header = "**Waiting for answer**"
+finished_header = "**Finished**"
+
+btn_cancel = "Cancel {name}"
+btn_cancel_all = "Cancel All"
+btn_refresh = "Refresh"
+btn_delete_finished = "Delete Finished"
+btn_confirm_delete = "Delete"
+btn_cancel_delete = "Cancel"
+
+summary_running = "Running: {count}"
+summary_waiting = "Waiting: {count}"
+summary_finished = "Finished: {count}"
+
+# -- Sessions selector ---------------------------------------------------------
+
+[sessions]
+msgs_one = "{count} msg"
+msgs_other = "{count} msgs"
+topic_fallback = "Topic #{id}"
+header = "**Sessions**"
+empty = "No active sessions."
+start_hint = "Start one with `/session <prompt>`."
+followup_hint = "Follow up: `@<name> <message>`"
+active_count = "Active: {count}"
+btn_end = "End {name}"
+btn_refresh = "Refresh"
+btn_end_all = "End All"
+topics_header = "Topics:"
+named_header = "Named:"
+named_empty = "No active sessions.\n  Start one with `/session <prompt>`."
+
+ended_all_one = "All {count} session(s) ended."
+ended_all_none = "No active sessions."
+ended_one = "Session '{name}' ended."
+ended_not_found = "Session '{name}' not found."
+unknown_action = "Unknown action."
+
+# -- Model selector ------------------------------------------------------------
+
+[model]
+invalid_effort = "Invalid reasoning effort `{effort}` for `{model}`. Supported: {supported}."
+no_efforts = "none"
+next_message = "Send @{model} <text> to use {model} for that message only."
+header = "**Model Selector**"
+current = "Current: {model}"
+current_with_effort = "Current: {model} ({effort})"
+configured_default = "Configured default: {configured}"
+
+switched = "**Model switched.**"
+model_line = "Model: {model}"
+model_change = "Model: {old} -> {new}"
+provider_change = "Provider: {old} -> {new}"
+reasoning_line = "Reasoning effort: {effort}"
+effort_updated = "Reasoning effort set to {effort}."
+already_running = "Already running {model}. No changes made."
+
+resume_hint = """\
+Resuming session `{sid}`.
+You have already sent {count} {label} in this provider session.
+Current model: `{model}`.
+Use /new to start a fresh session."""
+resume_msg_one = "message"
+resume_msg_other = "messages"
+
+no_auth = "No authenticated providers found.\nIn the repository folder on the host, run `./scripts/login.sh <provider>` (claude, codex, gemini, grok)."
+pick_provider = "Pick a provider:"
+select_claude = "Select Claude model:"
+select_gemini = "Select Gemini model:"
+select_codex = "Select Codex model:"
+select_grok = "Select Grok Build model:"
+no_codex = "No Codex models available."
+no_gemini = "No Gemini models discovered from local Gemini CLI files."
+thinking_level = "Reasoning effort for {model}:"
+unknown_action = "Unknown action."
+btn_back = "<< Back"
+switched_while_busy = "**Model switched.** Current process still running — new model applies to the next message."
+
+# -- Cron selector -------------------------------------------------------------
+
+[cron]
+state_enabled = "enabled"
+state_disabled = "disabled"
+last_run = " | last: {status}"
+delivery_failed = " (delivery failed)"
+header = "**Scheduled Tasks**"
+empty = "No cron jobs configured."
+empty_hint = "*Ask your agent: \"Run a backup check every day at 9am\"*"
+job_line = "{number}. **{title}** ({status}){last_run}\n   `{schedule}`"
+status_active = "active"
+status_paused = "paused"
+btn_disable = "{number}. Disable"
+btn_enable = "{number}. Enable"
+btn_prev = "<< Prev"
+btn_refresh = "Refresh"
+btn_next = "Next >>"
+btn_all_on = "All ON"
+btn_all_off = "All OFF"
+info_active = "{active}/{total} active"
+info_page = "page {current}/{total}"
+all_enabled = "All cron jobs enabled."
+all_disabled = "All cron jobs disabled."
+already_enabled = "All cron jobs were already enabled."
+already_disabled = "All cron jobs were already disabled."
+toggled = "'{title}' {state}."
+list_changed = "Cron list changed. Please try again."
+unknown_action = "Unknown action. Refreshed cron list."
+
+# -- Welcome (Telegram) -------------------------------------------------------
+
+[welcome]
+header = "**Welcome to DT Agent{name}!**"
+tagline = """\
+Deploy from your pocket. Automate from your couch.
+Claude Code, Codex & Gemini -- straight from Telegram."""
+hint_model = "/model — switch models"
+hint_info = "/info — docs & links"
+hint_help = "/help — all commands"
+
+no_auth = "No CLI authenticated yet.\nIn the repository folder on the host, run `./scripts/login.sh <provider>` (claude, codex, gemini, grok)."
+auth_line = "{providers} authenticated.\nModel: **{model}**"
+
+btn_know = "Let's get to know each other!"
+btn_system = "Check out the system!"
+btn_who = "Who are you? Who am I?"
+
+prompt_know = """\
+Hey, I just set up DT Agent and I want you to get to know me. \
+Ask me everything you need to know so we can work well together -- \
+my name, what I do, what I'm working on, how I like to communicate. \
+Save what you learn to your memory."""
+prompt_system = """\
+Take a look around the system you're running on. \
+Check the OS, installed tools, project folders, whatever you find interesting. \
+Give me a quick summary of what you see."""
+prompt_who = """\
+Let's get started! Introduce yourself -- who are you, what can you do for me? \
+Then ask me who I am and what I need help with."""
+
+# -- Info ----------------------------------------------------------------------
+
+[info]
+header = "**DT Agent**"
+version = "Version: `{version}`"
+telegram_description = "AI coding agents (Claude, Codex, Gemini) on Telegram.\nNamed sessions, persistent memory, cron jobs, webhooks, live streaming."
+matrix_description = "AI coding agents (Claude, Codex, Gemini) on Matrix.\nNamed sessions, persistent memory, cron jobs, webhooks, live streaming."
+slack_description = "AI coding agents (Claude, Codex, Gemini) on Slack.\nNamed sessions, persistent memory, cron jobs, webhooks, live streaming."
+
+# -- Help (categories) --------------------------------------------------------
+
+[help]
+header = "**Command Reference**"
+cat_daily = "Daily"
+cat_automation = "Automation"
+cat_multiagent = "Multi-Agent"
+cat_browse = "Browse & Info"
+cat_maintenance = "Maintenance"
+footer = "Send any message to start working with your agent."
+matrix_footer = "Use `!` or `/` prefix. Send any message to start."
+slack_footer = "Use `help` or `/help`. Send any other message to start."
+
+# -- Multi-agent ---------------------------------------------------------------
+
+[agents]
+cmd_list = "`{prefix}agents` — list all agents and their status"
+cmd_start = "`{prefix}agent_start <name>` — start a sub-agent"
+cmd_stop = "`{prefix}agent_stop <name>` — stop a sub-agent"
+cmd_restart = "`{prefix}agent_restart <name>` — restart a sub-agent"
+slack_explanation = "Slack sub-agents use the same multi-agent runtime."
+header = "**Agents**"
+empty = "No agents."
+not_active = "Multi-agent mode is not active."
+usage_stop = "Usage: /agent_stop <name>"
+usage_start = "Usage: /agent_start <name>"
+usage_restart = "Usage: /agent_restart <name>"
+cannot_stop_main = "Cannot stop the main agent."
+not_running = "Agent '{name}' is not running."
+stopped = "Agent '{name}' stopped."
+restarts = " (restarts: {count})"
+error_line = "Error: {error}"
+
+system_header = "**Multi-Agent System**"
+telegram_explanation = """\
+The multi-agent system lets you run additional bots as \
+sub-agents — each with its own Telegram token, workspace, \
+and user list. All agents share a single process and can \
+communicate via the inter-agent bus."""
+matrix_explanation = """\
+The multi-agent system lets you run additional bots as \
+sub-agents — each with its own workspace and user list. \
+All agents share a single process and can communicate \
+via the inter-agent bus."""
+commands_header = "**Commands**"
+setup_header = "**Setup**"
+setup_instruction = "Ask your agent to create a new sub-agent or edit `agents.json` in your DT Agent home directory."
+
+# -- Errors (generic) ---------------------------------------------------------
+
+[error]
+internal = "An internal error occurred. Please try again."
+shutting_down = "The bot is shutting down. Please send your message again after the restart."
+generic = "Error: {detail}"
+check_logs = "Error: check logs for details."
+
+# -- Gemini warning ------------------------------------------------------------
+
+[gemini]
+missing_key = """\
+Gemini is set to API-key auth mode, but `gemini_api_key` in \
+`~/.ductor/config/config.json` is `"null"` or empty.
+Why this is required: when DT Agent calls Gemini CLI as an external process, \
+Gemini CLI does not expose an internally entered API key to that caller.
+Set a real API key in `gemini_api_key` and restart `ductor`."""
+
+# -- New session (handler) -----------------------------------------------------
+
+[new]
+topic_not_found = "Topic \"{name}\" not found."
+topic_reset = "New session for **{name}** ({provider})."
+
+# -- Transport-specific --------------------------------------------------------
+
+[telegram]
+choose_option = "Choose an option:"
+group_rejected = "This bot is not authorized for this group."
+channel_not_whitelisted = "This channel is not whitelisted, I am out."
+where_header = "**Where**"
+where_no_tracker = "Chat tracker not available."
+where_empty = "No chat activity recorded yet."
+leave_usage_header = "**Usage**"
+leave_usage = "`/leave <group_id>`"
+leave_invalid_id = "Invalid group ID."
+leave_failed = "Failed to leave: {error}"
+left_group = "Left group <code>{group_id}</code>."
+
+[matrix]
+room_rejected = "This bot is not authorized for this room."
+
+# -- Session help (transport-specific) -----------------------------------------
+
+[session_help]
+slack_usage = "`/session <prompt>` — start a background session\n`/sessions` — list running sessions\n`/stop` — stop the active run"
+header = "**Background Sessions**"
+telegram_explanation = """\
+Background sessions run tasks in parallel without blocking \
+the main chat. Each session gets a unique name and runs \
+independently — you can have multiple sessions active at once."""
+usage_header = "**Usage**"
+followup_header = "**Follow up**"
+followup_line = "`@session-name <message>` — send a follow-up to a running session"
+commands_header = "**Commands**"
+telegram_sessions_cmd = "`/sessions` — view and manage all background sessions"
+telegram_stop_cmd = "`/stop` — cancel the running session"
+matrix_session_cmd = "`!session <prompt>` — start a background session"
+matrix_sessions_cmd = "`!sessions` — view and manage all sessions"
+matrix_stop_cmd = "`!stop` — cancel running session"
+default_provider = "`/session <prompt>` — default provider"
+claude_single = "`/session <prompt>` — runs on Claude"
+claude_model = "`/session @opus <prompt>` — specific model"
+codex_single = "`/session <prompt>` — runs on Codex"
+grok_single = "`/session <prompt>` — runs on Grok Build"
+gemini_single = "`/session <prompt>` — runs on Gemini"
+gemini_model = "`/session @flash <prompt>` — specific model"
+grok_model = "`/session @grok-4.5 <prompt>` — specific model"
+claude_multi = "`/session @opus <prompt>` — Claude (opus)"
+codex_multi = "`/session @codex <prompt>` — Codex"
+grok_multi = "`/session @grok <prompt>` — Grok Build"
+gemini_multi = "`/session @flash <prompt>` — Gemini (flash)"
+explicit = "`/session @provider model <prompt>` — explicit"
+
+# -- File browser --------------------------------------------------------------
+
+[file_browser]
+header = "**File Browser**"
+directory_not_found = "Directory not found."
+empty = "(empty)"
+btn_back = "<< Back"
+btn_request_files = "Send me a file from this folder"
+file_request_prompt = "List all files in {dir}/ and send me whichever one I ask for. Deliver files using file tags."
+
+# Matrix variant
+matrix_header = "**Workspace Files**"
+matrix_hint = "_Use `!showfiles <dir>` to list a specific directory._"
+matrix_dir_not_found = "Directory `{subdir}` not found."
+matrix_permission_denied = "(permission denied)"
+matrix_file_count = "{count} file(s)"
+matrix_no_dirs = "(no workspace directories found)"
+
+[multiagent]
+async_task_received = "📥 **Async task received** from `{sender}`\nSession: `{session}` · Task ID: `{task_id}`\n\n_{preview}_"
+
+[effort]
+select = "Select reasoning effort for {model}:"
+unsupported = "Reasoning effort is not configurable for the `{provider}` provider."
+
+# -- Completion summary, heartbeat, slot switch, memory lint ------------------
+
+[stream]
+slack_plan_title = "Working on your request"
+slack_analyze_title = "Understand request"
+slack_tools_title = "Use tools if needed"
+slack_response_title = "Draft response"
+slack_no_tools = "No tools needed"
+slack_understanding = "Understanding the request"
+slack_label_thinking = "Thinking"
+slack_label_compacting = "Compacting"
+slack_label_recovering = "Recovering"
+slack_label_timeout_warning = "Timeout approaching"
+slack_label_timeout_extended = "Timeout extended"
+more_items = "(+{count} more)"
+label_thinking = "THINKING"
+label_compacting = "COMPACTING"
+label_recovering = "Please wait, recovering..."
+label_timeout_warning = "TIMEOUT APPROACHING"
+label_timeout_extended = "TIMEOUT EXTENDED"
+done = "✓ Done · {secs}s"
+
+[heartbeat]
+quarantine_stopped = "Heartbeat checks stopped: the CLI session of this conversation cannot be continued. They restart automatically once a later conversation recovers the session and a new session is created."
+
+[slot]
+switched_estimated = "switched (quota exhausted, reset time unknown, retry after ~1h)"
+switched = "switched (quota exhausted, resets {reset})"
+cooldown_unparsable = "cooldown time could not be parsed, raw stderr below"
+
+[memory_lint]
+topic_name = "Memory Lint"
+
+# -- Inter-agent failure reasons -----------------------------------------------
+
+[interagent]
+queue_wait_timeout = "Wait time exceeded, not started"
+recipient_gone = "Recipient agent gone"
+
+# -- Why a sub-agent was excluded or did not start -----------------------------
+
+[agent_reason]
+item = "item #{index}"
+item_unnamed = "unnamed item"
+config_error = "{item} config error ({error}){detail}"
+name_format = "{item} name format error (ValueError); field name"
+create_error = "agent creation error ({error})"
+start_error = "agent start error ({error})"
+feature_missing = "feature {feature} is on but module {module} is missing"
+extras_hint = "image build extras: '{extras}'. Add the feature to DUCTOR_EXTRAS in the root .env, then run docker compose build"
+only_sub = "only sub-agent '{sub}' is excluded"
+
+[notice]
+session_cancelled = "**[{name}] Cancelled**"
+session_failed = "**[{name}] Failed** ({elapsed})"
+session_complete = "**[{name}] Complete** ({elapsed})"
+no_output = "_No output._"
+bg_cancelled = "**Background Task Cancelled**"
+bg_cancelled_body = "Task `{task_id}` was cancelled.\nPrompt: _{prompt}_"
+bg_failed = "**Background Task Failed** ({elapsed})"
+bg_failed_body = "Task `{task_id}` failed ({status}).\nPrompt: _{prompt}_"
+bg_complete = "**Background Task Complete** ({elapsed})"
+heartbeat_failed = "**Heartbeat delivery failed**\n\nCould not deliver to {target}.\n\n---\n{text}"
+target = "Chat {chat}"
+target_topic = "Chat {chat} / Topic {topic}"
+ia_failed = "**Inter-Agent Request Failed**\n\nAgent: `{agent}`{session}\nError: {error}\nRequest: _{request}_"
+ia_session = "\nSession: `{name}`"
+unknown = "unknown"
+provider_switch = "**Provider Switch Detected**\n\n{notice}"
+task_done = "**Task `{name}` completed** ({detail})"
+task_cancelled = "**Task `{name}` cancelled**"
+task_failed = "**Task `{name}` failed**\nReason: {reason}"
+task_question = "**Task `{task_id}` has a question:**\n{question}"
+task_header = "**TASK: {title}**"
+cron_delivery_failed = "**Cron delivery failed**\n\nTask **{title}** could not be delivered to {target}.\n\n---\n{text}"
+webhook_header = "**WEBHOOK (CRON TASK): {title}**"
+delivery_fallback = "**Delivery fallback**\n\nTarget transport '{transport}' is not available.\n\n---\n{text}"
+processing_error = "Error processing {origin} result"
+queue_waiting = "<i>[Message in queue...]</i>"
+queue_cancelled = "<i>[Message cancelled.]</i>"
+queue_discarded = "<i>[Message discarded.]</i>"
+queue_cancel_button = "Cancel message"
+file_outside = "Could not send <code>{name}</code> — file is outside the allowed directory.\n\nFix: set <code>\"file_access\": \"all\"</code> in <code>config.json</code>, then <b>/restart</b>."
+file_not_found = "[File not found: {name} (Tried host path: {path})]"
+file_send_failed = "[Failed to send: {name}]"
+download_failed = "Could not download that file."
+user_answer = "<i>[USER ANSWER] {answer}</i>"
+task_system_unavailable = "Task system not available."
+
+[run]
+cli_not_found = "[{provider} CLI not found]"
+timed_out = "[{label} timed out after {secs}s]"
+cron_failed = "Cron job '{title}' failed with an error ({error_type})."
+cron_no_session = "Cron job '{title}' could not run in this session."
+status_success = "success"
+status_aborted = "aborted"
+status_timeout = "timeout"
+status_cli_not_found = "CLI not found"
+status_exception = "error"
+status_injection = "not run in session"
+status_exit = "exit code {code}"
+
+[task_error]
+interrupted = "interrupted by restart"
+resume_hint = "To continue this task's conversation, use:"
+bot_restarted = "Bot restarted while task was running"
+timeout = "Timeout after {secs}s"
+stale_killed = "stale process killed after {secs}s"
+cli_error = "CLI error"
+
+[crash]
+matrix_no_credentials = "Matrix AUTH FAILED for {user_id}\n  No access_token, device_id, or password configured.\n  Set 'password' in the matrix section of config.json."
+matrix_login_failed = "Matrix AUTH FAILED for {user_id}\n  Homeserver: {homeserver}\n  Error: {error}\n  Check your credentials in config.json (matrix section)."
+
+[age]
+s = "{n}s"
+m = "{n}m"
+h = "{n}h"
+d = "{n}d"
+ago_now = "just now"
+ago_s = "{n}s ago"
+ago_m = "{n}m ago"
+ago_h = "{n}h ago"
+ago_d = "{n}d ago"
+
+[task_status]
+running = "running"
+waiting = "waiting"
+done = "done"
+failed = "failed"
+cancelled = "cancelled"
+
+[session_status]
+running = "running"
+idle = "idle"
+ended = "ended"
+
+[agent_status]
+running = "running"
+starting = "starting"
+crashed = "crashed"
+stopped = "stopped"
+
+[agent_role]
+main = "main"
+sub = "sub"
+
+[auth_status]
+authenticated = "authenticated"
+installed = "installed"
+not_found = "not_found"
+
+[effort_label]
+none = "None"
+minimal = "Minimal"
+low = "Low"
+medium = "Medium"
+high = "High"
+xhigh = "XHigh"
+max = "Max"
+
+[product_error]
+session_not_found = "Session '{name}' not found"
+session_ended = "Session '{name}' has ended"
+session_busy = "Session '{name}' is still processing"
+too_many_sessions = "Too many sessions ({max} max)"
+
+[session_notice]
+followup_sent = "**[{name}] Follow-up sent**"
+task_queued = "Task `{task_id}` queued."
+started_title = "**Session `{name}` started**"
+started_body = "Running on {provider}{model_info}.\nFollow up: `@{name} <message>`"
+
+[supervisor]
+already_running = "Agent '{name}' is already running."
+not_started = "Agent '{name}' not started: {reason}"
+not_found = "Agent '{name}' not found in agents.json."
+started = "Agent '{name}' started."
+restarted = "Agent '{name}' restarted."
+cannot_restart_main = "Cannot restart main agent via this command. Use /restart instead."
+excluded = "Sub-agent '{name}' excluded: {reason}"
+stopped_after_crashes = "Sub-agent '{name}' stopped after {max} crashes: {error}"
+label = "Supervisor"
+
+[cli_error]
+codex_no_final = "Codex failed before producing a final response."
+gemini_unknown = "Unknown Gemini error"
+gemini_exited = "Gemini exited with code {code}"
+grok_error = "Grok error"
+
+[secret]
+usage = "Use /secret list, /secret set KEY, /secret delete KEY, or /secret cancel. Never include the value in a command."
+prompt = "Reply to this message with the value for {key} within 2 minutes. Use /secret cancel to cancel."
+saved = "{key} saved (length: {length} characters)."
+saved_env_note = "{key} also exists in .env. CLI provider keys use the .env value."
+rejected = "Value rejected: {reason}. For other formats, edit the secrets file directly."
+reason_value_empty = "The value is empty"
+reason_value_too_long = "The value exceeds {max} characters"
+reason_value_nul = "The value contains a NUL character"
+reason_value_multiline = "The value contains a line break"
+reason_value_edge_space = "The value starts or ends with whitespace"
+reason_value_edge_quote = "The value starts or ends with a quote"
+reason_value_dollar = "The value starts with $"
+invalid_key = "Use a key of 1–56 uppercase letters, digits, or underscores, starting with a letter."
+extra_args = "Do not include the value in the command. Send it as the next message after /secret set KEY."
+expired = "The input window has expired. Start again with /secret set KEY."
+expired_value = "The input window expired, so this message was deleted without saving it. Send /secret set KEY again."
+not_text = "Please send the value as text."
+delete_failed = "I could not delete the message. Please delete it yourself."
+quoted_refused = "This message quotes a secret value message, so I did not process it. Send it again without the quote."
+save_failed = "The operation could not be saved. No new value was stored. Please try again."
+list = "Stored keys:\n{keys}"
+list_empty = "No keys are stored."
+confirm_overwrite = "Overwrite {key}?"
+confirm_delete = "Delete {key}?"
+deleted = "{key} deleted."
+delete_missing = "{key} was not found."
+cancelled = "Secret input cancelled."
+nothing_pending = "There is no pending secret input."
+private_only = "Use /secret in a private chat with the bot."
+main_only = "Use /secret with the main bot."
+btn_overwrite = "Overwrite"
+btn_delete = "Delete"
+btn_cancel = "Cancel"
+
+
+[accounts]
+error = "Account management failed. Please try again."
+title = "Claude accounts (top first)"
+authenticated = "Authenticated"
+unauthenticated = "Not authenticated"
+no_cooldown = "No cooldown"
+cooldown = "Cooldown {hours}h {minutes}m remaining ({time} reset)"
+empty = "The account list is empty; only the default slot is used."
+subagent_note = "Priority updates reach main within seconds and sub-agents on their next start. Cooldown changes apply to all on the next call."
+main_only = "Account management is available only in the main agent bot."
+stale = "This control is out of date. Showing the latest state."
+btn_prefer = "{name}: Prefer"
+btn_clear = "{name}: Clear cooldown"
+btn_refresh = "Refresh"
+
+[usage]
+title = "📊 Account usage · {time}"
+captured = "as of {time}"
+queried = "queried at {time}"
+reset = "Reset ({time})"
+empty = "No values received yet"
+account_empty = "Usage: no values received yet"
+failed = "Query failed ({reason})"
+timeout = "timed out"
+login_required = "login required"
+invalid_response = "invalid response"
+unsupported = "Automatic bot queries unsupported"
+refresh = "Refresh"
+loading = "Querying…"
+error = "Usage display failed"

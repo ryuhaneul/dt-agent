@@ -1,0 +1,32 @@
+# Deutsche Bot-Command-Beschreibungen (≤22 Zeichen für Telegram).
+
+[bot]
+new = "Neuer Chat"
+reset = "Chat zurücksetzen"
+stop = "Aktuelles + Wartende stoppen"
+interrupt = "Unterbrechen, Queue behalten"
+model = "Modell anzeigen/wechseln"
+effort = "Denkaufwand setzen"
+status = "Session-Info"
+usage = "Kontonutzung"
+memory = "Hauptspeicher zeigen"
+session = "Hintergrund-Sessions"
+tasks = "Hintergrund-Aufgaben"
+cron = "Cron-Jobs verwalten"
+agent_commands = "Multi-Agent-System"
+showfiles = "Dateien durchsuchen"
+info = "Docs, Links & Über"
+help = "Alle Befehle"
+diagnose = "System-Diagnose"
+upgrade = "Nach Updates suchen"
+restart = "Bot neustarten"
+
+accounts = "Claude-Konten"
+secret = "Secrets verwalten"
+
+[multiagent]
+agents = "Alle Agents auflisten"
+agent_start = "Sub-Agent starten"
+agent_stop = "Sub-Agent stoppen"
+agent_restart = "Sub-Agent neustarten"
+stop_all = "Alles beenden"

@@ -1,0 +1,85 @@
+# Nederlandse CLI-strings (Rich-geformatteerd, terminaluitvoer).
+
+# -- Statuscommando ---------------------------------------------------------------
+
+[status]
+path_sessions = "Sessies:    [cyan]{path}[/cyan]"
+path_logs = "Logs:       [cyan]{path}[/cyan]"
+path_workspace = "Workspace:  [cyan]{path}[/cyan]"
+path_config = "Config:     [cyan]{path}[/cyan]"
+path_home = "Home:       [cyan]{path}[/cyan]"
+title_main = "[bold]Status — main[/bold]"
+title = "[bold]Status[/bold]"
+running = "[bold green]Actief[/bold green]  pid={pid}  uptime: {uptime}"
+not_running = "[dim]Niet actief[/dim]"
+provider = "Provider:  [cyan]{provider}[/cyan] ({model})"
+errors_found = "Fouten:    [bold red]{count}[/bold red] in laatste log"
+errors_none = "Fouten:    [green]0[/green]"
+paths_header = "[bold]Paden:[/bold]"
+not_configured = "Niet geconfigureerd. Voer scripts/onboard.sh op de host uit en start daarna de bot."
+
+# -- Configvalidatie ---------------------------------------------------------------
+
+[config]
+headless_main = "De hoofdagent heeft een messenger nodig (headless is alleen voor sub-agents)."
+not_configured_container = "[bold yellow]Niet geconfigureerd. Voer scripts/onboard.sh op de host uit en start daarna de bot.[/bold yellow]"
+incomplete = "[bold yellow]Config is onvolledig. Voer [bold]scripts/onboard.sh[/bold] uit.[/bold yellow]"
+matrix_no_homeserver = "[bold yellow]Matrix homeserver-URL is vereist.{hint}[/bold yellow]"
+matrix_no_user = "[bold yellow]Matrix user_id is vereist.{hint}[/bold yellow]"
+matrix_no_auth = "[bold yellow]Matrix wachtwoord of access_token is vereist.{hint}[/bold yellow]"
+matrix_no_target = "[bold yellow]Minstens één allowed_room of allowed_user is vereist.{hint}[/bold yellow]"
+onboarding_hint = " Voer [bold]scripts/onboard.sh[/bold] uit om opnieuw te configureren."
+
+# -- Levenscyclus -----------------------------------------------------------------
+
+[agents]
+inherited = "overgenomen"
+restarts = "[dim](herstarts: {count})[/dim]"
+title = "[bold]Sub-agents ({count})[/bold]"
+help_remove = "Een sub-agent verwijderen"
+help_add = "Een nieuwe sub-agent toevoegen (interactief)"
+help_list = "Alle sub-agents en hun configuratie tonen"
+title_help = "[bold]Agent-commando's[/bold]"
+col_agent = "Agent"
+col_status = "Status"
+col_uptime = "Uptime"
+col_provider = "Provider"
+col_model = "Model"
+status_running = "[bold green]actief[/bold green]"
+status_starting = "[yellow]start op[/yellow]"
+status_crashed = "[bold red]gecrasht[/bold red]"
+status_stopped = "[dim]gestopt[/dim]"
+empty = "[dim]Geen sub-agents geconfigureerd.[/dim]"
+add_hint = "[dim]Gebruik 'ductor agents add <naam>' om er een aan te maken.[/dim]"
+
+[agents.add]
+usage = "[bold red]Gebruik: ductor agents add <naam>[/bold red]"
+reserved = "[bold red]Naam 'main' is gereserveerd.[/bold red]"
+exists = "[bold red]Agent '{name}' bestaat al.[/bold red]"
+prompt_token = "Telegram bot token voor '{name}':"
+prompt_users = "Toegestane gebruikers-ID's (kommagescheiden):"
+prompt_groups = "Toegestane groeps-ID's (kommagescheiden, leeg laten voor geen):"
+prompt_provider = "Provider:"
+prompt_model = "Model (bijv. opus, sonnet, o3):"
+cancelled = "[dim]Geannuleerd.[/dim]"
+done = "[green]Agent '{name}' toegevoegd aan agents.json.[/green]"
+auto_start = "[dim]Wordt automatisch gestart bij de volgende bot-(her)start.[/dim]"
+
+[agents.remove]
+usage = "[bold red]Gebruik: ductor agents remove <naam>[/bold red]"
+not_found = "[bold red]Agent '{name}' niet gevonden.[/bold red]"
+confirm = "Agent '{name}' verwijderen? (Workspace-gegevens worden niet gewist.)"
+done = "[green]Agent '{name}' verwijderd uit agents.json.[/green]"
+data_hint = "[dim]Workspace-gegevens blijven staan op {path}[/dim]"
+
+# -- Extra's installeren ----------------------------------------------------------
+
+[help]
+title_commands = "[bold]Commando's[/bold]"
+col_command = "Commando"
+col_description = "Beschrijving"
+ductor = "De geconfigureerde bot starten"
+agents = "Sub-agentbeheer (list/add/remove)"
+status = "Botstatus, paden en agents tonen"
+help = "Dit bericht tonen"
+verbose = "Uitgebreide loguitvoer"

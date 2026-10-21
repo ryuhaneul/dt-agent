@@ -1,0 +1,67 @@
+# Docker Compose for ductor — bot + CLI execution + browser.
+#
+# The bot and CLI tools run inside the same container. No separate
+# sandbox is needed — the container provides host isolation.
+# CLI auth is stored in /ductor/.cli-auth/ (persistent volume).
+#
+# Usage:
+#   docker compose up -d            # start
+#   docker compose up -d --build    # rebuild after code changes
+#   docker compose logs -f          # follow logs
+#   docker compose down             # stop
+#
+# Auth:
+#   ./scripts/login.sh              # authenticate CLI providers
+#   ./scripts/logout.sh             # remove CLI auth
+#   ./scripts/status.sh             # check auth status
+#
+# Environment:
+#   DUCTOR_HOME  — path to ~/.ductor on the host (default: ~/.ductor)
+#   DUCTOR_UID   — image user UID (default: 1000)
+#   DUCTOR_GID   — image user GID (default: 1000)
+
+services:
+  ductor-bot:
+    build:
+      context: .
+      dockerfile: docker/ductor-bot/Dockerfile
+      args:
+        DUCTOR_UID: "${DUCTOR_UID:-1000}"
+        DUCTOR_GID: "${DUCTOR_GID:-1000}"
+        DUCTOR_EXTRAS: "${DUCTOR_EXTRAS:-}"
+    container_name: ductor-bot
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s # twice the longest measured shutdown (5.353s), at least 30s
+    volumes:
+      # Ductor home — config, workspace, sessions, logs, CLI auth
+      - ${DUCTOR_HOME:-~/.ductor}:/ductor
+    env_file:
+      - ${DUCTOR_HOME:-~/.ductor}/.env
+      - ${DUCTOR_HOME:-~/.ductor}/.env.shared
+    depends_on:
+      browser:
+        condition: service_healthy
+    networks:
+      - ductor-net
+
+  browser:
+    init: true
+    build:
+      context: docker/browser
+    container_name: ductor-browser
+    restart: unless-stopped
+    networks:
+      - ductor-net
+    env_file:
+      - ${DUCTOR_HOME:-~/.ductor}/.env.shared
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:18800/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    # No host port binding — accessible only within ductor-net
+
+networks:
+  ductor-net:
+    name: ductor-net

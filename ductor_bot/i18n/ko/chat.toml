@@ -1,0 +1,716 @@
+# Korean chat strings (Markdown-formatted, sent to Telegram/Matrix/API).
+
+# -- Session management -------------------------------------------------------
+
+[session]
+error_header = "**세션 오류**"
+error_body = """\
+[{model}] 오류가 발생했어요.
+세션은 보존되었어요 — 재시도하려면 다른 메시지를 보내주세요.
+문제가 계속되면 /new로 새 세션을 시작하세요."""
+error_cause = "**원인:** {hint}"
+error_detail = "**상세:** `{detail}`"
+error_auth = "인증에 실패했어요. 호스트의 저장소 폴더에서 다음 명령을 실행하세요: `./scripts/login.sh <provider>`."
+no_auth = "{provider} provider가 인증되지 않았어요.\n호스트의 저장소 폴더에서 다음 명령을 실행하세요: `./scripts/login.sh {provider}`."
+error_rate = "사용량 한도에 도달했어요. 잠시 후 다시 시도하세요."
+error_context = "컨텍스트 길이를 초과했어요. /new로 새 세션을 시작하세요."
+
+reset_header = "**세션 초기화**"
+reset_body = """\
+이 채팅의 {provider} 세션만 초기화됐어요.
+다른 provider 세션은 보존됐어요.
+메시지를 보내서 계속하세요."""
+
+age_warning = "[세션이 {age} 경과했어요. 새로 시작하려면 /new를 사용하세요.]"
+
+empty_turn = "_(에이전트가 메모리를 조용히 업데이트했어요 — 다음 메시지를 보내서 계속하세요.)_"
+
+recovered = "_이전 세션을 복원할 수 없었어요. 새 세션이 자동으로 시작됐어요._"
+recovery_failed = "새로 시작한 뒤에도 세션을 복원할 수 없었어요. 다시 시도하거나 /new 를 써서 새로 시작해 주세요."
+sigkill = "실행이 중단됐어요. 같은 요청을 다시 보내주세요."
+
+not_found = "세션 '{name}'을(를) 찾을 수 없어요."
+ended = "세션 '{name}'이(가) 종료됐어요. /session으로 새 세션을 시작하세요."
+still_running = "세션 '{name}'은 아직 처리 중이에요. 기다리거나 /stop으로 취소하세요."
+
+# -- Stop/interrupt ------------------------------------------------------------
+
+[stop]
+header = "**에이전트 중지됨**"
+killed = "{provider}이(가) 종료됐어요."
+nothing = "지금 실행 중인 게 없어요."
+discarded = "이 토픽에서 대기 중이던 메시지 {count}개를 취소했어요."
+
+[interrupt]
+done = "{count}개 프로세스를 중단했어요."
+nothing = "활성 프로세스가 없어요."
+
+[abort_all]
+done = "모든 에이전트에서 {count}개 프로세스를 중지했어요."
+nothing = "어떤 에이전트에서도 활성 프로세스를 찾지 못했어요."
+
+# -- Timeout -------------------------------------------------------------------
+
+[timeout]
+error_header = "**시간 초과**"
+error_body = """\
+[{model}] CLI가 {minutes}분 후에 종료됐어요.
+세션은 보존되었어요 — 다른 메시지를 보내면 중단된 지점부터 이어서 진행돼요.
+/new로 새 세션을 시작할 수도 있어요."""
+
+result_header = "**시간 초과**"
+result_body = """\
+에이전트가 {elapsed}초 후 시간 초과됐어요 (제한: {configured}초).
+프롬프트를 짧게 하거나 단계를 나눠서 물어보세요."""
+
+warning_minutes = "{mins}분 후 시간 초과"
+warning_seconds = "{secs}초 후 시간 초과"
+extended = "제한 시간 연장 (+{secs}초, {remaining} 남음)"
+
+generic = "에이전트 응답 시간이 초과됐어요. 다시 시도해주세요."
+
+# -- Startup / lifecycle -------------------------------------------------------
+
+[startup]
+restart_marker = "재시작 마커"
+first_start_header = "**봇 시작됨**"
+first_start_body = "첫 시작 — 준비 완료예요."
+reboot_header = "**봇 시작됨**"
+reboot_body = "시스템 재부팅이 감지됐어요 — 다시 온라인이에요."
+
+restart_default = "재시작이 완료됐어요."
+restart_header = "**재시작 중**"
+restart_body = "봇이 종료되고 잠시 후 다시 돌아와요."
+stale_updates_skipped = "봇이 재시작되는 동안 쌓인 오래된 메시지 {count}개는 처리하지 않았어요."
+
+
+matrix_restart = "**봇이 재시작됐어요** ({reason})"
+
+[recovery]
+named_header = "**자동 복구**"
+named_body = "백그라운드 세션 **{session}** 재개 중\n`{preview}`"
+interrupted_header = "**중단된 태스크**"
+interrupted_body = "재시작 도중 태스크가 중단됐어요.\n`{preview}`\n이어서 진행하려면 다시 전송해주세요."
+
+# -- Memory --------------------------------------------------------------------
+
+[memory]
+header = "**메인 메모리**"
+empty = "비어 있어요. 상호작용하면서 에이전트가 메모리를 쌓아갈 거예요."
+empty_tip = "*팁: 에이전트에게 뭔가를 \"기억해달라\"고 요청해서 시작해보세요.*"
+filled_tip = "*팁: 에이전트가 자동으로 읽고 업데이트해요.*"
+
+# -- Status --------------------------------------------------------------------
+
+[status]
+streaming_header = "스트리밍 표시:"
+reasoning_stream = "  추론 스트림: {value}"
+tool_progress = "  도구 진행: {value}"
+thinking_indicator = "  생각 표시: {value}"
+on = "켜짐"
+off = "꺼짐"
+header = "**상태**"
+no_session = "활성 세션이 없어요."
+model_line = "모델: {model}"
+model_line_configured = "모델: {model} (구성된: {configured})"
+topic_line = "토픽: {topic}"
+session_line = "세션: `{sid}`"
+messages_line = "메시지: {count}"
+effort_line = "추론 강도: {effort}"
+bg_header = "백그라운드 태스크: {count}개 실행 중"
+auth_header = "인증:"
+agents_header = "에이전트:"
+
+# -- Technical footer ----------------------------------------------------------
+
+[footer]
+model = "모델: {name}"
+time = "시간: {secs}초"
+
+[diagnose]
+restarts = " | 재시작: {count}회"
+log_unreadable = "(로그 파일을 읽지 못했어요)"
+header = "**시스템 진단**"
+version_line = "버전: `{version}`"
+configured_line = "구성됨: {provider} / {model}"
+effective_line = "실제 런타임: {provider} / {model}"
+log_header = "최근 로그 (마지막 50줄):"
+no_log = "로그 파일을 찾을 수 없어요."
+codex_cache_not_init = "Codex 모델 캐시: 옵저버가 초기화되지 않음"
+codex_cache_not_loaded = "Codex 모델 캐시: 로드되지 않음"
+codex_cache_info = "Codex 모델 캐시:\n  마지막 업데이트: {updated}\n  캐시된 모델: {count}개\n  기본 모델: {default}"
+health_header = "**멀티 에이전트 상태:**"
+
+# -- Tasks ---------------------------------------------------------------------
+
+[tasks]
+header = "**백그라운드 태스크**"
+disabled = "태스크 시스템이 활성화되지 않았어요."
+empty = "백그라운드 태스크가 없어요."
+hint = "태스크는 장시간 작업을 위해 에이전트가 생성해요."
+too_many = "백그라운드 태스크가 너무 많아요 (최대 {max}개)"
+internal_error = "내부 오류 (로그 확인)"
+
+cancelled_one = "태스크 {count}개를 취소했어요."
+cancelled_other = "태스크 {count}개를 취소했어요."
+no_running = "실행 중인 태스크가 없어요."
+task_cancelled = "태스크 `{id}`이(가) 취소됐어요."
+task_not_running = "태스크 `{id}`이(가) 실행 중이 아니에요."
+cleaned_one = "완료된 태스크 {count}개를 제거했어요."
+cleaned_other = "완료된 태스크 {count}개를 제거했어요."
+nothing_to_clean = "정리할 항목이 없어요."
+cleanup_confirm_one = "완료된 태스크 {count}개의 목록과 작업 폴더(작업 메모 포함)를 삭제해요. 삭제하면 이어서 하기를 할 수 없어요. 삭제할까요?"
+cleanup_confirm_other = "완료된 태스크 {count}개의 목록과 작업 폴더(작업 메모 포함)를 삭제해요. 삭제하면 이어서 하기를 할 수 없어요. 삭제할까요?"
+
+running_header = "**실행 중**"
+waiting_header = "**응답 대기 중**"
+finished_header = "**완료됨**"
+
+btn_cancel = "{name} 취소"
+btn_cancel_all = "모두 취소"
+btn_refresh = "새로고침"
+btn_delete_finished = "완료된 항목 삭제"
+btn_confirm_delete = "삭제"
+btn_cancel_delete = "취소"
+
+summary_running = "실행 중: {count}"
+summary_waiting = "대기 중: {count}"
+summary_finished = "완료: {count}"
+
+# -- Sessions selector ---------------------------------------------------------
+
+[sessions]
+msgs_one = "{count}개 메시지"
+msgs_other = "{count}개 메시지"
+topic_fallback = "토픽 #{id}"
+header = "**세션**"
+empty = "활성 세션이 없어요."
+start_hint = "`/session <prompt>`로 시작하세요."
+followup_hint = "팔로우업: `@<name> <message>`"
+active_count = "활성: {count}"
+btn_end = "{name} 종료"
+btn_refresh = "새로고침"
+btn_end_all = "모두 종료"
+topics_header = "토픽:"
+named_header = "이름 있는 세션:"
+named_empty = "활성 세션이 없어요.\n  `/session <prompt>`로 시작하세요."
+
+ended_all_one = "{count}개 세션을 모두 종료했어요."
+ended_all_none = "활성 세션이 없어요."
+ended_one = "세션 '{name}'이(가) 종료됐어요."
+ended_not_found = "세션 '{name}'을(를) 찾을 수 없어요."
+unknown_action = "알 수 없는 동작이에요."
+
+# -- Model selector ------------------------------------------------------------
+
+[model]
+invalid_effort = "`{model}`에는 `{effort}` 추론 강도를 쓸 수 없어요. 지원: {supported}."
+no_efforts = "없음"
+next_message = "@{model} <내용>으로 보내면 그 메시지만 {model}을(를) 써요."
+header = "**모델 선택기**"
+current = "현재: {model}"
+current_with_effort = "현재: {model} ({effort})"
+configured_default = "구성된 기본값: {configured}"
+
+switched = "**모델이 전환됐어요.**"
+model_line = "모델: {model}"
+model_change = "모델: {old} -> {new}"
+provider_change = "Provider: {old} -> {new}"
+reasoning_line = "추론 강도: {effort}"
+effort_updated = "추론 강도가 {effort}(으)로 업데이트됐어요."
+already_running = "이미 {model}을(를) 실행 중이에요. 변경 사항 없어요."
+
+resume_hint = """\
+세션 `{sid}`을(를) 재개해요.
+이 provider 세션에서 이미 {count}{label}을(를) 보냈어요.
+현재 모델: `{model}`.
+/new로 새 세션을 시작할 수 있어요."""
+resume_msg_one = "개 메시지"
+resume_msg_other = "개 메시지"
+
+no_auth = "인증된 provider를 찾을 수 없어요.\n호스트의 저장소 폴더에서 다음 명령을 실행하세요: `./scripts/login.sh <provider>` (claude, codex, gemini, grok)."
+pick_provider = "Provider를 선택하세요:"
+select_claude = "Claude 모델 선택:"
+select_gemini = "Gemini 모델 선택:"
+select_codex = "Codex 모델 선택:"
+select_grok = "Grok Build 모델 선택:"
+no_codex = "사용 가능한 Codex 모델이 없어요."
+no_gemini = "로컬 Gemini CLI 파일에서 찾은 Gemini 모델이 없어요."
+thinking_level = "{model}의 추론 강도:"
+unknown_action = "알 수 없는 동작이에요."
+btn_back = "<< 뒤로"
+switched_while_busy = "**모델이 전환됐어요.** 현재 프로세스는 계속 실행 중 — 새 모델은 다음 메시지부터 적용돼요."
+
+# -- Cron selector -------------------------------------------------------------
+
+[cron]
+state_enabled = "활성화됨"
+state_disabled = "비활성화됨"
+last_run = " | 마지막: {status}"
+delivery_failed = " (전달 실패)"
+header = "**예약된 작업**"
+empty = "구성된 cron 작업이 없어요."
+empty_hint = "*에이전트에게 요청하세요: \"매일 오전 9시에 백업 확인해줘\"*"
+job_line = "{number}. **{title}** ({status}){last_run}\n   `{schedule}`"
+status_active = "활성"
+status_paused = "일시정지"
+btn_disable = "{number}. 비활성화"
+btn_enable = "{number}. 활성화"
+btn_prev = "<< 이전"
+btn_refresh = "새로고침"
+btn_next = "다음 >>"
+btn_all_on = "모두 ON"
+btn_all_off = "모두 OFF"
+info_active = "{active}/{total} 활성"
+info_page = "{current}/{total} 페이지"
+all_enabled = "모든 cron 작업이 활성화됐어요."
+all_disabled = "모든 cron 작업이 비활성화됐어요."
+already_enabled = "모든 cron 작업이 이미 활성화돼 있어요."
+already_disabled = "모든 cron 작업이 이미 비활성화돼 있어요."
+toggled = "'{title}'이(가) {state}."
+list_changed = "Cron 목록이 변경됐어요. 다시 시도해주세요."
+unknown_action = "알 수 없는 동작이에요. Cron 목록을 새로고쳤어요."
+
+# -- Welcome (Telegram) -------------------------------------------------------
+
+[welcome]
+header = "**DT Agent에 오신 걸 환영해요{name}!**"
+tagline = """\
+휴대폰으로 어디서든 배포하고, 소파에 누워 자동화하세요.
+Claude Code, Codex, Gemini — 모두 텔레그램 안에서."""
+hint_model = "/model — 모델 전환"
+hint_info = "/info — 문서와 링크"
+hint_help = "/help — 모든 명령"
+
+no_auth = "아직 인증된 CLI가 없어요.\n호스트의 저장소 폴더에서 다음 명령을 실행하세요: `./scripts/login.sh <provider>` (claude, codex, gemini, grok)."
+auth_line = "{providers} 인증 완료.\n모델: **{model}**"
+
+btn_know = "서로 알아가요!"
+btn_system = "시스템을 살펴봐요!"
+btn_who = "너는 누구야? 나는 누구야?"
+
+prompt_know = """\
+안녕, 방금 DT Agent를 설정했는데 나를 좀 알아갔으면 해. \
+우리가 잘 협업할 수 있도록 네가 알아야 할 걸 다 물어봐줘 — \
+내 이름, 내가 하는 일, 작업 중인 것, 소통 방식 같은 거. \
+알게 된 내용은 메모리에 저장해줘."""
+prompt_system = """\
+네가 실행 중인 시스템을 한번 둘러봐. \
+OS, 설치된 도구, 프로젝트 폴더 등 흥미로운 걸 확인해봐. \
+발견한 걸 간단히 요약해서 알려줘."""
+prompt_who = """\
+시작해볼까! 자기소개해줘 — 너는 누구고, 나에게 뭘 해줄 수 있어? \
+그 다음 내가 누구고 어떤 도움이 필요한지 물어봐."""
+
+# -- Info ----------------------------------------------------------------------
+
+[info]
+header = "**DT Agent**"
+version = "버전: `{version}`"
+telegram_description = "Telegram에서 쓰는 AI 코딩 에이전트 (Claude, Codex, Gemini).\n이름 있는 세션, 영속 메모리, cron 작업, webhook, 라이브 스트리밍."
+matrix_description = "Matrix에서 쓰는 AI 코딩 에이전트 (Claude, Codex, Gemini).\n이름 있는 세션, 영속 메모리, cron 작업, webhook, 라이브 스트리밍."
+slack_description = "Slack에서 쓰는 AI 코딩 에이전트 (Claude, Codex, Gemini).\n이름 있는 세션, 영속 메모리, cron 작업, webhook, 라이브 스트리밍."
+
+# -- Help (categories) --------------------------------------------------------
+
+[help]
+header = "**명령어 레퍼런스**"
+cat_daily = "일상"
+cat_automation = "자동화"
+cat_multiagent = "멀티 에이전트"
+cat_browse = "탐색 및 정보"
+cat_maintenance = "유지보수"
+footer = "아무 메시지나 보내서 에이전트와 작업을 시작하세요."
+matrix_footer = "`!` 또는 `/` prefix를 사용하세요. 아무 메시지로 시작하세요."
+slack_footer = "`help` 또는 `/help`를 사용하세요. 다른 메시지로 시작하세요."
+
+# -- Multi-agent ---------------------------------------------------------------
+
+[agents]
+cmd_list = "`{prefix}agents` — 모든 에이전트와 상태를 보여줘요"
+cmd_start = "`{prefix}agent_start <name>` — 서브 에이전트를 시작해요"
+cmd_stop = "`{prefix}agent_stop <name>` — 서브 에이전트를 중지해요"
+cmd_restart = "`{prefix}agent_restart <name>` — 서브 에이전트를 재시작해요"
+slack_explanation = "Slack 서브 에이전트도 같은 멀티 에이전트 런타임을 사용해요."
+header = "**에이전트**"
+empty = "에이전트가 없어요."
+not_active = "멀티 에이전트 모드가 활성화되지 않았어요."
+usage_stop = "사용법: /agent_stop <name>"
+usage_start = "사용법: /agent_start <name>"
+usage_restart = "사용법: /agent_restart <name>"
+cannot_stop_main = "메인 에이전트는 중지할 수 없어요."
+not_running = "에이전트 '{name}'이(가) 실행 중이 아니에요."
+stopped = "에이전트 '{name}'이(가) 중지됐어요."
+restarts = " (재시작: {count}회)"
+error_line = "오류: {error}"
+
+system_header = "**멀티 에이전트 시스템**"
+telegram_explanation = """\
+멀티 에이전트 시스템을 쓰면 추가 봇을 서브 에이전트로 \
+운영할 수 있어요 — 각각 고유한 Telegram 토큰, workspace, \
+사용자 목록을 가져요. 모든 에이전트는 하나의 프로세스를 \
+공유하며 에이전트 간 버스를 통해 통신할 수 있어요."""
+matrix_explanation = """\
+멀티 에이전트 시스템을 쓰면 추가 봇을 서브 에이전트로 \
+운영할 수 있어요 — 각각 고유한 workspace와 사용자 목록을 \
+가져요. 모든 에이전트는 하나의 프로세스를 공유하며 \
+에이전트 간 버스를 통해 통신할 수 있어요."""
+commands_header = "**명령**"
+setup_header = "**설정**"
+setup_instruction = "에이전트에게 새 서브 에이전트를 만들어달라고 요청하거나 DT Agent home 디렉토리의 `agents.json`을 편집하세요."
+
+# -- Errors (generic) ---------------------------------------------------------
+
+[error]
+internal = "내부 오류가 발생했어요. 다시 시도해 주세요."
+shutting_down = "봇이 종료되는 중이에요. 재시작한 뒤 메시지를 다시 보내 주세요."
+generic = "오류: {detail}"
+check_logs = "오류: 자세한 내용은 로그를 확인하세요."
+
+# -- Gemini warning ------------------------------------------------------------
+
+[gemini]
+missing_key = """\
+Gemini가 API 키 인증 모드로 설정돼 있지만 \
+`~/.ductor/config/config.json`의 `gemini_api_key`가 `"null"` 또는 비어 있어요.
+이게 필요한 이유: DT Agent가 Gemini CLI를 외부 프로세스로 호출할 때, \
+Gemini CLI는 내부에 입력된 API 키를 호출자에게 노출하지 않아요.
+`gemini_api_key`에 실제 API 키를 설정하고 `ductor`를 재시작하세요."""
+
+# -- New session (handler) -----------------------------------------------------
+
+[new]
+topic_not_found = "토픽 \"{name}\"을(를) 찾을 수 없어요."
+topic_reset = "**{name}**의 새 세션 ({provider})."
+
+# -- Transport-specific --------------------------------------------------------
+
+[telegram]
+choose_option = "옵션을 선택해 주세요:"
+group_rejected = "이 봇은 이 그룹에 대해 권한이 없어요."
+channel_not_whitelisted = "이 채널은 허용 목록에 없어서 나가요."
+where_header = "**위치**"
+where_no_tracker = "채팅 추적기를 사용할 수 없어요."
+where_empty = "아직 기록된 채팅 활동이 없어요."
+leave_usage_header = "**사용법**"
+leave_usage = "`/leave <group_id>`"
+leave_invalid_id = "그룹 ID가 올바르지 않아요."
+leave_failed = "나가기에 실패했어요: {error}"
+left_group = "그룹 <code>{group_id}</code>에서 나갔어요."
+
+[matrix]
+room_rejected = "이 봇은 이 room에 대해 권한이 없어요."
+
+# -- Session help (transport-specific) -----------------------------------------
+
+[session_help]
+slack_usage = "`/session <prompt>` — 백그라운드 세션을 시작해요\n`/sessions` — 실행 중인 세션을 보여줘요\n`/stop` — 진행 중인 실행을 중지해요"
+header = "**백그라운드 세션**"
+telegram_explanation = """\
+백그라운드 세션은 메인 채팅을 막지 않고 병렬로 \
+작업을 실행해요. 각 세션은 고유한 이름을 가지며 \
+독립적으로 동작해요 — 동시에 여러 세션을 활성화할 수 있어요."""
+usage_header = "**사용법**"
+followup_header = "**팔로우업**"
+followup_line = "`@session-name <message>` — 실행 중인 세션에 후속 메시지 전송"
+commands_header = "**명령**"
+telegram_sessions_cmd = "`/sessions` — 모든 백그라운드 세션 보기 및 관리"
+telegram_stop_cmd = "`/stop` — 실행 중인 세션 취소"
+matrix_session_cmd = "`!session <prompt>` — 백그라운드 세션 시작"
+matrix_sessions_cmd = "`!sessions` — 모든 세션 보기 및 관리"
+matrix_stop_cmd = "`!stop` — 실행 중인 세션 취소"
+default_provider = "`/session <prompt>` — 기본 provider"
+claude_single = "`/session <prompt>` — Claude에서 실행"
+claude_model = "`/session @opus <prompt>` — 특정 모델"
+codex_single = "`/session <prompt>` — Codex에서 실행"
+grok_single = "`/session <prompt>` — Grok Build에서 실행"
+gemini_single = "`/session <prompt>` — Gemini에서 실행"
+gemini_model = "`/session @flash <prompt>` — 특정 모델"
+grok_model = "`/session @grok-4.5 <prompt>` — 특정 모델"
+claude_multi = "`/session @opus <prompt>` — Claude (opus)"
+codex_multi = "`/session @codex <prompt>` — Codex"
+grok_multi = "`/session @grok <prompt>` — Grok Build"
+gemini_multi = "`/session @flash <prompt>` — Gemini (flash)"
+explicit = "`/session @provider model <prompt>` — 명시적 지정"
+
+# -- File browser --------------------------------------------------------------
+
+[file_browser]
+header = "**파일 탐색기**"
+directory_not_found = "디렉토리를 찾을 수 없어요."
+empty = "(비어 있음)"
+btn_back = "<< 뒤로"
+btn_request_files = "이 폴더에서 파일 보내기"
+file_request_prompt = "{dir}/의 모든 파일을 나열하고, 내가 요청하는 걸 보내줘. 파일 태그로 전달해줘."
+
+# Matrix variant
+matrix_header = "**Workspace 파일**"
+matrix_hint = "_특정 디렉토리를 보려면 `!showfiles <dir>`를 사용하세요._"
+matrix_dir_not_found = "디렉토리 `{subdir}`을(를) 찾을 수 없어요."
+matrix_permission_denied = "(권한 없음)"
+matrix_file_count = "파일 {count}개"
+matrix_no_dirs = "(workspace 디렉토리를 찾을 수 없음)"
+
+[multiagent]
+async_task_received = "📥 `{sender}`에게서 **비동기 태스크 수신**\n세션: `{session}` · 태스크 ID: `{task_id}`\n\n_{preview}_"
+
+[effort]
+select = "{model}의 추론 강도를 선택하세요:"
+unsupported = "`{provider}` provider는 추론 강도를 설정할 수 없어요."
+
+# -- Completion summary, heartbeat, slot switch, memory lint ------------------
+
+[stream]
+slack_plan_title = "요청을 처리하는 중"
+slack_analyze_title = "요청 이해하기"
+slack_tools_title = "필요하면 도구 사용"
+slack_response_title = "답변 작성"
+slack_no_tools = "도구가 필요 없어요"
+slack_understanding = "요청을 이해하는 중"
+slack_label_thinking = "생각 중"
+slack_label_compacting = "컨텍스트 압축 중"
+slack_label_recovering = "복구 중"
+slack_label_timeout_warning = "시간 초과 임박"
+slack_label_timeout_extended = "시간 초과 연장됨"
+more_items = "(+{count}개 더)"
+label_thinking = "생각 중"
+label_compacting = "컨텍스트 압축 중"
+label_recovering = "잠시만 기다려 주세요, 복구 중이에요..."
+label_timeout_warning = "시간 초과 임박"
+label_timeout_extended = "시간 초과 연장됨"
+done = "✓ 완료 · {secs}초"
+
+[heartbeat]
+quarantine_stopped = "하트비트 점검을 멈췄어요: 이 대화의 CLI 세션을 이어갈 수 없어요. 이후 대화에서 세션 복구가 성공해 새 세션이 만들어지면 점검이 자동으로 다시 시작돼요."
+
+[slot]
+switched_estimated = "전환 (할당량 소진, 리셋 시각 알 수 없음, 약 1시간 뒤 재시도)"
+switched = "전환 (할당량 소진, {reset} 리셋)"
+cooldown_unparsable = "쿨다운 파싱 실패, 원본 stderr 이하"
+
+[memory_lint]
+topic_name = "메모리 점검"
+
+# -- Inter-agent failure reasons -----------------------------------------------
+
+[interagent]
+queue_wait_timeout = "대기 시간 초과 — 시작 안 함"
+recipient_gone = "수신 에이전트 없음"
+
+# -- Why a sub-agent was excluded or did not start -----------------------------
+
+[agent_reason]
+item = "항목 #{index}"
+item_unnamed = "이름 없는 항목"
+config_error = "{item} 설정 오류 ({error}){detail}"
+name_format = "{item} 이름 형식 오류 (ValueError); 필드 name"
+create_error = "에이전트 생성 오류 ({error})"
+start_error = "에이전트 시작 오류 ({error})"
+feature_missing = "기능 {feature}이(가) 켜졌지만 모듈 {module}이(가) 없어요"
+extras_hint = "이미지 빌드 extras: '{extras}'. 루트 .env의 DUCTOR_EXTRAS에 해당 기능을 추가한 뒤 docker compose build를 실행하세요"
+only_sub = "서브 '{sub}'만 제외돼요"
+
+[notice]
+session_cancelled = "**[{name}] 취소됨**"
+session_failed = "**[{name}] 실패** ({elapsed})"
+session_complete = "**[{name}] 완료** ({elapsed})"
+no_output = "_출력이 없어요._"
+bg_cancelled = "**백그라운드 태스크 취소됨**"
+bg_cancelled_body = "태스크 `{task_id}`이(가) 취소됐어요.\n프롬프트: _{prompt}_"
+bg_failed = "**백그라운드 태스크 실패** ({elapsed})"
+bg_failed_body = "태스크 `{task_id}`이(가) 실패했어요 ({status}).\n프롬프트: _{prompt}_"
+bg_complete = "**백그라운드 태스크 완료** ({elapsed})"
+heartbeat_failed = "**하트비트 전달 실패**\n\n{target}(으)로 전달하지 못했어요.\n\n---\n{text}"
+target = "채팅 {chat}"
+target_topic = "채팅 {chat} / 토픽 {topic}"
+ia_failed = "**에이전트 간 요청 실패**\n\n에이전트: `{agent}`{session}\n오류: {error}\n요청: _{request}_"
+ia_session = "\n세션: `{name}`"
+unknown = "알 수 없음"
+provider_switch = "**Provider 전환 감지**\n\n{notice}"
+task_done = "**태스크 `{name}` 완료** ({detail})"
+task_cancelled = "**태스크 `{name}` 취소됨**"
+task_failed = "**태스크 `{name}` 실패**\n사유: {reason}"
+task_question = "**태스크 `{task_id}`에 질문이 있어요:**\n{question}"
+task_header = "**태스크: {title}**"
+cron_delivery_failed = "**Cron 전달 실패**\n\n태스크 **{title}**을(를) {target}(으)로 전달하지 못했어요.\n\n---\n{text}"
+webhook_header = "**웹훅 (CRON 태스크): {title}**"
+delivery_fallback = "**전달 대체 경로**\n\n대상 전송 수단 '{transport}'을(를) 사용할 수 없어요.\n\n---\n{text}"
+processing_error = "결과를 처리하는 중 오류가 났어요 ({origin})"
+queue_waiting = "<i>[메시지가 대기열에 있어요...]</i>"
+queue_cancelled = "<i>[메시지가 취소됐어요.]</i>"
+queue_discarded = "<i>[메시지가 폐기됐어요.]</i>"
+queue_cancel_button = "메시지 취소"
+file_outside = "<code>{name}</code>을(를) 보내지 못했어요 — 허용된 디렉터리 밖의 파일이에요.\n\n해결: <code>config.json</code>에서 <code>\"file_access\": \"all\"</code>로 설정한 뒤 <b>/restart</b>를 실행하세요."
+file_not_found = "[파일을 찾을 수 없어요: {name} (시도한 호스트 경로: {path})]"
+file_send_failed = "[전송 실패: {name}]"
+download_failed = "이 파일을 다운로드하지 못했어요."
+user_answer = "<i>[사용자 답변] {answer}</i>"
+task_system_unavailable = "태스크 시스템을 사용할 수 없어요."
+
+[run]
+cli_not_found = "[{provider} CLI를 찾을 수 없어요]"
+timed_out = "[{label}이(가) {secs}초 후 시간 초과됐어요]"
+cron_failed = "Cron 작업 '{title}'이(가) 오류로 실패했어요 ({error_type})."
+cron_no_session = "Cron 작업 '{title}'을(를) 이 세션에서 실행하지 못했어요."
+status_success = "성공"
+status_aborted = "중단됨"
+status_timeout = "시간 초과"
+status_cli_not_found = "CLI를 찾을 수 없음"
+status_exception = "오류"
+status_injection = "세션에서 실행되지 않음"
+status_exit = "종료 코드 {code}"
+
+[task_error]
+interrupted = "재시작으로 중단됐어요"
+resume_hint = "이 태스크의 대화를 이어가려면 다음을 사용하세요:"
+bot_restarted = "태스크가 실행 중일 때 봇이 재시작됐어요"
+timeout = "{secs}초 후 시간 초과"
+stale_killed = "{secs}초 후 멈춘 프로세스를 종료했어요"
+cli_error = "CLI 오류"
+
+[crash]
+matrix_no_credentials = "Matrix 인증 실패: {user_id}\n  access_token, device_id, password가 설정되어 있지 않아요.\n  config.json의 matrix 섹션에 'password'를 설정하세요."
+matrix_login_failed = "Matrix 인증 실패: {user_id}\n  홈서버: {homeserver}\n  오류: {error}\n  config.json의 matrix 섹션에서 자격 증명을 확인하세요."
+
+[age]
+s = "{n}초"
+m = "{n}분"
+h = "{n}시간"
+d = "{n}일"
+ago_now = "방금"
+ago_s = "{n}초 전"
+ago_m = "{n}분 전"
+ago_h = "{n}시간 전"
+ago_d = "{n}일 전"
+
+[task_status]
+running = "실행 중"
+waiting = "대기 중"
+done = "완료"
+failed = "실패"
+cancelled = "취소됨"
+
+[session_status]
+running = "실행 중"
+idle = "대기"
+ended = "종료됨"
+
+[agent_status]
+running = "실행 중"
+starting = "시작 중"
+crashed = "비정상 종료"
+stopped = "중지됨"
+
+[agent_role]
+main = "메인"
+sub = "서브"
+
+[auth_status]
+authenticated = "인증됨"
+installed = "설치됨"
+not_found = "찾을 수 없음"
+
+[effort_label]
+none = "없음"
+minimal = "최소"
+low = "낮음"
+medium = "보통"
+high = "높음"
+xhigh = "매우 높음"
+max = "최대"
+
+[product_error]
+session_not_found = "세션 '{name}'을(를) 찾을 수 없어요"
+session_ended = "세션 '{name}'은(는) 이미 종료됐어요"
+session_busy = "세션 '{name}'은(는) 아직 처리 중이에요"
+too_many_sessions = "세션이 너무 많아요 (최대 {max}개)"
+
+[session_notice]
+followup_sent = "**[{name}] 후속 메시지 전송됨**"
+task_queued = "태스크 `{task_id}`을(를) 대기열에 넣었어요."
+started_title = "**세션 `{name}` 시작됨**"
+started_body = "{provider}{model_info}에서 실행 중이에요.\n후속 메시지: `@{name} <message>`"
+
+[supervisor]
+already_running = "에이전트 '{name}'은(는) 이미 실행 중이에요."
+not_started = "에이전트 '{name}'을(를) 시작하지 못했어요: {reason}"
+not_found = "agents.json에서 에이전트 '{name}'을(를) 찾을 수 없어요."
+started = "에이전트 '{name}'을(를) 시작했어요."
+restarted = "에이전트 '{name}'을(를) 다시 시작했어요."
+cannot_restart_main = "이 명령으로는 메인 에이전트를 재시작할 수 없어요. 대신 /restart를 사용해 주세요."
+excluded = "서브 에이전트 '{name}'이(가) 제외됐어요: {reason}"
+stopped_after_crashes = "서브 에이전트 '{name}'이(가) {max}번 충돌한 뒤 중지됐어요: {error}"
+label = "슈퍼바이저"
+
+[cli_error]
+codex_no_final = "Codex가 최종 응답을 만들기 전에 실패했어요."
+gemini_unknown = "알 수 없는 Gemini 오류"
+gemini_exited = "Gemini가 종료 코드 {code}(으)로 종료됐어요."
+grok_error = "Grok 오류"
+
+[secret]
+usage = "/secret list, /secret set KEY, /secret delete KEY, /secret cancel을 사용하세요. 명령에는 값을 쓰지 마세요."
+prompt = "2분 안에 이 메시지에 답장으로 {key}의 값을 보내주세요. 취소하려면 /secret cancel을 사용하세요."
+saved = "{key} 저장됨(길이 {length}자)."
+saved_env_note = ".env에도 {key}가 있어요. CLI 제공자 키는 .env 값을 사용해요."
+rejected = "값을 받지 않았어요: {reason}. 다른 형식은 시크릿 파일을 직접 편집해 주세요."
+reason_value_empty = "값이 비어 있어요"
+reason_value_too_long = "값이 {max}자를 넘어요"
+reason_value_nul = "값에 NUL 문자가 있어요"
+reason_value_multiline = "값에 줄바꿈이 있어요"
+reason_value_edge_space = "값의 처음이나 끝에 공백이 있어요"
+reason_value_edge_quote = "값의 처음이나 끝에 따옴표가 있어요"
+reason_value_dollar = "값이 $로 시작해요"
+invalid_key = "키는 영문 대문자로 시작하고, 대문자·숫자·밑줄로 이루어진 1~56자여야 해요."
+extra_args = "명령에는 값을 쓰지 마세요. /secret set KEY 뒤의 다음 메시지로 보내주세요."
+expired = "입력 시간이 지났어요. /secret set KEY로 다시 시작해 주세요."
+expired_value = "입력 시간이 지나서 이 메시지는 저장하지 않고 지웠어요. /secret set KEY 를 다시 보내 주세요."
+not_text = "값은 텍스트로 보내주세요."
+delete_failed = "메시지를 삭제하지 못했어요. 직접 지워주세요."
+quoted_refused = "시크릿 값 메시지를 인용한 메시지라 처리하지 않았어요. 인용 없이 다시 보내주세요."
+save_failed = "변경 사항을 저장하지 못했어요. 새 값은 저장되지 않았어요. 다시 시도해 주세요."
+list = "저장된 키:\n{keys}"
+list_empty = "저장된 키가 없어요."
+confirm_overwrite = "{key}를 덮어쓸까요?"
+confirm_delete = "{key}를 삭제할까요?"
+deleted = "{key}를 삭제했어요."
+delete_missing = "{key}를 찾지 못했어요."
+cancelled = "시크릿 입력을 취소했어요."
+nothing_pending = "대기 중인 시크릿 입력이 없어요."
+private_only = "봇과의 1:1 채팅에서 /secret을 사용하세요."
+main_only = "main 봇에서 /secret을 사용하세요."
+btn_overwrite = "덮어쓰기"
+btn_delete = "삭제"
+btn_cancel = "취소"
+
+
+[accounts]
+error = "계정 관리에 실패했어요. 다시 시도해 주세요."
+title = "Claude 계정 슬롯 (위가 먼저 쓰임)"
+authenticated = "인증됨"
+unauthenticated = "인증 안 됨"
+no_cooldown = "쿨다운 없음"
+cooldown = "쿨다운 {hours}시간 {minutes}분 남음 ({time} 해제)"
+empty = "계정 목록이 비어 있어 기본 슬롯만 사용해요."
+subagent_note = "우선순위는 메인에 수 초 내, 하위 에이전트에는 다음 기동 때 반영돼요. 쿨다운 변경은 모두 다음 호출부터 적용돼요."
+main_only = "계정 관리는 메인 에이전트 봇에서만 사용할 수 있어요."
+stale = "이 버튼은 이전 상태예요. 최신 상태를 표시해요."
+btn_prefer = "{name}: 1순위로"
+btn_clear = "{name}: 쿨다운 해제"
+btn_refresh = "새로고침"
+
+[usage]
+title = "📊 계정 사용량 · {time}"
+captured = "{time} 기준"
+queried = "{time} 조회"
+reset = "리셋됨 ({time})"
+empty = "아직 받은 값 없음"
+account_empty = "사용량 아직 받은 값 없음"
+failed = "조회 실패({reason})"
+timeout = "시간 초과"
+login_required = "로그인 필요"
+invalid_response = "응답 형식 오류"
+unsupported = "봇 자동 조회 미지원"
+refresh = "새로고침"
+loading = "조회 중…"
+error = "사용량 표시 실패"
