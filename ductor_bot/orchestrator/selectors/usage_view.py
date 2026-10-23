@@ -149,7 +149,6 @@ def render_usage(
         )
         if not codex.windows:
             lines.append(t("usage.empty"))
-    lines.append("Grok  " + t("usage.unsupported"))
     return "\n".join(lines)
 
 

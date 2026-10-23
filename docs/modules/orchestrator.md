@@ -88,7 +88,7 @@ Runtime main-agent registration:
 Not orchestrator-owned:
 
 - `/stop`, `/stop_all` (middleware/bot layer)
-- Telegram `/usage`: read-only on main and sub-agent bots, bypassing the sequential queue; Claude shows the last saved run values, Codex is queried on command or refresh, and Grok automatic queries are unsupported
+- Telegram `/usage`: read-only on main and sub-agent bots, bypassing the sequential queue; Claude shows the last saved run values, Codex is queried on command or refresh
 
 ## Provider/model management (`ProviderManager`)
 

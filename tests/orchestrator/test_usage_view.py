@@ -67,8 +67,8 @@ def sample():
 
 
 # SHA-256 of the design-approved Korean bodies, kept free of locale text.
-GOLDEN_SHA256 = "4866cca7f41e491514fba7330b1171af607eefe2f24d8d84da584616af82d5cb"
-AFTER_SHA256 = "b1419f5c1b45989e71a4b8ba9e23f2eed5e0b22439aa8f363d03ebb237adca1f"
+GOLDEN_SHA256 = "d3f82503650d5134fee5d666aec9626955c3c9bd453bad61e1430588ed5c8e99"
+AFTER_SHA256 = "3f93f915e7f9f1e3efc7e208969c2258e474f586203d26feee329e96e72d5f13"
 
 
 def test_design_examples_exactly():
@@ -157,7 +157,7 @@ def test_null_reset_omits_time_and_trailing_space():
         captured_at=stamp(21, 13, 30),
     )
     text = render_usage(config, slots, codex, now=stamp(21, 13, 30))
-    assert text.splitlines()[-2] == " 7d ██░░░░░░░░  16%"
+    assert text.splitlines()[-1] == " 7d ██░░░░░░░░  16%"
     assert all(line == line.rstrip() for line in text.splitlines())
 
 

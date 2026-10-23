@@ -241,7 +241,7 @@ docker compose exec ductor-bot ductor agents list
 | `/stop_all` | supervisor가 있으면 에이전트 전체 작업 중단. |
 | `/model [name]` | 모델·provider 선택. 인자 없으면 선택 UI. |
 | `/accounts` | main Telegram 봇 전용: Claude 슬롯의 인증·우선순위·쿨다운·저장된 사용량 조회, 순서 변경·쿨다운 해제. |
-| `/usage` | Telegram main·하위 봇 모두: 읽기 전용 사용량. Claude는 평소 실행에서 받은 마지막 값, Codex는 명령·새로고침 때 조회, Grok 자동 조회는 미지원. |
+| `/usage` | Telegram main·하위 봇 모두: 읽기 전용 사용량. Claude는 평소 실행에서 받은 마지막 값, Codex는 명령·새로고침 때 조회. |
 | `/effort` | provider 추론 수준 선택. |
 | `/status` | 현재 세션·모델·실행 상태. |
 | `/secret` | main Telegram 봇 전용, 허용 사용자의 1:1 채팅: 도구 시크릿 입력·키 목록·삭제·취소. 값은 입력 요청에 답장으로 보냅니다. |

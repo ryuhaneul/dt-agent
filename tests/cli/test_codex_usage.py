@@ -199,7 +199,6 @@ def test_measured_response_renders_only_weekly_window():
         assert codex_lines == [
             ("Codex · " + t("usage.queried", time="13:30")),
             " 7d ██░░░░░░░░  16%  10/27 15:31",
-            ("Grok  " + t("usage.unsupported")),
         ]
     finally:
         init("en")

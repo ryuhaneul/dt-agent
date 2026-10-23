@@ -241,7 +241,7 @@ These are chat messages, **not shell commands**. Matrix accepts !command as well
 | `/stop_all` | Abort work across agents via supervisor where available. |
 | `/model [name]` | Select model/provider; no argument shows selection UI. |
 | `/accounts` | Main Telegram bot only: view Claude slot authentication, priority, cooldowns and saved usage; reorder slots or clear cooldowns. |
-| `/usage` | All Telegram agent bots: read-only usage. Claude shows the last values received during normal runs; Codex is queried on command or refresh; Grok automatic queries are unsupported. |
+| `/usage` | All Telegram agent bots: read-only usage. Claude shows the last values received during normal runs; Codex is queried on command or refresh. |
 | `/effort` | Select provider reasoning effort. |
 | `/status` | Current session/model/runtime status. |
 | `/secret` | Main Telegram bot only, in an allowed user’s private chat: set, list, delete or cancel tool secrets; send values as replies to the input request. |
