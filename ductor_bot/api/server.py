@@ -189,6 +189,7 @@ class ApiServer:
         self._active_ws: set[web.WebSocketResponse] = set()
         # File context (set via set_file_context)
         self._allowed_roots: Sequence[Path] | None = None
+        self._allowed_roots_getter: Callable[[], Sequence[Path] | None] | None = None
         self._upload_dir: Path | None = None
         self._workspace: Path | None = None
         self._provider_info: list[dict[str, object]] = []
@@ -210,9 +211,11 @@ class ApiServer:
         allowed_roots: Sequence[Path] | None,
         upload_dir: Path,
         workspace: Path,
+        allowed_roots_getter: Callable[[], Sequence[Path] | None] | None = None,
     ) -> None:
         """Configure file download/upload paths."""
         self._allowed_roots = allowed_roots
+        self._allowed_roots_getter = allowed_roots_getter
         self._upload_dir = upload_dir
         self._workspace = workspace
 
@@ -296,7 +299,12 @@ class ApiServer:
             return web.json_response({"error": "missing 'path' query parameter"}, status=400)
 
         file_path = Path(raw_path)
-        if self._allowed_roots is not None and not is_path_safe(file_path, self._allowed_roots):
+        roots = (
+            self._allowed_roots_getter()
+            if self._allowed_roots_getter is not None
+            else self._allowed_roots
+        )
+        if roots is not None and not is_path_safe(file_path, roots):
             return web.json_response({"error": "path outside allowed roots"}, status=403)
 
         if not await asyncio.to_thread(file_path.is_file):

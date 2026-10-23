@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -10,9 +13,14 @@ import pytest
 pytest.importorskip("nacl", reason="PyNaCl not installed (optional: pip install dt-agent[api])")
 
 from aiohttp import FormData, web
+from aiohttp.test_utils import make_mocked_request
+from yarl import URL
 
-from ductor_bot.api.server import _parse_file_refs
-from ductor_bot.config import ApiConfig
+from ductor_bot.api.server import ApiServer, _parse_file_refs
+from ductor_bot.bus.lock_pool import LockPool
+from ductor_bot.config import AgentConfig, ApiConfig
+from ductor_bot.config_reload import ConfigReloader
+from ductor_bot.orchestrator.lifecycle import start_api_server
 
 # ---------------------------------------------------------------------------
 # Unit tests for helpers
@@ -190,3 +198,97 @@ class TestFileUpload:
         dest.write_bytes(b"saved content")
         assert dest.is_file()
         assert dest.read_bytes() == b"saved content"
+
+
+class TestFileAccessReload:
+    @pytest.mark.parametrize(
+        ("initial", "updated", "outside_status"),
+        [
+            ("all", "workspace", 403),
+            ("home", "workspace", 403),
+            ("workspace", "all", 200),
+            ("all", "unknown", 403),
+        ],
+    )
+    async def test_download_uses_reloaded_policy(
+        self, tmp_path: Path, monkeypatch, initial: str, updated: str, outside_status: int
+    ) -> None:
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        inside = workspace / "inside.txt"
+        outside = tmp_path / "outside.txt"
+        payload = b"synthetic file contents"
+        inside.write_bytes(payload)
+        outside.write_bytes(payload)
+        config = AgentConfig(file_access=initial, api=ApiConfig(token="test-token"))
+        paths = SimpleNamespace(
+            workspace=workspace,
+            api_files_dir=workspace / "uploads",
+            config_path=tmp_path / "config.json",
+        )
+        paths.config_path.write_text(config.model_dump_json())
+        orch = SimpleNamespace(
+            _config=config,
+            _lock_pool=LockPool(),
+            handle_message_streaming=AsyncMock(),
+            abort=AsyncMock(),
+            _providers=SimpleNamespace(build_provider_info=lambda _cache: []),
+            _observers=SimpleNamespace(codex_cache_obs=None),
+        )
+        with patch.object(ApiServer, "start", new_callable=AsyncMock):
+            await start_api_server(orch, config, paths)
+        server = orch._api_stop.__self__
+        reloader = ConfigReloader(paths.config_path, config)
+        data = config.model_dump(mode="json")
+        data["file_access"] = updated
+        paths.config_path.write_text(json.dumps(data))
+        mtime = reloader._last_mtime + 2
+        os.utime(paths.config_path, (mtime, mtime))
+        await reloader._check()
+        assert config.file_access == updated
+
+        for path, status in [(outside, outside_status), (inside, 200)]:
+            request = make_mocked_request(
+                "GET",
+                str(URL("/files").with_query(path=str(path))),
+                headers={"Authorization": "Bearer test-token"},
+            )
+            with patch(
+                "ductor_bot.api.server.web.FileResponse", wraps=web.FileResponse
+            ) as response:
+                result = await server._handle_file_download(request)
+            assert result.status == status
+            if status == 403:
+                response.assert_not_called()
+                assert result.body.count(payload) == 0
+            else:
+                _, handle, _, _ = result._make_response(request, "")
+                assert handle is not None
+                try:
+                    assert handle.read() == payload
+                finally:
+                    handle.close()
+
+    @pytest.mark.parametrize(
+        ("roots", "token", "status"), [([], "test-token", 403), (None, "wrong", 401)]
+    )
+    async def test_getter_respects_empty_roots_and_auth(
+        self, tmp_path: Path, roots, token: str, status: int
+    ) -> None:
+        file = tmp_path / "file.txt"
+        file.write_text("synthetic file contents")
+        server = ApiServer(ApiConfig(token="test-token"))
+        server.set_file_context(
+            allowed_roots=None,
+            upload_dir=tmp_path,
+            workspace=tmp_path,
+            allowed_roots_getter=lambda: roots,
+        )
+        request = make_mocked_request(
+            "GET",
+            str(URL("/files").with_query(path=str(file))),
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        result = await server._handle_file_download(request)
+        assert result.status == status

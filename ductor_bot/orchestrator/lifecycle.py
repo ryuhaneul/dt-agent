@@ -144,6 +144,7 @@ async def start_api_server(
     server.set_abort_handler(orch.abort)
     server.set_file_context(
         allowed_roots=resolve_allowed_roots(config.file_access, paths.workspace),
+        allowed_roots_getter=lambda: resolve_allowed_roots(config.file_access, paths.workspace),
         upload_dir=paths.api_files_dir,
         workspace=paths.workspace,
     )

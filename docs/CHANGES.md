@@ -10,6 +10,7 @@ DT Agent is based on ductor v0.20.1. The project metadata retains the PleaseProm
 
 | Change / interface | Behavior |
 | --- | --- |
+| API file access reload | File downloads use the current `file_access` policy after a config hot-reload. |
 | Materialized source tree | Replaced the old vendored Git tree with the v0.20.1 source tree plus the fork features that were previously applied only at image build time. This exposes those changes in Git; it does not mean every added source line is a new runtime feature. |
 | Direct-source image | Compose builds docker/ductor-bot/Dockerfile, which installs /app/src from the checkout instead of fetching a pinned upstream package and applying overlays at image build time. |
 | Package metadata alignment | Project version was set to 0.20.1 (later 1.0.0, see Own version 1.0.0 below) and project URLs identify the fork; old root metadata said 0.19.0 despite the manifest targeting v0.20.1. Python remains >=3.11, hatchling/MIT attribution remain. |
