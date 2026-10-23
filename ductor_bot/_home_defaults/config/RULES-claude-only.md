@@ -17,7 +17,7 @@ Edit only when the user asks for behavior changes.
 
 - `provider`: `claude`
 - `model`: default model id
-  - Available: `haiku`, `sonnet`, `sonnet[1m]`, `opus`, `opus[1m]`, `fable`
+  - Available: `haiku`, `sonnet`, `opus`, `fable`
 - `reasoning_effort`: `low|medium|high|xhigh|max` — reasoning depth passed to
   the Claude CLI via `--effort`. Change it with the `/effort` command.
 - `permission_mode`: CLI permission behavior

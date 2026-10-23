@@ -120,21 +120,6 @@ async def test_start_one_provider_claude(orch: Orchestrator) -> None:
     assert "OPUS" in labels
 
 
-async def test_start_one_provider_claude_includes_1m_variants(orch: Orchestrator) -> None:
-    """/model selector surfaces SONNET[1M] + OPUS[1M] buttons for Claude."""
-    with _patch_auth(
-        {"claude": _AUTHED_CLAUDE, "codex": _NOT_FOUND_CODEX, "gemini": _NOT_FOUND_GEMINI}
-    ):
-        resp = await model_selector_start(orch, SessionKey(chat_id=1))
-    assert resp.buttons is not None
-    labels = [btn.text for row in resp.buttons.rows for btn in row]
-    callbacks = [btn.callback_data for row in resp.buttons.rows for btn in row]
-    assert "SONNET[1M]" in labels
-    assert "OPUS[1M]" in labels
-    assert "ms:m:opus[1m]" in callbacks
-    assert "ms:m:sonnet[1m]" in callbacks
-
-
 async def test_start_one_provider_codex(orch: Orchestrator) -> None:
     with (
         _patch_auth(

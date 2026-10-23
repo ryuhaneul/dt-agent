@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 from ductor_bot.config import (
     _GEMINI_ALIASES,
     CLAUDE_MODELS,
+    CLAUDE_MODELS_ORDERED,
     CLAUDE_SUPPORTED_EFFORTS,
     GROK_MODELS,
     GROK_SUPPORTED_EFFORTS,
@@ -183,7 +184,7 @@ def resolve_cli_config(
     # 3. Validate model
     if provider == "claude":
         if model not in CLAUDE_MODELS:
-            msg = f"Invalid Claude model: {model}. Must be one of {sorted(CLAUDE_MODELS)}"
+            msg = f"Invalid Claude model: {model}. Must be one of {list(CLAUDE_MODELS_ORDERED)}"
             raise DuctorError(msg)
     elif provider == "gemini":
         _validate_gemini_model(model)

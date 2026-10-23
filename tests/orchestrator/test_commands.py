@@ -46,6 +46,13 @@ async def test_model_direct_switch(orch: Orchestrator) -> None:
     kill_mock.assert_called_once_with(1, None)
 
 
+async def test_model_direct_claude_context_alias(orch: Orchestrator) -> None:
+    object.__setattr__(orch._process_registry, "kill_by_chat_topic", AsyncMock(return_value=0))
+    await cmd_model(orch, SessionKey(chat_id=1), "/model opus[1m]")
+    assert orch._config.provider == "claude"
+    assert orch._config.model == "opus[1m]"
+
+
 async def test_model_already_set(orch: Orchestrator) -> None:
     result = await cmd_model(orch, SessionKey(chat_id=1), "/model opus")
     assert "Already running" in result.text

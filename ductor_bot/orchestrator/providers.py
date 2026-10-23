@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from ductor_bot.config import (
     _GEMINI_ALIASES,
     CLAUDE_MODELS,
+    CLAUDE_MODELS_ORDERED,
     GROK_MODELS,
     ModelRegistry,
     get_gemini_models,
@@ -215,7 +216,7 @@ class ProviderManager:
             name, color = meta
             models: list[str]
             if pid == "claude":
-                models = sorted(CLAUDE_MODELS)
+                models = sorted(CLAUDE_MODELS_ORDERED)
             elif pid == "gemini":
                 gemini = get_gemini_models()
                 models = sorted(gemini) if gemini else sorted(_GEMINI_ALIASES)

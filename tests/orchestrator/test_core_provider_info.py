@@ -51,9 +51,7 @@ class TestBuildProviderInfo:
             "fable",
             "haiku",
             "opus",
-            "opus[1m]",
             "sonnet",
-            "sonnet[1m]",
         ]
 
     def test_multiple_providers_sorted(self) -> None:

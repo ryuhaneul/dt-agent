@@ -57,7 +57,7 @@ When creating a sub-agent:
 1. Choose a descriptive lowercase name (no spaces, e.g. `finanzius`, `researcher`)
 2. Choose the transport: **Telegram**, **Matrix**, or delegation-only **headless**
 3. Use **specific model names**, not provider names:
-   - Claude: `opus`, `opus[1m]`, `sonnet`, `sonnet[1m]`, `haiku`, `fable`
+   - Claude: `opus`, `sonnet`, `haiku`, `fable`
    - Codex: `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex-spark` (check `config/codex_models.json`)
    - Gemini: `gemini-2.5-pro`, `gemini-2.5-flash` (check `config/gemini_models.json`)
 4. Provider is `claude`, `openai`/`codex`, `gemini`, or `grok`

@@ -11,7 +11,7 @@ For cron tool commands (add/edit/remove/list), see `tools/cron_tools/CLAUDE.md`.
    - Default if user doesn't specify: Use global config provider
 
 2. **Which model?** (`--model <name>`)
-   - Claude models: `haiku`, `sonnet`, `sonnet[1m]`, `opus`, `opus[1m]`, `fable`
+   - Claude models: `haiku`, `sonnet`, `opus`, `fable`
    - Codex models: `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex-spark`
    - Gemini models: `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-3-pro-preview`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash`
    - Default if user doesn't specify: Use global config model
@@ -38,7 +38,7 @@ You: "I'll create a cron job to check weather every 3 minutes. Let me configure 
    - `gemini` (Google Gemini models)
 
 2. **Model**: Which model?
-   - If Claude: `haiku` (fast), `sonnet` (balanced), `sonnet[1m]`, `opus` (most capable), `opus[1m]`, `fable`
+   - If Claude: `haiku` (fast), `sonnet` (balanced), `opus` (most capable), `fable`
    - If Codex: `gpt-5.5` (recommended), `gpt-5.4`, `gpt-5.4-mini`, etc.
    - If Gemini: `gemini-2.5-pro` (recommended), `gemini-2.5-flash`, `gemini-3.1-flash-lite`, etc.
 
@@ -84,7 +84,7 @@ Each cron task can override global config settings in `cron_jobs.json`:
 
 - `provider`: `"claude"`, `"codex"`, or `"gemini"` (optional, defaults to global config)
 - `model`: Model name (optional, defaults to global config)
-  - Claude models: `"haiku"`, `"sonnet"`, `"sonnet[1m]"`, `"opus"`, `"opus[1m]"`, `"fable"`
+  - Claude models: `"haiku"`, `"sonnet"`, `"opus"`, `"fable"`
   - Codex models:
     - `"gpt-5.5"` - Newest/recommended frontier agentic coding model
     - `"gpt-5.4"` - Frontier agentic coding model

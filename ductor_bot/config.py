@@ -705,21 +705,16 @@ def _detect_posix_timezone() -> ZoneInfo | None:
         return None
 
 
-# `[1m]` suffix unlocks Claude Code's 1M-context beta on sonnet + opus.
-# The Claude CLI strips the suffix before dispatch and sets the beta header
-# internally (see https://code.claude.com/docs/en/model-config). Haiku has
-# no 1M variant upstream, so it is intentionally omitted.
 CLAUDE_MODELS_ORDERED: tuple[str, ...] = (
     "haiku",
     "sonnet",
-    "sonnet[1m]",
     "opus",
-    "opus[1m]",
     # Claude Code >= 2.1.172 resolves the "fable" alias to the latest Fable
     # model (same auto-tracking as the opus/sonnet aliases).
     "fable",
 )
-CLAUDE_MODELS: frozenset[str] = frozenset(CLAUDE_MODELS_ORDERED)
+# Still accepted as typed or saved values.
+CLAUDE_MODELS: frozenset[str] = frozenset(CLAUDE_MODELS_ORDERED) | {"sonnet[1m]", "opus[1m]"}
 
 # Reasoning-effort levels the Claude CLI accepts via ``--effort``. ``max`` is
 # Claude-specific (Codex tops out at ``xhigh``).

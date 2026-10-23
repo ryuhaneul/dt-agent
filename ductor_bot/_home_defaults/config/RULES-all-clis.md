@@ -17,7 +17,7 @@ Edit only when the user asks for behavior changes.
 
 - `provider`: `claude`, `codex`, `gemini`, or `grok`
 - `model`: default model id
-  - Claude models: `haiku`, `sonnet`, `sonnet[1m]`, `opus`, `opus[1m]`, `fable`
+  - Claude models: `haiku`, `sonnet`, `opus`, `fable`
   - Codex models:
     - `gpt-5.5` - Newest/recommended frontier agentic coding model
     - `gpt-5.4` - Frontier agentic coding model
