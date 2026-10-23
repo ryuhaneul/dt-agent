@@ -196,6 +196,7 @@ def listeners(certificates):
 
     tls = ThreadingHTTPServer(("127.0.0.1", 0), TLSHandler)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(certificates / "server.pem", certificates / "test-server-key.pem")
     tls.socket = context.wrap_socket(tls.socket, server_side=True)
     proxy = ThreadingHTTPServer(("127.0.0.1", 0), ProxyHandler)
