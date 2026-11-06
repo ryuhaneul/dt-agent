@@ -194,7 +194,7 @@ docker compose up -d --build
 | 스크립트 / 인터페이스 | 동작과 예시 |
 | --- | --- |
 | `onboard.sh` / `onboard.py` | 선행 조건 래퍼 / 비공개 config 작성기. 옵션은 3절. 예: `./scripts/onboard.sh --help`. |
-| `login.sh [provider]` | 인자 없음: Claude → Codex → Gemini → Grok. 자격 확인 실패는 경고 후 계속 진행하고 마지막에 요약합니다. provider는 claude/codex/gemini/grok, -h/--help/help 지원. 예: `./scripts/login.sh codex`. |
+| `login.sh [provider]` | 인자 없음: Claude 기본 슬롯(`claude`와 같음). provider는 claude/codex/gemini/grok, -h/--help/help 지원. 예: `./scripts/login.sh codex`. |
 | `login.sh claude [slot]` | 빈 값·default·claude는 claude, alt는 claude-alt, 완전한 claude-*도 허용합니다. --list/-l/list는 슬롯 조회(공유 디렉터리 생성), --repair/repair는 비자격 항목을 백업 후 공유 링크로 옮기며 claude -h/--help도 지원합니다. 예: `./scripts/login.sh claude alt`. |
 | `logout.sh [provider]` | 인자 없음은 전체 로그아웃. claude/codex/gemini/grok, -h/--help 지원. Claude --list(인증·우선순위·남은 쿨다운, 컨테이너 없이 조회), --prefer SLOT, --priority A,B,..., --clear-cooldown SLOT 또는 all(변경은 실행 중인 컨테이너 필요), --disable SLOT(config만), --remove SLOT 또는 SLOT(config와 자격 백업 이름 변경). 예: `./scripts/logout.sh claude --disable alt`. Codex는 저장 인증 파일을 제거하고 Gemini는 `oauth_creds.json`을 제거하고 키 삭제·재시작 안내를 출력합니다. |
 | `status.sh` | 파싱하는 옵션 없음. 컨테이너·CLI 인증 탐침. 예: `./scripts/status.sh`. Gemini는 API 키 환경 또는 OAuth 자격증명 파일을 확인합니다. |

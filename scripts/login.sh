@@ -2,7 +2,7 @@
 # Login to CLI providers inside the ductor-bot container.
 #
 # Usage:
-#   ./scripts/login.sh                        # login to all available providers
+#   ./scripts/login.sh                        # login to Claude Code default slot (same as claude)
 #   ./scripts/login.sh claude                 # login to Claude Code default slot
 #   ./scripts/login.sh claude <name>          # login to extra Claude slot (e.g. alt, work)
 #   ./scripts/login.sh claude --list          # show configured Claude slots + auth state
@@ -48,9 +48,6 @@ say_err() { say "$@" >&2; }
 login_text_en() {
     case "$1" in
         err_slot_name) printf '%s' $'Invalid Claude slot name; slots is reserved.' ;;
-        summary_title) printf '%s' $'Login summary:' ;;
-        summary_ok) printf '%s' $'OK' ;;
-        summary_failed) printf '%s' $'Failed' ;;
         slots_title) printf '%s' $'=== Claude Code Slots ===' ;;
         no_slots) printf '%s' $'  (no slots found — run ./scripts/login.sh claude to create the default)' ;;
         state_auth) printf '%s' $'authenticated' ;;
@@ -59,8 +56,8 @@ login_text_en() {
         unknown_provider) printf '%s' $'Unknown provider: {1}' ;;
         login_help_title) printf '%s' $'Login to CLI providers inside the ductor-bot container.' ;;
         usage) printf '%s' $'Usage:' ;;
-        h_login_all) printf '%s' $'login to all available providers' ;;
         h_login_claude) printf '%s' $'login to Claude Code default slot' ;;
+        h_login_default) printf '%s' $'login to Claude Code default slot (same as claude)' ;;
         h_login_claude_slot) printf '%s' $'login to extra Claude slot (e.g. alt, work)' ;;
         h_login_list) printf '%s' $'show configured Claude slots + auth state' ;;
         h_repair) printf '%s' $'re-share settings/skills/plugins from default slot to every alt slot' ;;
@@ -112,9 +109,6 @@ login_text_en() {
 login_text_de() {
     case "$1" in
         err_slot_name) printf '%s' $'Ungültiger Claude-Slotname; slots ist reserviert.' ;;
-        summary_title) printf '%s' $'Anmeldeübersicht:' ;;
-        summary_ok) printf '%s' $'OK' ;;
-        summary_failed) printf '%s' $'Fehlgeschlagen' ;;
         slots_title) printf '%s' $'=== Claude-Code-Slots ===' ;;
         no_slots) printf '%s' $'  (keine Slots gefunden — führe ./scripts/login.sh claude aus, um den Standard-Slot anzulegen)' ;;
         state_auth) printf '%s' $'angemeldet' ;;
@@ -123,8 +117,8 @@ login_text_de() {
         unknown_provider) printf '%s' $'Unbekannter Anbieter: {1}' ;;
         login_help_title) printf '%s' $'Bei CLI-Anbietern im ductor-bot-Container anmelden.' ;;
         usage) printf '%s' $'Verwendung:' ;;
-        h_login_all) printf '%s' $'bei allen verfügbaren Anbietern anmelden' ;;
         h_login_claude) printf '%s' $'am Standard-Slot von Claude Code anmelden' ;;
+        h_login_default) printf '%s' $'am Standard-Slot von Claude Code anmelden (wie claude)' ;;
         h_login_claude_slot) printf '%s' $'an einem zusätzlichen Claude-Slot anmelden (z. B. alt, work)' ;;
         h_login_list) printf '%s' $'konfigurierte Claude-Slots + Anmeldestatus zeigen' ;;
         h_repair) printf '%s' $'Einstellungen/Skills/Plugins vom Standard-Slot erneut an jeden alt-Slot teilen' ;;
@@ -176,9 +170,6 @@ login_text_de() {
 login_text_es() {
     case "$1" in
         err_slot_name) printf '%s' $'Nombre de slot Claude no válido; slots está reservado.' ;;
-        summary_title) printf '%s' $'Resumen de inicio de sesión:' ;;
-        summary_ok) printf '%s' $'OK' ;;
-        summary_failed) printf '%s' $'Falló' ;;
         slots_title) printf '%s' $'=== Slots de Claude Code ===' ;;
         no_slots) printf '%s' $'  (no se encontraron slots — ejecuta ./scripts/login.sh claude para crear el predeterminado)' ;;
         state_auth) printf '%s' $'autenticado' ;;
@@ -187,8 +178,8 @@ login_text_es() {
         unknown_provider) printf '%s' $'Proveedor desconocido: {1}' ;;
         login_help_title) printf '%s' $'Iniciar sesión en los proveedores de CLI dentro del contenedor ductor-bot.' ;;
         usage) printf '%s' $'Uso:' ;;
-        h_login_all) printf '%s' $'iniciar sesión en todos los proveedores disponibles' ;;
         h_login_claude) printf '%s' $'iniciar sesión en el slot predeterminado de Claude Code' ;;
+        h_login_default) printf '%s' $'iniciar sesión en el slot predeterminado de Claude Code (igual que claude)' ;;
         h_login_claude_slot) printf '%s' $'iniciar sesión en un slot de Claude adicional (p. ej. alt, work)' ;;
         h_login_list) printf '%s' $'mostrar los slots de Claude configurados + estado de autenticación' ;;
         h_repair) printf '%s' $'volver a compartir ajustes/skills/plugins del slot predeterminado con cada slot alt' ;;
@@ -240,9 +231,6 @@ login_text_es() {
 login_text_fr() {
     case "$1" in
         err_slot_name) printf '%s' $'Nom de slot Claude invalide ; slots est réservé.' ;;
-        summary_title) printf '%s' $'Résumé des connexions :' ;;
-        summary_ok) printf '%s' $'OK' ;;
-        summary_failed) printf '%s' $'Échec' ;;
         slots_title) printf '%s' $'=== Slots Claude Code ===' ;;
         no_slots) printf '%s' $'  (aucun slot trouvé — lance ./scripts/login.sh claude pour créer celui par défaut)' ;;
         state_auth) printf '%s' $'connecté' ;;
@@ -251,8 +239,8 @@ login_text_fr() {
         unknown_provider) printf '%s' $'Fournisseur inconnu : {1}' ;;
         login_help_title) printf '%s' $'Se connecter aux fournisseurs CLI dans le conteneur ductor-bot.' ;;
         usage) printf '%s' $'Utilisation :' ;;
-        h_login_all) printf '%s' $'se connecter à tous les fournisseurs disponibles' ;;
         h_login_claude) printf '%s' $'se connecter au slot par défaut de Claude Code' ;;
+        h_login_default) printf '%s' $'se connecter au slot par défaut de Claude Code (comme claude)' ;;
         h_login_claude_slot) printf '%s' $'se connecter à un slot Claude supplémentaire (p. ex. alt, work)' ;;
         h_login_list) printf '%s' $'afficher les slots Claude configurés + état de connexion' ;;
         h_repair) printf '%s' $'repartager réglages/skills/plugins du slot par défaut vers chaque slot alt' ;;
@@ -304,9 +292,6 @@ login_text_fr() {
 login_text_id() {
     case "$1" in
         err_slot_name) printf '%s' $'Nama slot Claude tidak valid; slots dicadangkan.' ;;
-        summary_title) printf '%s' $'Ringkasan login:' ;;
-        summary_ok) printf '%s' $'OK' ;;
-        summary_failed) printf '%s' $'Gagal' ;;
         slots_title) printf '%s' $'=== Slot Claude Code ===' ;;
         no_slots) printf '%s' $'  (slot tidak ditemukan — jalankan ./scripts/login.sh claude untuk membuat slot default)' ;;
         state_auth) printf '%s' $'terautentikasi' ;;
@@ -315,8 +300,8 @@ login_text_id() {
         unknown_provider) printf '%s' $'Penyedia tidak dikenal: {1}' ;;
         login_help_title) printf '%s' $'Masuk ke penyedia CLI di dalam kontainer ductor-bot.' ;;
         usage) printf '%s' $'Penggunaan:' ;;
-        h_login_all) printf '%s' $'masuk ke semua penyedia yang tersedia' ;;
         h_login_claude) printf '%s' $'masuk ke slot default Claude Code' ;;
+        h_login_default) printf '%s' $'masuk ke slot default Claude Code (sama dengan claude)' ;;
         h_login_claude_slot) printf '%s' $'masuk ke slot Claude tambahan (mis. alt, work)' ;;
         h_login_list) printf '%s' $'tampilkan slot Claude yang dikonfigurasi + status autentikasi' ;;
         h_repair) printf '%s' $'bagikan ulang pengaturan/skill/plugin dari slot default ke setiap slot alt' ;;
@@ -368,9 +353,6 @@ login_text_id() {
 login_text_nl() {
     case "$1" in
         err_slot_name) printf '%s' $'Ongeldige Claude-slotnaam; slots is gereserveerd.' ;;
-        summary_title) printf '%s' $'Aanmeldingsoverzicht:' ;;
-        summary_ok) printf '%s' $'OK' ;;
-        summary_failed) printf '%s' $'Mislukt' ;;
         slots_title) printf '%s' $'=== Claude Code-slots ===' ;;
         no_slots) printf '%s' $'  (geen slots gevonden — voer ./scripts/login.sh claude uit om de standaard aan te maken)' ;;
         state_auth) printf '%s' $'aangemeld' ;;
@@ -379,8 +361,8 @@ login_text_nl() {
         unknown_provider) printf '%s' $'Onbekende provider: {1}' ;;
         login_help_title) printf '%s' $'Aanmelden bij CLI-providers in de ductor-bot-container.' ;;
         usage) printf '%s' $'Gebruik:' ;;
-        h_login_all) printf '%s' $'aanmelden bij alle beschikbare providers' ;;
         h_login_claude) printf '%s' $'aanmelden bij het standaardslot van Claude Code' ;;
+        h_login_default) printf '%s' $'aanmelden bij het standaardslot van Claude Code (zoals claude)' ;;
         h_login_claude_slot) printf '%s' $'aanmelden bij een extra Claude-slot (bijv. alt, work)' ;;
         h_login_list) printf '%s' $'ingestelde Claude-slots + aanmeldstatus tonen' ;;
         h_repair) printf '%s' $'instellingen/skills/plugins van het standaardslot opnieuw delen met elk alt-slot' ;;
@@ -432,9 +414,6 @@ login_text_nl() {
 login_text_pt() {
     case "$1" in
         err_slot_name) printf '%s' $'Nome de slot Claude inválido; slots é reservado.' ;;
-        summary_title) printf '%s' $'Resumo de login:' ;;
-        summary_ok) printf '%s' $'OK' ;;
-        summary_failed) printf '%s' $'Falhou' ;;
         slots_title) printf '%s' $'=== Slots do Claude Code ===' ;;
         no_slots) printf '%s' $'  (nenhum slot encontrado — execute ./scripts/login.sh claude para criar o padrão)' ;;
         state_auth) printf '%s' $'autenticado' ;;
@@ -443,8 +422,8 @@ login_text_pt() {
         unknown_provider) printf '%s' $'Provedor desconhecido: {1}' ;;
         login_help_title) printf '%s' $'Entrar nos provedores de CLI dentro do contêiner ductor-bot.' ;;
         usage) printf '%s' $'Uso:' ;;
-        h_login_all) printf '%s' $'entrar em todos os provedores disponíveis' ;;
         h_login_claude) printf '%s' $'entrar no slot padrão do Claude Code' ;;
+        h_login_default) printf '%s' $'entrar no slot padrão do Claude Code (igual a claude)' ;;
         h_login_claude_slot) printf '%s' $'entrar em um slot extra do Claude (ex.: alt, work)' ;;
         h_login_list) printf '%s' $'mostrar os slots do Claude configurados + estado de autenticação' ;;
         h_repair) printf '%s' $'compartilhar de novo configurações/skills/plugins do slot padrão com cada slot alt' ;;
@@ -496,9 +475,6 @@ login_text_pt() {
 login_text_ru() {
     case "$1" in
         err_slot_name) printf '%s' $'Недопустимое имя слота Claude; slots зарезервировано.' ;;
-        summary_title) printf '%s' $'Итоги входа:' ;;
-        summary_ok) printf '%s' $'OK' ;;
-        summary_failed) printf '%s' $'Ошибка' ;;
         slots_title) printf '%s' $'=== Слоты Claude Code ===' ;;
         no_slots) printf '%s' $'  (слоты не найдены — запусти ./scripts/login.sh claude, чтобы создать слот по умолчанию)' ;;
         state_auth) printf '%s' $'выполнен вход' ;;
@@ -507,8 +483,8 @@ login_text_ru() {
         unknown_provider) printf '%s' $'Неизвестный провайдер: {1}' ;;
         login_help_title) printf '%s' $'Вход в CLI-провайдеры внутри контейнера ductor-bot.' ;;
         usage) printf '%s' $'Использование:' ;;
-        h_login_all) printf '%s' $'войти во все доступные провайдеры' ;;
         h_login_claude) printf '%s' $'войти в слот Claude Code по умолчанию' ;;
+        h_login_default) printf '%s' $'войти в слот Claude Code по умолчанию (как claude)' ;;
         h_login_claude_slot) printf '%s' $'войти в дополнительный слот Claude (например, alt, work)' ;;
         h_login_list) printf '%s' $'показать настроенные слоты Claude + состояние входа' ;;
         h_repair) printf '%s' $'заново поделиться настройками/skills/плагинами из слота по умолчанию с каждым alt-слотом' ;;
@@ -562,9 +538,6 @@ login_text_ru() {
 login_text_ko() {
     case "$1" in
         err_slot_name) printf '%s' $'잘못된 Claude 슬롯 이름입니다. slots는 예약어입니다.' ;;
-        summary_title) printf '%s' $'로그인 요약:' ;;
-        summary_ok) printf '%s' $'OK' ;;
-        summary_failed) printf '%s' $'실패' ;;
         slots_title) printf '%s' $'=== Claude Code 슬롯 ===' ;;
         no_slots) printf '%s' $'  (슬롯이 없어요 — ./scripts/login.sh claude 를 실행해 기본 슬롯을 만드세요)' ;;
         state_auth) printf '%s' $'인증됨' ;;
@@ -573,8 +546,8 @@ login_text_ko() {
         unknown_provider) printf '%s' $'알 수 없는 제공자: {1}' ;;
         login_help_title) printf '%s' $'ductor-bot 컨테이너 안의 CLI 제공자에 로그인해요.' ;;
         usage) printf '%s' $'사용법:' ;;
-        h_login_all) printf '%s' $'사용 가능한 모든 제공자에 로그인' ;;
         h_login_claude) printf '%s' $'Claude Code 기본 슬롯에 로그인' ;;
+        h_login_default) printf '%s' $'Claude Code 기본 슬롯에 로그인 (claude 와 같음)' ;;
         h_login_claude_slot) printf '%s' $'추가 Claude 슬롯에 로그인 (예: alt, work)' ;;
         h_login_list) printf '%s' $'설정된 Claude 슬롯과 인증 상태 표시' ;;
         h_repair) printf '%s' $'기본 슬롯의 설정/스킬/플러그인을 모든 alt 슬롯에 다시 공유' ;;
@@ -629,7 +602,7 @@ show_help() {
     say login_help_title
     echo
     say usage
-    printf '%s# %s\n' "  ./scripts/login.sh                        " "$(say h_login_all)"
+    printf '%s# %s\n' "  ./scripts/login.sh                        " "$(say h_login_default)"
     printf '%s# %s\n' "  ./scripts/login.sh claude                 " "$(say h_login_claude)"
     printf '%s# %s\n' "  ./scripts/login.sh claude <name>          " "$(say h_login_claude_slot)"
     printf '%s# %s\n' "  ./scripts/login.sh claude --list          " "$(say h_login_list)"
@@ -1078,28 +1051,7 @@ login_grok() {
 # `source` this file to exercise the helper functions in isolation.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     if [ $# -eq 0 ]; then
-        ensure_container
-        failed_providers=()
-        login_claude_slot "claude" || failed_providers+=(claude)
-        echo ""
-        login_codex || failed_providers+=(codex)
-        echo ""
-        login_gemini || failed_providers+=(gemini)
-        echo ""
-        login_grok || failed_providers+=(grok)
-        echo ""
-        say summary_title
-        for provider in claude codex gemini grok; do
-            case " ${failed_providers[*]} " in
-                *" $provider "*) summary="$(say summary_failed)" ;;
-                *) summary="$(say summary_ok)" ;;
-            esac
-            printf '  %s: %s\n' "$provider" "$summary"
-        done
-        if [ "${#failed_providers[@]}" -gt 0 ]; then
-            exit 1
-        fi
-        exit 0
+        set -- claude
     fi
 
     case "$1" in

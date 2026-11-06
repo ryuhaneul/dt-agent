@@ -197,28 +197,6 @@ esac
         self.assertEqual(self.config.read_text(), 'invalid fixture JSON')
         self.assert_private_unchanged_identity()
 
-    def test_full_login_write_failure_has_no_success_notice_and_continues(self):
-        self.command = ['bash', str(SCRIPT)]
-        calls = self.root / 'full-login-calls.txt'
-        self.env['FAKE_LOGIN_CALLS'] = str(calls)
-        docker = self.root / 'bin/docker'
-        source = docker.read_text()
-        source = source.replace(
-            'exec) [[ " $* " == *" ductor-bot claude /login "* ]] || exit 98 ;;',
-            'exec) printf "%s\\n" "$*" >> "$FAKE_LOGIN_CALLS"; '
-            '[[ " $* " != *" sh -c "* ]] || exit 1 ;;')
-        docker.write_text(source)
-        code, output = self.run_tty('y', break_config=True)
-        self.assertEqual(code, 1, output)
-        self.assertIn('JSONDecodeError', output)
-        self.assertNotIn('Updated.', output)
-        self.assertNotIn('claude: OK', output)
-        self.assertIn('claude: Failed', output)
-        self.assertEqual(self.config.read_text(), 'invalid fixture JSON')
-        recorded = calls.read_text()
-        for command in ('codex login', 'gemini', 'grok login'):
-            self.assertIn(command, recorded)
-
 
 class ProviderLoginTests(unittest.TestCase):
     def setUp(self):
@@ -297,7 +275,7 @@ esac
                 self.assertNotIn('Warning:', result.stderr)
                 self.assertFalse((self.home / '.cli-auth/gemini/oauth_creds.json').exists())
 
-    def test_all_login_continues_and_summarizes_each_provider_failure(self):
+    def test_no_arguments_log_into_the_claude_default_slot_only(self):
         binary = self.root / 'bin/docker'
         binary.write_text(r"""#!/usr/bin/env python3
 import json, os, subprocess, sys
@@ -327,25 +305,17 @@ if provider != os.environ['FAKE_MISSING_PROVIDER']:
         config.parent.mkdir()
         config.write_text('{"claude_accounts": []}')
         calls = self.root / 'login-calls.txt'
-        providers = ('claude', 'codex', 'gemini', 'grok')
-        for missing in providers:
+        for missing in ('none', 'claude'):
             with self.subTest(missing=missing):
-                for provider in providers:
-                    directory = self.home / '.cli-auth' / provider
-                    for filename in ('.credentials.json', 'auth.json', 'oauth_creds.json'):
-                        path = directory / filename
-                        if path.exists(): path.unlink()
+                credentials = self.home / '.cli-auth/claude/.credentials.json'
+                if credentials.exists(): credentials.unlink()
                 calls.write_text('')
                 env = dict(self.env, FAKE_MISSING_PROVIDER=missing, FAKE_LOGIN_CALLS=str(calls))
                 result = subprocess.run(['bash', str(SCRIPT)], env=env, input='',
                                         capture_output=True, text=True, timeout=15)
-                self.assertEqual(result.returncode, 1, result.stderr)
-                self.assertEqual(calls.read_text().splitlines(), list(providers))
-                self.assertIn('Warning:', result.stderr)
-                self.assertIn('Login summary:', result.stdout)
-                summary = result.stdout.split('Login summary:', 1)[1]
-                for provider in providers:
-                    self.assertIn(provider + ': ' + ('Failed' if provider == missing else 'OK'), summary)
+                self.assertEqual(result.returncode, 1 if missing == 'claude' else 0,
+                                 result.stdout + result.stderr)
+                self.assertEqual(calls.read_text().splitlines(), ['claude'])
 
     def _install_permission_login_probe(self):
         if os.geteuid() == 0:
@@ -382,7 +352,7 @@ name = {'claude': '.credentials.json', 'codex': 'auth.json',
 """)
         return calls
 
-    def _check_readonly_auth_parent(self, all_providers):
+    def _check_readonly_auth_parent(self):
         calls = self._install_permission_login_probe()
         auth = self.home / '.cli-auth'
         session = auth / 'claude/projects/fixture-project/fixture-session.jsonl'
@@ -395,8 +365,7 @@ name = {'claude': '.credentials.json', 'codex': 'auth.json',
         auth.chmod(0o555)
         try:
             self.assertEqual(auth.stat().st_mode & 0o777, 0o555)
-            args = [] if all_providers else ['claude']
-            result = subprocess.run(['bash', str(SCRIPT), *args], env=self.env, input='',
+            result = subprocess.run(['bash', str(SCRIPT), 'claude'], env=self.env, input='',
                                     capture_output=True, text=True, timeout=15)
             observed = {
                 'exit': result.returncode,
@@ -409,20 +378,13 @@ name = {'claude': '.credentials.json', 'codex': 'auth.json',
             auth.chmod(0o755)
         self.assertEqual(observed, {
             'exit': 1,
-            'calls': ['codex', 'gemini', 'grok'] if all_providers else [],
+            'calls': [],
             'original_session_visible': True, 'nested_projects': False, 'updated': False,
         }, result.stdout + result.stderr)
         self.assertIn('Permission denied', result.stderr)
-        if all_providers:
-            self.assertIn('claude: Failed', result.stdout)
-            for provider in ('codex', 'gemini', 'grok'):
-                self.assertIn(provider + ': OK', result.stdout)
 
     def test_readonly_auth_parent_stops_single_login_before_session_move(self):
-        self._check_readonly_auth_parent(False)
-
-    def test_readonly_auth_parent_marks_full_login_failed_and_continues(self):
-        self._check_readonly_auth_parent(True)
+        self._check_readonly_auth_parent()
 
     def test_readonly_alt_slot_preserves_stale_link_without_nested_link(self):
         calls = self._install_permission_login_probe()
@@ -468,7 +430,7 @@ name = {'claude': '.credentials.json', 'codex': 'auth.json',
         }, result.stdout + result.stderr)
         self.assertIn('Permission denied', result.stderr)
 
-    def test_filesystem_failure_reaches_full_login_summary(self):
+    def test_filesystem_failure_fails_the_claude_login(self):
         docker = self.root / 'bin/docker'
         docker.write_text(r"""#!/usr/bin/env python3
 import os, subprocess, sys
@@ -514,23 +476,14 @@ name = {'claude': '.credentials.json', 'codex': 'auth.json',
                 shutil.rmtree(self.home / '.cli-auth', ignore_errors=True)
                 if failure.startswith('mv:'):
                     (self.home / '.cli-auth/claude/projects').mkdir(parents=True)
-                calls.write_text('')
                 env = dict(self.env, FAKE_FS_FAILURE=failure)
-                result = subprocess.run(['bash', str(SCRIPT)], env=env, input='',
-                                        capture_output=True, text=True, timeout=15)
-                self.assertIn('claude: Failed', result.stdout)
-                self.assertNotIn('claude: OK', result.stdout)
-                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-                self.assertEqual(calls.read_text().splitlines(), ['codex', 'gemini', 'grok'])
                 single = subprocess.run(['bash', str(SCRIPT), 'claude'], env=env, input='',
                                         capture_output=True, text=True, timeout=15)
                 self.assertEqual(single.returncode, 1, single.stdout + single.stderr)
         self.env.pop('FAKE_FS_FAILURE', None)
-        success = subprocess.run(['bash', str(SCRIPT)], env=self.env, input='',
+        success = subprocess.run(['bash', str(SCRIPT), 'claude'], env=self.env, input='',
                                  capture_output=True, text=True, timeout=15)
         self.assertEqual(success.returncode, 0, success.stdout + success.stderr)
-        for provider in ('claude', 'codex', 'gemini', 'grok'):
-            self.assertIn(provider + ': OK', success.stdout)
 
     def test_slot_name_validation_and_aliases(self):
         config = self.home / 'config/config.json'

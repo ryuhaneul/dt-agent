@@ -194,7 +194,7 @@ These are host scripts. Run from the repository root. `login.sh` addresses the C
 | Script / interface | Behavior and example |
 | --- | --- |
 | `onboard.sh` / `onboard.py` | Wrapper prerequisites / private config writer; options in §3. Example: `./scripts/onboard.sh --help`. |
-| `login.sh [provider]` | No args: Claude → Codex → Gemini → Grok; failed credential checks warn and continue, with a final summary. Providers claude/codex/gemini/grok; -h/--help/help. Example: `./scripts/login.sh codex`. |
+| `login.sh [provider]` | No args: the Claude default slot, like `claude`. Providers claude/codex/gemini/grok; -h/--help/help. Example: `./scripts/login.sh codex`. |
 | `login.sh claude [slot]` | Default/default/claude → claude; alt → claude-alt; full claude-* accepted. --list/-l/list lists slots (creates shared dir); --repair/repair migrates noncredential entries to shared symlinks with backups; claude -h/--help shows help. Example: `./scripts/login.sh claude alt`. |
 | `logout.sh [provider]` | No args logs out all; claude/codex/gemini/grok, -h/--help. Claude --list (authentication, priority and remaining cooldown; no container needed), --prefer SLOT, --priority A,B,..., --clear-cooldown SLOT or all (management requires a running container), --disable SLOT (config only), --remove SLOT or bare SLOT (config + renamed credential backups). Example: `./scripts/logout.sh claude --disable alt`. Codex removes stored auth files; Gemini removes `oauth_creds.json` and prints key-removal and restart instructions. |
 | `status.sh` | No parsed options; container + CLI-auth probes. Example: `./scripts/status.sh`. Gemini probe checks API-key env or the OAuth credential file. |
