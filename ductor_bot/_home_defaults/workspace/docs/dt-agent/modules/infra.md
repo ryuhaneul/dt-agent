@@ -11,9 +11,16 @@ atomic persistence, environment loading, and shared observer/task helpers.
   startup and interrupted-work state
 - `json_store.py`, `atomic_io.py`, `fs.py`: atomic file operations
 - `env_secrets.py`: user-defined environment values from the bot home
+- `file_lock.py`: companion-file locks for concurrent history, import and credential updates
+- `secret_store.py`: shared tool credential store, also used by web password/TOTP administration
 - `base_observer.py`, `base_task_observer.py`, `task_runner.py`:
   automation support
 - `platform.py`, `process_tree.py`: subprocess helpers
+
+Optional history and web components reuse these atomic-write and locking helpers.
+Their state lives under `DuctorPaths.chat_log_dir` and `webchat_dir`;
+[recording retention](chat_log.md#retention-and-manual-cleanup) is separate from
+the general cleanup observer.
 
 ## Restart recovery notices
 

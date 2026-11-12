@@ -14,6 +14,7 @@ Session lifecycle and persistence with provider isolation and topic/channel-awar
 
 - Telegram messages with `is_topic_message` false -> `SessionKey("tg", chat_id, None)`, even if `message_thread_id` is present
 - Telegram group/private-chat messages with `is_topic_message` true -> `SessionKey("tg", chat_id, message_thread_id)`
+- Web chat -> the target Telegram `tg:` session key and shared lock; topic deletion removes that exact session, history and queued deliveries (see [web chat](webchat.md#topics-turns-and-queue))
 - Matrix rooms -> `SessionKey("mx", mapped_room_int, None)`
 - API channel scope -> `SessionKey(chat_id=chat_id, topic_id=channel_id)` uses the default `"tg"` transport and may share Telegram state for equal numeric IDs; CLI origin metadata is separately `"api"`
 

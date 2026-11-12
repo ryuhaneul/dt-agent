@@ -44,7 +44,8 @@ Lock key: `envelope.lock_key -> (chat_id, topic_id)`.
 3. wake heartbeat state for task result/question and inter-agent origins
 4. if `needs_injection`: call `SessionInjector.inject_prompt(...)` (orchestrator)
 5. after a non-empty inter-agent injection, invoke the injected-response persistence callback
-6. route delivery and return `DeliveryOutcome`
+6. route delivery
+7. after processing and lock release, invoke the optional delivery observer (observer errors are logged), then return `DeliveryOutcome`
 
 Inter-agent injection failure, missing injector or empty injection response
 prevents raw-result delivery. `DeliveryOutcome.ok` requires both injection and
@@ -83,6 +84,17 @@ Cascading fallback for UNICAST:
 - Inter-agent results never use that fallback: unavailable recorded transport produces a delivery failure for durable retry by the inter-agent layer.
 - The fallback envelope is rewritten as a BROADCAST with a "Delivery fallback" explanation prepended to the result text, so the user understands the message was intended for a different transport.
 
+## Optional recording and Telegram outbox
+
+Main-agent `ChatLogRuntime` installs `HistoryRecorder.on_delivered` through
+`set_delivery_observer` and attaches an outbox to `TelegramTransport`. Supported
+public Telegram deliveries use progress-aware sending; transient failures and
+deliveries behind an existing pending queue are persisted. Successful enqueue
+sets `envelope.delivered=true`: the bus has accepted durable delivery, while
+Telegram transmission may still be pending. The drainer resumes saved chunk
+progress in order. Inter-agent deliveries retain their own acknowledgement and
+retry path. See [coverage and recovery limits](chat_log.md#behavior-when-enabled).
+
 ## Adapter mapping (`adapters.py`)
 
 - `from_background_result(...)`
@@ -115,5 +127,6 @@ A single `LockPool` is shared by:
 
 - `SequentialMiddleware` (Telegram ingress)
 - `MessageBus` (observer/result routing)
+- optional web turns (same Telegram chat/topic lock)
 
 `Orchestrator` receives that pool during primary Telegram/Matrix/Slack/headless startup, before starting the optional API. `ApiServer` uses the passed pool for WebSocket user turns; active-session delegation questions also acquire it. Their 60s wait falls back to the separate source-header Named Session. A standalone `ApiServer` without a supplied pool still creates its own. Lock keys remain `(chat_id, topic_id)`; the API retains legacy `tg` session storage while CLI origin is `api`. Sources: [delegation questions](multiagent.md#questions-during-delegation).

@@ -115,7 +115,7 @@ top-level key.
 | `webchat.trusted_proxies` | `list[str]` | `[]` | restart | IP addresses or CIDRs; required behind a proxy |
 | `webchat.bind_address` | `str` | `"127.0.0.1"` | restart | Behind-proxy IPv4 bind: loopback or RFC1918 only |
 | `webchat.http_port` | `int` | `80` | restart | HTTP port, 1-65535 |
-| `webchat.https_port` | `int` | `443` | restart | Direct-mode HTTPS port, 1-65535 |
+| `webchat.https_port` | `int` | `443` | restart | HTTPS listener port, 1-65535; also bound internally in behind-proxy mode |
 | `webchat.npm_admin_port` | `int` | `81` | restart | Admin port, 1-65535; must differ from HTTP and HTTPS ports |
 | `webchat.acme_email` | `str` | `""` | restart | Direct-mode ACME email; required and must contain `@` |
 | `webchat.web_port` | `int` | `8744` | restart | Web app port, 1-65535 |

@@ -59,6 +59,14 @@ Common path:
 
 `is_chat_busy(chat_id, topic_id=None)` checks whether a CLI process is running. When `topic_id` is provided, only processes for that specific topic are considered busy; otherwise any process for the chat qualifies.
 
+When main-agent recording is active, `set_history_recorder` attaches
+`HistoryRecorder` around `_handle_message_impl`: it records Telegram-keyed user
+input and completed replies and emits busy state. Recording errors are logged
+without preventing the turn. Optional web turns enter the streaming path with
+source `web`, stable turn/entry IDs and the shared Telegram topic lock;
+[webchat/turns.py](../../ductor_bot/webchat/turns.py) owns mirrors and scoped abort.
+See [recording](chat_log.md) and [web chat](webchat.md).
+
 ## `OrchestratorResult` metadata
 
 `OrchestratorResult` carries optional metadata fields populated after CLI execution:

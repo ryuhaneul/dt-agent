@@ -78,7 +78,7 @@ and Matrix, not every supported transport.
 
 ### `ductor` entry (`ductor_bot/__main__.py`)
 
-1. parse CLI args and dispatch command (implementation in `cli_commands/*`)
+1. parse CLI args and dispatch command (`cli_commands/*`, plus `chat_log/cli.py` and `webchat/cli.py`)
 2. default run path:
    - `_is_configured()` only checks the minimal onboarding gate for active transports
    - Telegram gate: non-placeholder token + non-empty `allowed_user_ids`
@@ -119,6 +119,12 @@ Telegram startup:
 8. recovery planning (`inflight_turns.json` + recovered named sessions)
 9. sync Telegram commands and start restart watcher
 10. run group audit immediately + start periodic 24h audit loop
+
+Optional recording starts once the orchestrator is available, attaching history
+and bus observers, the Telegram outbox, link monitor and drainer. Valid web
+activation splits local startup from Telegram connection setup so the bridge
+can start during an outage; startup hooks run once. Shutdown closes the bridge
+and recording runtime before the orchestrator. See [web startup](modules/webchat.md#components-and-activation).
 
 Matrix startup also consumes restart state, classifies/notifies startup, and plans foreground/named-session recovery. It uses matrix-nio's `AsyncClient` sync loop instead of aiogram polling. Secondary transports sharing an orchestrator skip the primary initialization/recovery sequence.
 

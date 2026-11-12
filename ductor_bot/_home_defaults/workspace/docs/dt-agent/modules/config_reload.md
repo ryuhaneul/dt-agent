@@ -43,6 +43,7 @@ Important runtime nuance:
 
 - transport/auth: `transport`, `transports`, `telegram_token`, `matrix`
 - runtime topology: `api`, `webhooks`, `interagent_port`
+- recording/web: `chat_log` (including retention limits), `webchat`; gateway settings also require host `scripts/webchat.py up` after restart
 - environment/core: `ductor_home`, `log_level`, `gemini_api_key`
 - timeout/task policy: `timeouts`, `tasks`, `cron_delivery_retry`
 - receipt notification: `interagent_notify_received` (default false)

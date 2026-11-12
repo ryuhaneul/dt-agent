@@ -34,12 +34,20 @@ python3.11 -m venv .venv
 4. `ductor_bot/orchestrator/`: commands and message flows
 5. `ductor_bot/cli/service.py`: provider subprocess gateway
 6. `ductor_bot/bus/`, `session/`, `tasks/`: delivery and persistent work
+7. `ductor_bot/chat_log/`, `webchat/`: optional history/outbox and web bridge/browser app; `scripts/webchat.py` and `docker/webchat/` provide the gateway
 
 The bot home is mounted at `/ductor` in the container. Workspace,
 sessions, logs, and CLI authentication persist in the host `DUCTOR_HOME`.
 Chat `/stop` and `/restart` are runtime commands; Compose controls the
 container itself. Compose environment edits require service recreation;
 `/restart` cannot refresh inherited container environment variables.
+
+Both recording and web chat default to disabled. See [history](modules/chat_log.md),
+[web chat](modules/webchat.md) and [setup](installation.md#emergency-web-chat-optional)
+for activation, CLI administration and storage. After documentation or config-note
+changes, regenerate the agent bundle with `python scripts/build_agent_docs.py`;
+`INDEX.md` and `commands-reference.md` in the bundle are maintained by hand.
+Verify with `python scripts/build_agent_docs.py --check`.
 
 For development, [justfile](../justfile) defines `just fix`, `just check`,
 `just test [args]`, and opt-in `just test-parallel [args]` (`just` >=1.42.0 and

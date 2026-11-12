@@ -168,6 +168,11 @@ The fixed-width view shows ten-cell bars and server percentages, including value
 
 The standard image installs `/etc/claude-code/managed-settings.d/10-dt-agent-retention.json` with `cleanupPeriodDays: 36500`, covering every in-container Claude invocation regardless of slot (bot calls, streaming, one-shot tasks, sub-agents, login and direct execution). Higher-priority managed sources such as organization server policies may supersede this local policy; administrators can deliberately override the value with a later-named drop-in in the same directory ([how Claude Code combines managed sources](https://code.claude.com/docs/en/managed-settings#how-claude-code-combines-managed-sources)).
 
+Optional `ductor chat-log import` reads Claude and Codex transcripts into the
+separate conversation history store; it does not alter provider transcripts.
+History retention does not change this Claude CLI policy. See
+[import and retention](chat_log.md).
+
 ### Claude system prompt snapshot
 
 Claude Code records its system prompt at session start and at compaction (`--system-prompt-snapshot`, default **on**), so a resumed turn keeps the old text even when `MAINMEMORY.md`, `PERSONA.md` or `BEHAVIOR.md` changed. DT Agent therefore runs Claude turns with `--system-prompt-snapshot off`, which renders the system prompt anew on every request, and assembles the appended parts on every turn:

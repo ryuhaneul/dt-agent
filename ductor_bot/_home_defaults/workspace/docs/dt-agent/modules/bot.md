@@ -18,7 +18,19 @@ For shared messenger protocols and the transport registry, see
 - `messenger/telegram/topic.py`: topic/session key helpers + topic-name cache
 - `messenger/telegram/topic_naming.py`: bounded implicit DM topic naming, isolated title generation and persistent attempt flags
 - `messenger/telegram/file_browser.py`, `messenger/telegram/sender.py`, `messenger/telegram/media.py`, `messenger/telegram/welcome.py`, `messenger/telegram/formatting.py`, `messenger/telegram/typing.py`
-- `messenger/telegram/transport.py`: Telegram transport adapter for `MessageBus`
+- `messenger/telegram/transport.py`: Telegram transport adapter for `MessageBus`, with optional recording outbox integration
+- `messenger/telegram/webchat_ops.py`: Telegram probe, topic operations and progress-aware sends for history/web runtime
+
+## Optional history and web startup
+
+For main only, `ChatLogRuntime` attaches the recorder to the orchestrator and bus,
+and the outbox to `TelegramTransport`. It starts a link monitor, ordered drainer
+and optional history/backup retention. With valid `webchat.enabled`, local startup
+and the token-protected web bridge run before Telegram connection attempts,
+which retry after 5, 10, 20, 40 and then 60 seconds. Without web activation,
+recording starts through normal Telegram startup. Shutdown closes the bridge
+and recording runtime before the orchestrator. See [history](chat_log.md) and
+[web chat](webchat.md).
 
 ## Command ownership
 

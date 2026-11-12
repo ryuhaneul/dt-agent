@@ -10,7 +10,7 @@ and [configuration](../config.md#chatlogconfig).
 
 `ChatLogRuntime.start(bot)` starts once after the orchestrator is available and
 stops before orchestrator shutdown. `recorder.py` records user input, completed
-responses and public bus events. `history.py` stores append-only JSONL under
+responses and public bus events. `history.py` appends JSONL entries under
 `$DUCTOR_HOME/chat_log/history/`, with stable entry IDs and per-topic sequence
 numbers. Topics use the same Telegram session identity as normal chat.
 Deleting a topic removes its history; the empty companion lock file remains
@@ -32,7 +32,12 @@ task questions and replies, heartbeat alerts, cron, webhook and background resul
 New deliveries join an existing pending queue so recovery preserves order.
 Web messages and replies use the same queue for their Telegram mirrors.
 Public task questions are recorded from their question text; other bus events
-use public result content. Heartbeat recording follows the alert path.
+use public result content; a task result without injection records status/title
+without the raw worker result. Heartbeat recording follows the alert path.
+Inter-agent results can be recorded, but keep their existing inter-agent retry
+path rather than this outbox. Normal Telegram foreground replies and other direct
+sends are not made durable by enabling recording. Telegram-keyed direct API turns
+can also be recorded with source `api`; Matrix/Slack turns are excluded.
 
 Buffered delivery uses `send_rich_progress_detailed`, tracking completed chunks.
 Long messages can split at different positions from the default `send_rich` path.

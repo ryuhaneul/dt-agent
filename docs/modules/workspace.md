@@ -32,6 +32,8 @@ Important runtime paths:
 - `cron_jobs_path`: `~/.ductor/cron_jobs.json`
 - `webhooks_path`: `~/.ductor/webhooks.json`
 - `logs_dir`: `~/.ductor/logs`
+- `chat_log_dir`: `~/.ductor/chat_log` (history, outbox and import references)
+- `webchat_dir`: `~/.ductor/webchat` (bridge token, auth state, edit backups and gateway state)
 - `cron_tasks_dir`: `~/.ductor/workspace/cron_tasks`
 - `tasks_dir`: `~/.ductor/workspace/tasks`
 - `api_files_dir`: `~/.ductor/workspace/api_files`
@@ -57,6 +59,7 @@ Directory creation note:
 
 - `workspace/api_files/` is not in `_REQUIRED_DIRS`; it is created lazily on first API upload via `prepare_destination(...)`.
 - `workspace/tasks/` is part of `_REQUIRED_DIRS` and always created (used by shared `TaskHub` task folders).
+- resolving `chat_log_dir` or `webchat_dir` does not create directories; recording/web runtime and explicit maintenance operations create their own state as needed. Neither feature activates for sub-agents.
 - sub-agent homes do not create `logs/` by default; all agents write to the main home log file `~/.ductor/logs/agent.log`.
 
 ## Zone copy rules (`_walk_and_copy`)

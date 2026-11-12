@@ -43,6 +43,20 @@ Details: [modules/bot.md](modules/bot.md) (Telegram), [modules/orchestrator.md](
 
 Inside the bot container: `ductor` (no arguments) starts the configured bot, `ductor --help` / `ductor help` prints usage, `ductor --version` prints the version, `-v` / `--verbose` turns on verbose logging, `ductor status` shows bot status, paths and agents, and `ductor agents [list|add NAME|remove NAME]` manages sub-agents (the add scaffold is interactive and Telegram-focused; edit `agents.json` for headless or Matrix agents). Never start a second no-argument `ductor` process against an active home. Details: [modules/cli_commands.md](modules/cli_commands.md).
 
+| Command | Purpose |
+|---|---|
+| `ductor chat-log status` | Recording validation, history and queue counts |
+| `ductor chat-log import [--dry-run] [--undo]` | Import Claude/Codex transcripts, preview or undo imported entries |
+| `ductor chat-log prune --older-than N [--backups] [--dry-run]` | Clean old history and terminal/quarantined queue files; optionally edit backups |
+| `ductor webchat set-password` | Set password interactively (12+ characters), revoke sessions |
+| `ductor webchat reset-totp` / `clear-credentials` | Reset enrollment or remove password/TOTP credentials, revoke sessions |
+| `ductor webchat check-config [--json]` | Validate recording/web settings; validation errors exit 1 |
+
+Actual import/undo requires active recording; manual prune works when recording is
+off. Both features default to off and activate for main with Telegram only; web
+requires recording. Settings need a bot restart; credential maintenance does not.
+See [history and retention](modules/chat_log.md) and [web chat](modules/webchat.md).
+
 ## Host scripts (operator only)
 
 These run on the host in the repository checkout, not inside the agent container; an agent cannot run them. Running host scripts is the operator's job: ask the operator to run them.
@@ -53,6 +67,7 @@ These run on the host in the repository checkout, not inside the agent container
 | `scripts/login.sh [provider]` | Log a provider CLI (claude, codex, gemini, grok) in inside the running container; `claude [slot]` for extra Claude accounts |
 | `scripts/logout.sh [provider]` | Log out; Claude slot options `--list`, `--disable SLOT`, `--remove SLOT` |
 | `scripts/status.sh` | Container and CLI-auth probes |
+| `python3 scripts/webchat.py up/down/status` | Start/configure, stop or inspect web app and NPMplus/CrowdSec gateway; `down --purge` also deletes gateway volumes/state |
 | `scripts/rebuild.sh` | Rebuild images and recreate containers without pulling source |
 | `scripts/update.sh` | Fast-forward the checkout, rebuild and swap containers |
 | `scripts/verify-clean-clone.sh` | Isolated verification of a committed ref (developer tool) |

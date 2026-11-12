@@ -70,6 +70,8 @@ Observer / TaskHub / InterAgentBus callback
 | `background/` | named background session execution for `/session` |
 | `multiagent/` | supervisor, inter-agent bus, internal localhost API bridge, shared knowledge sync |
 | `api/` | optional direct WebSocket API and authenticated file endpoints |
+| `chat_log/` | optional main-agent history, transcript import, retention, Telegram link monitor and durable outbox |
+| `webchat/` | optional main-agent web bridge, authentication, topics, file editing and browser app |
 | `cron/`, `webhook/`, `heartbeat/`, `cleanup/` | in-process automation observers |
 | `workspace/` | `/ductor` path model, seeding, rule deployment/sync, skill sync |
 | `infra/` | PID lock, restart/recovery state, and shared runtime helpers |
@@ -83,6 +85,8 @@ Observer / TaskHub / InterAgentBus callback
 - `/new` resets the configured default-provider bucket for the active session key.
 - `/reset` resets the currently active provider bucket for the active session key.
 - `MessageBus` is the single async delivery path for observers, task callbacks, webhook wake results, and async inter-agent responses. Delivery is transport-aware: UNICAST envelopes route to the matching transport only, with cascading fallback when the target transport is unavailable.
+- `chat_log.enabled` and `webchat.enabled` default to false, require restart and activate only for main with Telegram. Recording works without the web UI; web requires recording. Recording wires a bus delivery observer and Telegram outbox for supported public deliveries; inter-agent results keep their own retry path.
+- Web turns share Telegram session keys and the orchestrator lock. The internal bridge uses `X-Dtw-Bridge-Token`; browser sessions use password/TOTP and CSRF protection. See [history](docs/modules/chat_log.md) and [web chat](docs/modules/webchat.md).
 - User ingress, `MessageBus` injection and `ApiServer` share the orchestrator `LockPool`. `ApiServer` receives that pool at startup and locks by the session key.
 - Workspace init is zone-based:
   - Zone 2 overwrite: `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, framework-managed tool scripts
@@ -102,6 +106,9 @@ All run as in-process asyncio tasks:
 - `CleanupObserver`
 - `CodexCacheObserver`
 - `GeminiCacheObserver`
+- `TelegramLinkMonitor` and `OutboxDrainer` when main-agent recording is active
+- history/backup retention task when a `chat_log` retention limit is enabled
+- web bridge and web turns when `webchat` is active (browser app and gateway run in separate Compose services)
 - config reloader
 - rule sync watcher
 - skill sync watcher
@@ -110,6 +117,10 @@ All run as in-process asyncio tasks:
 
 `ductor` starts a configured bot. `ductor status`, `ductor help`,
 `ductor --help`, `ductor --version`, and `ductor agents` are available.
+`ductor chat-log status/import/prune` manages history and recovery data;
+`ductor webchat set-password/reset-totp/clear-credentials/check-config` manages
+web credentials and validation. Host `python3 scripts/webchat.py up/down/status`
+controls the optional web app and NPMplus/CrowdSec gateway.
 Use `docker compose` to start, stop, and rebuild the runtime container.
 See [installation](docs/installation.md).
 
@@ -128,6 +139,8 @@ See [installation](docs/installation.md).
 - `inflight_turns.json`
 - `chat_activity.json`
 - `SHAREDMEMORY.md`
+- `chat_log/history/`, `chat_log/outbox/`, `chat_log/import_refs.json` (optional recording state)
+- `webchat/share/bridge.token`, `webchat/auth_state.json`, `webchat/backups/`, `webchat/gateway/` (optional web state)
 - `logs/agent.log`
 - `workspace/`
 

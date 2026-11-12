@@ -16,7 +16,7 @@ DT Agent는 [github.com/ryuhaneul/dt-agent](https://github.com/ryuhaneul/dt-agen
 
 Provider CLI는 봇 컨테이너에서, Chromium은 별도 브라우저 컨테이너에서 실행합니다. 위임 라우팅, 중단·복구, 초기 설정, 선택 의존성과 안전한 진단도 변경했습니다. 전체 변경은 [변경점 문서](docs/CHANGES.md)에 정리되어 있습니다.
 
-- 선택 기능인 [대화 기록·복구 큐](docs/modules/chat_log.md)는 텔레그램 전달 실패분을 보관하고, [긴급 웹 채팅](docs/modules/webchat.md)은 인증된 토픽 대화와 버전 확인을 거치는 설정 파일 편집을 제공합니다. [설정 절차](docs/installation.md#emergency-web-chat-optional)를 참고하십시오.
+- 선택 기능인 [대화 기록·복구 큐](docs/modules/chat_log.md)는 대화를 기록하고 지원되는 공개 Telegram 버스 전송 실패분을 보관하며, [긴급 웹 채팅](docs/modules/webchat.md)은 인증된 토픽 대화와 버전 확인을 거치는 설정 파일 편집을 제공합니다. [설정 절차](docs/installation.md#emergency-web-chat-optional)를 참고하십시오.
 
 ## 1. 요구 사항과 깨끗한 서버 준비
 
@@ -218,7 +218,7 @@ managed 설정이므로 사용자 설정으로 보존 기간을 줄일 수 없�
 ./scripts/logout.sh --help
 ```
 
-컨테이너 안 제품 CLI는 인자 없음(설정된 봇 기동), --help/help·--version·--verbose·status, agents [list|add NAME|remove NAME]을 지원합니다. add는 Telegram 중심 대화형 생성이며 headless·Matrix는 agents.json에 직접 정의할 수 있습니다. 확인 목적으로 활성 home에 인자 없는 ductor를 또 실행하지 마십시오.
+컨테이너 안 제품 CLI는 인자 없음(설정된 봇 기동), --help/help·--version·--verbose·status, agents [list|add NAME|remove NAME], chat-log·webchat 관리를 지원합니다. add는 Telegram 중심 대화형 생성이며 headless·Matrix는 agents.json에 직접 정의할 수 있습니다. 확인 목적으로 활성 home에 인자 없는 ductor를 또 실행하지 마십시오.
 
 ```bash
 docker compose exec ductor-bot ductor --help
@@ -226,6 +226,22 @@ docker compose exec ductor-bot ductor --version
 docker compose exec ductor-bot ductor status
 docker compose exec ductor-bot ductor agents list
 ```
+
+선택 기능인 기록·웹 관리 명령:
+
+| 컨테이너 안 명령 | 용도 |
+| --- | --- |
+| `ductor chat-log status` | 기록 활성 상태·대화 기록·복구 큐 개수 조회. |
+| `ductor chat-log import [--dry-run] [--undo]` | Claude·Codex 기록 가져오기, 미리보기 또는 가져온 기록 되돌리기. |
+| `ductor chat-log prune --older-than N [--backups] [--dry-run]` | 오래된 기록·완료/격리 큐 데이터 정리. 선택적으로 웹 편집 백업 포함. |
+| `ductor webchat set-password` | 비밀번호 대화형 설정(12자 이상). |
+| `ductor webchat reset-totp` / `clear-credentials` | TOTP 등록 초기화 또는 웹 자격 삭제·세션 폐기. |
+| `ductor webchat check-config [--json]` | 설정 검증. 검증 오류는 exit 1. |
+
+`docker compose exec ductor-bot`으로 실행하며 `set-password`에는 `-it`를 사용합니다.
+호스트의 `python3 scripts/webchat.py up/down/status`는 웹 앱과 NPMplus·CrowdSec
+게이트웨이를 관리합니다. `down --purge`는 게이트웨이 볼륨·상태를 삭제합니다.
+시작 전에 [설정 절차](docs/installation.md#emergency-web-chat-optional)를 따르십시오.
 
 ## 5. Telegram·Matrix 채팅 명령
 
@@ -278,19 +294,25 @@ ductor_bot/           # tracked Python package
   multiagent/         # supervisor, registry, inter-agent bus/API
   session/            # transport/chat/topic and named sessions
   tasks/, background/ # background tasks and named-session work
+  chat_log/, webchat/ # optional history/outbox and emergency web chat
   cron/, webhook/, heartbeat/, cleanup/
   workspace/          # path model, seeding, rule/skill sync
   infra/, security/, files/, text/, api/, i18n/
   _home_defaults/     # bundled home/workspace templates
-docker/               # ductor-bot, browser, env templates
+docker/               # ductor-bot, browser, webchat, env templates
 scripts/              # host operators and isolated verifiers
 tests/                # product tests
 docs/                 # configuration and module docs
-compose.yaml          # two-service runtime
+compose.yaml          # bot/browser runtime + optional webchat profile
 config.example.json   # onboarding input template
 pyproject.toml        # package/dependencies/extras
 justfile              # developer checks
 ```
+
+선택 `webchat` 프로필은 loopback 포트의 웹 앱, 호스트 네트워크를 쓰는 NPMplus
+게이트웨이와 loopback 포트의 CrowdSec 서비스를 추가합니다. 직접 공개 시 IP 허용
+목록·TLS를 사용하며 프록시 뒤에서는 신뢰 프록시·내부 bind 주소를 지정해야 합니다.
+봇 브리지는 내부에 유지합니다. [웹 배포](docs/modules/webchat.md#components-and-activation)를 참고하십시오.
 
 봇 이미지에는 openssh-client(`ssh`·`scp`)가 기본 포함됩니다. Python paramiko는 설치하지 않으며 PyNaCl은 `api` extra로만 제공합니다.
 
@@ -319,6 +341,9 @@ $DUCTOR_HOME/                     # host; mounted as /ductor
   cron_jobs.json, webhooks.json, startup_state.json
   inflight_turns.json, chat_activity.json, heartbeat_state.json
   interagent/inflight/, interagent/undelivered/
+  chat_log/history/, chat_log/outbox/, chat_log/import_refs.json
+  webchat/share/bridge.token, webchat/auth_state.json
+  webchat/backups/, webchat/gateway/
   SHAREDMEMORY.md, bot.pid, restart-requested
 ```
 
@@ -388,6 +413,8 @@ main 설정은 `$DUCTOR_HOME/config/config.json`입니다. [설정 스키마](do
 | `streaming/heartbeat/cleanup` | 스트리밍 출력·정기 확인·보관 기간. 예시는 heartbeat 활성, 수동 그룹 대상은 빈 목록. 끄려면 `config.json`의 `heartbeat.enabled`를 `false`로 설정합니다. 자동 대상 선정은 기본 켜짐으로, 최근 7일 안에 대화한 허용 Telegram DM·그룹 토픽 세션을 각각 선택합니다(사용자의 마지막 활동 기준, 추적·복구 대상은 이후에도 포함될 수 있음). suspend_on_ack도 기본 켜짐으로, 할 말 없이 ACK만 답한 세션은 다음 대화까지 쉽니다. 수락된 사용자·태스크·버스 활동이나 사용자 활동 횟수 변경도 다시 깨웁니다. 메모리 린트 보고와 크론 결과만으로는 heartbeat 대상이 되거나 깨어나지 않습니다. 조용한 시간 기본값은 꺼짐(0/0)이며, 최근 활동 쿨다운과 세션 조건은 계속 적용됩니다. |
 | `cron_delivery_retry/cron_preflight` | 선택 cron 재시도(기본 꺼짐·300초·12회) / 결정적 건너뛰기 조건(기본 꺼짐·15초·HEARTBEAT_OK). |
 | cron job `delivery_mode` | cron 도구로 job 마다 지정(`config.json` 아님): `separate`(별도 실행, 결과는 메시지로 도착; 전달 방식이 지정되지 않은 job), `inject`(chat/topic 에서 만든 job 의 기본값: 결과를 그 토픽 세션에 주입하고 세션 응답을 전달) 또는 `in_session`(별도 실행 없이 그 세션의 턴으로 지시를 수행). 둘은 chat 이 필요하며, 에이전트가 크론을 만들거나 고치기 전에 항목별로 설명합니다. [cron 전달 방식](docs/modules/cron.md#delivery-modes-inject-and-in_session) 참고. |
+| `chat_log` | 기본 꺼짐. main Telegram 기록·복구 큐. 기록·백업 자동 보관 정리는 기본 꺼짐(`0` 또는 `null`). 재시작 필요. |
+| `webchat` | 기본 꺼짐. 기록 활성화·도메인·접근 설정 필요. 비밀번호·TOTP, Telegram 토픽 공유와 main Markdown 4종 편집 제공. 재시작 필요. |
 | `api/webhooks` | 선택 리스너. 인증 토큰·공개 제한은 브라우저 인증과 별도. |
 | `file_access/permission_mode` | 스키마 기본 all/bypassPermissions. provider는 마운트 home에 접근합니다. |
 | `language/user_timezone` | 스키마 언어 기본값은 en, 온보딩은 지원하는 서버 로케일 또는 --language/ONBOARD_LANGUAGE를 사용합니다. 한국어 UI는 ko. 자동화는 IANA 시간대. |
@@ -477,6 +504,13 @@ just test tests/session
 | [docs/fork_deploy_model.md](docs/fork_deploy_model.md) | 포크 배포·소스 모델. |
 | [docs/UPSTREAM.md](docs/UPSTREAM.md) | 수동 upstream 반영 절차. |
 | [docs/README.md](docs/README.md) | 문서 색인·모듈 링크. |
+
+기록이 켜져 있으면 지원되는 공개 버스 전송은 일시적 Telegram 실패 뒤 큐에
+저장되고 웹 메시지·답변도 Telegram 미러로 큐에 들어갑니다. 일반 Telegram 직접
+응답은 이 큐 대상이 아니며 에이전트 간 결과는 기존 재시도 경로를 사용합니다.
+수락된 청크의 응답이 끊기면 그 청크가 한 번 중복될 수 있습니다. 웹 저장은 전체
+바이트 해시 확인·원본 백업을 하지만 비교 뒤 외부 쓰기와 경쟁할 수 있으므로
+메모리 편집을 조율하고 백업을 유지하십시오.
 
 알려진 한계는 [CHANGES 7절](docs/CHANGES.md#7-known-limitations)에 기록되어 있습니다. 닫히지 않은 바깥 버튼 표식 뒤의 정상 파일 표식이 최상위로 취급되어 업로드될 수 있습니다. config·인증 경로의 부모 심볼릭 링크를 따라갈 수 있고 링크 검사와 chmod 사이에 경쟁이 남습니다. 자연 종료한 서브는 health만 멈추고 등록이 남아 `/agent_stop` 뒤 `/agent_start`가 필요할 수 있습니다. 파일 읽기·이동 실패와 재시작이 겹치면 같은 결과가 다시 전달될 수 있습니다(정확히 한 번 전달 아님). 에이전트 간 방송이 일부 수신처에서 실패하면 방송 전체를 다시 보내 이미 받은 수신처에 중복될 수 있습니다. 켜 둔 수신 알림은 서브 봇이 원 채팅에 접근하지 못하면 전송에 실패합니다(결과 전달은 별개). 같은 chat ID의 API·Telegram 세션이 공유될 수 있습니다. 이름 있는 세션이 출처이거나 출처를 확인할 수 없거나 세션 잠금을 60초 기다려도 얻지 못하면 질문을 별도 세션에서 처리합니다.
 

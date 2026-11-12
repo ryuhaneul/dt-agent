@@ -21,6 +21,16 @@ For transport-specific details see [bot.md](bot.md) (Telegram) and
 | `messenger/send_opts.py` | Base send-option model shared by transport senders |
 | `messenger/multi.py` | `MultiBotAdapter` — multi-transport facade behind `BotProtocol` |
 
+## Optional Telegram history and web chat
+
+Main-agent `chat_log.enabled` wires a history recorder and durable outbox into
+the Telegram transport. Supported public bus notices use progress-aware delivery
+and ordered recovery; this does not provide a queue for every direct Telegram
+send. `webchat.enabled` adds an internal bridge and a separately hosted browser
+app sharing Telegram sessions and locks. Matrix, Slack and sub-agents do not
+activate these runtimes. See [history and delivery coverage](chat_log.md) and
+[web components and access controls](webchat.md).
+
 ## BotProtocol
 
 `BotProtocol` (`protocol.py`) is a `typing.Protocol` decorated with

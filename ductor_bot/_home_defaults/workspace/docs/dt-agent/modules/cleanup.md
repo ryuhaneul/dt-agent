@@ -17,6 +17,11 @@ Targets retention cleanup in:
 - `~/.ductor/workspace/output_to_user/`
 - `~/.ductor/workspace/api_files/`
 
+Conversation history, completed/quarantined outbox items and web edit backups are
+managed separately by `ChatLogRuntime`, not these workspace retention settings.
+See [history retention](chat_log.md#retention-and-manual-cleanup) for defaults,
+`chat_log.retention_days`, `chat_log.backup_retention_days` and manual pruning.
+
 ## Config (`AgentConfig.cleanup`)
 
 | Field | Type | Default | Notes |

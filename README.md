@@ -16,7 +16,7 @@ DT Agent is a modified fork maintained at [github.com/ryuhaneul/dt-agent](https:
 
 Provider CLIs run in the bot container; Chromium runs in a separate browser container. DT Agent also changes delegation routing, interruption/recovery, onboarding, optional dependencies and safe diagnostics. See the complete [change list](docs/CHANGES.md).
 
-- Optional [conversation history and recovery queue](docs/modules/chat_log.md) retains failed Telegram deliveries; [emergency web chat](docs/modules/webchat.md) adds authenticated topic chat and versioned settings-file editing. See [setup](docs/installation.md#emergency-web-chat-optional).
+- Optional [conversation history and recovery queue](docs/modules/chat_log.md) records conversations and retains supported failed public Telegram bus deliveries; [emergency web chat](docs/modules/webchat.md) adds authenticated topic chat and versioned settings-file editing. See [setup](docs/installation.md#emergency-web-chat-optional).
 
 ## 1. Requirements and a clean server
 
@@ -218,7 +218,7 @@ Because this is a managed setting, user settings cannot shorten retention; add a
 ./scripts/logout.sh --help
 ```
 
-The in-container product CLI has no arguments (start configured bot), --help/help, --version, --verbose, status, and agents [list|add NAME|remove NAME]. The add scaffold is Telegram-focused and interactive; agents.json supports headless/Matrix definitions directly. Never launch a second no-argument ductor process against the active home just to inspect it.
+The in-container product CLI has no arguments (start configured bot), --help/help, --version, --verbose, status, agents [list|add NAME|remove NAME], chat-log and webchat administration. The add scaffold is Telegram-focused and interactive; agents.json supports headless/Matrix definitions directly. Never launch a second no-argument ductor process against the active home just to inspect it.
 
 ```bash
 docker compose exec ductor-bot ductor --help
@@ -226,6 +226,22 @@ docker compose exec ductor-bot ductor --version
 docker compose exec ductor-bot ductor status
 docker compose exec ductor-bot ductor agents list
 ```
+
+Optional history and web administration:
+
+| In-container command | Purpose |
+| --- | --- |
+| `ductor chat-log status` | Recording activation, history and recovery queue counts. |
+| `ductor chat-log import [--dry-run] [--undo]` | Import Claude/Codex transcripts, preview or undo imports. |
+| `ductor chat-log prune --older-than N [--backups] [--dry-run]` | Clean old history and completed/quarantined queue data; optionally web edit backups. |
+| `ductor webchat set-password` | Set a password interactively (12+ characters). |
+| `ductor webchat reset-totp` / `clear-credentials` | Reset TOTP enrollment or remove web credentials; revoke sessions. |
+| `ductor webchat check-config [--json]` | Validate configuration; exit 1 on validation errors. |
+
+Run these with `docker compose exec ductor-bot`; use `-it` for `set-password`.
+On the host, `python3 scripts/webchat.py up/down/status` manages the web app and
+NPMplus/CrowdSec gateway. `down --purge` deletes gateway volumes/state. Follow
+[setup](docs/installation.md#emergency-web-chat-optional) before starting it.
 
 ## 5. Chat commands: Telegram and Matrix
 
@@ -278,21 +294,28 @@ ductor_bot/           # tracked Python package
   multiagent/         # supervisor, registry, inter-agent bus/API
   session/            # transport/chat/topic and named sessions
   tasks/, background/ # background tasks and named-session work
+  chat_log/, webchat/ # optional history/outbox and emergency web chat
   cron/, webhook/, heartbeat/, cleanup/
   workspace/          # path model, seeding, rule/skill sync
   infra/, security/, files/, text/, api/, i18n/
   _home_defaults/     # bundled home/workspace templates
-docker/               # ductor-bot, browser, env templates
+docker/               # ductor-bot, browser, webchat, env templates
 scripts/              # host operators and isolated verifiers
 tests/                # product tests
 docs/                 # configuration and module docs
-compose.yaml          # two-service runtime
+compose.yaml          # bot/browser runtime + optional webchat profile
 config.example.json   # onboarding input template
 pyproject.toml        # package/dependencies/extras
 justfile              # developer checks
 ```
 
 Compose creates `ductor-bot`, `ductor-browser`, and the explicitly named `ductor-net`. The bot uses `init: true`, `restart: unless-stopped` and `stop_grace_period: 30s`. Browser uses the same restart policy and HTTP health check on internal port 18800. Browser has no host port, host home mount or Docker socket. Bot bind-mounts host `DUCTOR_HOME` at `/ductor`, loads home `.env` and `.env.shared`; browser loads only `.env.shared`. Base Compose has **no published host ports**. Onboarding override publishes enabled main API/webhook ports with loopback default. The internal inter-agent API uses localhost port 8799.
+
+The optional `webchat` profile adds a web app with a loopback-published port,
+a host-network NPMplus gateway and loopback-published CrowdSec services.
+Direct exposure uses IP allowlisting and TLS; behind-proxy mode needs explicit
+trusted proxies and an internal bind address. The bot bridge remains internal.
+See [web deployment](docs/modules/webchat.md#components-and-activation).
 
 The bot image includes openssh-client (`ssh` and `scp`) by default. Python paramiko is not installed; PyNaCl remains an `api` extra dependency.
 
@@ -319,6 +342,9 @@ $DUCTOR_HOME/                     # host; mounted as /ductor
   cron_jobs.json, webhooks.json, startup_state.json
   inflight_turns.json, chat_activity.json, heartbeat_state.json
   interagent/inflight/, interagent/undelivered/
+  chat_log/history/, chat_log/outbox/, chat_log/import_refs.json
+  webchat/share/bridge.token, webchat/auth_state.json
+  webchat/backups/, webchat/gateway/
   SHAREDMEMORY.md, bot.pid, restart-requested
 ```
 
@@ -388,6 +414,8 @@ Main config is `$DUCTOR_HOME/config/config.json`. Refer to [config schema](docs/
 | `streaming/heartbeat/cleanup` | Streaming output, periodic checks and retention. Heartbeat enabled by example; manual groups seeded empty. To disable heartbeat, set `heartbeat.enabled` to `false` in `config.json`. Automatic targets default on: allowed Telegram DM/group-topic sessions active within the last 7 days are selected separately by their last user activity (tracked/recovered targets may remain eligible later). With suspend_on_ack on by default, an ACK-only session rests until its next conversation; accepted user, task or bus activity also wakes it (a changed user-activity count counts too). Memory lint reports and cron results alone do not make a topic a heartbeat target or wake it. Quiet hours default to off (0/0); recent-activity cooldown and session gates still apply. |
 | `cron_delivery_retry/cron_preflight` | Optional cron retry (off, 300s, 12 attempts) / deterministic skip gate (off, 15s, HEARTBEAT_OK). |
 | cron job `delivery_mode` | Set per cron job by the cron tools (not in `config.json`): `separate` (a separate run; the result arrives as a message; jobs with no delivery mode set), `inject` (default for a job created in a chat/topic: the result is injected into that topic's session and the session's reply is delivered) or `in_session` (no separate run; the instruction runs as a turn of that session). The two need a chat; the agent explains each setting before creating or editing a job. See [cron delivery modes](docs/modules/cron.md#delivery-modes-inject-and-in_session). |
+| `chat_log` | Default off; main Telegram history and recovery queue. History/backup retention defaults off (`0` or `null`); restart required. |
+| `webchat` | Default off; requires recording, domain and access settings. Password/TOTP, shared Telegram topics and editing of four main-agent Markdown files; restart required. |
 | `api/webhooks` | Opt-in listeners; auth tokens and exposure restrictions separate from browser auth. |
 | `file_access/permission_mode` | Schema defaults all/bypassPermissions; provider has mounted-home access. |
 | `language/user_timezone` | Schema language default en; onboarding selects a supported server locale or explicit --language/ONBOARD_LANGUAGE. Set ko for Korean UI. IANA timezone for automation. |
@@ -477,6 +505,13 @@ The `verify-*` files in `scripts/` are isolated verification tools for maintaini
 | [docs/fork_deploy_model.md](docs/fork_deploy_model.md) | Fork deployment/source model. |
 | [docs/UPSTREAM.md](docs/UPSTREAM.md) | Manual upstream integration workflow. |
 | [docs/README.md](docs/README.md) | Documentation index and module links. |
+
+With recording active, supported public bus deliveries queue after transient Telegram
+failures; web messages/replies also queue Telegram mirrors. Ordinary direct Telegram
+replies are outside this queue, and inter-agent results keep their own retry path.
+An accepted chunk with an interrupted response can be duplicated once. Web saves
+check a full-byte hash and back up originals, but external writers can still race
+after comparison. Coordinate memory edits and retain backups.
 
 Known limits are recorded in [CHANGES §7](docs/CHANGES.md#7-known-limitations). Unfinished button markers: a valid file marker after an unclosed outer button marker can be treated as top-level and uploaded. Parent symbolic links of config/auth paths may be followed, and a race remains between the link check and chmod. A naturally exited sub-agent only stops reporting health while its registration stays, so `/agent_stop` followed by `/agent_start` may be needed. A failed file read/move combined with a restart can deliver the same result again (delivery is not exactly-once). If an inter-agent broadcast fails for some recipients, the whole broadcast is sent again and recipients that already received it may get a duplicate. An enabled receipt notice fails to send when the sub-agent’s bot cannot reach the origin chat (result delivery is separate). API and Telegram sessions of the same chat ID can be shared. If the source is a Named session, cannot be identified, or the session lock is not obtained within 60 seconds, the question is handled in a separate session.
 

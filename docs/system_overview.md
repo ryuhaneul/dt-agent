@@ -16,6 +16,7 @@ One Python process hosts:
 - shared `InterAgentBus`
 - shared internal HTTP bridge (`InternalAgentAPI`, default port `8799`, configurable via `interagent_port`)
 - shared `TaskHub` when `tasks.enabled=true`
+- optional main Telegram `ChatLogRuntime` (history, outbox, link monitor and retention); `webchat.enabled` additionally starts its internal web bridge before Telegram connection retries
 
 Each agent stack contains:
 
@@ -63,6 +64,7 @@ Session identity is transport-aware via `SessionKey(transport, chat_id, topic_id
 - Telegram messages with `is_topic_message` false: `transport="tg"`, `topic_id=None`, even if `message_thread_id` is present
 - Telegram topic messages (group or private) with `is_topic_message` true: `transport="tg"`, `topic_id=message_thread_id` (`ductor_bot/messenger/telegram/topic.py:37`)
 - Matrix rooms: `transport="mx"`, `chat_id=<deterministic room-int>`
+- Web chat: shares the target Telegram `tg:` chat/topic session and lock; it is not a separate messenger transport.
 - API channels: auth currently uses default `transport="tg"`, `topic_id=channel_id`.
   Equal numeric chat/topic IDs can share Telegram state. CLI request metadata
   still identifies API origin; see the [API/Telegram limit](CHANGES.md#7-known-limitations).
@@ -95,6 +97,13 @@ All observer/task/inter-agent results now flow through `bus/`:
   the receiving messenger agent uses its own bot and `--silent` suppresses them
 - interrupted persisted IA work reports an interrupted result after restart;
   retries can duplicate output under the recorded double-failure limits
+
+With `chat_log.enabled=true`, the main Telegram transport buffers supported public
+bus deliveries after transient failures, or behind an existing pending queue. Durable
+enqueue acknowledges delivery to the bus; a single drainer retries in order using
+saved chunk progress. Inter-agent delivery keeps its separate retry mechanism.
+The history recorder observes public Telegram bus deliveries and orchestrator turns;
+see [history and recovery](modules/chat_log.md) for coverage and retention.
 
 Streaming nuance:
 
@@ -156,6 +165,8 @@ Ownership checks are enforced for resume/cancel/delete when `from=<agent>` is su
 - `secrets.env` (tool credentials, mode 0600; loaded on demand by `tools/_secrets.py`, not injected)
 - `.cli-auth/` (CLI credentials and persistent Claude state)
 - `interagent/inflight/`, `interagent/undelivered/` (durable async recovery/retry state)
+- `chat_log/history/`, `chat_log/outbox/`, `chat_log/import_refs.json` (optional recording and import state)
+- `webchat/share/bridge.token`, `webchat/auth_state.json`, `webchat/backups/`, `webchat/gateway/` (optional web state)
 - `workspace/` (rules, tools, files, tasks, cron_tasks, skills)
 
 Sub-agent home: `<main_home>/agents/<name>/` with its own config/workspace/session files. Edit `agents.json` as the configuration source; generated sub config is runtime output.
@@ -193,6 +204,8 @@ CLI:
 
 - `ductor`, `ductor status`, `ductor help`, `ductor --version`
 - `ductor agents list/add/remove`
+- `ductor chat-log status/import/prune` (see [options](modules/chat_log.md#operator-commands))
+- `ductor webchat set-password/reset-totp/clear-credentials/check-config` (see [web chat](modules/webchat.md))
 
 ## 10) Container runtime
 
@@ -207,6 +220,12 @@ each defaulting to 1000), `init: true`, restart policy `unless-stopped`,
 and measured 30-second stop grace. API/webhook host ports appear only through the
 onboarding-generated override. Rebuild/update replace services and can interrupt
 work.
+
+The optional `webchat` profile adds `dt-webchat-web`, `dt-webchat-npm` and
+`dt-webchat-crowdsec`. The web app and CrowdSec publish loopback ports; NPMplus
+uses host networking and exposes HTTP/HTTPS directly or on an internal bind
+address behind a trusted proxy. Host `python3 scripts/webchat.py up/down/status`
+manages these services; see [setup](installation.md#emergency-web-chat-optional).
 
 Sources: [session key](../ductor_bot/session/key.py),
 [API construction](../ductor_bot/api/server.py),

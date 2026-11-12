@@ -605,7 +605,7 @@ restart. Both `chat_log.enabled` and `webchat.enabled` default to `false`.
 | `trusted_proxies` | `list[str]` | `[]` | IP addresses or CIDRs; required behind a proxy |
 | `bind_address` | `str` | `"127.0.0.1"` | Behind-proxy IPv4 bind: loopback or RFC1918 only |
 | `http_port` | `int` | `80` | HTTP port, 1-65535 |
-| `https_port` | `int` | `443` | Direct-mode HTTPS port, 1-65535 |
+| `https_port` | `int` | `443` | HTTPS listener port, 1-65535; also bound internally in behind-proxy mode |
 | `npm_admin_port` | `int` | `81` | Admin port, 1-65535; must differ from HTTP and HTTPS ports |
 | `acme_email` | `str` | `""` | Direct-mode ACME email; required and must contain `@` |
 | `web_port` | `int` | `8744` | Web app port, 1-65535 |
@@ -650,8 +650,9 @@ logs `Webchat disabled: <errors>` once; the bridge, Telegram connection retry lo
 and web-specific startup stay off. Recording follows its own activation decision.
 `ductor webchat check-config` and `scripts/webchat.py up` use the same errors and
 exit with code 1 on failure. Web state lives under `$DUCTOR_HOME/webchat/`, created
-only when webchat is active. Merely resolving paths or validating configuration
-creates no directories and performs no network access.
+by the runtime when webchat is active; explicit credential and gateway administration
+can also create web state while it is disabled. Merely resolving paths or validating
+configuration creates no directories and performs no network access.
 
 ## `SkillsConfig`
 

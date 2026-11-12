@@ -7,6 +7,13 @@ Input and file-path safety utilities.
 - `content.py`: suspicious prompt-pattern detection.
 - `paths.py`: file path validation against allowed roots.
 
+Web chat uses separate authentication and file controls in `webchat/auth.py`,
+`webchat/web/app.py`, `webchat/bridge.py` and `webchat/files.py`: password/TOTP,
+session cookies, CSRF, an internal bridge token and a fixed four-file edit allowlist.
+The host gateway adds client IP filtering and CrowdSec AppSec. These controls are
+described in [web chat](webchat.md); prompt-pattern warnings below are not an
+authentication boundary.
+
 ## Public API
 
 - `detect_suspicious_patterns(text) -> list[str]`
