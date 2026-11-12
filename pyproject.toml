@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dt-agent"
-version = "1.0.0"
+version = "1.1.0"
 description = "Control Claude Code and Codex CLI from Telegram. Live streaming, sessions, cron jobs, webhooks."
 readme = "README.md"
 requires-python = ">=3.11"
