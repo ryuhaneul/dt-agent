@@ -714,3 +714,7 @@ invalid_response = "Ungültiges Antwortformat"
 refresh = "Aktualisieren"
 loading = "Abfrage läuft…"
 error = "Nutzungsanzeige fehlgeschlagen"
+
+[chat_log]
+mirror_user = "🌐 Aus dem Web gesendet\n{text}"
+mirror_aborted = "Antwort gestoppt"

@@ -14,7 +14,13 @@ from typing import TYPE_CHECKING, Any, cast
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramRetryAfter
+from aiogram.exceptions import (
+    TelegramAPIError,
+    TelegramBadRequest,
+    TelegramNetworkError,
+    TelegramRetryAfter,
+    TelegramServerError,
+)
 from aiogram.filters import Command, CommandStart
 from aiogram.types import BotCommand, ChatMemberUpdated, MessageEntity, ReplyParameters
 
@@ -102,12 +108,14 @@ from ductor_bot.multiagent.bus import AsyncInterAgentResult
 from ductor_bot.session.key import SessionKey
 from ductor_bot.tasks.models import TaskResult
 from ductor_bot.text.response_format import SEP, fmt
+from ductor_bot.webchat.settings import validate_webchat, webchat_active
 from ductor_bot.workspace.paths import DuctorPaths, resolve_paths
 
 if TYPE_CHECKING:
     from aiogram.types import CallbackQuery, ForumTopicCreated, Message
 
     from ductor_bot.bus.envelope import DeliveryOutcome
+    from ductor_bot.chat_log.runtime import ChatLogRuntime
     from ductor_bot.cli.codex_usage import CodexUsage
     from ductor_bot.messenger.telegram.topic_naming import DMTopicNamer
     from ductor_bot.orchestrator.core import Orchestrator
@@ -247,6 +255,24 @@ class TelegramBot:
         self._config = config
         self._agent_name = agent_name
         self._orchestrator: Orchestrator | None = None
+        self._chat_log_runtime: ChatLogRuntime | None = None
+        self._chat_log_checked = False
+        self._webchat_active = webchat_active(config, agent_name)
+        if config.webchat.enabled and agent_name == "main" and not self._webchat_active:
+            logger.error("Webchat disabled: %s", ", ".join(validate_webchat(config)))
+        if not self._webchat_active:
+            reasons = (
+                ["disabled"]
+                if not config.webchat.enabled
+                else ["agent_not_main"]
+                if agent_name != "main"
+                else validate_webchat(config)
+            )
+            logger.info("Webchat startup skipped: %s", ", ".join(reasons))
+        self._extra_startup_hooks: list[Callable[[], Awaitable[None]]] = []
+        self._webchat_local_started = False
+        self._webchat_bridge_stop: Callable[[], Awaitable[None]] | None = None
+        self._webchat_retry_stop = asyncio.Event()
         self._abort_all_callback: Callable[[], Awaitable[int]] | None = None
 
         self._bot = Bot(
@@ -295,7 +321,8 @@ class TelegramBot:
 
         from ductor_bot.messenger.telegram.transport import TelegramTransport
 
-        self._bus.register_transport(TelegramTransport(self))
+        self._telegram_transport = TelegramTransport(self)
+        self._bus.register_transport(self._telegram_transport)
         self._button_choices: set[tuple[int, int, str]] = set()
         self._sequential = SequentialMiddleware(
             shutdown_check=self._shutdown_begun,
@@ -360,7 +387,16 @@ class TelegramBot:
 
     def register_startup_hook(self, hook: Callable[[], Awaitable[None]]) -> None:
         """Register a callback to run after bot startup (used by supervisor)."""
-        self._dp.startup.register(hook)
+        ran = False
+
+        async def run_once() -> None:
+            nonlocal ran
+            if not ran:
+                ran = True
+                await hook()
+
+        self._extra_startup_hooks.append(run_once)
+        self._dp.startup.register(run_once)
 
     @property
     def sequential(self) -> SequentialMiddleware:
@@ -1944,6 +1980,8 @@ class TelegramBot:
         Also valid before polling started: ``run()`` then ends right after its startup.
         """
         self._stop_requested = True
+        if self._webchat_active:
+            self._webchat_retry_stop.set()
         self._stop_requested = True
         self._dp.signal_stop()
         return True
@@ -2019,6 +2057,63 @@ class TelegramBot:
         if not task.done():
             logger.warning("Telegram polling task did not end within the shutdown budget")
 
+    async def _webchat_local_start(self) -> None:
+        if self._webchat_local_started:
+            return
+        from ductor_bot.chat_log.runtime import ChatLogRuntime
+        from ductor_bot.messenger.telegram.startup import run_local_notices, run_local_startup
+        from ductor_bot.webchat.bridge import start_bridge
+
+        recovery_actions = await run_local_startup(self)
+        for hook in self._extra_startup_hooks:
+            await hook()
+        runtime = await ChatLogRuntime.start(self)
+        self._webchat_local_started = True
+        if runtime is not None:
+            try:
+                self._webchat_bridge_stop = await start_bridge(self, runtime)
+            except Exception:
+                logger.exception("Webchat bridge failed to start")
+        await run_local_notices(self, recovery_actions)
+
+    async def _webchat_stop(self) -> None:
+        stop, self._webchat_bridge_stop = self._webchat_bridge_stop, None
+        if stop is not None:
+            await stop()
+
+    async def _wait_webchat_retry(self, seconds: int) -> None:
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(seconds):
+                await self._webchat_retry_stop.wait()
+
+    async def _webchat_connect(self) -> bool:
+        delay = 5
+        while not self._stop_requested:
+            try:
+                await self._bot.delete_webhook(drop_pending_updates=False)
+            except (
+                TelegramNetworkError,
+                TelegramServerError,
+                TelegramRetryAfter,
+                ConnectionError,
+                TimeoutError,
+            ) as exc:
+                if self._chat_log_runtime is not None:
+                    self._chat_log_runtime.link.report_failure()
+                if delay == 5:
+                    logger.info(
+                        "Telegram unavailable; webchat local startup completed first: %s",
+                        type(exc).__name__,
+                    )
+                logger.warning("Telegram connection retry: %s", type(exc).__name__)
+                await self._wait_webchat_retry(delay)
+                delay = min(delay * 2, 60)
+            else:
+                if self._chat_log_runtime is not None:
+                    self._chat_log_runtime.link.record(up=True)
+                return not self._stop_requested
+        return False
+
     async def run(self) -> int:
         """Start polling. Returns exit code (0 = normal, 42 = restart).
 
@@ -2030,7 +2125,12 @@ class TelegramBot:
         logger.info("Starting Telegram bot (aiogram, long-polling)...")
         # Updates the server still holds stay: whatever arrived while the bot was down is
         # processed, and a message that was only waiting is replayed from the journal.
-        await self._bot.delete_webhook(drop_pending_updates=False)
+        if self._webchat_active:
+            await self._webchat_local_start()
+            if not await self._webchat_connect():
+                return self._exit_code
+        else:
+            await self._bot.delete_webhook(drop_pending_updates=False)
         allowed_updates = self._dp.resolve_used_update_types()
         logger.info("Polling allowed_updates=%s", ",".join(allowed_updates))
         self._dp.startup.register(self._honour_stop_request)
@@ -2067,12 +2167,20 @@ class TelegramBot:
         """
         budget = budget or ShutdownBudget()
         self._stop_requested = True  # no update starts a new turn from here on
+        if self._webchat_active:
+            self._webchat_retry_stop.set()
         self._topic_naming_stopped = True
         naming_stop = asyncio.ensure_future(self._topic_namer.stop()) if self._topic_namer else None
         await _cancel_task(self._restart_watcher)
         await _cancel_task(self._group_audit_task)
 
         await self._stop_polling_owned(budget)
+        if self._webchat_active:
+            await wait_capped(self._webchat_stop(), budget.remaining(), label="webchat bridge")
+        if self._chat_log_runtime is not None:
+            await wait_capped(
+                self._chat_log_runtime.stop(), budget.remaining(), label="chat log runtime"
+            )
         await self._wait_for_naming_stop(naming_stop, budget)
         await self._reply_phase.wait_idle(budget.cap(_REPLY_DRAIN_SECONDS))
         if self._orchestrator:

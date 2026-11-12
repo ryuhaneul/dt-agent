@@ -10,19 +10,25 @@ from __future__ import annotations
 import hashlib
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from aiogram.exceptions import TelegramRetryAfter
 
 from ductor_bot.bus.cron_sanitize import sanitize_cron_result_text
 from ductor_bot.bus.envelope import IA_CHUNK_SCHEMES, Envelope, Origin
 from ductor_bot.bus.failure_reason import display_reason
+from ductor_bot.chat_log.ids import new_id, to_tid
 from ductor_bot.i18n import t
 from ductor_bot.messenger.telegram.sender import (
     SendRichOpts,
     send_rich,
     send_rich_checked_progress,
+    send_rich_progress_detailed,
 )
 from ductor_bot.messenger.telegram.typing import TypingContext
+from ductor_bot.session.key import SessionKey
 from ductor_bot.session.named import is_interagent_session_name
 from ductor_bot.text.response_format import (
     SEP,
@@ -33,6 +39,7 @@ from ductor_bot.text.response_format import (
 )
 
 if TYPE_CHECKING:
+    from ductor_bot.chat_log.outbox import Outbox
     from ductor_bot.messenger.telegram.app import TelegramBot
 
 logger = logging.getLogger(__name__)
@@ -60,6 +67,23 @@ class TelegramTransport:
 
     def __init__(self, bot: TelegramBot) -> None:
         self._bot = bot
+        self._outbox: Outbox | None = None
+        self._on_failure: Callable[[], None] | None = None
+        self._on_retry_after: Callable[[float], None] | None = None
+        self._is_blocked: Callable[[str], bool] | None = None
+
+    def set_outbox(
+        self,
+        outbox: Outbox | None,
+        *,
+        on_failure: Callable[[], None] | None = None,
+        on_retry_after: Callable[[float], None] | None = None,
+        is_blocked: Callable[[str], bool] | None = None,
+    ) -> None:
+        self._outbox = outbox
+        self._on_failure = on_failure if outbox is not None else None
+        self._on_retry_after = on_retry_after if outbox is not None else None
+        self._is_blocked = is_blocked if outbox is not None else None
 
     # -- Protocol methods ---------------------------------------------------
 
@@ -103,6 +127,63 @@ class TelegramTransport:
             thread_id=envelope.topic_id or envelope.thread_id,
         )
 
+    async def _send_part(self, env: Envelope, chat_id: int, text: str, opts: SendRichOpts) -> None:
+        if self._outbox is None:
+            await send_rich(self._bot.bot_instance, chat_id, text, opts)
+            return
+        if not text.strip():
+            return
+
+        async with self._outbox.delivery_lock:
+            sent_chunks = 0
+            transient_failure = False
+            if not env.metadata.get("chat_log_queued") and not await self._outbox.has_pending():
+                progress = await send_rich_progress_detailed(
+                    self._bot.bot_instance,
+                    chat_id,
+                    text,
+                    replace(opts, skip_unavailable_files=True),
+                    start_chunk=0,
+                )
+                if progress.delivered:
+                    return
+                if progress.failure == "permanent":
+                    if progress.exception is not None:
+                        raise progress.exception
+                    return
+                if (
+                    isinstance(progress.exception, TelegramRetryAfter)
+                    and self._on_retry_after is not None
+                ):
+                    self._on_retry_after(progress.exception.retry_after)
+                sent_chunks = progress.sent_chunks
+                transient_failure = True
+
+            tid = to_tid(SessionKey.telegram(chat_id, opts.thread_id))
+            if self._is_blocked is not None and self._is_blocked(tid):
+                return
+            history_id = env.metadata.setdefault("chat_log_entry_id", new_id())
+            await self._outbox.enqueue(
+                kind="bus",
+                chat_id=chat_id,
+                topic_id=opts.thread_id,
+                text=text,
+                origin=env.origin.value,
+                title=env.metadata.get("name") or env.metadata.get("title"),
+                history_id=history_id,
+                buttons_session=(
+                    env.session_name
+                    if env.origin == Origin.BACKGROUND and env.session_name
+                    else None
+                ),
+                sent_chunks=sent_chunks,
+            )
+            env.metadata["chat_log_queued"] = True
+            env.delivered = True
+            env.delivery_error = ""
+            if transient_failure and self._on_failure is not None:
+                self._on_failure()
+
     # -- Origin handlers (unicast) -----------------------------------------
 
     async def _deliver_background(self, env: Envelope) -> None:
@@ -122,10 +203,12 @@ class TelegramTransport:
             cleaned, markup = extract_buttons_for_session(text, env.session_name)
             opts = self._opts(env)
             opts.reply_markup = markup
-            await send_rich(self._bot.bot_instance, env.chat_id, cleaned, opts)
+            await self._send_part(
+                env, env.chat_id, text if self._outbox is not None else cleaned, opts
+            )
         else:
             text = self._format_stateless(env, elapsed)
-            await send_rich(self._bot.bot_instance, env.chat_id, text, self._opts(env))
+            await self._send_part(env, env.chat_id, text, self._opts(env))
 
     @staticmethod
     def _format_named_session(env: Envelope, elapsed: str) -> str:
@@ -183,7 +266,7 @@ class TelegramTransport:
 
         opts = SendRichOpts(allowed_roots=self._roots(), thread_id=env.topic_id)
         try:
-            await send_rich(self._bot.bot_instance, env.chat_id, env.result_text, opts)
+            await self._send_part(env, env.chat_id, env.result_text, opts)
             logger.info("Heartbeat delivered")
         except TelegramAPIError:
             logger.warning(
@@ -290,29 +373,41 @@ class TelegramTransport:
             note = t("notice.task_failed", name=name, reason=reason)
 
         if note:
-            await send_rich(self._bot.bot_instance, env.chat_id, note, opts)
+            await self._send_part(env, env.chat_id, note, opts)
 
         # 2. Injected response (filled by bus injection for done/failed)
         if env.needs_injection and env.result_text:
-            await send_rich(self._bot.bot_instance, env.chat_id, env.result_text, opts)
+            await self._send_part(env, env.chat_id, env.result_text, opts)
 
     async def _deliver_task_question(self, env: Envelope) -> None:
         """Deliver task question notification + injected agent response."""
         opts = self._opts(env)
         task_id = env.metadata.get("task_id", "?")
 
+        if self._outbox is not None:
+            env.metadata.setdefault("chat_log_entry_id", new_id())
+
         # 1. Notification
         note = t("notice.task_question", task_id=task_id, question=env.prompt)
-        await send_rich(self._bot.bot_instance, env.chat_id, note, opts)
+        await self._send_part(env, env.chat_id, note, opts)
 
         # 2. Agent response (filled by bus injection)
         if env.result_text:
-            await send_rich(self._bot.bot_instance, env.chat_id, env.result_text, opts)
+            if self._outbox is None:
+                await self._send_part(env, env.chat_id, env.result_text, opts)
+            else:
+                question_id = env.metadata["chat_log_entry_id"]
+                reply_id = env.metadata.setdefault("chat_log_reply_entry_id", new_id())
+                env.metadata["chat_log_entry_id"] = reply_id
+                try:
+                    await self._send_part(env, env.chat_id, env.result_text, opts)
+                finally:
+                    env.metadata["chat_log_entry_id"] = question_id
 
     async def _deliver_webhook_wake(self, env: Envelope) -> None:
         """Deliver webhook wake result."""
         if env.result_text:
-            await send_rich(self._bot.bot_instance, env.chat_id, env.result_text, self._opts(env))
+            await self._send_part(env, env.chat_id, env.result_text, self._opts(env))
 
     async def _deliver_cron(self, env: Envelope) -> None:
         """Deliver cron result to a specific chat/topic (unicast).
@@ -336,7 +431,11 @@ class TelegramTransport:
             thread_id=env.topic_id,
         )
         try:
-            delivered = await send_rich(self._bot.bot_instance, env.chat_id, text, opts)
+            if self._outbox is None:
+                delivered = await send_rich(self._bot.bot_instance, env.chat_id, text, opts)
+            else:
+                await self._send_part(env, env.chat_id, text, opts)
+                delivered = True
         except TelegramAPIError as exc:
             logger.warning(
                 "Cron '%s' delivery failed for chat %d, falling back to main agent",
@@ -376,7 +475,12 @@ class TelegramTransport:
             )
             return
         text = f"{t('notice.task_header', title=title)}\n\n{_cron_body(env.status, clean_result)}"
-        await self._bot.broadcast(text, SendRichOpts(allowed_roots=self._roots()))
+        opts = SendRichOpts(allowed_roots=self._roots())
+        if self._outbox is None:
+            await self._bot.broadcast(text, opts)
+        else:
+            for chat_id in self._bot._config.allowed_user_ids:
+                await self._send_part(env, chat_id, text, opts)
 
     async def _broadcast_interagent(self, env: Envelope) -> None:
         """Send the injected report to the same users as a cron broadcast."""
@@ -415,7 +519,12 @@ class TelegramTransport:
         title = env.metadata.get("hook_title", "?")
         header = t("notice.webhook_header", title=title)
         text = f"{header}\n\n{_cron_body(env.status, env.result_text)}"
-        await self._bot.broadcast(text, SendRichOpts(allowed_roots=self._roots()))
+        opts = SendRichOpts(allowed_roots=self._roots())
+        if self._outbox is None:
+            await self._bot.broadcast(text, opts)
+        else:
+            for chat_id in self._bot._config.allowed_user_ids:
+                await self._send_part(env, chat_id, text, opts)
 
 
 # ---------------------------------------------------------------------------

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+
+import pytest
 
 from ductor_bot.infra.atomic_io import atomic_bytes_save, atomic_text_save
 
@@ -65,3 +68,43 @@ class TestAtomicBytesSave:
         files = list(tmp_path.iterdir())
         assert len(files) == 1
         assert files[0].name == "test.bin"
+
+    def test_retries_partial_writes(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        target = tmp_path / "test.bin"
+        data = b"complete contents"
+        write = os.write
+
+        def partial_write(fd: int, remaining: memoryview) -> int:
+            return write(fd, remaining[:3])
+
+        monkeypatch.setattr(os, "write", partial_write)
+        atomic_bytes_save(target, data)
+
+        assert target.read_bytes() == data
+        assert list(tmp_path.iterdir()) == [target]
+
+    @pytest.mark.parametrize("failure", ["zero", "error"])
+    def test_failed_write_preserves_original(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+    ) -> None:
+        target = tmp_path / "test.bin"
+        original = b"original contents"
+        target.write_bytes(original)
+        write = os.write
+        calls = 0
+
+        def failing_write(fd: int, remaining: memoryview) -> int:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return write(fd, remaining[:3])
+            if failure == "zero":
+                return 0
+            raise OSError("Write failed")
+
+        monkeypatch.setattr(os, "write", failing_write)
+        with pytest.raises(OSError):
+            atomic_bytes_save(target, b"replacement contents")
+
+        assert target.read_bytes() == original
+        assert list(tmp_path.iterdir()) == [target]

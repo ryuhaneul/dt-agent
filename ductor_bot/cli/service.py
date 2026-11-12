@@ -419,6 +419,7 @@ class CLIService:
         return create_cli(
             CLIConfig(
                 provider=provider,
+                include_partial_messages=request.include_partial_messages,
                 working_dir=working_dir,
                 ductor_home=self._config.ductor_home,
                 model=model,

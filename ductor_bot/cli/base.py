@@ -136,6 +136,7 @@ class CLIConfig:
     # Multi-agent identification:
     agent_name: str = "main"
     interagent_port: int = 8799
+    include_partial_messages: bool = field(default=False, kw_only=True)
     # Claude-specific multi-account fallback (priority order, empty = disabled):
     claude_accounts: list[str] = field(default_factory=list)
     # Default timezone for parsing provider reset-time strings (e.g. "resets 3pm"):

@@ -83,3 +83,28 @@ agents = "Manajemen sub-agen (list/add/remove)"
 status = "Tampilkan status bot, path, dan agen"
 help = "Tampilkan pesan ini"
 verbose = "Output log verbose"
+
+[chat_log]
+usage = "Penggunaan: ductor chat-log status | import [--dry-run] [--undo] | prune --older-than N [--backups] [--dry-run]"
+disabled = "Pencatatan percakapan dinonaktifkan atau konfigurasinya tidak valid."
+import_summary = "Berkas: {files}; entri diimpor: {entries}; topik tidak diketahui: {unknown}."
+import_undone = "Entri impor dihapus: {entries}."
+
+status = "Catatan percakapan: {active}; kesalahan: {errors}; berkas riwayat: {files}; entri: {entries}; tertunda: {pending}; gagal: {failed}. tidak terbaca: {unreadable}; dikarantina: {corrupt}."
+active = "aktif"
+inactive = "nonaktif"
+no_errors = "tidak ada"
+prune_preview = "Pratinjau: {entries} entri riwayat dalam {files} berkas, {outbox} item antrean selesai, dan {backups} cadangan akan dihapus; {bytes} byte. kegagalan: {failures}."
+prune_summary = "Dihapus: {entries} entri riwayat dalam {files} berkas, {outbox} item antrean selesai, dan {backups} cadangan; {bytes} byte. kegagalan: {failures}."
+
+[webchat]
+usage = "Penggunaan: ductor webchat set-password | reset-totp | clear-credentials | check-config [--json]"
+password_prompt = "Kata sandi: "
+password_confirm = "Konfirmasi kata sandi: "
+password_mismatch = "Kata sandi tidak cocok."
+password_too_short = "Kata sandi harus berisi setidaknya 12 karakter."
+password_saved = "Kata sandi disimpan."
+totp_reset = "Benih TOTP dihapus."
+credentials_cleared = "Kredensial obrolan web dihapus."
+config_ok = "Konfigurasi obrolan web valid."
+config_errors = "Kesalahan konfigurasi obrolan web: {errors}"

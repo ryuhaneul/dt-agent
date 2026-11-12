@@ -37,6 +37,8 @@ The [known limits](CHANGES.md#7-known-limitations) remain relevant to recovery a
 - `ductor_bot/bus/`: central `MessageBus` + `Envelope` + `LockPool`.
 - `ductor_bot/session/`: provider-isolated session state keyed by `SessionKey(transport, chat_id, topic_id)` plus named-session registry.
 - `ductor_bot/tasks/`: shared background task delegation (`TaskHub`) and persistent task registry.
+- `ductor_bot/chat_log/`: optional main-agent history, link monitoring and durable Telegram delivery queue.
+- `ductor_bot/webchat/`: optional authenticated web UI, internal bridge and gateway configuration.
 - `ductor_bot/api/`: WebSocket ingress (`/ws`) and HTTP file endpoints (`/files`, `/upload`).
 - `ductor_bot/cron/`, `webhook/`, `heartbeat/`, `cleanup/`: in-process automation observers.
 - `ductor_bot/workspace/`: path source-of-truth, home defaults sync, rules deployment/sync, skill sync.
@@ -61,6 +63,8 @@ Runtime behavior notes:
 - [Developer Quickstart](developer_quickstart.md)
 - [Configuration](config.md)
 - Module docs:
+  - [Conversation history and recovery queue](modules/chat_log.md)
+  - [Emergency web chat](modules/webchat.md)
   - [cli_commands](modules/cli_commands.md)
   - [config_reload](modules/config_reload.md)
   - [messenger](modules/messenger.md)

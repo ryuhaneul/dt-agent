@@ -83,3 +83,28 @@ agents = "Sub-agentbeheer (list/add/remove)"
 status = "Botstatus, paden en agents tonen"
 help = "Dit bericht tonen"
 verbose = "Uitgebreide loguitvoer"
+
+[chat_log]
+usage = "Gebruik: ductor chat-log status | import [--dry-run] [--undo] | prune --older-than N [--backups] [--dry-run]"
+disabled = "Gespreksregistratie is uitgeschakeld of de configuratie is ongeldig."
+import_summary = "Bestanden: {files}; geïmporteerde items: {entries}; onbekend onderwerp: {unknown}."
+import_undone = "Verwijderde geïmporteerde items: {entries}."
+
+status = "Chatlogboek: {active}; fouten: {errors}; geschiedenisbestanden: {files}; vermeldingen: {entries}; in wachtrij: {pending}; mislukt: {failed}. onleesbaar: {unreadable}; in quarantaine: {corrupt}."
+active = "actief"
+inactive = "inactief"
+no_errors = "geen"
+prune_preview = "Voorbeeld: {entries} geschiedenisitems in {files} bestanden, {outbox} voltooide wachtrijitems en {backups} back-ups zouden worden verwijderd; {bytes} bytes. fouten: {failures}."
+prune_summary = "Verwijderd: {entries} geschiedenisitems in {files} bestanden, {outbox} voltooide wachtrijitems en {backups} back-ups; {bytes} bytes. fouten: {failures}."
+
+[webchat]
+usage = "Gebruik: ductor webchat set-password | reset-totp | clear-credentials | check-config [--json]"
+password_prompt = "Wachtwoord: "
+password_confirm = "Bevestig wachtwoord: "
+password_mismatch = "De wachtwoorden komen niet overeen."
+password_too_short = "Het wachtwoord moet minstens 12 tekens bevatten."
+password_saved = "Wachtwoord opgeslagen."
+totp_reset = "TOTP-sleutel verwijderd."
+credentials_cleared = "Webchat-inloggegevens gewist."
+config_ok = "De webchatconfiguratie is geldig."
+config_errors = "Fouten in de webchatconfiguratie: {errors}"

@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from ductor_bot.config import AgentConfig, resolve_user_timezone
+from ductor_bot.infra.atomic_io import complete_write
 from ductor_bot.infra.json_store import atomic_json_save, load_json
 from ductor_bot.session.key import SessionKey
 
@@ -221,6 +222,14 @@ TopicNameResolver = Callable[[int, int], str]
 """Callback: (chat_id, topic_id) → human-readable topic name."""
 
 
+class _SessionSnapshot(dict[str, SessionData]):
+    """Keep the loaded state so saving only applies this snapshot's changes."""
+
+    def __init__(self, sessions: dict[str, SessionData]) -> None:
+        super().__init__(sessions)
+        self.original = {key: asdict(value) for key, value in sessions.items()}
+
+
 class SessionManager:
     """Manages session lifecycle with JSON file persistence."""
 
@@ -228,6 +237,7 @@ class SessionManager:
         self._path = sessions_path
         self._config = config
         self._lock = asyncio.Lock()
+        self._save_lock = asyncio.Lock()
         self._topic_name_resolver: TopicNameResolver | None = None
 
     def set_topic_name_resolver(self, resolver: TopicNameResolver) -> None:
@@ -446,6 +456,26 @@ class SessionManager:
         """Return all persisted sessions (fresh or stale)."""
         sessions = await self._load()
         return list(sessions.values())
+
+    async def set_topic_name(self, key: SessionKey, name: str) -> bool:
+        """Update an existing session's topic name without changing its activity."""
+        async with self._lock:
+            sessions = await self._load()
+            current = sessions.get(key.storage_key)
+            if current is None:
+                return False
+            current.topic_name = name
+            await self._save(sessions)
+            return True
+
+    async def delete_session(self, key: SessionKey) -> bool:
+        """Remove only the exact transport/chat/topic session."""
+        async with self._lock:
+            sessions = await self._load()
+            if sessions.pop(key.storage_key, None) is None:
+                return False
+            await self._save(sessions)
+            return True
 
     async def reset_provider_session(
         self,
@@ -769,12 +799,27 @@ class SessionManager:
                 result[parsed.storage_key] = sd
             return result
 
-        return await asyncio.to_thread(_read)
+        return _SessionSnapshot(await asyncio.to_thread(_read))
 
     async def _save(self, sessions: dict[str, SessionData]) -> None:
-        """Atomically write sessions to JSON file."""
+        """Atomically apply snapshot changes to the latest persisted sessions."""
+        async with self._save_lock:
+            latest = await self._load() if isinstance(sessions, _SessionSnapshot) else {}
 
-        def _write() -> None:
-            atomic_json_save(self._path, {k: asdict(v) for k, v in sessions.items()})
+            def _write() -> None:
+                rows = {key: asdict(value) for key, value in sessions.items()}
+                if isinstance(sessions, _SessionSnapshot):
+                    merged = {key: asdict(value) for key, value in latest.items()}
+                    for key in sessions.original.keys() - rows.keys():
+                        merged.pop(key, None)
+                    merged.update(
+                        {
+                            key: value
+                            for key, value in rows.items()
+                            if value != sessions.original.get(key)
+                        }
+                    )
+                    rows = merged
+                atomic_json_save(self._path, rows)
 
-        await asyncio.to_thread(_write)
+            await complete_write(_write)

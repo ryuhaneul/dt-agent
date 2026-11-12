@@ -16,6 +16,8 @@ DT Agent is a modified fork maintained at [github.com/ryuhaneul/dt-agent](https:
 
 Provider CLIs run in the bot container; Chromium runs in a separate browser container. DT Agent also changes delegation routing, interruption/recovery, onboarding, optional dependencies and safe diagnostics. See the complete [change list](docs/CHANGES.md).
 
+- Optional [conversation history and recovery queue](docs/modules/chat_log.md) retains failed Telegram deliveries; [emergency web chat](docs/modules/webchat.md) adds authenticated topic chat and versioned settings-file editing. See [setup](docs/installation.md#emergency-web-chat-optional).
+
 ## 1. Requirements and a clean server
 
 Use a Linux server with Docker Engine, the **Compose plugin v2 or newer**, Git, Bash, Python **3.9+** for host onboarding and a timezone database. Bot/development Python is **3.11+**, installed in the image. The bot image is Debian Bookworm/Python 3.11 with Node.js 24; the browser image is Playwright `v1.59.1-noble`. Linux x86-64 is the deployment path documented here; other architectures/OSes need an independent image/CLI compatibility check.

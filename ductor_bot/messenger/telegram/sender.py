@@ -6,13 +6,22 @@ import asyncio
 import html as html_mod
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramConflictError,
+    TelegramEntityTooLarge,
+    TelegramForbiddenError,
+    TelegramNetworkError,
+    TelegramNotFound,
+    TelegramRetryAfter,
+    TelegramUnauthorizedError,
+)
 from aiogram.types import FSInputFile, InlineKeyboardMarkup, ReplyParameters
 
 from ductor_bot.files.tags import FILE_PATH_RE, extract_file_paths, guess_mime, path_from_file_tag
@@ -38,6 +47,61 @@ class SendRichOpts(BaseSendOpts):
     reply_markup: InlineKeyboardMarkup | None = None
     thread_id: int | None = None
     ia_task_id: str = ""
+    skip_unavailable_files: bool = False
+
+
+SendFailure = Literal["transient", "permanent"]
+
+
+@dataclass(frozen=True, slots=True)
+class SendProgress:
+    delivered: bool
+    sent_chunks: int
+    failure: SendFailure | None
+    error: str
+    exception: BaseException | None
+
+
+@dataclass(frozen=True, slots=True)
+class _ChunkOutcome:
+    ok: bool
+    failure: SendFailure | None = None
+    error: str = ""
+    exception: BaseException | None = None
+
+
+def _classify(exc: Exception) -> SendFailure:
+    if isinstance(
+        exc,
+        (
+            TelegramBadRequest,
+            TelegramForbiddenError,
+            TelegramNotFound,
+            TelegramUnauthorizedError,
+            TelegramConflictError,
+            TelegramEntityTooLarge,
+        ),
+    ):
+        return "permanent"
+    return "transient"
+
+
+def _exception_outcome(exc: Exception) -> _ChunkOutcome:
+    failure = _classify(exc)
+    return _ChunkOutcome(
+        ok=False,
+        failure=failure,
+        error=type(exc).__name__,
+        exception=exc if failure == "permanent" or isinstance(exc, TelegramRetryAfter) else None,
+    )
+
+
+def _response_outcome(response: object) -> _ChunkOutcome:
+    return (
+        _ChunkOutcome(ok=True)
+        if _has_message_id(response)
+        else _ChunkOutcome(ok=False, failure="transient", error="no_message_id")
+    )
 
 
 class _MarkupKwargs(TypedDict, total=False):
@@ -327,7 +391,7 @@ def _is_html_parse_error(exc: TelegramBadRequest) -> bool:
     )
 
 
-async def _send_ia_text_chunk(  # noqa: PLR0913 -- sender and chunk options are independent
+async def _send_ia_text_chunk_outcome(  # noqa: PLR0913 -- sender and chunk options are independent
     bot: Bot,
     chat_id: int,
     raw: str,
@@ -335,7 +399,7 @@ async def _send_ia_text_chunk(  # noqa: PLR0913 -- sender and chunk options are 
     index: int,
     *,
     reply_markup: InlineKeyboardMarkup | None = None,
-) -> bool:
+) -> _ChunkOutcome:
     kwargs: _TextKwargs = {
         "chat_id": chat_id,
         "message_thread_id": opts.thread_id,
@@ -364,11 +428,11 @@ async def _send_ia_text_chunk(  # noqa: PLR0913 -- sender and chunk options are 
             index,
             type(exc).__name__,
         )
-        return False
+        return _exception_outcome(exc)
     else:
         # Some test callers return an exception object in place of raising it.
         if not isinstance(response, TelegramBadRequest):
-            return _has_message_id(response)
+            return _response_outcome(response)
         rejection = response
 
     if not _is_html_parse_error(rejection):
@@ -378,7 +442,7 @@ async def _send_ia_text_chunk(  # noqa: PLR0913 -- sender and chunk options are 
             index,
             type(rejection).__name__,
         )
-        return False
+        return _exception_outcome(rejection)
     logger.warning(
         "Telegram IA HTML parse rejected task=%s chunk=%d; using plain text",
         opts.ia_task_id,
@@ -391,7 +455,7 @@ async def _send_ia_text_chunk(  # noqa: PLR0913 -- sender and chunk options are 
             text=strip_button_syntax(raw),
             parse_mode=None,
         )
-        return _has_message_id(response)
+        return _response_outcome(response)
     except Exception as exc:
         logger.warning(
             "Telegram IA plain chunk failed task=%s chunk=%d error=%s; duplicate possible on retry",
@@ -399,7 +463,62 @@ async def _send_ia_text_chunk(  # noqa: PLR0913 -- sender and chunk options are 
             index,
             type(exc).__name__,
         )
-        return False
+        return _exception_outcome(exc)
+
+
+async def _send_ia_file_chunk_outcome(
+    bot: Bot,
+    chat_id: int,
+    file_tag: str,
+    opts: SendRichOpts,
+    *,
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> _ChunkOutcome:
+    try:
+        path = path_from_file_tag(file_tag)
+        blocked = opts.allowed_roots is not None and not is_path_safe(path, opts.allowed_roots)
+        if blocked or not await asyncio.to_thread(path.exists):
+            if not opts.skip_unavailable_files:
+                return _ChunkOutcome(ok=False, failure="permanent", error="file_unavailable")
+            response = await bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    t("notice.file_outside", name=path.name)
+                    if blocked
+                    else t("notice.file_not_found", name=path.name, path=path)
+                ),
+                parse_mode="HTML" if blocked else None,
+                message_thread_id=opts.thread_id,
+                reply_markup=reply_markup,
+            )
+            return _response_outcome(response)
+        mime = guess_mime(path)
+        response = await _send_by_mode(
+            bot,
+            chat_id,
+            path,
+            upload_mode=_select_telegram_upload_mode(path, mime),
+            thread_id=opts.thread_id,
+            reply_markup=reply_markup,
+        )
+        return _response_outcome(response)
+    except Exception as exc:
+        logger.warning("Telegram IA file chunk failed: %s", type(exc).__name__)
+        return _exception_outcome(exc)
+
+
+async def _send_ia_text_chunk(  # noqa: PLR0913 -- sender and chunk options are independent
+    bot: Bot,
+    chat_id: int,
+    raw: str,
+    opts: SendRichOpts,
+    index: int,
+    *,
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> bool:
+    return (
+        await _send_ia_text_chunk_outcome(bot, chat_id, raw, opts, index, reply_markup=reply_markup)
+    ).ok
 
 
 async def _send_ia_file_chunk(
@@ -410,25 +529,9 @@ async def _send_ia_file_chunk(
     *,
     reply_markup: InlineKeyboardMarkup | None = None,
 ) -> bool:
-    try:
-        path = path_from_file_tag(file_tag)
-        if (
-            opts.allowed_roots is not None and not is_path_safe(path, opts.allowed_roots)
-        ) or not await asyncio.to_thread(path.exists):
-            return False
-        mime = guess_mime(path)
-        response = await _send_by_mode(
-            bot,
-            chat_id,
-            path,
-            upload_mode=_select_telegram_upload_mode(path, mime),
-            thread_id=opts.thread_id,
-            reply_markup=reply_markup,
-        )
-        return _has_message_id(response)
-    except Exception as exc:
-        logger.warning("Telegram IA file chunk failed: %s", type(exc).__name__)
-        return False
+    return (
+        await _send_ia_file_chunk_outcome(bot, chat_id, file_tag, opts, reply_markup=reply_markup)
+    ).ok
 
 
 def _parse_ia_report(text: str) -> tuple[str, list[str], InlineKeyboardMarkup | None]:
@@ -469,14 +572,15 @@ def _parse_ia_report(text: str) -> tuple[str, list[str], InlineKeyboardMarkup | 
     return clean_text, files, markup
 
 
-async def send_rich_checked_progress(
+async def send_rich_progress_detailed(  # noqa: PLR0913 -- resumable send and progress callback
     bot: Bot,
     chat_id: int,
     text: str,
     opts: SendRichOpts | None = None,
     *,
     start_chunk: int = 0,
-) -> tuple[bool, int]:
+    on_chunk: Callable[[int], Awaitable[None]] | None = None,
+) -> SendProgress:
     """Send IA text and files in fixed chunks, stopping at the first failure."""
     o = opts or SendRichOpts()
     # The bus hashes the original report; IA-only display parsing is stable.
@@ -490,12 +594,18 @@ async def send_rich_checked_progress(
     ]
     total = len(chunks) + len(files)
     if total == 0 or start_chunk < 0 or start_chunk > total:
-        return False, start_chunk
+        return SendProgress(
+            delivered=False,
+            sent_chunks=start_chunk,
+            failure="permanent",
+            error="invalid_chunk_range",
+            exception=None,
+        )
 
     for index in range(start_chunk, total):
         last_markup = markup if index == total - 1 else None
         if index < len(chunks):
-            sent = await _send_ia_text_chunk(
+            outcome = await _send_ia_text_chunk_outcome(
                 bot,
                 chat_id,
                 chunks[index],
@@ -504,16 +614,37 @@ async def send_rich_checked_progress(
                 reply_markup=last_markup,
             )
         else:
-            sent = await _send_ia_file_chunk(
+            outcome = await _send_ia_file_chunk_outcome(
                 bot,
                 chat_id,
                 files[index - len(chunks)],
                 o,
                 reply_markup=last_markup,
             )
-        if not sent:
-            return False, index
-    return True, total
+        if not outcome.ok:
+            return SendProgress(
+                delivered=False,
+                sent_chunks=index,
+                failure=outcome.failure,
+                error=outcome.error,
+                exception=outcome.exception,
+            )
+        if on_chunk is not None:
+            await on_chunk(index + 1)
+    return SendProgress(delivered=True, sent_chunks=total, failure=None, error="", exception=None)
+
+
+async def send_rich_checked_progress(
+    bot: Bot,
+    chat_id: int,
+    text: str,
+    opts: SendRichOpts | None = None,
+    *,
+    start_chunk: int = 0,
+) -> tuple[bool, int]:
+    """Keep the legacy IA progress contract."""
+    progress = await send_rich_progress_detailed(bot, chat_id, text, opts, start_chunk=start_chunk)
+    return progress.delivered, progress.sent_chunks
 
 
 async def send_file(

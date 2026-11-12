@@ -74,7 +74,7 @@ class CompactBoundaryEvent(StreamEvent):
     pre_tokens: int = 0
 
 
-def parse_stream_line(line: str) -> list[StreamEvent]:
+def parse_stream_line(line: str, *, include_partial_messages: bool = False) -> list[StreamEvent]:
     """Parse a single NDJSON line into normalized stream events."""
     stripped = line.strip()
     if not stripped:
@@ -104,8 +104,12 @@ def parse_stream_line(line: str) -> list[StreamEvent]:
             ),
         ]
 
-    if event_type == "assistant":
-        return _parse_assistant_content(data)
+    if event_type == "assistant" or (event_type == "stream_event" and include_partial_messages):
+        return (
+            _parse_partial_content(data)
+            if include_partial_messages
+            else _parse_assistant_content(data)
+        )
 
     if event_type == "system":
         logger.debug("Stream event parsed type=%s subtype=%s", event_type, data.get("subtype"))
@@ -184,3 +188,18 @@ def _parse_assistant_content(data: dict[str, Any]) -> list[StreamEvent]:
             )
 
     return events
+
+
+def _parse_partial_content(data: dict[str, Any]) -> list[StreamEvent]:
+    """Use partial text while retaining completed tool and thinking events."""
+    if data.get("type") == "assistant":
+        return [
+            event
+            for event in _parse_assistant_content(data)
+            if not isinstance(event, AssistantTextDelta)
+        ]
+    event = data.get("event", {})
+    delta = event.get("delta", {})
+    if event.get("type") == "content_block_delta" and delta.get("type") == "text_delta":
+        return [AssistantTextDelta(type="assistant", text=delta.get("text", ""))]
+    return []

@@ -15,6 +15,7 @@ from rich.console import Console
 
 # Re-exports from cli_commands — referenced by main() dispatch and by
 # tests that patch ductor_bot.__main__.<name>.
+from ductor_bot.chat_log.cli import cmd_chat_log as _cmd_chat_log
 from ductor_bot.cli_commands.agents import cmd_agents as _cmd_agents
 from ductor_bot.cli_commands.lifecycle import (
     start_bot as _start_bot,
@@ -34,6 +35,7 @@ from ductor_bot.i18n import init as init_i18n
 from ductor_bot.i18n import t_rich
 from ductor_bot.infra.atomic_io import atomic_bytes_save
 from ductor_bot.infra.json_store import atomic_json_save
+from ductor_bot.webchat.cli import cmd_webchat as _cmd_webchat
 from ductor_bot.workspace.init import init_workspace
 from ductor_bot.workspace.paths import resolve_paths
 
@@ -350,6 +352,8 @@ def _default_action(verbose: bool) -> None:
 # ---------------------------------------------------------------------------
 
 _COMMANDS: dict[str, str] = {
+    "chat-log": "chat-log",
+    "webchat": "webchat",
     "help": "help",
     "status": "status",
     "agents": "agents",
@@ -377,6 +381,8 @@ def main() -> None:
     action = next((_COMMANDS[c] for c in commands if c in _COMMANDS), None)
 
     dispatch: dict[str, _Action] = {
+        "chat-log": lambda: _cmd_chat_log(args),
+        "webchat": lambda: _cmd_webchat(args),
         "help": _print_usage,
         "status": _cmd_status,
         "agents": lambda: _cmd_agents(args),

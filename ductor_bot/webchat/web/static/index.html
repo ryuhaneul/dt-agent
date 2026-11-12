@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title data-i18n="app.title">Emergency web chat</title><link rel="icon" href="data:,">
+<script src="/static/js/theme-init.js"></script>
+<link rel="stylesheet" href="/static/css/pretendard.css"><link rel="stylesheet" href="/static/css/app.css">
+<script type="module" src="/static/js/main.js"></script><script src="/static/starflow/embed-pointer.js" defer></script>
+</head><body>
+<iframe id="starflow-background" data-src="/static/starflow/base-stars.html" tabindex="-1" aria-hidden="true" title="Decorative star background" data-i18n-attr="title:starflow.title"></iframe>
+
+<template id="tpickTpl">
+  <div class="tpick">
+    <button class="theme-btn" type="button" aria-haspopup="menu" aria-expanded="false">
+      <svg class="i-sys" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"></rect><path d="M8 20h8M12 16v4"></path></svg>
+      <svg class="i-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"></path></svg>
+      <svg class="i-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg>
+    </button>
+    <div class="menu" role="menu" aria-label="Theme" hidden data-i18n-attr="aria-label:theme.menu">
+      <button type="button" role="menuitemradio" data-pref="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"></rect><path d="M8 20h8M12 16v4"></path></svg><span data-i18n="theme.system">System</span><svg class="ck" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4 10-10"></path></svg></button>
+      <button type="button" role="menuitemradio" data-pref="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"></path></svg><span data-i18n="theme.dark">Dark</span><svg class="ck" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4 10-10"></path></svg></button>
+      <button type="button" role="menuitemradio" data-pref="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg><span data-i18n="theme.light">Light</span><svg class="ck" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4 10-10"></path></svg></button>
+      <span class="now"></span>
+    </div>
+  </div>
+</template>
+
+
+<main id="auth" class="auth-page">
+  <div class="topline" data-tpick></div>
+  <div class="auth-stack">
+    <form class="card" data-auth="pw" id="pwForm">
+      <p class="brand">dt-agent<span class="dot">.</span></p>
+      <h2 tabindex="-1"><span data-i18n="app.title">Emergency web chat</span></h2>
+      <div class="step layout-1"><i class="on"></i><i></i><span>1 / 2</span></div>
+      <div class="form-field"><label class="lb" for="pw"><span data-i18n="auth.password">Password</span></label><input id="pw" class="field" type="password" autocomplete="current-password" required></div>
+      <button class="btn btn-primary btn-block" type="submit" id="passwordNext"><span data-i18n="auth.next">Next</span></button>
+      <div class="auth-links"><a href="#setup" id="setupLink" hidden><span data-i18n="auth.setup_link">Set up two-step authentication</span></a></div>
+    </form>
+
+    <form class="card hidden" data-auth="totp" id="totpForm">
+      <p class="brand">dt-agent<span class="dot">.</span></p>
+      <h2 tabindex="-1"><span data-i18n="auth.code_title">Authentication code</span></h2>
+      <div class="step layout-1"><i class="on"></i><i class="on"></i><span>2 / 2</span></div>
+      <div class="form-field"><span class="lb" id="otpL"><span data-i18n="auth.code_label">Six-digit code from your authenticator</span></span><div class="otp" id="otp" role="group" aria-labelledby="otpL"></div></div>
+      <button class="btn btn-primary btn-block" type="submit" id="totpLogin"><span data-i18n="auth.login">Log in</span></button>
+      <div class="auth-links"><a href="#pw"><span data-i18n="auth.back_to_password">Enter password again</span></a></div>
+    </form>
+
+    <form class="card hidden" data-auth="setup" id="setupForm">
+      <p class="kicker"><span data-i18n="auth.setup_kicker">First setup</span></p>
+      <h2 tabindex="-1"><span data-i18n="auth.setup_title">Connect two-step authentication</span></h2>
+      <div class="seg layout-1" role="tablist">
+        <button type="button" role="tab" id="segNew" aria-selected="true" data-setup-mode="new"><span data-i18n="auth.setup_new">Create new QR</span></button>
+        <button type="button" role="tab" id="segPaste" aria-selected="false" data-setup-mode="paste"><span data-i18n="auth.setup_paste">Paste existing seed</span></button>
+      </div>
+      <div id="setupNew">
+        <div class="qrbox"><div id="qr" role="img" aria-live="polite" data-i18n-attr="aria-label:auth.qr"></div>
+          <div><span class="lb"><span data-i18n="auth.seed">Seed</span></span><div class="seed"></div>
+          <button class="btn btn-sm layout-2" type="button" id="regenerate"><span data-i18n="auth.regenerate">Regenerate</span></button></div></div>
+      </div>
+      <div id="setupPaste" class="hidden">
+        <div class="form-field"><label class="lb" for="seedIn"><span data-i18n="auth.seed_input">TOTP seed (Base32)</span></label><textarea id="seedIn" class="field mono" rows="2" placeholder="JBSWY3DPEHPK3PXP"></textarea></div>
+      </div>
+      <p class="warn-line"><span class="pip"></span><span data-i18n="auth.seed_once">The seed is shown only on this screen.</span></p>
+      <div class="form-field"><span class="lb" id="otp2L"><span data-i18n="auth.confirm_code">Six-digit confirmation code</span></span><div class="otp" id="otp2" role="group" aria-labelledby="otp2L"></div></div>
+      <button class="btn btn-primary btn-block" type="submit" id="setupConfirm"><span data-i18n="auth.setup_done">Finish setup</span></button>
+      <div class="auth-links"><a href="#pw"><span data-i18n="auth.to_login">Back to login</span></a></div>
+    </form>
+  </div>
+</main>
+
+
+<div id="app" class="app hidden">
+  <header class="bar">
+    <div class="logo"><span>dt-agent<span class="dot">.</span></span><span class="sub"><span data-i18n="app.title">Emergency web chat</span></span></div>
+    <div class="stat" aria-label="Connection status" data-i18n-attr="aria-label:status.title"><a href="#status" class="badge badge-off" id="telegramBadge"><span data-i18n="status.telegram_unknown">Checking</span></a><a href="#status" class="badge badge-warn" id="pendingBadge" hidden><span data-i18n="status.pending" data-i18n-args="{&quot;n&quot;: 0}">Unsent 0</span></a><a href="#status" class="badge badge-off" id="botBadge"><span data-i18n="status.bot_down">Bot unreachable</span></a></div>
+    <div class="bar-acts">
+      <button class="theme-btn only-t" type="button" aria-label="Connection status" data-route="status" data-i18n-attr="aria-label:status.title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l2-5 4 10 2-5h6"></path></svg></button>
+      <button class="theme-btn" type="button" aria-label="Settings files" title="Settings files" data-route="files" data-i18n-attr="title:files.title;aria-label:files.title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><path d="M14 3v6h6M8 13h8M8 17h5"></path></svg></button>
+      <span data-tpick></span>
+    </div>
+  </header>
+
+  <div class="main">
+    <aside class="pane topics" aria-label="Topics" data-i18n-attr="aria-label:topic.title">
+      <div class="pane-head"><div class="grow"><h2 tabindex="-1"><span data-i18n="topic.title">Topics</span></h2></div>
+        <button class="theme-btn" type="button" aria-label="Manage topics" title="Manage topics" data-route="manage" data-i18n-attr="title:topic.manage;aria-label:topic.manage"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"></path><circle cx="16" cy="6" r="2"></circle><circle cx="10" cy="12" r="2"></circle><circle cx="18" cy="18" r="2"></circle></svg></button></div>
+      <div class="search"><label class="sr-only" for="q"><span data-i18n="topic.search">Search topics and messages</span></label><input id="q" class="field" maxlength="200" placeholder="Search topics and messages" data-i18n-attr="placeholder:topic.search"></div>
+      <nav class="tlist scroll" id="tlist"></nav>
+      <div class="tfoot"><button class="btn btn-primary btn-block" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg><span data-i18n="topic.new">New topic</span></button></div>
+    </aside>
+
+    <section class="pane center">
+
+      <div data-view="chat" class="pane layout-3">
+        <div class="pane-head">
+          <button class="theme-btn only-m" type="button" aria-label="Topic list" data-route="list" data-i18n-attr="aria-label:chat.list"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"></path></svg></button>
+          <div class="grow"><h2 tabindex="-1">—</h2><div class="sub">—</div></div>
+          <button class="btn btn-sm" type="button" data-route="manage"><span data-i18n="topic.manage">Manage topics</span></button>
+        </div>
+        <div class="thread scroll" id="thread"></div>
+        <div class="composer">
+          <div class="line" hidden><span class="pip"></span><span data-i18n="chat.telegram_down_line">Telegram disconnected — messages will send after recovery</span></div>
+          <div class="row">
+            <label class="sr-only" for="msgIn"><span data-i18n="topic.group_search">Messages</span></label>
+            <textarea id="msgIn" class="field" maxlength="32000" placeholder="Enter a message" data-i18n-attr="placeholder:chat.placeholder"></textarea>
+            <button class="btn btn-primary" type="button" id="stopBtn"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2"></path></svg><span data-i18n="chat.send">Send</span></button>
+          </div>
+        </div>
+      </div>
+
+
+      <div data-view="manage" class="pane hidden layout-3">
+        <div class="pane-head">
+          <button class="theme-btn only-m" type="button" aria-label="Back to chat" data-route="chat" data-i18n-attr="aria-label:chat.back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"></path></svg></button>
+          <div class="grow"><h2 tabindex="-1"><span data-i18n="topic.manage">Manage topics</span></h2><div class="sub"><span data-i18n="topic.manage_hint">Renaming also updates the Telegram topic</span></div></div>
+        </div>
+        <div class="pad scroll" id="mlist"></div>
+      </div>
+
+
+      <div data-view="files" class="pane hidden layout-3">
+        <div class="pane-head">
+          <button class="theme-btn only-m" type="button" aria-label="Back to chat" data-route="chat" data-i18n-attr="aria-label:chat.back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"></path></svg></button>
+          <div class="grow"><h2 tabindex="-1"><span data-i18n="files.title">Settings files</span></h2></div>
+        </div>
+        <div class="files">
+          <nav class="flist scroll" id="flist" aria-label="Settings files" data-i18n-attr="aria-label:files.title"><button class="fitem" type="button" data-file="PERSONA.md"><span class="fn">PERSONA.md<span class="pip" role="img" data-i18n-attr="aria-label:files.unsaved"></span></span><span class="fd"><span data-i18n="files.desc_persona">Identity and tone</span></span></button><button class="fitem" type="button" data-file="BEHAVIOR.md"><span class="fn">BEHAVIOR.md<span class="pip" role="img" data-i18n-attr="aria-label:files.unsaved"></span></span><span class="fd"><span data-i18n="files.desc_behavior">Behavior rules</span></span></button><button class="fitem" type="button" data-file="MAINMEMORY.md"><span class="fn">MAINMEMORY.md<span class="pip" role="img" data-i18n-attr="aria-label:files.unsaved"></span></span><span class="fd"><span data-i18n="files.desc_mainmemory">Long-term memory</span></span></button><button class="fitem" type="button" data-file="SHAREDMEMORY.md"><span class="fn">SHAREDMEMORY.md<span class="pip" role="img" data-i18n-attr="aria-label:files.unsaved"></span></span><span class="fd"><span data-i18n="files.desc_sharedmemory">Shared knowledge</span></span></button></nav>
+          <div class="editor">
+            <div class="ed-bar">
+              <b id="fname">PERSONA.md</b>
+              <span class="dirty hidden" id="dirty" title="Unsaved" data-i18n-attr="title:files.unsaved"><span class="pip"></span><span class="lbl"><span data-i18n="files.unsaved">Unsaved</span></span></span>
+              <div class="seg" role="tablist"><button type="button" role="tab" id="tEdit" aria-selected="true" data-route="edit"><span data-i18n="files.edit">Edit</span></button><button type="button" role="tab" id="tPrev" aria-selected="false" data-route="preview"><span data-i18n="files.preview">Preview</span></button></div>
+              <button class="btn btn-primary btn-sm" type="button" id="fileSave" disabled><span data-i18n="common.save">Save</span></button>
+              <button class="btn btn-sm" type="button" id="fileReload" hidden data-i18n="files.reload">Reload</button>
+            </div>
+            <p class="hint file-notice" id="fileSharedHint" hidden data-i18n="files.shared_hint">Edit shared knowledge in SHAREDMEMORY.md</p>
+            <div class="ed-body"><label class="sr-only" for="ed"><span data-i18n="files.content">File contents</span></label><textarea id="ed" class="field" spellcheck="false"></textarea><div class="mdview md hidden scroll" id="prev"></div></div>
+            <div class="ed-foot"><span id="backupTo" data-i18n="files.backup_to" data-i18n-args="{&quot;path&quot;: &quot;\u2014&quot;}">Backup on save → —</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="pane info scroll" id="info" aria-label="Connection status" data-i18n-attr="aria-label:status.title">
+      <section class="panel" id="connPanel">
+        <div class="panel-head"><h2 tabindex="-1"><span data-i18n="status.title">Connection status</span></h2>
+          <button class="theme-btn info-close layout-4" type="button" aria-label="Close" data-i18n-attr="aria-label:common.close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"></path></svg></button></div>
+        <div class="panel-body">
+          <dl class="kv">
+            <dt><span data-i18n="topic.group_telegram">Telegram</span></dt><dd><span class="badge badge-off" id="telegramDetail"><span data-i18n="status.telegram_unknown">Checking</span></span></dd>
+            <dt><span data-i18n="status.down_since">Disconnected since</span></dt><dd class="mono" id="downSince">—</dd>
+            <dt><span data-i18n="status.last_retry">Last retry</span></dt><dd><span class="mono" id="lastRetry">—</span><div class="hint" id="retryInterval"></div></dd>
+            <dt><span data-i18n="status.bot_process">Bot process</span></dt><dd><span class="badge badge-off" id="botDetail"><span data-i18n="status.bot_down">Bot unreachable</span></span></dd>
+            <dt><span data-i18n="status.web_sessions">Web sessions</span></dt><dd id="webSessions">—</dd>
+          </dl>
+          <div class="hbwrap"><div class="lbl"><span><span data-i18n="status.strip">Telegram · last 30 minutes</span></span><span id="stripEnd">—</span></div><div class="hb" id="hb" role="img" data-i18n-attr="aria-label:status.strip"><i data-s="none"></i><i data-s="none"></i><i data-s="none"></i><i data-s="none"></i><i data-s="none"></i><i data-s="none"></i><i data-s="none"></i><i data-s="none"></i><i data-s="none"></i><i data-s="none"></i><i data-s="none"></i><i data-s="none"></i><i data-s="none"></i><i data-s="none"></i><i data-s="none"></i><i data-s="none"></i><i data-s="none"></i><i data-s="none"></i><i data-s="none"></i><i data-s="none"></i><i data-s="none"></i><i data-s="none"></i><i data-s="none"></i><i data-s="none"></i><i data-s="none"></i><i data-s="none"></i><i data-s="none"></i><i data-s="none"></i><i data-s="none"></i><i data-s="none"></i></div></div>
+        </div>
+      </section>
+      <section class="panel" id="outboxPanel">
+        <div class="panel-head"><h2 tabindex="-1"><span data-i18n="outbox.title">Unsent</span></h2><span class="count" id="outboxCount">—</span></div>
+        <div class="panel-body">
+          <div id="outboxRows"></div>
+          <p class="hint"><span data-i18n="outbox.hint">Sent in order after recovery</span></p>
+        </div>
+      </section>
+      <section class="panel" id="topicPanel">
+        <div class="panel-head"><h2 tabindex="-1"><span data-i18n="topic.info_title">This topic</span></h2></div>
+        <div class="panel-body">
+          <dl class="kv"><dt><span data-i18n="topic.group_search">Messages</span></dt><dd class="mono">—</dd><dt><span data-i18n="topic.group_imported">Imported history</span></dt><dd class="mono">—</dd><dt><span data-i18n="topic.created">Created</span></dt><dd class="mono">—</dd></dl>
+          <div class="btnrow"><button class="btn btn-sm" type="button" id="topicRename" data-route="manage"><span data-i18n="topic.rename">Rename</span></button><button class="btn btn-sm btn-danger" type="button" id="topicDelete" data-route="delete"><span data-i18n="topic.delete">Delete</span></button></div>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2 tabindex="-1"><span data-i18n="files.title">Settings files</span></h2></div>
+        <div class="panel-body" id="flinks"><a class="flink" href="#edit" data-file="PERSONA.md">PERSONA.md</a><a class="flink" href="#edit" data-file="BEHAVIOR.md">BEHAVIOR.md</a><a class="flink" href="#edit" data-file="MAINMEMORY.md">MAINMEMORY.md</a><a class="flink" href="#edit" data-file="SHAREDMEMORY.md">SHAREDMEMORY.md</a></div>
+      </section>
+    </aside>
+  </div>
+</div>
+
+<dialog id="delDlg" aria-labelledby="delT">
+  <div class="dlg-body">
+    <span class="badge badge-down"><span data-i18n="del.irreversible">Cannot be undone</span></span>
+    <h2 id="delT" tabindex="-1" class="layout-2"><span data-i18n="del.title" data-i18n-args="{&quot;name&quot;: &quot;\u2014&quot;}">Delete —</span></h2>
+    <p><span data-i18n="del.items">The following will be deleted together.</span></p>
+    <ul class="dlist"><li><span data-i18n="del.item_topic">Telegram topic and messages</span></li><li><span data-i18n="del.item_session">Chat session</span></li><li><span data-i18n="del.item_history" data-i18n-args="{&quot;n&quot;: &quot;\u2014&quot;}">— web history entries</span></li></ul>
+    <label class="lb" for="delIn"><span data-i18n="del.confirm" data-i18n-args="{&quot;name&quot;: &quot;\u2014&quot;}">Enter — to confirm</span></label>
+    <input id="delIn" class="field" autocomplete="off">
+  </div>
+  <div class="dlg-foot"><button class="btn" type="button" data-close-dialog><span data-i18n="common.cancel">Cancel</span></button><button class="btn btn-danger" type="button" id="delGo" disabled><span data-i18n="topic.delete">Delete</span></button></div>
+</dialog>
+
+<dialog id="diffDlg" class="wide" aria-labelledby="diffT">
+  <div class="dlg-body">
+    <p class="kicker layout-6"><span data-i18n="files.diff_kicker">Review changes</span></p>
+    <h2 id="diffT" class="mono" tabindex="-1">PERSONA.md</h2>
+    <div class="diff" id="diffBox"></div>
+    <p class="hint layout-7"><span id="backupPath" data-i18n="files.backup_path" data-i18n-args="{&quot;path&quot;: &quot;\u2014&quot;}">Backup → —</span></p>
+  </div>
+  <div class="dlg-foot"><button class="btn" type="button" data-close-dialog><span data-i18n="files.keep_editing">Keep editing</span></button><button class="btn btn-primary" type="button" id="diffSave" disabled><span data-i18n="files.backup_and_save">Back up and save</span></button></div>
+</dialog>
+
+<div class="toast-stack" id="toasts" aria-live="polite"></div>
+
+<div id="errorMessages" hidden><span data-i18n="error.bot_unreachable">Bot unreachable</span><span data-i18n="error.generic">Something went wrong</span><span data-i18n="auth.invalid">Invalid credentials</span><span data-i18n="auth.locked" data-i18n-args="{&quot;minutes&quot;:1}">Try again in {minutes} minutes</span><span data-i18n="auth.setup_needs_password">Enter your password first to set up authentication.</span><span data-i18n="common.close">Close</span></div>
+</body></html>

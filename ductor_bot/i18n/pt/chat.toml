@@ -716,3 +716,7 @@ invalid_response = "formato de resposta inválido"
 refresh = "Atualizar"
 loading = "Consultando…"
 error = "Falha ao exibir o uso"
+
+[chat_log]
+mirror_user = "🌐 Enviado pela web\n{text}"
+mirror_aborted = "Resposta interrompida"

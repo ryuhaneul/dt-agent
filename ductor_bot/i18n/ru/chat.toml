@@ -718,3 +718,7 @@ invalid_response = "неверный формат ответа"
 refresh = "Обновить"
 loading = "Выполняется запрос…"
 error = "Не удалось показать использование"
+
+[chat_log]
+mirror_user = "🌐 Отправлено из веб-чата\n{text}"
+mirror_aborted = "Ответ прерван"

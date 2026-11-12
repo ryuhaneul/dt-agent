@@ -416,3 +416,12 @@ def test_call_log_has_label_status_and_duration_but_no_figures(
     assert "CLI main [ok] duration_ms=1500" in caplog.text
     assert "cost" not in caplog.text
     assert "tokens" not in caplog.text
+
+
+def test_make_cli_partial_messages_flag_is_explicit_and_defaults_off() -> None:
+    svc = _make_service()
+    with patch("ductor_bot.cli.service.create_cli") as create:
+        svc._make_cli(AgentRequest(prompt="hello"))
+        assert create.call_args.args[0].include_partial_messages is False
+        svc._make_cli(AgentRequest(prompt="hello", include_partial_messages=True))
+        assert create.call_args.args[0].include_partial_messages is True

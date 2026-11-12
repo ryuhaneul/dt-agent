@@ -83,3 +83,28 @@ agents = "서브 에이전트 관리 (list/add/remove)"
 status = "봇 상태, 경로, 에이전트 표시"
 help = "이 메시지 표시"
 verbose = "상세 로깅 출력"
+
+[chat_log]
+usage = "사용법: ductor chat-log status | import [--dry-run] [--undo] | prune --older-than N [--backups] [--dry-run]"
+disabled = "대화 기록이 비활성화되어 있거나 설정이 올바르지 않아요."
+import_summary = "파일: {files}; 가져온 항목: {entries}; 토픽 미상: {unknown}."
+import_undone = "제거한 가져오기 항목: {entries}."
+
+status = "대화 기록: {active}; 검증 오류: {errors}; 기록 파일: {files}; 항목: {entries}; 미전송: {pending}; 실패: {failed}. 읽기 실패: {unreadable}; 격리: {corrupt}."
+active = "활성"
+inactive = "비활성"
+no_errors = "없음"
+prune_preview = "정리 미리보기: 기록 {files}개 파일의 {entries}개 항목, 완료된 큐 {outbox}개, 백업 {backups}개, 총 {bytes}바이트를 삭제할 예정이에요. 실패: {failures}."
+prune_summary = "정리 완료: 기록 {files}개 파일의 {entries}개 항목, 완료된 큐 {outbox}개, 백업 {backups}개, 총 {bytes}바이트를 삭제했어요. 실패: {failures}."
+
+[webchat]
+usage = "사용법: ductor webchat set-password | reset-totp | clear-credentials | check-config [--json]"
+password_prompt = "비밀번호: "
+password_confirm = "비밀번호 확인: "
+password_mismatch = "비밀번호가 일치하지 않아요."
+password_too_short = "비밀번호는 12자 이상이어야 해요."
+password_saved = "비밀번호를 저장했어요."
+totp_reset = "TOTP 시드를 삭제했어요."
+credentials_cleared = "웹 채팅 인증 정보를 삭제했어요."
+config_ok = "웹 채팅 설정이 올바라요."
+config_errors = "웹 채팅 설정 오류: {errors}"

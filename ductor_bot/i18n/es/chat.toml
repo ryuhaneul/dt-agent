@@ -718,3 +718,7 @@ invalid_response = "formato de respuesta incorrecto"
 refresh = "Actualizar"
 loading = "Consultando…"
 error = "No se pudo mostrar el uso"
+
+[chat_log]
+mirror_user = "🌐 Enviado desde la web\n{text}"
+mirror_aborted = "Respuesta detenida"

@@ -103,6 +103,26 @@ top-level key.
 | `api.token` | `str` | `""` | restart | Bearer/WebSocket auth token (generated and persisted at API startup when empty) |
 | `api.chat_id` | `int` | `0` | restart | Default API session chat (`0` means fallback to first `allowed_user_ids` entry, else `1`) |
 | `api.allow_public` | `bool` | `false` | restart | Suppresses Tailscale-not-detected warning |
+| `chat_log` | `ChatLogConfig` | `(nested keys below)` | restart | Independent conversation history and outage queue; restart-required |
+| `chat_log.enabled` | `bool` | `false` | restart | Enables conversation history, the outage queue, Telegram link monitoring, and preserved bus delivery for the main agent |
+| `chat_log.retention_days` | `int or null` | `0` | restart | History retention in days; `0` or `null` disables automatic history cleanup |
+| `chat_log.backup_retention_days` | `int or null` | `0` | restart | Web edit backup retention in days; `0` or `null` disables automatic backup cleanup |
+| `webchat` | `WebchatConfig` | `(nested keys below)` | restart | Optional web interface; requires recording and a restart |
+| `webchat.enabled` | `bool` | `false` | restart | Enables webchat for the main agent only, after validation |
+| `webchat.exposure` | `"direct" or "behind_proxy"` | `"direct"` | restart | Exposure mode; other values are rejected by the config model |
+| `webchat.domain` | `str` | `""` | restart | Required DNS domain, normalized to lowercase; e.g. `chat.example.com` |
+| `webchat.allowed_ips` | `list[str]` | `[]` | restart | IP addresses or CIDRs; required in direct mode, e.g. `203.0.113.0/24` |
+| `webchat.trusted_proxies` | `list[str]` | `[]` | restart | IP addresses or CIDRs; required behind a proxy |
+| `webchat.bind_address` | `str` | `"127.0.0.1"` | restart | Behind-proxy IPv4 bind: loopback or RFC1918 only |
+| `webchat.http_port` | `int` | `80` | restart | HTTP port, 1-65535 |
+| `webchat.https_port` | `int` | `443` | restart | Direct-mode HTTPS port, 1-65535 |
+| `webchat.npm_admin_port` | `int` | `81` | restart | Admin port, 1-65535; must differ from HTTP and HTTPS ports |
+| `webchat.acme_email` | `str` | `""` | restart | Direct-mode ACME email; required and must contain `@` |
+| `webchat.web_port` | `int` | `8744` | restart | Web app port, 1-65535 |
+| `webchat.bridge_port` | `int` | `8743` | restart | Bridge port, 1-65535; must differ from API, webhook, inter-agent, and web app ports |
+| `webchat.crowdsec_lapi_port` | `int` | `18080` | restart | CrowdSec LAPI port, 1-65535 |
+| `webchat.crowdsec_appsec_port` | `int` | `17422` | restart | AppSec port, 1-65535; must differ from LAPI |
+| `webchat.default_chat_id` | `int` | `0` | restart | `0` falls back to the first `allowed_user_ids` entry; an explicit group ID may be negative |
 | `cli_parameters` | `CLIParametersConfig` | `(nested keys below)` | hot | Provider-specific extra CLI flags |
 | `cli_parameters.claude` | `list[str]` | `[]` | hot | Extra args appended to Claude CLI command |
 | `cli_parameters.codex` | `list[str]` | `[]` | hot | Extra args appended to Codex CLI command |

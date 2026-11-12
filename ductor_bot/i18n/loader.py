@@ -99,3 +99,14 @@ class TranslationStore:
                 logger.warning("Translation key %s: missing placeholder %s", key, exc)
                 return raw
         return raw
+
+
+def load_web_strings(lang: str) -> dict[str, str]:
+    """Load flattened web strings with English fallback for absent keys."""
+    strings = _load_toml(_I18N_DIR / "en" / "web.toml")
+    # Only locale directories may be selected, never an arbitrary file path.
+    from ductor_bot.i18n import LANGUAGES
+
+    if lang != "en" and lang in LANGUAGES:
+        strings.update(_load_toml(_I18N_DIR / lang / "web.toml"))
+    return strings

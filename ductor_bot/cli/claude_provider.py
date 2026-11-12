@@ -303,6 +303,8 @@ class ClaudeCodeCLI(BaseCLI):
             pass
         if "--verbose" not in cmd:
             cmd.insert(1, "--verbose")
+        if self._config.include_partial_messages:
+            cmd.append("--include-partial-messages")
         return cmd
 
     async def send_streaming(  # noqa: C901, PLR0912
@@ -623,7 +625,9 @@ class ClaudeCodeCLI(BaseCLI):
         if '"rate_limit_event"' in line:
             captured_at = int(time.time())
             usage_events.extend((event, captured_at) for event in extract_usage_events(line))
-        async for event in _claude_line_handler(line):
+        async for event in _claude_line_handler(
+            line, include_partial_messages=self._config.include_partial_messages
+        ):
             yield event
 
     def _write_prompt_files(self) -> _PromptFiles:
@@ -686,9 +690,11 @@ def _make_capturing_post_handler(
     return _post
 
 
-async def _claude_line_handler(line: str) -> AsyncGenerator[StreamEvent, None]:
+async def _claude_line_handler(
+    line: str, *, include_partial_messages: bool = False
+) -> AsyncGenerator[StreamEvent, None]:
     """Parse a single Claude stream-json line into stream events."""
-    for event in parse_stream_line(line):
+    for event in parse_stream_line(line, include_partial_messages=include_partial_messages):
         yield event
 
 

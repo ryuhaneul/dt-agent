@@ -1,0 +1,12 @@
+{"type":"user","timestamp":"2020-01-01T00:00:00Z","message":{"content":"[Received: 2020-01-01 00:00:00 UTC]\nSynthetic question"}}
+{"type":"assistant","timestamp":"2020-01-01T00:00:01Z","message":{"content":[{"type":"text","text":"Discarded draft"},{"type":"tool_use","id":"synthetic-tool-a","name":"example","input":{}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"synthetic-tool-a","content":"Synthetic tool output"}]}}
+{"type":"assistant","timestamp":"2020-01-01T00:00:02Z","message":{"content":[{"type":"text","text":"Discarded intermediate"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"synthetic-tool-b","name":"example","input":{}}]}}
+{"type":"assistant","timestamp":"2020-01-01T00:00:03Z","message":{"content":[{"type":"text","text":"Synthetic final one"},{"type":"text","text":"Synthetic final two"}]}}
+{"type":"user","isSidechain":true,"message":{"content":"Synthetic sidechain"}}
+{"type":"assistant","isSidechain":true,"message":{"content":[{"type":"text","text":"Synthetic sidechain reply"}]}}
+{"type":"user","message":{"content":"[TASK_RESULT: synthetic]\nSynthetic injection"}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Synthetic injected reply"}]}}
+{"type":"user","message":{"content":"<environment>Synthetic instructions</environment>"}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Synthetic environment reply"}]}}

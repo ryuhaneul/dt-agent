@@ -83,3 +83,28 @@ agents = "Управление суб-агентами (list/add/remove)"
 status = "Статус бота, пути и агенты"
 help = "Показать это сообщение"
 verbose = "Подробный вывод логов"
+
+[chat_log]
+usage = "Использование: ductor chat-log status | import [--dry-run] [--undo] | prune --older-than N [--backups] [--dry-run]"
+disabled = "Журнал бесед отключён или настроен неверно."
+import_summary = "Файлы: {files}; импортированные записи: {entries}; неизвестная тема: {unknown}."
+import_undone = "Удалено импортированных записей: {entries}."
+
+status = "Журнал чата: {active}; ошибки: {errors}; файлы истории: {files}; записи: {entries}; в очереди: {pending}; ошибки отправки: {failed}. нечитаемые: {unreadable}; изолированные: {corrupt}."
+active = "активен"
+inactive = "неактивен"
+no_errors = "нет"
+prune_preview = "Предпросмотр: будут удалены {entries} записей истории из {files} файлов, {outbox} завершённых элементов очереди и {backups} резервных копий; {bytes} байт. ошибки: {failures}."
+prune_summary = "Удалено: {entries} записей истории из {files} файлов, {outbox} завершённых элементов очереди и {backups} резервных копий; {bytes} байт. ошибки: {failures}."
+
+[webchat]
+usage = "Использование: ductor webchat set-password | reset-totp | clear-credentials | check-config [--json]"
+password_prompt = "Пароль: "
+password_confirm = "Подтверждение пароля: "
+password_mismatch = "Пароли не совпадают."
+password_too_short = "Пароль должен содержать не менее 12 символов."
+password_saved = "Пароль сохранён."
+totp_reset = "Секрет TOTP удалён."
+credentials_cleared = "Учётные данные веб-чата удалены."
+config_ok = "Настройки веб-чата корректны."
+config_errors = "Ошибки настроек веб-чата: {errors}"

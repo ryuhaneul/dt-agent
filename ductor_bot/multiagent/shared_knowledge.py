@@ -31,6 +31,23 @@ def _find_markers(text: str) -> tuple[str, str] | None:
     return None
 
 
+def render_shared_knowledge(current: str, shared_content: str) -> str:
+    """Render shared knowledge with the sync writer's existing marker semantics."""
+    shared_content = shared_content.strip()
+    if not shared_content:
+        return current
+    inject_block = f"{_START_MARKER}\n{shared_content}\n{_END_MARKER}"
+    markers = _find_markers(current)
+    if markers:
+        start, end = markers
+        before = current.split(start, 1)[0]
+        after_parts = current.split(end, 1)
+        after = after_parts[1] if len(after_parts) > 1 else ""
+        # Always write new-format markers (migrates legacy on first sync)
+        return f"{before}{inject_block}{after}"
+    return f"{current.rstrip()}\n\n{inject_block}\n"
+
+
 def _sync_agent_io(shared_path: Path, mainmemory_path: Path) -> bool:
     """Synchronous file I/O for injecting shared knowledge into one agent.
 
@@ -41,23 +58,11 @@ def _sync_agent_io(shared_path: Path, mainmemory_path: Path) -> bool:
     shared_content = shared_path.read_text(encoding="utf-8").strip()
     if not shared_content:
         return False
-    inject_block = f"{_START_MARKER}\n{shared_content}\n{_END_MARKER}"
-
     if not mainmemory_path.is_file():
         return False
 
     current = mainmemory_path.read_text(encoding="utf-8")
-
-    markers = _find_markers(current)
-    if markers:
-        start, end = markers
-        before = current.split(start, 1)[0]
-        after_parts = current.split(end, 1)
-        after = after_parts[1] if len(after_parts) > 1 else ""
-        # Always write new-format markers (migrates legacy on first sync)
-        new_content = f"{before}{inject_block}{after}"
-    else:
-        new_content = f"{current.rstrip()}\n\n{inject_block}\n"
+    new_content = render_shared_knowledge(current, shared_content)
 
     if new_content != current:
         mainmemory_path.write_text(new_content, encoding="utf-8")

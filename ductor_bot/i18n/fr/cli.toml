@@ -83,3 +83,28 @@ agents = "Gestion des sous-agents (list/add/remove)"
 status = "Afficher le statut du bot, chemins et agents"
 help = "Afficher ce message"
 verbose = "Sortie de log détaillée"
+
+[chat_log]
+usage = "Utilisation : ductor chat-log status | import [--dry-run] [--undo] | prune --older-than N [--backups] [--dry-run]"
+disabled = "Le journal des conversations est désactivé ou sa configuration est invalide."
+import_summary = "Fichiers : {files} ; entrées importées : {entries} ; sujet inconnu : {unknown}."
+import_undone = "Entrées importées supprimées : {entries}."
+
+status = "Historique du chat : {active} ; erreurs : {errors} ; fichiers : {files} ; entrées : {entries} ; en attente : {pending} ; échecs : {failed}. illisibles: {unreadable}; isolés: {corrupt}."
+active = "actif"
+inactive = "inactif"
+no_errors = "aucune"
+prune_preview = "Aperçu : {entries} entrées d’historique dans {files} fichiers, {outbox} éléments terminés de la file et {backups} sauvegardes seraient supprimés ; {bytes} octets. échecs: {failures}."
+prune_summary = "Supprimés : {entries} entrées d’historique dans {files} fichiers, {outbox} éléments terminés de la file et {backups} sauvegardes ; {bytes} octets. échecs: {failures}."
+
+[webchat]
+usage = "Utilisation : ductor webchat set-password | reset-totp | clear-credentials | check-config [--json]"
+password_prompt = "Mot de passe : "
+password_confirm = "Confirmer le mot de passe : "
+password_mismatch = "Les mots de passe ne correspondent pas."
+password_too_short = "Le mot de passe doit comporter au moins 12 caractères."
+password_saved = "Mot de passe enregistré."
+totp_reset = "Clé TOTP supprimée."
+credentials_cleared = "Identifiants du chat web supprimés."
+config_ok = "La configuration du chat web est valide."
+config_errors = "Erreurs de configuration du chat web : {errors}"

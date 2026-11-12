@@ -83,3 +83,28 @@ agents = "Sub-Agent-Verwaltung (list/add/remove)"
 status = "Bot-Status, Pfade und Agents anzeigen"
 help = "Diese Nachricht anzeigen"
 verbose = "Ausführliche Log-Ausgabe"
+
+[chat_log]
+usage = "Aufruf: ductor chat-log status | import [--dry-run] [--undo] | prune --older-than N [--backups] [--dry-run]"
+disabled = "Die Chatprotokollierung ist deaktiviert oder falsch konfiguriert."
+import_summary = "Dateien: {files}; importierte Einträge: {entries}; unbekanntes Thema: {unknown}."
+import_undone = "Entfernte importierte Einträge: {entries}."
+
+status = "Chatprotokoll: {active}; Fehler: {errors}; Protokolldateien: {files}; Einträge: {entries}; ausstehend: {pending}; fehlgeschlagen: {failed}. unlesbar: {unreadable}; isoliert: {corrupt}."
+active = "aktiv"
+inactive = "inaktiv"
+no_errors = "keine"
+prune_preview = "Vorschau: {entries} Verlaufseinträge in {files} Dateien, {outbox} abgeschlossene Warteschlangeneinträge und {backups} Sicherungen; {bytes} Bytes würden entfernt. Fehler: {failures}."
+prune_summary = "Entfernt: {entries} Verlaufseinträge in {files} Dateien, {outbox} abgeschlossene Warteschlangeneinträge und {backups} Sicherungen; {bytes} Bytes. Fehler: {failures}."
+
+[webchat]
+usage = "Aufruf: ductor webchat set-password | reset-totp | clear-credentials | check-config [--json]"
+password_prompt = "Passwort: "
+password_confirm = "Passwort bestätigen: "
+password_mismatch = "Die Passwörter stimmen nicht überein."
+password_too_short = "Das Passwort muss mindestens 12 Zeichen enthalten."
+password_saved = "Passwort gespeichert."
+totp_reset = "TOTP-Schlüssel entfernt."
+credentials_cleared = "Webchat-Zugangsdaten gelöscht."
+config_ok = "Die Webchat-Konfiguration ist gültig."
+config_errors = "Fehler in der Webchat-Konfiguration: {errors}"

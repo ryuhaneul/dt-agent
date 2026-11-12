@@ -714,3 +714,7 @@ invalid_response = "ongeldige antwoordindeling"
 refresh = "Vernieuwen"
 loading = "Bezig met opvragen…"
 error = "Gebruik weergeven mislukt"
+
+[chat_log]
+mirror_user = "🌐 Verzonden via het web\n{text}"
+mirror_aborted = "Antwoord gestopt"

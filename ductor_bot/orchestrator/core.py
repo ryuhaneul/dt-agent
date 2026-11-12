@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Literal
 
 from ductor_bot.background import (
     BackgroundSubmit,
@@ -77,6 +77,7 @@ if TYPE_CHECKING:
     from ductor_bot.bus.bus import MessageBus
     from ductor_bot.bus.envelope import Envelope
     from ductor_bot.bus.lock_pool import LockPool
+    from ductor_bot.chat_log.recorder import HistoryRecorder
     from ductor_bot.config import ModelRegistry
     from ductor_bot.infra.shutdown_budget import ShutdownBudget
     from ductor_bot.multiagent.session_gate import Reservation, SessionGateRegistry
@@ -112,6 +113,7 @@ class _MessageDispatch:
     key: SessionKey
     text: str
     cmd: str
+    include_partial_messages: bool = field(default=False, kw_only=True)
     streaming: bool = False
     transport_override: str | None = None
     on_text_delta: _TextCallback | None = None
@@ -124,6 +126,7 @@ class _MessageDispatch:
     def streaming_callbacks(self) -> StreamingCallbacks:
         """Bundle the streaming callbacks into a StreamingCallbacks instance."""
         return StreamingCallbacks(
+            include_partial_messages=self.include_partial_messages,
             on_text_delta=self.on_text_delta,
             on_thinking_delta=self.on_thinking_delta,
             on_tool_activity=self.on_tool_activity,
@@ -238,6 +241,7 @@ class Orchestrator:
             self._hook_registry.register(build_memory_reflection_hook(config.memory_reflection))
         self._supervisor: AgentSupervisor | None = None  # Set by AgentSupervisor after creation
         self._task_hub: TaskHub | None = None  # Set by supervisor or __main__.py
+        self._history_recorder: HistoryRecorder | None = None
         self._command_registry = CommandRegistry()
         self._register_commands()
 
@@ -316,6 +320,10 @@ class Orchestrator:
         self._task_hub = hub
         hub.start_maintenance()
 
+    def set_history_recorder(self, recorder: HistoryRecorder | None) -> None:
+        """Install the optional conversation history hooks."""
+        self._history_recorder = recorder
+
     @classmethod
     async def create(
         cls,
@@ -382,6 +390,7 @@ class Orchestrator:
         on_system_status: _SystemStatusCallback | None = None,
         on_reasoning_delta: _ReasoningCallback | None = None,
         request_transport: str | None = None,
+        include_partial_messages: bool = False,
     ) -> OrchestratorResult:
         """Main entry point with streaming support."""
         dispatch = _MessageDispatch(
@@ -389,6 +398,7 @@ class Orchestrator:
             text=text,
             cmd=text.strip().lower(),
             streaming=True,
+            include_partial_messages=include_partial_messages,
             transport_override=request_transport,
             on_text_delta=on_text_delta,
             on_thinking_delta=on_thinking_delta,
@@ -398,7 +408,7 @@ class Orchestrator:
         )
         return await self._handle_message_impl(dispatch)
 
-    async def _handle_message_impl(self, dispatch: _MessageDispatch) -> OrchestratorResult:
+    async def _handle_message_impl(self, dispatch: _MessageDispatch) -> OrchestratorResult:  # noqa: C901, PLR0912
         if self._inflight_tracker.shutting_down:
             # A turn started now would outlive the last CLI kill of this shutdown.
             logger.info("Message refused: the shutdown has begun")
@@ -413,9 +423,18 @@ class Orchestrator:
         if patterns:
             logger.warning("Suspicious input patterns: %s", ", ".join(patterns))
 
+        recorder = self._history_recorder
+        result: OrchestratorResult | None = None
+        status: Literal["ok", "aborted", "error"] = "ok"
         try:
-            return await self._route_message(dispatch)
+            if recorder is not None:
+                try:
+                    await recorder.begin(dispatch)
+                except Exception:
+                    logger.exception("History begin failed: session=%s", dispatch.key.storage_key)
+            result = await self._route_message(dispatch)
         except asyncio.CancelledError:
+            status = "aborted"
             raise
         except (
             CLIError,
@@ -426,10 +445,29 @@ class Orchestrator:
             WorkspaceError,
         ):
             logger.exception("Domain error in handle_message")
-            return OrchestratorResult(text=t("error.internal"))
+            status = "error"
+            result = OrchestratorResult(text=t("error.internal"))
+            return result
         except (OSError, RuntimeError, ValueError, TypeError, KeyError):
             logger.exception("Unexpected error in handle_message")
-            return OrchestratorResult(text=t("error.internal"))
+            status = "error"
+            result = OrchestratorResult(text=t("error.internal"))
+            return result
+        else:
+            return result
+        finally:
+            if recorder is not None:
+                try:
+                    if status == "ok" and (
+                        self._process_registry.was_aborted(dispatch.key.chat_id)
+                        or self._process_registry.was_aborted_topic(
+                            dispatch.key.chat_id, dispatch.key.topic_id
+                        )
+                    ):
+                        status = "aborted"
+                    await recorder.finish(dispatch, result, status=status)
+                except Exception:
+                    logger.exception("History finish failed: session=%s", dispatch.key.storage_key)
 
     async def _route_message(self, dispatch: _MessageDispatch) -> OrchestratorResult:
         result = await self._command_registry.dispatch(

@@ -10,7 +10,6 @@ import pytest
 from ductor_bot.cli.types import AgentResponse
 from ductor_bot.orchestrator.core import Orchestrator
 from ductor_bot.orchestrator.flows import (
-    StreamingCallbacks,
     _finish_normal,
     _strip_ack_token,
     _update_session,
@@ -353,16 +352,21 @@ async def test_normal_recovers_when_gemini_auth_flipped_mid_session(
 # -- streaming flow --
 
 
-async def test_streaming_delegates_correctly(orch: Orchestrator) -> None:
+@pytest.mark.parametrize("partial", [False, True])
+async def test_streaming_delegates_correctly(orch: Orchestrator, partial: bool) -> None:
     mock_streaming = AsyncMock(return_value=_mock_response())
     object.__setattr__(orch._cli_service, "execute_streaming", mock_streaming)
     on_delta = AsyncMock()
 
-    result = await normal_streaming(
-        orch, SessionKey(chat_id=1), "Hello", cbs=StreamingCallbacks(on_text_delta=on_delta)
+    result = await orch.handle_message_streaming(
+        SessionKey(chat_id=1),
+        "Hello",
+        on_text_delta=on_delta,
+        include_partial_messages=partial,
     )
     assert result.text == "Hello from agent"
     mock_streaming.assert_called_once()
+    assert mock_streaming.call_args.args[0].include_partial_messages is partial
 
 
 async def test_streaming_fallback_flag(orch: Orchestrator) -> None:

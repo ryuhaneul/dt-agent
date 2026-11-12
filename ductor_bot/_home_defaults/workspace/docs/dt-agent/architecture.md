@@ -42,6 +42,24 @@ starts all transports in parallel and exposes a unified
 
 Direct API path (`api.enabled=true`) uses `ApiServer` and calls orchestrator streaming callbacks directly.
 
+### Optional history and web chat
+
+`chat_log.enabled` activates the main Telegram agent’s history recorder, durable
+outbox and link monitor. `webchat.enabled` additionally activates an internal
+token-authenticated bridge and local startup before Telegram retries. The web
+app and NPMplus/CrowdSec gateway run in the `webchat` Compose profile. Both flags
+default to `false`; web activation requires recording. Web turns use the target
+Telegram session key and the same `LockPool`; abort is scoped to that topic.
+
+```text
+Browser -> HTTPS gateway (IP allowlist + AppSec) -> web app (session + CSRF)
+        -> internal token-authenticated bridge -> Orchestrator (tg: session lock)
+        -> history + durable Telegram mirrors / buffered bus deliveries
+```
+
+See [recording and recovery](modules/chat_log.md) and [web chat](modules/webchat.md)
+for storage, ordered recovery delivery, authentication and endpoint contracts.
+
 ### Transport dispatch
 
 `messenger/registry.py` maps `config.transport` to a bot factory:

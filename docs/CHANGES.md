@@ -10,6 +10,7 @@ DT Agent is based on ductor v0.20.1. The project metadata retains the PleaseProm
 
 | Change / interface | Behavior |
 | --- | --- |
+| Optional history and emergency web chat | Independent `chat_log.enabled` enables conversation history, Telegram monitoring and durable recovery of failed public bus deliveries. `webchat.enabled` adds password/TOTP login, shared Telegram topic sessions, streaming, topic management and versioned editing of four main-agent Markdown files behind an IP-filtered NPMplus/CrowdSec gateway. Both default to false; web requires recording. See [recording](modules/chat_log.md), [web chat](modules/webchat.md) and [setup](installation.md#emergency-web-chat-optional). |
 | API file access reload | File downloads use the current `file_access` policy after a config hot-reload. |
 | Claude model menus | Model menus list `opus` and `sonnet` without the short `[1m]` aliases; typed and saved `[1m]` values keep working. |
 | Materialized source tree | Replaced the old vendored Git tree with the v0.20.1 source tree plus the fork features that were previously applied only at image build time. This exposes those changes in Git; it does not mean every added source line is a new runtime feature. |
@@ -225,6 +226,9 @@ DT Agent is based on ductor v0.20.1. The project metadata retains the PleaseProm
 | Retired wizard translations and tests | Delete wizard.toml for the existing locales, Antigravity/service/Docker/setup test modules, and update retained command/chat translations for the removed commands. |
 
 ## 7. Known limitations
+
+- **Buffered Telegram chunk acknowledgement.** With conversation recording enabled, recovery resumes from saved chunk progress. A chunk accepted by Telegram whose response is interrupted can be duplicated once. Progress-aware delivery can also change long-message split positions.
+- **Web file editing and external writers.** Web saves serialize per file, compare the full-byte hash and back up before replacement. A noncooperating external writer, including shared-memory synchronization, can race after the final comparison. Coordinate edits and use retained backups for recovery.
 
 - **Interrupted-task notice transport.** The notice about a task a restart cut off is sent through the agent's primary transport. In a multi-transport agent it does not go back to the transport the task was started from (the task record has no transport field). Telling the parent is tried once per start and given up after three failed tries.
 - **Update journal scope.** The Telegram update journal keeps message updates only (edited messages, member changes and other kinds are not replayed), is Telegram-only, and covers what the server still holds: Telegram keeps unconfirmed updates for 24 hours, and the journal drops waiting updates after the same time. If the journal file cannot be saved, the reader waits and retries (and so does not confirm the update to the server), and an update that cannot be marked as started is not run until the next start. A button press is never replayed. A message sent while a stop is already in progress (for example a second `/restart`) has not been received yet, so it is processed once after the next start.

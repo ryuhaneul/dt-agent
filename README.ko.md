@@ -16,6 +16,8 @@ DT Agent는 [github.com/ryuhaneul/dt-agent](https://github.com/ryuhaneul/dt-agen
 
 Provider CLI는 봇 컨테이너에서, Chromium은 별도 브라우저 컨테이너에서 실행합니다. 위임 라우팅, 중단·복구, 초기 설정, 선택 의존성과 안전한 진단도 변경했습니다. 전체 변경은 [변경점 문서](docs/CHANGES.md)에 정리되어 있습니다.
 
+- 선택 기능인 [대화 기록·복구 큐](docs/modules/chat_log.md)는 텔레그램 전달 실패분을 보관하고, [긴급 웹 채팅](docs/modules/webchat.md)은 인증된 토픽 대화와 버전 확인을 거치는 설정 파일 편집을 제공합니다. [설정 절차](docs/installation.md#emergency-web-chat-optional)를 참고하십시오.
+
 ## 1. 요구 사항과 깨끗한 서버 준비
 
 Linux 서버에 Docker Engine, **Compose 플러그인 v2 이상**, Git, Bash, 호스트 초기 설정용 Python **3.9 이상**과 시간대 데이터베이스가 필요합니다. 봇·개발용 Python은 **3.11 이상**이며 이미지에 설치됩니다. 봇 이미지는 Debian Bookworm/Python 3.11과 Node.js 24, 브라우저 이미지는 Playwright `v1.59.1-noble`을 사용합니다. 이 문서는 Linux x86-64 배포를 기준으로 합니다. 다른 아키텍처·OS는 이미지와 CLI 호환성을 별도로 확인해야 합니다.

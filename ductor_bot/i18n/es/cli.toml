@@ -83,3 +83,28 @@ agents = "Gestión de sub-agentes (list/add/remove)"
 status = "Mostrar estado del bot, rutas y agentes"
 help = "Mostrar este mensaje"
 verbose = "Salida de log detallada"
+
+[chat_log]
+usage = "Uso: ductor chat-log status | import [--dry-run] [--undo] | prune --older-than N [--backups] [--dry-run]"
+disabled = "El registro de conversaciones está desactivado o su configuración no es válida."
+import_summary = "Archivos: {files}; entradas importadas: {entries}; tema desconocido: {unknown}."
+import_undone = "Entradas importadas eliminadas: {entries}."
+
+status = "Registro de chat: {active}; errores: {errors}; archivos: {files}; entradas: {entries}; pendientes: {pending}; fallidos: {failed}. ilegibles: {unreadable}; aislados: {corrupt}."
+active = "activo"
+inactive = "inactivo"
+no_errors = "ninguno"
+prune_preview = "Vista previa: se eliminarían {entries} entradas del historial en {files} archivos, {outbox} elementos completados de la cola y {backups} copias de seguridad; {bytes} bytes. fallos: {failures}."
+prune_summary = "Eliminados: {entries} entradas del historial en {files} archivos, {outbox} elementos completados de la cola y {backups} copias de seguridad; {bytes} bytes. fallos: {failures}."
+
+[webchat]
+usage = "Uso: ductor webchat set-password | reset-totp | clear-credentials | check-config [--json]"
+password_prompt = "Contraseña: "
+password_confirm = "Confirmar contraseña: "
+password_mismatch = "Las contraseñas no coinciden."
+password_too_short = "La contraseña debe tener al menos 12 caracteres."
+password_saved = "Contraseña guardada."
+totp_reset = "Semilla TOTP eliminada."
+credentials_cleared = "Credenciales del chat web eliminadas."
+config_ok = "La configuración del chat web es válida."
+config_errors = "Errores de configuración del chat web: {errors}"

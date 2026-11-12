@@ -67,7 +67,8 @@ slack = [
     "slack-bolt>=1.23.0,<2.0.0",
     "slack-sdk>=3.37.0,<4.0.0",
 ]
-dev = ["dt-agent[test,lint,api,matrix,slack]"]
+webchat = ["segno>=1.6"]
+dev = ["dt-agent[test,lint,api,matrix,slack,webchat]"]
 
 [project.urls]
 Homepage = "https://github.com/ryuhaneul/dt-agent"
@@ -206,6 +207,10 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["slack_bolt.*", "slack_sdk.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["segno.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

@@ -75,7 +75,23 @@ def _is_allowed_private_chat(bot: TelegramBot, chat_id: int) -> bool:
     return chat_id > 0 and chat_id in bot.config.allowed_user_ids
 
 
-async def _handle_recovery(bot: TelegramBot, sentinel: dict[str, object] | None) -> None:
+def _plan_recovery(bot: TelegramBot) -> list[RecoveryAction]:
+    """Snapshot the interrupted work known at startup."""
+    from ductor_bot.infra.recovery import RecoveryPlanner
+
+    return RecoveryPlanner(
+        inflight=bot._orch.inflight_tracker,
+        named_sessions=bot._orch.named_sessions.pop_recovered_running(),
+        max_age_seconds=bot.config.timeouts.normal * 2,
+    ).plan()
+
+
+async def _handle_recovery(
+    bot: TelegramBot,
+    sentinel: dict[str, object] | None,
+    *,
+    actions: list[RecoveryAction] | None = None,
+) -> None:
     """Handle startup lifecycle and auto-recovery of interrupted work."""
     from ductor_bot.infra.startup_state import detect_startup_kind, save_startup_state
     from ductor_bot.text.response_format import startup_notification_text
@@ -87,15 +103,12 @@ async def _handle_recovery(bot: TelegramBot, sentinel: dict[str, object] | None)
         if note:
             await bot.notify_startup(note)
 
-    from ductor_bot.infra.recovery import RecoveryPlanner
     from ductor_bot.text.response_format import recovery_notification_text
 
-    planner = RecoveryPlanner(
-        inflight=bot._orch.inflight_tracker,
-        named_sessions=bot._orch.named_sessions.pop_recovered_running(),
-        max_age_seconds=bot.config.timeouts.normal * 2,
-    )
-    for action in planner.plan():
+    prepared = actions is not None
+    if actions is None:
+        actions = _plan_recovery(bot)
+    for action in actions:
         note = recovery_notification_text(action.kind, action.prompt_preview, action.session_name)
         await _notify_recovery(bot, action, note)
         if action.kind == "named_session" and action.session_name:
@@ -107,10 +120,11 @@ async def _handle_recovery(bot: TelegramBot, sentinel: dict[str, object] | None)
                     message_id=0,
                     thread_id=action.topic_id,
                 )
-    bot._orch.inflight_tracker.clear()
+    if not prepared:
+        bot._orch.inflight_tracker.clear()
 
 
-async def _run_primary_startup(bot: TelegramBot) -> None:
+async def _run_primary_startup(bot: TelegramBot, *, local: bool = False) -> None:
     """Create orchestrator, handle sentinels, and recovery.
 
     Called only when the bot is the primary transport (owns the orchestrator).
@@ -134,7 +148,7 @@ async def _run_primary_startup(bot: TelegramBot) -> None:
         logger.info("Topic name cache seeded with %d name(s)", seeded)
     bot._orch._sessions.set_topic_name_resolver(bot._topic_names.resolve)
 
-    sentinel = await _handle_restart_sentinel(bot)
+    sentinel = None if local else await _handle_restart_sentinel(bot)
 
     bot._orch.wire_observers_to_bus(bot._bus, wake_handler=bot._handle_webhook_wake)
     from ductor_bot.messenger.telegram.memory_lint_report import MemoryLintReporter
@@ -152,7 +166,31 @@ async def _run_primary_startup(bot: TelegramBot) -> None:
 
     bot._orch._observers.heartbeat.set_chat_validator(_validate_chat)
 
-    await _handle_recovery(bot, sentinel)
+    if not local:
+        await _handle_recovery(bot, sentinel)
+
+
+async def run_local_startup(bot: TelegramBot) -> list[RecoveryAction]:
+    """Prepare services and consume boot recovery before accepting web turns."""
+    if bot._orchestrator is not None:
+        return []
+    await _run_primary_startup(bot, local=True)
+    actions = _plan_recovery(bot)
+    bot._orch.inflight_tracker.clear()
+    return actions
+
+
+async def run_local_notices(bot: TelegramBot, actions: list[RecoveryAction]) -> None:
+    """Send best-effort startup notices after the web bridge is listening."""
+    try:
+        sentinel = await _handle_restart_sentinel(bot)
+    except Exception:
+        logger.warning("Local restart notice failed", exc_info=True)
+        sentinel = None
+    try:
+        await _handle_recovery(bot, sentinel, actions=actions)
+    except Exception:
+        logger.warning("Local recovery notice failed", exc_info=True)
 
 
 async def run_startup(bot: TelegramBot) -> None:
@@ -163,6 +201,10 @@ async def run_startup(bot: TelegramBot) -> None:
     """
     if bot._orchestrator is None:
         await _run_primary_startup(bot)
+
+    from ductor_bot.chat_log.runtime import ChatLogRuntime
+
+    await ChatLogRuntime.start(bot)
 
     me = await bot.bot_instance.get_me()
     bot._bot_id = me.id

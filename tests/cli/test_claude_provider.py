@@ -1770,3 +1770,32 @@ async def test_buffered_usage_uses_start_before_intermediate_stream(tmp_path, mo
     usage = store.load()[slot]
     assert (usage.captured_at, usage.windows["five_hour"].captured_at,
             usage.windows["five_hour"].utilization) == (1100, 1100, 0.3)
+
+
+@pytest.mark.parametrize("partial", [False, True])
+@pytest.mark.parametrize("accounts", [[], ["claude"]])
+async def test_partial_messages_are_opt_in_and_never_duplicate_final_text(
+    tmp_path, monkeypatch, partial, accounts
+):
+    cli = _make_cli(
+        monkeypatch,
+        ductor_home=tmp_path,
+        include_partial_messages=partial,
+        claude_accounts=accounts,
+    )
+    fixture = Path(__file__).parent / "fixtures" / "claude_partial_messages.jsonl"
+    lines = fixture.read_bytes().splitlines(keepends=True)
+    proc = _fake_streaming_process(lines)
+    with patch(_EXEC_PATH, new_callable=AsyncMock, return_value=proc) as spawn:
+        events = await _collect_stream(cli)
+    assert ("--include-partial-messages" in spawn.call_args.args) is partial
+    assert "--include-partial-messages" not in cli._build_command()
+    texts = [event.text for event in events if isinstance(event, AssistantTextDelta)]
+    finals = [event for event in events if isinstance(event, ResultEvent)]
+    assert len(texts) == (3 if partial else 1)
+    assert len(finals) == 1
+    assert "".join(texts) == finals[0].result
+    assert (
+        finals[0].result
+        == "A small river flows quietly past the old stone bridge under the morning sky."
+    )

@@ -172,3 +172,95 @@ Sources: onboarding options/output (`scripts/onboard.py`),
 login (`scripts/login.sh`), Compose (`compose.yaml`),
 image (`docker/ductor-bot/Dockerfile`), rebuild (`scripts/rebuild.sh`),
 update (`scripts/update.sh`).
+
+## Conversation history and recovery queue (optional)
+
+Merge this block into the main agent's `config/config.json`, keeping your existing
+Telegram transport and access settings:
+
+```json
+{"chat_log": {"enabled": true}}
+```
+
+Restart the bot with `docker compose restart ductor-bot`, then check activation
+and preview transcript import:
+
+```bash
+docker compose exec ductor-bot ductor chat-log status
+docker compose exec ductor-bot ductor chat-log import --dry-run
+docker compose exec ductor-bot ductor chat-log import
+```
+
+Recording defaults to `false` and works independently of the web UI. Enabling it
+also buffers failed public bus deliveries during Telegram outages and sends them
+in order after recovery. Long messages use progress-aware chunk splitting, which
+can change their split positions. A chunk accepted by Telegram just before its
+response is interrupted can be duplicated once. See [recording runtime](modules/chat_log.md)
+for storage, imports, restart behavior and safe disabling.
+
+## Emergency web chat (optional)
+
+Enable recording first, then merge a `webchat` block. Both activation flags default
+to `false`; web startup requires `chat_log.enabled=true`. Main must use Telegram.
+For direct TLS exposure:
+
+```json
+{
+  "chat_log": {"enabled": true},
+  "webchat": {
+    "enabled": true,
+    "exposure": "direct",
+    "domain": "chat.example.com",
+    "acme_email": "admin@example.com",
+    "allowed_ips": ["203.0.113.0/24"]
+  }
+}
+```
+
+Replace the example domain, email and reserved client range with your own values.
+Point DNS at the host and make HTTP/HTTPS ports available for the gateway and
+ACME HTTP-01 validation. External exposure requires an explicit client IP allowlist.
+For direct exposure, allow inbound TCP ports 80 and 443 in the host firewall for
+certificate issuance and HTTPS access.
+For `behind_proxy`, configure `trusted_proxies`, an internal IPv4 `bind_address`
+and `allowed_ips` for client filtering (or enforce the client allowlist at the
+trusted outer ingress). For example, use `127.0.0.1` when the outer proxy runs on the same host, with
+`127.0.0.1/32` as the trusted proxy. For a remote proxy, choose an actual internal
+interface address and its trusted proxy CIDR. Avoid a wildcard bind. Preserve the incoming
+Host and forward the real client address from the trusted proxy.
+The pinned NPMplus tag binds HTTP and HTTPS only to `bind_address` in this mode;
+its release does not support `DISABLE_HTTPS`. Account for both listener ports
+when choosing a bind address and port pair; forward outer HTTPS to its HTTP listener.
+
+Set credentials, validate configuration, restart the bot and create the gateway:
+
+```bash
+docker compose exec -it ductor-bot ductor webchat set-password
+docker compose exec ductor-bot ductor webchat check-config --json
+docker compose restart ductor-bot
+python3 scripts/webchat.py up
+```
+
+Use a password of at least 12 characters. Open the configured HTTPS origin from
+an allowed client, log in and confirm a new authenticator QR code or an existing
+Base32 seed. `check-config` returns error-code strings and exits 1 on validation
+failure; see the [JSON contract](modules/webchat.md#bridge-contracts).
+The enabled bot creates `webchat/share/bridge.token` when its bridge starts.
+If `up` reports `bridge_token_missing`, restart the bot and wait for the bridge
+to start before retrying; the helper exits before starting gateway services.
+
+The host helper records `DTW_*` values and merges `webchat` into `COMPOSE_PROFILES`
+in the repository-root `.env`. Run `python3 scripts/webchat.py up` again after
+onboarding with `--force` rewrites that file. Gateway startup verifies the pinned
+NPMplus template, configures CrowdSec AppSec and checks web health. Review
+`python3 scripts/webchat.py status` and `docker compose --profile webchat ps`
+when troubleshooting. Configuration changes require a bot restart and another
+`up` for gateway settings.
+
+To disable the web service, run `python3 scripts/webchat.py down`, set
+`webchat.enabled=false` and restart the bot. Recording and its recovery queue
+continue while `chat_log.enabled` remains true. Gateway volumes and web data
+are preserved. `down --purge` deletes gateway volumes and gateway state; back up
+before using it. File editing creates original-byte backups; coordinate shared
+memory edits with external writers to avoid a race. See [web chat](modules/webchat.md)
+for authentication maintenance, bridge errors and file recovery.

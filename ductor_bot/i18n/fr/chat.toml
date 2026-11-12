@@ -718,3 +718,7 @@ invalid_response = "format de réponse invalide"
 refresh = "Actualiser"
 loading = "Consultation en cours…"
 error = "Échec de l’affichage de l’utilisation"
+
+[chat_log]
+mirror_user = "🌐 Envoyé depuis le Web\n{text}"
+mirror_aborted = "Réponse interrompue"

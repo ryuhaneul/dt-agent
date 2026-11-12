@@ -157,6 +157,8 @@ Host paths written as `~/.ductor` below mean the default home; substitute the co
 | `cleanup` | `CleanupConfig` | see below | Daily file-retention cleanup |
 | `webhooks` | `WebhookConfig` | see below | Webhook HTTP server config |
 | `api` | `ApiConfig` | see below | Direct WebSocket API server config |
+| `chat_log` | `ChatLogConfig` | disabled | Independent conversation history and outage queue; restart-required |
+| `webchat` | `WebchatConfig` | disabled | Optional web interface; requires recording and a restart |
 | `cli_parameters` | `CLIParametersConfig` | see below | Provider-specific extra CLI flags |
 | `image` | `ImageConfig` | see below | Incoming image processing settings |
 | `timeouts` | `TimeoutConfig` | see below | Path-specific timeout policy (`normal`, `background`, `subagent`) |
@@ -549,6 +551,107 @@ Runtime note (`Orchestrator._start_api_server` + `ApiServer._authenticate`):
   - `{"type":"auth","chat_id":...}` (positive int),
   - optional `channel_id` (positive int) for per-channel session isolation (`SessionKey.topic_id`),
 - clients can override only for that connection; persisted default stays in config.
+
+## `ChatLogConfig`
+
+Top-level `chat_log` is independent of `webchat`. Changes require a restart.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | `bool` | `false` | Enables conversation history, the outage queue, Telegram link monitoring, and preserved bus delivery for the main agent |
+| `retention_days` | `int` or `null` | `0` | History retention in days; `0` or `null` disables automatic history cleanup |
+| `backup_retention_days` | `int` or `null` | `0` | Web edit backup retention in days; `0` or `null` disables automatic backup cleanup |
+
+`validate_chat_log(config)` returns `[]` when disabled. When enabled, Telegram
+must be in `transports` (or the legacy `transport` when the list is empty),
+otherwise it returns `telegram_required`. `chat_log_active(config, agent_name)`
+is true only when enabled, the agent name is `main`, and validation succeeds.
+Sub-agents remain inactive even when they inherit this setting.
+
+Retention limits accept nonnegative integers or `null`. Negative values,
+fractions, booleans and numeric strings are rejected by the config model.
+Both limits default to `0`: automatic history and backup cleanup is off.
+When recording and either limit are enabled, cleanup runs at startup and every
+24 hours. Each limit is independent and only items strictly older than that
+number of days are removed. History uses each line's timestamp; missing,
+invalid or timezone-free timestamps are preserved. Empty topic files are removed,
+while companion `.lock` files remain. Backup age comes from the KST date folder
+and filename time, never the source file's modification time. Unrecognized
+backup paths are preserved with one warning per cleanup pass.
+Completed queue items keep their existing seven-day automatic retention;
+pending deliveries and saved transmission progress are preserved.
+Use `ductor chat-log prune --older-than N --dry-run` for a manual preview,
+optionally adding `--backups`. Manual cleanup also works when recording is off.
+See [retention commands](modules/chat_log.md#retention-and-manual-cleanup).
+
+Recording can remain active while webchat is disabled or has invalid settings.
+Invalid recording settings leave the bot running with recording disabled; the
+runtime logs `Chat log disabled: <errors>` once. History and queue data live under
+`$DUCTOR_HOME/chat_log/`, created only when recording is active. With webchat off,
+a Telegram outage during initial startup still follows the existing startup
+behavior: recording starts only after the orchestrator has been created.
+
+## `WebchatConfig`
+
+Top-level `webchat` configures the optional web interface. Changes require a
+restart. Both `chat_log.enabled` and `webchat.enabled` default to `false`.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | `bool` | `false` | Enables webchat for the main agent only, after validation |
+| `exposure` | `"direct"` or `"behind_proxy"` | `"direct"` | Exposure mode; other values are rejected by the config model |
+| `domain` | `str` | `""` | Required DNS domain, normalized to lowercase; e.g. `chat.example.com` |
+| `allowed_ips` | `list[str]` | `[]` | IP addresses or CIDRs; required in direct mode, e.g. `203.0.113.0/24` |
+| `trusted_proxies` | `list[str]` | `[]` | IP addresses or CIDRs; required behind a proxy |
+| `bind_address` | `str` | `"127.0.0.1"` | Behind-proxy IPv4 bind: loopback or RFC1918 only |
+| `http_port` | `int` | `80` | HTTP port, 1-65535 |
+| `https_port` | `int` | `443` | Direct-mode HTTPS port, 1-65535 |
+| `npm_admin_port` | `int` | `81` | Admin port, 1-65535; must differ from HTTP and HTTPS ports |
+| `acme_email` | `str` | `""` | Direct-mode ACME email; required and must contain `@` |
+| `web_port` | `int` | `8744` | Web app port, 1-65535 |
+| `bridge_port` | `int` | `8743` | Bridge port, 1-65535; must differ from API, webhook, inter-agent, and web app ports |
+| `crowdsec_lapi_port` | `int` | `18080` | CrowdSec LAPI port, 1-65535 |
+| `crowdsec_appsec_port` | `int` | `17422` | AppSec port, 1-65535; must differ from LAPI |
+| `default_chat_id` | `int` | `0` | `0` falls back to the first `allowed_user_ids` entry; an explicit group ID may be negative |
+
+`validate_webchat(config)` returns `[]` when disabled. When enabled, it returns
+all applicable error codes below. Operational checks (including port ranges)
+return errors rather than raising config-loading exceptions.
+`webchat_active(config, agent_name)` is true only when enabled, the agent name
+is `main`, and validation succeeds. `resolve_default_chat_id(config)` returns
+the explicit chat ID, otherwise the first allowed user ID, otherwise `0`.
+
+| Error code | Condition |
+|---|---|
+| `chat_log_required` | Webchat is enabled but `chat_log.enabled` is false |
+| `telegram_required` | Telegram is absent from `transports` (falling back to legacy `transport` for an empty list) |
+| `domain_invalid` | Domain is empty or fails `^(?=.{1,253}$)(a-z0-9 (`docs/?:[a-z0-9-]{0,61}[a-z0-9]`)?\.)+[a-z]{2,63}$` |
+| `allowed_ips_required` | Direct mode has an empty allowlist |
+| `allowed_ips_invalid` | Any allowlist entry fails `ipaddress.ip_network(value, strict=False)` |
+| `trusted_proxies_required` | Behind-proxy mode has no trusted proxies |
+| `trusted_proxies_invalid` | Any trusted proxy entry fails the same network parser |
+| `bind_address_invalid` | Behind-proxy bind is not an IPv4 address in loopback (`127.0.0.0/8`) or RFC1918 (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`); unspecified, public, multicast, link-local, and IPv6 addresses are rejected |
+| `acme_email_required` | Direct mode has an empty ACME email |
+| `acme_email_invalid` | Direct mode has a nonempty ACME email without `@` |
+| `http_port_invalid` | HTTP port is outside 1-65535 |
+| `https_port_invalid` | HTTPS port is outside 1-65535 |
+| `npm_admin_port_invalid` | Admin port is outside 1-65535 |
+| `web_port_invalid` | Web app port is outside 1-65535 |
+| `bridge_port_invalid` | Bridge port is outside 1-65535 |
+| `crowdsec_lapi_port_invalid` | LAPI port is outside 1-65535 |
+| `crowdsec_appsec_port_invalid` | AppSec port is outside 1-65535 |
+| `npm_admin_port_conflict` | Admin port equals HTTP or HTTPS port |
+| `bridge_port_conflict` | Bridge port equals `api.port`, `webhooks.port`, `interagent_port`, or `webchat.web_port`, regardless of those services' enable flags |
+| `crowdsec_appsec_port_conflict` | AppSec and LAPI ports are equal |
+| `default_chat_required` | The resolved default chat ID is `0` |
+
+Invalid webchat settings leave the bot running with webchat disabled. The runtime
+logs `Webchat disabled: <errors>` once; the bridge, Telegram connection retry loop,
+and web-specific startup stay off. Recording follows its own activation decision.
+`ductor webchat check-config` and `scripts/webchat.py up` use the same errors and
+exit with code 1 on failure. Web state lives under `$DUCTOR_HOME/webchat/`, created
+only when webchat is active. Merely resolving paths or validating configuration
+creates no directories and performs no network access.
 
 ## `SkillsConfig`
 

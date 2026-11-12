@@ -9,7 +9,7 @@ Edit only when the user asks for behavior changes.
 2. Preserve unrelated values and structure.
 3. Never expose secrets (`telegram_token`, webhook tokens) in chat output.
 4. Keep valid JSON.
-5. Hot-reloadable settings take effect within seconds. These settings require `/restart`: `allowed_channel_ids`, `api`, `append_system_prompt_files`, `claude_system_prompt_snapshot`, `cron_delivery_retry`, `cron_preflight`, `ductor_home`, `gemini_api_key`, `interagent`, `interagent_notify_received`, `interagent_port`, `log_level`, `matrix`, `memory_compaction`, `memory_flush`, `memory_reflection`, `notifications`, `skills`, `slack`, `tasks`, `telegram_token`, `timeouts`, `transcription`, `transport`, `transports`, `webhooks`. Unknown/new keys also require restart until explicitly made hot-reloadable.
+5. Hot-reloadable settings take effect within seconds. These settings require `/restart`: `allowed_channel_ids`, `api`, `append_system_prompt_files`, `chat_log`, `claude_system_prompt_snapshot`, `cron_delivery_retry`, `cron_preflight`, `ductor_home`, `gemini_api_key`, `interagent`, `interagent_notify_received`, `interagent_port`, `log_level`, `matrix`, `memory_compaction`, `memory_flush`, `memory_reflection`, `notifications`, `skills`, `slack`, `tasks`, `telegram_token`, `timeouts`, `transcription`, `transport`, `transports`, `webchat`, `webhooks`. Unknown/new keys also require restart until explicitly made hot-reloadable.
 
 ## Important Key Groups
 

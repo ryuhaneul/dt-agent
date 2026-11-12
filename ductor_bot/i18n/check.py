@@ -27,7 +27,7 @@ from ductor_bot.i18n import LANGUAGES
 from ductor_bot.i18n.loader import _load_toml
 
 _DEFAULT_ROOT = Path(__file__).resolve().parent
-_DOMAINS: tuple[str, ...] = ("chat", "cli", "commands", "wizard")
+_DOMAINS: tuple[str, ...] = ("chat", "cli", "commands", "wizard", "web")
 _PLACEHOLDER_RE = re.compile(r"\{(\w+)\}")
 
 

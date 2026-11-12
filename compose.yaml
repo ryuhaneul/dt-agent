@@ -62,6 +62,99 @@ services:
       retries: 3
     # No host port binding — accessible only within ductor-net
 
+  dt-webchat-web:
+    profiles: ["webchat"]
+    build:
+      context: .
+      dockerfile: docker/webchat/Dockerfile
+      args:
+        DUCTOR_UID: "${DUCTOR_UID:-1000}"
+    restart: unless-stopped
+    init: true
+    networks: [ductor-net]
+    ports:
+      - "127.0.0.1:${DTW_WEB_PORT:-8744}:8744"
+    environment:
+      TZ: ${TZ:-UTC}
+      DTW_BRIDGE_URL: http://ductor-bot:${DTW_BRIDGE_PORT:-8743}
+      DTW_PUBLIC_ORIGIN: ${DTW_PUBLIC_ORIGIN:-https://chat.example.com}
+      DTW_TOKEN_FILE: /run/dtw/bridge.token
+    volumes:
+      - ${DUCTOR_HOME:-~/.ductor}/webchat/share:/run/dtw:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8744/api/health',timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  dt-webchat-npm:
+    profiles: ["webchat"]
+    image: ghcr.io/zoeyvid/npmplus:2026-07-24-r1@sha256:f7f6ca26082036ee6387a7da336267fe61f16b1eb8087dd964237238b59479ef
+    restart: unless-stopped
+    network_mode: host
+    entrypoint: ["/bin/sh", "/etc/dtw-nginx-entrypoint.sh"]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE, SETGID]
+    security_opt: [no-new-privileges:true]
+    environment:
+      TZ: ${TZ:-UTC}
+      NPM_LISTEN_LOCALHOST: "true"
+      NPM_PORT: ${DTW_NPM_ADMIN_PORT:-81}
+      IPV4_BINDING: ${DTW_NPM_IPV4_BINDING:-0.0.0.0}
+      IPV6_BINDING: ${DTW_NPM_IPV6_BINDING:-[::]}
+      DISABLE_IPV6: ${DTW_NPM_DISABLE_IPV6:-false}
+      HTTP_PORT: ${DTW_NPM_HTTP_PORT:-80}
+      HTTPS_PORT: ${DTW_NPM_HTTPS_PORT:-443}
+      ACME_EMAIL: ${DTW_ACME_EMAIL:-}
+      ACME_PROFILE: classic
+      LOGROTATE: "true"
+    volumes:
+      - dtw-npmplus-data:/data
+      - ./docker/webchat/npmplus/_common.conf:/app/templates/_common.conf:ro
+      - ${DUCTOR_HOME:-~/.ductor}/webchat/gateway/nginx.conf:/etc/dtw-nginx.conf:ro
+      - ./docker/webchat/npmplus/entrypoint.sh:/etc/dtw-nginx-entrypoint.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -kfsS https://127.0.0.1:${DTW_NPM_ADMIN_PORT:-81}/ >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  dt-webchat-crowdsec:
+    profiles: ["webchat"]
+    image: docker.io/crowdsecurity/crowdsec:v1.7.8@sha256:2f527c9bb8b367120eb08b82890aa912ce96bfa1ada93dda0721700e4b4e0dde
+    restart: unless-stopped
+    networks: [dtw-gateway-net]
+    environment:
+      TZ: ${TZ:-UTC}
+      USE_WAL: "true"
+      COLLECTIONS: ZoeyVid/npmplus
+      DISABLE_SCENARIOS: crowdsecurity/http-generic-bf crowdsecurity/appsec-native crowdsecurity/crowdsec-appsec-outofband
+    ports:
+      - "127.0.0.1:${DTW_CROWDSEC_LAPI_PORT:-18080}:8080"
+      - "127.0.0.1:${DTW_CROWDSEC_APPSEC_PORT:-17422}:7422"
+    volumes:
+      - dtw-crowdsec-data:/var/lib/crowdsec/data
+      - dtw-crowdsec-config:/etc/crowdsec
+      - dtw-npmplus-data:/npmplus-data:ro
+    healthcheck:
+      test: ["CMD", "cscli", "lapi", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
 networks:
   ductor-net:
     name: ductor-net
+
+  dtw-gateway-net:
+    driver: bridge
+
+volumes:
+  dtw-npmplus-data:
+    name: dtw-npmplus-data
+  dtw-crowdsec-data:
+    name: dtw-crowdsec-data
+  dtw-crowdsec-config:
+    name: dtw-crowdsec-config

@@ -713,3 +713,7 @@ invalid_response = "format respons tidak valid"
 refresh = "Muat ulang"
 loading = "Memeriksa…"
 error = "Gagal menampilkan penggunaan"
+
+[chat_log]
+mirror_user = "🌐 Dikirim dari web\n{text}"
+mirror_aborted = "Balasan dihentikan"

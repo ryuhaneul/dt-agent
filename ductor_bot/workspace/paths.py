@@ -56,6 +56,14 @@ class DuctorPaths:
         return self.interagent_dir / "undelivered"
 
     @property
+    def chat_log_dir(self) -> Path:
+        return self.ductor_home / "chat_log"
+
+    @property
+    def webchat_dir(self) -> Path:
+        return self.ductor_home / "webchat"
+
+    @property
     def config_dir(self) -> Path:
         return self.ductor_home / "config"
 

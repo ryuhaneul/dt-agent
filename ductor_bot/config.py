@@ -530,6 +530,39 @@ class SkillsConfig(BaseModel):
     sync: SkillSyncProviders = Field(default_factory=SkillSyncProviders)
 
 
+class ChatLogConfig(BaseModel):
+    """Independent conversation history and outage queue settings."""
+
+    enabled: bool = False
+    retention_days: int | None = Field(default=0, ge=0, strict=True)
+    backup_retention_days: int | None = Field(default=0, ge=0, strict=True)
+
+
+class WebchatConfig(BaseModel):
+    """Optional webchat settings; operational checks live in webchat.settings."""
+
+    enabled: bool = False
+    exposure: Literal["direct", "behind_proxy"] = "direct"
+    domain: str = ""
+    allowed_ips: list[str] = Field(default_factory=list)
+    trusted_proxies: list[str] = Field(default_factory=list)
+    bind_address: str = "127.0.0.1"
+    http_port: int = 80
+    https_port: int = 443
+    npm_admin_port: int = 81
+    acme_email: str = ""
+    web_port: int = 8744
+    bridge_port: int = 8743
+    crowdsec_lapi_port: int = 18080
+    crowdsec_appsec_port: int = 17422
+    default_chat_id: int = 0
+
+    @field_validator("domain")
+    @classmethod
+    def _normalize_domain(cls, value: str) -> str:
+        return value.lower()
+
+
 class AgentConfig(BaseModel):
     """Top-level configuration loaded from config.json."""
 
@@ -567,6 +600,8 @@ class AgentConfig(BaseModel):
     memory_compaction: MemoryCompactionConfig = Field(default_factory=MemoryCompactionConfig)
     webhooks: WebhookConfig = Field(default_factory=WebhookConfig)
     api: ApiConfig = Field(default_factory=ApiConfig)
+    chat_log: ChatLogConfig = Field(default_factory=ChatLogConfig)
+    webchat: WebchatConfig = Field(default_factory=WebchatConfig)
     cli_parameters: CLIParametersConfig = Field(default_factory=CLIParametersConfig)
     image: ImageConfig = Field(default_factory=ImageConfig)
     timeouts: TimeoutConfig = Field(default_factory=TimeoutConfig)

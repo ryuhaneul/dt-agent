@@ -713,3 +713,7 @@ invalid_response = "응답 형식 오류"
 refresh = "새로고침"
 loading = "조회 중…"
 error = "사용량 표시 실패"
+
+[chat_log]
+mirror_user = "🌐 웹에서 보냄\n{text}"
+mirror_aborted = "답변 중단됨"

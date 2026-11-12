@@ -83,3 +83,28 @@ agents = "Sub-agent management (list/add/remove)"
 status = "Show bot status, paths, and agents"
 help = "Show this message"
 verbose = "Verbose logging output"
+
+[chat_log]
+usage = "Usage: ductor chat-log status | import [--dry-run] [--undo] | prune --older-than N [--backups] [--dry-run]"
+disabled = "Chat logging is disabled or its configuration is invalid."
+import_summary = "Files: {files}; imported entries: {entries}; unknown topic: {unknown}."
+import_undone = "Imported entries removed: {entries}."
+
+status = "Chat log: {active}; errors: {errors}; history files: {files}; entries: {entries}; pending: {pending}; failed: {failed}. unreadable: {unreadable}; quarantined: {corrupt}."
+active = "active"
+inactive = "inactive"
+no_errors = "none"
+prune_preview = "Dry run: {entries} history entries in {files} files; {outbox} completed queue items; {backups} backups; {bytes} bytes would be removed. failures: {failures}."
+prune_summary = "Removed: {entries} history entries in {files} files; {outbox} completed queue items; {backups} backups; {bytes} bytes. failures: {failures}."
+
+[webchat]
+usage = "Usage: ductor webchat set-password | reset-totp | clear-credentials | check-config [--json]"
+password_prompt = "Password: "
+password_confirm = "Confirm password: "
+password_mismatch = "Passwords do not match."
+password_too_short = "Password must contain at least 12 characters."
+password_saved = "Password saved."
+totp_reset = "TOTP seed removed."
+credentials_cleared = "Webchat credentials cleared."
+config_ok = "Webchat configuration is valid."
+config_errors = "Webchat configuration errors: {errors}"

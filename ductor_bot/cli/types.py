@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
@@ -79,6 +79,7 @@ class AgentRequest:
     queue_context: str | None = None
     received_context: str | None = None
     # Claude turn whose system prompt is rendered anew each turn (see claude_features).
+    include_partial_messages: bool = field(default=False, kw_only=True)
     claude_snapshot_off: bool = False
     private_task_question: bool = False
 

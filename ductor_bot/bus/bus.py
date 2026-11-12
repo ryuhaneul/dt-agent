@@ -102,6 +102,7 @@ class MessageBus:
         self._injector: SessionInjector | None = None
         self._wake_hook: Callable[[Envelope], Awaitable[None]] | None = None
         self._on_injected: Callable[[Envelope], Awaitable[None]] | None = None
+        self._delivery_observer: Callable[[Envelope], Awaitable[None]] | None = None
 
     @property
     def lock_pool(self) -> LockPool:
@@ -123,6 +124,13 @@ class MessageBus:
     def set_on_injected(self, callback: Callable[[Envelope], Awaitable[None]]) -> None:
         """Persist an injected inter-agent response before transport delivery."""
         self._on_injected = callback
+
+    def set_delivery_observer(
+        self,
+        callback: Callable[[Envelope], Awaitable[None]] | None,
+    ) -> None:
+        """Observe each submitted envelope after processing and lock release."""
+        self._delivery_observer = callback
 
     async def submit(self, envelope: Envelope) -> DeliveryOutcome:
         """Route an envelope: assign ID, acquire lock, inject, deliver."""
@@ -149,6 +157,12 @@ class MessageBus:
                 await self._process(envelope)
         else:
             await self._process(envelope)
+
+        if self._delivery_observer is not None:
+            try:
+                await self._delivery_observer(envelope)
+            except Exception:
+                logger.exception("Delivery observer failed")
 
         injected = envelope.injected
         delivered = envelope.delivered

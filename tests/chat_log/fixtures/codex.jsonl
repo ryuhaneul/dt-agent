@@ -1,0 +1,6 @@
+{"timestamp":"2020-02-01T00:00:00Z","type":"session_meta","payload":{"id":"synthetic-codex-a","cwd":"/example/workspace"}}
+{"timestamp":"2020-02-01T00:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"Synthetic Codex question"}}
+{"timestamp":"2020-02-01T00:00:02Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Ignored intermediate response"}]}}
+{"timestamp":"2020-02-01T00:00:03Z","type":"event_msg","payload":{"type":"task_complete","last_agent_message":"Synthetic Codex answer"}}
+{"type":"event_msg","payload":{"type":"user_message","message":"[INTER-AGENT MESSAGE]\nSynthetic injection"}}
+{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":"Synthetic injected Codex reply"}}

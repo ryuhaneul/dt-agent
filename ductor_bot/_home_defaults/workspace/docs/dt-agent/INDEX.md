@@ -25,6 +25,8 @@ Framework-managed reference for how DT Agent works, its settings, commands and t
 | create or use sub-agents, delegate to them | [modules/multiagent.md](modules/multiagent.md) | [Inter-agent communication](modules/multiagent.md#inter-agent-communication); `agents.json` in [config.md](config.md) |
 | manage memory (MAINMEMORY, topic pages, lint, persona) | [modules/workspace.md](modules/workspace.md) | memory wiki tools, `PERSONA.md`/`BEHAVIOR.md`; [config.md](config.md) `MemoryLintConfig` |
 | understand sessions, resets, topics per chat | [modules/session.md](modules/session.md) | [Session identity](modules/session.md#session-identity-sessionkey); [architecture.md](architecture.md) |
+| enable conversation history, import transcripts or inspect recovery deliveries | [modules/chat_log.md](modules/chat_log.md) | Operator commands, Behavior when enabled |
+| enable emergency web chat, manage topics or edit settings files | [modules/webchat.md](modules/webchat.md) | Components and activation, Bridge contracts, File editing |
 | work with Telegram topics, groups, buttons | [modules/bot.md](modules/bot.md) | [Topic support](modules/bot.md#topic-support); `telegram_dm_topic_auto_name` |
 | set up or troubleshoot Matrix / Slack | [matrix-setup.md](matrix-setup.md), [modules/matrix.md](modules/matrix.md) | `MatrixConfig`, `SlackConfig` in [config.md](config.md) |
 | handle received files, media, cleanup | [modules/files.md](modules/files.md), [modules/cleanup.md](modules/cleanup.md) | `CleanupConfig` in [config.md](config.md) |

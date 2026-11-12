@@ -50,6 +50,7 @@ logger = logging.getLogger(__name__)
 class StreamingCallbacks:
     """Bundle of optional streaming callbacks passed through flow functions."""
 
+    include_partial_messages: bool = field(default=False, kw_only=True)
     on_text_delta: Callable[[str], Awaitable[None]] | None = field(default=None)
     on_thinking_delta: Callable[[str], Awaitable[None]] | None = field(default=None)
     on_tool_activity: Callable[[ToolUseEvent], Awaitable[None]] | None = field(default=None)
@@ -488,6 +489,7 @@ async def _recover_session(
     request, session = await _prepare_normal(orch, key, text, model_override=ctx.model_override)
     ctx.turn_started_at = time.time()
     if ctx.streaming:
+        request = replace(request, include_partial_messages=cb.include_partial_messages)
         response = await orch._cli_service.execute_streaming(
             request,
             on_text_delta=cb.on_text_delta,
@@ -750,6 +752,7 @@ async def normal_streaming(  # noqa: PLR0913
     finished = False
     try:
         cb = cbs or StreamingCallbacks()
+        request = replace(request, include_partial_messages=cb.include_partial_messages)
 
         async def _on_compact() -> None:
             if orch._memory_flusher is not None:
@@ -1108,6 +1111,7 @@ async def _named_streaming_turn(  # noqa: PLR0913
         chat_id=key.chat_id,
         topic_id=key.topic_id,
         transport=transport_override or key.transport,
+        include_partial_messages=cb.include_partial_messages,
         process_label=f"ns:{session_name}",
         session_kind="named",
         session_name=session_name,

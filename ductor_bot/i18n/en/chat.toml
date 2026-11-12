@@ -715,3 +715,7 @@ invalid_response = "invalid response"
 refresh = "Refresh"
 loading = "Querying…"
 error = "Usage display failed"
+
+[chat_log]
+mirror_user = "🌐 Sent from web\n{text}"
+mirror_aborted = "Reply stopped"
