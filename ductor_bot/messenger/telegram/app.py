@@ -124,6 +124,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+async def _acknowledge_callback(callback: CallbackQuery) -> None:
+    """Answer a button press; a late or failed answer must not drop the press itself."""
+    try:
+        await callback.answer()
+    except TelegramAPIError as exc:
+        logger.warning("Callback answer failed: %s", type(exc).__name__)
+
+
 # Backward-compatible patch points used by tests.
 TypingContext = _TypingContext
 send_files_from_text = _send_files_from_text
@@ -1353,7 +1361,7 @@ class TelegramBot:
             await self._secret_input.handle_callback(callback)
             return
 
-        await callback.answer()
+        await _acknowledge_callback(callback)
         data = callback.data
         msg = callback.message
         if not data or msg is None or isinstance(msg, InaccessibleMessage):

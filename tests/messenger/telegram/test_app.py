@@ -604,6 +604,21 @@ class TestCallbackQueryHandler:
         await tg_bot._on_callback_query(cb)
         cb.answer.assert_called_once()
 
+    async def test_callback_still_handled_when_answer_fails(self) -> None:
+        from aiogram.exceptions import TelegramBadRequest
+
+        tg_bot, bot_instance = _make_tg_bot()
+        tg_bot._orchestrator = _make_orchestrator()
+
+        cb = _make_callback_query(data="No", message_id=99)
+        cb.answer.side_effect = TelegramBadRequest(
+            method=MagicMock(), message="query is too old and response timeout expired"
+        )
+        await tg_bot._on_callback_query(cb)
+
+        bot_instance.edit_message_text.assert_called_once()
+        assert "[USER ANSWER] No" in bot_instance.edit_message_text.call_args.kwargs["text"]
+
     async def test_callback_appends_user_answer_indicator(self) -> None:
         tg_bot, bot_instance = _make_tg_bot()
         tg_bot._orchestrator = _make_orchestrator()
