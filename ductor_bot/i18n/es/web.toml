@@ -166,3 +166,21 @@ web_turn_running = "Ya se está generando una respuesta web en este tema"
 
 [starflow]
 title = "Fondo decorativo de estrellas"
+
+[account]
+title = "Cuenta"
+change = "Cambiar contraseña"
+guide = "Al cambiar la contraseña, se cerrará la sesión en los demás dispositivos."
+current_password = "Contraseña actual"
+new_password = "Nueva contraseña"
+minimum = "(al menos 12 caracteres)"
+confirm_password = "Confirmar nueva contraseña"
+code = "TOTP actual de seis dígitos"
+busy = "Cambiando…"
+invalid = "La contraseña actual o el código de autenticación no es correcto."
+password_too_short = "La nueva contraseña debe tener al menos 12 caracteres."
+mismatch = "Las nuevas contraseñas no coinciden."
+code_reused = "Este código ya se ha usado. Espera uno nuevo."
+locked = "Demasiados intentos. Vuelve a intentarlo en {seconds} segundos."
+totp_required = "Configura la autenticación en dos pasos antes de cambiar la contraseña."
+success = "Contraseña cambiada. Se ha cerrado la sesión en los demás dispositivos."

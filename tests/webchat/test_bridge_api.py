@@ -1910,3 +1910,46 @@ async def test_queue_endpoints_skip_unreadable_files(conversation, monkeypatch):
             assert data["outbox"]["pending"] == 1
         else:
             assert data["entries"][0]["mirror"] is None
+
+
+async def test_password_change_route_rotates_generation(bridge, monkeypatch):
+    from ductor_bot.webchat.auth import TOTP_KEY
+
+    client, _, _, paths = bridge
+    seed = "JBSWY3DPEHPK3PXP"
+    step = 60_000_000
+    monkeypatch.setattr("ductor_bot.webchat.auth.time.time", lambda: step * 30)
+    set_secret(paths.ductor_home / "secrets.env", PASSWORD_KEY, hash_password(_PASSWORD))
+    set_secret(paths.ductor_home / "secrets.env", TOTP_KEY, seed)
+    before = await (await client.get(f"{_PREFIX}/auth/state", headers=headers())).json()
+    state_path = paths.webchat_dir / "auth_state.json"
+    state = json.loads(state_path.read_text())
+    state.update(
+        seed_fingerprint=hashlib.sha256(seed.encode()).hexdigest(),
+        last_step=step - 2,
+        source="login",
+    )
+    state_path.write_text(json.dumps(state))
+    data = {
+        "current_password": _PASSWORD,
+        "new_password": "changed-password-123",
+        "code": totp_code(seed, step),
+        "client_ip": "198.51.100.7",
+    }
+    denied = await client.post(f"{_PREFIX}/auth/password-change", json=data)
+    assert denied.status == 403
+    response = await client.post(
+        f"{_PREFIX}/auth/password-change",
+        headers=headers(),
+        json={**data, "current_password": "wrong"},
+    )
+    assert response.status == 403
+    assert await response.json() == {"error": "invalid"}
+    assert "WWW-Authenticate" not in response.headers
+    response = await client.post(f"{_PREFIX}/auth/password-change", headers=headers(), json=data)
+    assert response.status == 200
+    result = await response.json()
+    assert result["ok"] is True
+    assert result["credential_generation"] != before["credential_generation"]
+    after = await (await client.get(f"{_PREFIX}/auth/state", headers=headers())).json()
+    assert result["credential_generation"] == after["credential_generation"]

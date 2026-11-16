@@ -1,4 +1,25 @@
 let csrf = null;
+let credentialChanging = false, credentialEpoch = 0;
+export function isCredentialChanging() { return credentialChanging; }
+export function beginCredentialChange() { credentialChanging = true; ++credentialEpoch; }
+export function finishCredentialChange(success) {
+  credentialChanging = false;
+  ++credentialEpoch;
+  if (!success) checkSession();
+}
+export function checkSession(active = () => true) {
+  const epoch = credentialEpoch;
+  return api('/auth/state').then(state => {
+    if (!active() || credentialChanging || epoch !== credentialEpoch) return;
+    if (state.authenticated) {
+      // Another tab may have rotated the shared session cookie; adopt its CSRF token.
+      if (state.csrf) csrf = state.csrf;
+      return;
+    }
+    csrf = null;
+    document.dispatchEvent(new CustomEvent('auth-required'));
+  }).catch(() => {});
+}
 export function setCsrf(value) { csrf = value; }
 
 export class ApiError extends Error {
@@ -11,6 +32,7 @@ export class ApiError extends Error {
 }
 
 export async function api(path, { method = 'GET', body } = {}) {
+  const epoch = credentialEpoch;
   const headers = {};
   if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
     headers['X-Dtw-Client'] = 'web';
@@ -28,7 +50,8 @@ export async function api(path, { method = 'GET', body } = {}) {
   try { data = await response.json(); }
   catch { throw new ApiError(response.status, { error: 'generic' }); }
   if (!response.ok) {
-    if (response.status === 403 && data.error === 'auth_required') {
+    if (response.status === 403 && data.error === 'auth_required'
+        && !credentialChanging && epoch === credentialEpoch) {
       csrf = null;
       document.dispatchEvent(new CustomEvent('auth-required'));
     }

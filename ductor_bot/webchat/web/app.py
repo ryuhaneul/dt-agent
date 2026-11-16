@@ -267,6 +267,32 @@ async def auth(request: web.Request) -> web.Response:
     return response
 
 
+async def password_change(request: web.Request) -> web.Response:
+    state = request.app[STATE]
+    body = await _json_body(request)
+    payload = {
+        "current_password": body.get("current_password"),
+        "new_password": body.get("new_password"),
+        "code": body.get("code"),
+        "client_ip": request.headers.get("X-Real-IP") or request.remote,
+    }
+    status, data = await state.bridge.request(
+        "POST", "/auth/password-change", body=json.dumps(payload).encode()
+    )
+    if status != 200:
+        return web.json_response(data, status=status)
+    state.sessions.clear()
+    state.validated.clear()
+    for socket in list(state.sockets):
+        await socket.close()
+    token = state.sessions.create(data["credential_generation"])
+    session = state.sessions.get(token)
+    assert session is not None
+    response = web.json_response({"ok": True, "csrf": session.csrf})
+    set_session(response, token)
+    return response
+
+
 async def logout(request: web.Request) -> web.Response:
     state = request.app[STATE]
     token = request.cookies.get(SESSION_COOKIE, "")
@@ -383,6 +409,7 @@ def create_app(
     app.router.add_get("/api/i18n", i18n)
     app.router.add_get("/api/auth/state", auth_state)
     app.router.add_post("/api/auth/{step:password|totp|setup/begin|setup/confirm}", auth)
+    app.router.add_post("/api/auth/password-change", password_change)
     app.router.add_post("/api/auth/logout", logout)
     app.router.add_get("/api/ws", websocket)
     app.router.add_get("/api/state", relay)

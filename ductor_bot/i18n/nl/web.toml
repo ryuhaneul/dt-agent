@@ -166,3 +166,21 @@ web_turn_running = "Er wordt al een webantwoord gemaakt in dit onderwerp"
 
 [starflow]
 title = "Decoratieve sterrenachtergrond"
+
+[account]
+title = "Account"
+change = "Wachtwoord wijzigen"
+guide = "Bij het wijzigen van je wachtwoord worden alle andere apparaten afgemeld."
+current_password = "Huidig wachtwoord"
+new_password = "Nieuw wachtwoord"
+minimum = "(minstens 12 tekens)"
+confirm_password = "Nieuw wachtwoord bevestigen"
+code = "Huidige TOTP-code van zes cijfers"
+busy = "Wijzigen…"
+invalid = "Het huidige wachtwoord of de verificatiecode is onjuist."
+password_too_short = "Het nieuwe wachtwoord moet minstens 12 tekens bevatten."
+mismatch = "De nieuwe wachtwoorden komen niet overeen."
+code_reused = "Deze code is al gebruikt. Wacht op een nieuwe code."
+locked = "Te veel pogingen. Probeer het over {seconds} seconden opnieuw."
+totp_required = "Stel tweestapsverificatie in voordat je je wachtwoord wijzigt."
+success = "Wachtwoord gewijzigd. Andere apparaten zijn afgemeld."

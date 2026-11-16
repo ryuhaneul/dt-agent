@@ -86,7 +86,7 @@ def create_bridge_app(  # noqa: C901
             result = await auth.handle(request.path.removeprefix(f"{_PREFIX}/auth/"), data)
         except AuthError as exc:
             return web.json_response(exc.payload, status=403)
-        if request.path == f"{_PREFIX}/auth/totp":
+        if request.path in {f"{_PREFIX}/auth/totp", f"{_PREFIX}/auth/password-change"}:
             result["credential_generation"] = credential_generation()
         return web.json_response(result)
 
@@ -101,7 +101,7 @@ def create_bridge_app(  # noqa: C901
     app.router.add_get(f"{_PREFIX}/health", health)
     app.router.add_get(f"{_PREFIX}/meta", meta)
     app.router.add_get(f"{_PREFIX}/auth/state", auth_state)
-    for action in ("password", "totp", "setup/begin", "setup/confirm"):
+    for action in ("password", "totp", "setup/begin", "setup/confirm", "password-change"):
         app.router.add_post(f"{_PREFIX}/auth/{action}", authenticate_user)
     app.router.add_get(f"{_PREFIX}/state", state)
     _register_conversation_routes(app, bot, runtime)

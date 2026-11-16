@@ -58,6 +58,12 @@ Browser sessions have a 12-hour absolute lifetime and a two-hour idle timeout.
 Cookies are Secure, HttpOnly and SameSite=Strict. Mutations use `X-Dtw-Client`
 and `X-Dtw-Csrf`; authentication failures return 403.
 
+Logged-in users can choose **Change password** from the header account menu.
+Enter the current password, a new password of at least 12 characters, its confirmation,
+and a fresh TOTP code. A successful change logs out all other sessions and closes
+their WebSockets; the current window receives a new session cookie and CSRF token
+and stays logged in. Resetting TOTP and recovering a forgotten password still require the CLI.
+
 `ductor webchat reset-totp` resets enrollment. `clear-credentials` removes the
 password hash and TOTP seed. Credential maintenance and TOTP enrollment rotate a
 persistent nonce in `webchat/auth_state.json` (0600), revoking prior sessions even

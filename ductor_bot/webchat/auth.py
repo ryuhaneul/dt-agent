@@ -24,6 +24,7 @@ from ductor_bot.infra.secret_store import set_secret
 
 PASSWORD_KEY = "DT_WEBCHAT_PASSWORD_HASH"  # noqa: S105
 TOTP_KEY = "DT_WEBCHAT_TOTP_SEED"
+MIN_PASSWORD_LENGTH = 12
 _HASH = re.compile(r"scrypt:32768:8:1:([0-9a-f]{32}):([0-9a-f]{64})")
 _WINDOW = 900
 logger = logging.getLogger(__name__)
@@ -219,21 +220,46 @@ class BridgeAuth:
             try:
                 result = await self._dispatch(action, data, pre, ip, now)
             except AuthError as exc:
-                if (
-                    action in {"password", "totp", "setup/confirm"}
-                    and exc.payload["error"] != "code_reused"
-                ):
+                if action in {
+                    "password",
+                    "totp",
+                    "setup/confirm",
+                    "password-change",
+                } and exc.payload["error"] not in {"code_reused", "password_too_short"}:
                     self._failed(ip, now)
                 raise
-            if action in {"totp", "setup/confirm"}:
+            if action in {"totp", "setup/confirm", "password-change"}:
                 self._succeeded(ip)
             return result
 
-    async def _dispatch(  # noqa: C901
+    async def _dispatch(  # noqa: C901, PLR0912
         self, action: str, data: dict[str, object], pre: _Preauth | None, ip: str, now: float
     ) -> dict[str, object]:
         values = load_env_secrets(self.store)
         seed = values.get(TOTP_KEY)
+        if action == "password-change":
+            current = data.get("current_password")
+            if (
+                not data.get("client_ip")
+                or not ip
+                or not isinstance(current, str)
+                or not await asyncio.to_thread(
+                    verify_password, current, values.get(PASSWORD_KEY, "")
+                )
+            ):
+                raise AuthError
+            if not seed:
+                raise AuthError("totp_required")
+            code = data.get("code")
+            if not isinstance(code, str) or not self._verify_code(seed, code):
+                raise AuthError
+            new = data.get("new_password")
+            if not isinstance(new, str) or len(new) < MIN_PASSWORD_LENGTH:
+                raise AuthError("password_too_short")
+            encoded = await asyncio.to_thread(hash_password, new)
+            await asyncio.to_thread(set_secret, self.store, PASSWORD_KEY, encoded)
+            rotate_credential_nonce(self.state_path)
+            return {"ok": True}
         if action == "password":
             password = data.get("password")
             if (

@@ -75,6 +75,7 @@
     <div class="logo"><span>dt-agent<span class="dot">.</span></span><span class="sub"><span data-i18n="app.title">Emergency web chat</span></span></div>
     <div class="stat" aria-label="Connection status" data-i18n-attr="aria-label:status.title"><a href="#status" class="badge badge-off" id="telegramBadge"><span data-i18n="status.telegram_unknown">Checking</span></a><a href="#status" class="badge badge-warn" id="pendingBadge" hidden><span data-i18n="status.pending" data-i18n-args="{&quot;n&quot;: 0}">Unsent 0</span></a><a href="#status" class="badge badge-off" id="botBadge"><span data-i18n="status.bot_down">Bot unreachable</span></a></div>
     <div class="bar-acts">
+      <div class="account-menu"><button id="accountButton" class="theme-btn" type="button" aria-label="Account" title="Account" aria-haspopup="menu" aria-expanded="false" data-i18n-attr="aria-label:account.title;title:account.title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="8" r="4"></circle><path d="M4 21v-2a8 8 0 0 1 16 0v2"></path></svg></button><div id="accountMenu" class="menu" role="menu" hidden><button id="openPw" role="menuitem" type="button" data-i18n="account.change">Change password</button></div></div>
       <button class="theme-btn only-t" type="button" aria-label="Connection status" data-route="status" data-i18n-attr="aria-label:status.title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l2-5 4 10 2-5h6"></path></svg></button>
       <button class="theme-btn" type="button" aria-label="Settings files" title="Settings files" data-route="files" data-i18n-attr="title:files.title;aria-label:files.title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><path d="M14 3v6h6M8 13h8M8 17h5"></path></svg></button>
       <span data-tpick></span>
@@ -200,6 +201,13 @@
   </div>
   <div class="dlg-foot"><button class="btn" type="button" data-close-dialog><span data-i18n="files.keep_editing">Keep editing</span></button><button class="btn btn-primary" type="button" id="diffSave" disabled><span data-i18n="files.backup_and_save">Back up and save</span></button></div>
 </dialog>
+
+<dialog id="pwDialog" aria-labelledby="pwHeading"><div id="pwCard"><div class="panel-head"><h2 id="pwHeading" data-i18n="account.change">Change password</h2><button id="closePw" class="btn btn-ghost" aria-label="Close" data-i18n-attr="aria-label:common.close" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"></path></svg></button></div><div class="pw-content"><p id="pwGuide" class="hint" data-i18n="account.guide">Changing your password logs out all other devices.</p><div id="pwNotice" class="pw-notice" role="status" aria-live="polite" hidden></div><form id="changeForm" novalidate><div class="pw-grid">
+<div><label class="lb" for="currentPw" data-i18n="account.current_password">Current password</label><input class="field" id="currentPw" type="password" autocomplete="current-password" required></div>
+<div><label class="lb" for="newPw"><span data-i18n="account.new_password">New password</span> <span data-i18n="account.minimum">(at least 12 characters)</span></label><input class="field" id="newPw" type="password" autocomplete="new-password" minlength="12" required></div>
+<div><label class="lb" for="confirmPw" data-i18n="account.confirm_password">Confirm new password</label><input class="field" id="confirmPw" type="password" autocomplete="new-password" required></div>
+<div><label class="lb" for="currentTotp" data-i18n="account.code">Current six-digit TOTP</label><input class="field mono" id="currentTotp" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" placeholder="000000" required></div>
+</div><div class="pw-actions"><button class="btn btn-primary" id="pwSubmit" type="submit" data-i18n="account.change">Change password</button></div></form></div></div></dialog>
 
 <div class="toast-stack" id="toasts" aria-live="polite"></div>
 

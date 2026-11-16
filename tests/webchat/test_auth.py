@@ -551,3 +551,114 @@ async def test_review_preauth_rejected_after_password_change(service):
         "totp",
         {"preauth": pre["preauth"], "code": totp_code(_SEED, clock.wall // 30), "client_ip": _IP},
     )
+
+
+def change_data(clock, **overrides):
+    return {
+        "current_password": _PASSWORD,
+        "new_password": "changed-password-123",
+        "code": totp_code(_SEED, clock.wall // 30),
+        "client_ip": _IP,
+        **overrides,
+    }
+
+
+async def test_password_change_rotates_credentials_and_allows_new_login(service):
+    instance, clock = service
+    set_secret(instance.store, TOTP_KEY, _SEED)
+    old_credentials = instance.credentials()
+    await invalid(instance, "password-change", change_data(clock, current_password="wrong"))
+    assert await instance.handle("password-change", change_data(clock)) == {"ok": True}
+    assert instance.credentials() != old_credentials
+    assert _IP not in instance._ip_failures
+    stored = load_env_secrets(instance.store)[PASSWORD_KEY]
+    assert verify_password("changed-password-123", stored)
+    assert not verify_password(_PASSWORD, stored)
+    await invalid(instance, "password", {"password": _PASSWORD, "client_ip": _IP})
+    pre = await instance.handle("password", {"password": "changed-password-123", "client_ip": _IP})
+    clock.wall += 30
+    assert await instance.handle(
+        "totp",
+        {"preauth": pre["preauth"], "code": totp_code(_SEED, clock.wall // 30), "client_ip": _IP},
+    ) == {"ok": True}
+
+
+@pytest.mark.parametrize("overrides", [{"current_password": "wrong"}, {"code": "abcdef"}])
+async def test_password_change_invalid_credentials_lock(service, overrides):
+    instance, clock = service
+    set_secret(instance.store, TOTP_KEY, _SEED)
+    original = instance.credentials()
+    for count in range(1, 6):
+        await invalid(instance, "password-change", change_data(clock, **overrides))
+        assert len(instance._ip_failures[_IP]) == count
+    await invalid(instance, "password-change", change_data(clock), "locked")
+    assert instance.credentials() == original
+
+
+async def test_password_change_requires_ip_and_enrolled_totp(service):
+    instance, clock = service
+    await invalid(instance, "password-change", change_data(clock), "totp_required")
+    set_secret(instance.store, TOTP_KEY, _SEED)
+    await invalid(instance, "password-change", change_data(clock, client_ip=""))
+    pre = await password_login(service)
+    data = change_data(clock, preauth=pre["preauth"])
+    data.pop("client_ip")
+    await invalid(instance, "password-change", data)
+
+
+@pytest.mark.parametrize("source", ["login", "password-change", "setup"])
+async def test_password_change_code_reuse_contract(service, source):
+    instance, clock = service
+    set_secret(instance.store, TOTP_KEY, _SEED)
+    data = change_data(clock)
+    if source == "login":
+        pre = await password_login(service)
+        await instance.handle(
+            "totp", {"preauth": pre["preauth"], "code": data["code"], "client_ip": _IP}
+        )
+    elif source == "password-change":
+        await instance.handle("password-change", data)
+        data["current_password"] = data["new_password"]
+    else:
+        instance._verify_code(_SEED, data["code"], setup=True)
+    await invalid(
+        instance, "password-change", data, "code_reused" if source == "setup" else "invalid"
+    )
+    assert len(instance._ip_failures.get(_IP, [])) == (0 if source == "setup" else 1)
+
+
+async def test_password_change_short_password_checks_credentials_first(service):
+    instance, clock = service
+    set_secret(instance.store, TOTP_KEY, _SEED)
+    original = instance.credentials()
+    await invalid(
+        instance,
+        "password-change",
+        change_data(clock, current_password="wrong", new_password="short"),
+    )
+    await invalid(
+        instance, "password-change", change_data(clock, code="abcdef", new_password="short")
+    )
+    await invalid(
+        instance, "password-change", change_data(clock, new_password="short"), "password_too_short"
+    )
+    assert len(instance._ip_failures[_IP]) == 2
+    assert instance.credentials() == original
+    clock.wall += 30
+    assert await instance.handle("password-change", change_data(clock, new_password="x" * 12)) == {
+        "ok": True
+    }
+
+
+async def test_password_change_serializes_replayed_code(service):
+    import asyncio
+
+    instance, clock = service
+    set_secret(instance.store, TOTP_KEY, _SEED)
+    results = await asyncio.gather(
+        instance.handle("password-change", change_data(clock, new_password=_PASSWORD)),
+        instance.handle("password-change", change_data(clock, new_password=_PASSWORD)),
+        return_exceptions=True,
+    )
+    assert sum(result == {"ok": True} for result in results) == 1
+    assert sum(isinstance(result, AuthError) for result in results) == 1
