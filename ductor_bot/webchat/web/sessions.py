@@ -53,6 +53,9 @@ class SessionStore:
     def delete(self, token: str) -> None:
         self._sessions.pop(token, None)
 
+    def clear(self) -> None:
+        self._sessions.clear()
+
     def count(self) -> int:
         for token in list(self._sessions):
             self.get(token, touch=False)

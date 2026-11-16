@@ -75,6 +75,11 @@ class FakeBridge:
             return web.json_response(
                 {"preauth": "fake-preauth", "next": "totp" if self.configured else "setup"}
             )
+        if path == "/auth/password-change":
+            if body["current_password"] != "good-password":
+                return web.json_response({"error": "invalid"}, status=403)
+            self.generation = "changed-generation"
+            return web.json_response({"ok": True, "credential_generation": self.generation})
         if path.startswith("/auth/"):
             if body["preauth"] != "fake-preauth":
                 return web.json_response({"error": "invalid"}, status=403)
@@ -658,3 +663,81 @@ async def test_review_abort_waits_for_slow_delivery_lock(site, endpoint):
         )
         assert response.status == (202 if endpoint == "messages" else 200)
         assert await response.json() == {"killed": 1}
+
+
+async def test_password_change_revokes_sessions_sockets_and_issues_new_csrf(site):
+    client, fake = site
+    first, _ = await login(client)
+    second, _ = await login(client)
+    sockets = [
+        await client.ws_connect("/api/ws", headers={**headers, "Origin": ORIGIN})
+        for headers in (first, second)
+    ]
+    for socket in sockets:
+        await socket.receive_json(timeout=2)
+    response = await client.post(
+        "/api/auth/password-change",
+        headers={**first, "X-Real-IP": "198.51.100.9"},
+        json={
+            "current_password": "good-password",
+            "new_password": "changed-password-123",
+            "code": "123456",
+            "client_ip": "forged",
+        },
+    )
+    assert response.status == 200
+    data = await response.json()
+    assert data["ok"] is True
+    assert data["csrf"] != first["X-Dtw-Csrf"]
+    assert_cookie(response.cookies["dtw_session"], "/")
+    new_headers = {
+        **CLIENT,
+        "Cookie": cookie_header(response, "dtw_session"),
+        "X-Dtw-Csrf": data["csrf"],
+    }
+    for socket in sockets:
+        assert (await socket.receive(timeout=2)).type == aiohttp.WSMsgType.CLOSE
+        await socket.close()
+    state = client.app[STATE]
+    assert state.sessions.count() == 1
+    assert not state.validated
+    assert not state.sockets
+    for headers in (first, second):
+        denied = await client.get("/api/topics", headers=headers)
+        assert denied.status == 403
+        assert "WWW-Authenticate" not in denied.headers
+    created = await client.post("/api/topics", headers=new_headers, json={"name": "New topic"})
+    assert created.status == 200
+    assert await created.json() == {"path": "/topics", "body": {"name": "New topic"}}
+    payload = next(call[3] for call in fake.calls if call[1] == "/auth/password-change")
+    assert payload == {
+        "current_password": "good-password",
+        "new_password": "changed-password-123",
+        "code": "123456",
+        "client_ip": "198.51.100.9",
+    }
+    socket = await client.ws_connect("/api/ws", headers={**new_headers, "Origin": ORIGIN})
+    assert await socket.receive_json(timeout=2) == {"type": "bridge", "up": True}
+    await socket.close()
+
+
+async def test_password_change_denials_preserve_session(site):
+    client, fake = site
+    headers, _ = await login(client)
+    for request_headers in (
+        CLIENT,
+        {key: value for key, value in headers.items() if key != "X-Dtw-Csrf"},
+        {key: value for key, value in headers.items() if key != "X-Dtw-Client"},
+    ):
+        response = await client.post("/api/auth/password-change", headers=request_headers, json={})
+        assert response.status == 403
+        assert "WWW-Authenticate" not in response.headers
+    assert not any(call[1] == "/auth/password-change" for call in fake.calls)
+    response = await client.post(
+        "/api/auth/password-change", headers=headers, json={"current_password": "wrong"}
+    )
+    assert response.status == 403
+    assert await response.json() == {"error": "invalid"}
+    assert "WWW-Authenticate" not in response.headers
+    assert client.app[STATE].sessions.count() == 1
+    assert (await client.get("/api/topics", headers=headers)).status == 200

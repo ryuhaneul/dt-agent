@@ -11,7 +11,13 @@ from ductor_bot.chat_log.settings import validate_chat_log
 from ductor_bot.config import AgentConfig
 from ductor_bot.i18n import init, t_rich
 from ductor_bot.infra.secret_store import delete_secret, set_secret, store_path
-from ductor_bot.webchat.auth import PASSWORD_KEY, TOTP_KEY, hash_password, rotate_credential_nonce
+from ductor_bot.webchat.auth import (
+    MIN_PASSWORD_LENGTH,
+    PASSWORD_KEY,
+    TOTP_KEY,
+    hash_password,
+    rotate_credential_nonce,
+)
 from ductor_bot.webchat.settings import validate_webchat
 from ductor_bot.workspace.paths import resolve_paths
 
@@ -63,7 +69,7 @@ def cmd_webchat(args: list[str]) -> None:
     if args[0] == "set-password":
         password = getpass.getpass(t_rich("webchat.password_prompt"))
         confirmation = getpass.getpass(t_rich("webchat.password_confirm"))
-        if len(password) < 12:
+        if len(password) < MIN_PASSWORD_LENGTH:
             _console.print(t_rich("webchat.password_too_short"))
             raise SystemExit(1)
         if password != confirmation:
