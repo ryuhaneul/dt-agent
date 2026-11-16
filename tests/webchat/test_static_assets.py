@@ -1059,7 +1059,6 @@ def test_password_change_markup_and_module_contract(markup):
     assert not any(item.get("class") == "demo" for _, item in markup.tags)
     source = (STATIC / "js/account.js").read_text()
     assert "initAccount" in (STATIC / "js/main.js").read_text()
-    assert "setTimeout" not in source
     assert "innerHTML" not in source
     assert source.index("beginCredentialChange();") < source.index(
         "await api('/auth/password-change'"
@@ -1081,7 +1080,7 @@ PASSWORD_CHANGE_WS_TESTS = r"""
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-const {source}=JSON.parse(fs.readFileSync(0,'utf8'));
+const {source,apiSource}=JSON.parse(fs.readFileSync(0,'utf8'));
 const sockets=[],timers=new Map(),events=[];let count=0,lookups=0,authenticated=true,release;
 class WebSocket {
   constructor(){this.listeners={};sockets.push(this)}
@@ -1091,7 +1090,8 @@ class WebSocket {
 const context=vm.createContext({WebSocket,URL,location:{href:'https://example.test/'},
   document:{dispatchEvent:event=>events.push(event)},CustomEvent:class{constructor(type){this.type=type}},
   setTimeout:fn=>{timers.set(++count,fn);return count},clearTimeout:id=>timers.delete(id)});
-const api=new vm.SyntheticModule(['api'],function(){this.setExport('api',async()=>{lookups++;if(release)await new Promise(resolve=>{release=resolve});return {authenticated}})},{context});
+context.fetch=async()=>{lookups++;if(release)await new Promise(resolve=>{release=resolve});return {ok:true,status:200,json:async()=>({authenticated})}};
+const api=new vm.SourceTextModule(apiSource,{context});
 await api.link(()=>{});await api.evaluate();
 const module=new vm.SourceTextModule(source,{context});await module.link(()=>api);await module.evaluate();
 const ws=module.namespace,stop=ws.connectEvents(()=>{},()=>{});
@@ -1126,7 +1126,12 @@ def test_password_change_ws_delayed_success_failure_and_stale_close():
             "-e",
             PASSWORD_CHANGE_WS_TESTS,
         ],
-        input=json.dumps({"source": (STATIC / "js/ws.js").read_text()}),
+        input=json.dumps(
+            {
+                "source": (STATIC / "js/ws.js").read_text(),
+                "apiSource": (STATIC / "js/api.js").read_text(),
+            }
+        ),
         capture_output=True,
         text=True,
         check=False,
@@ -1146,8 +1151,8 @@ const elements=new Map(ids.map(id=>[id,{id,value:'',hidden:false,listeners:{},at
  showModal(){this.open=true},close(){this.open=false;this.listeners.close?.()},reset(){inputs.forEach(input=>input.value='')}
 }]));
 const get=id=>elements.get(id),inputs=['currentPw','newPw','confirmPw','currentTotp'].map(get);
-let focused,release,error=null,calls=0;const order=[],documentListeners={};
-const context=vm.createContext({document:{querySelector:selector=>get(selector.slice(1)),addEventListener:(type,fn)=>documentListeners[type]=fn}});
+let focused,release,error=null,calls=0,now=10000;const order=[],documentListeners={},timers=new Map();let timerId=0;
+const context=vm.createContext({Date:class{static now(){return now}},setTimeout:(fn,delay)=>{timers.set(++timerId,{fn,delay});return timerId},clearTimeout:id=>timers.delete(id),document:{querySelector:selector=>get(selector.slice(1)),addEventListener:(type,fn)=>documentListeners[type]=fn}});
 const api=new vm.SyntheticModule(['api','setCsrf'],function(){
  this.setExport('api',async(path,{body})=>{calls++;assert.equal(path,'/auth/password-change');assert.equal(body.current_password,'current-password');assert.equal(body.code,'123456');order.push('request');await new Promise(resolve=>{release=resolve});if(error)throw error;return {csrf:'new-csrf'}});
  this.setExport('setCsrf',value=>order.push(`csrf:${value}`));
@@ -1163,7 +1168,8 @@ fill('short');await submit();assert.equal(calls,0);assert.equal(get('pwNotice').
 fill('changed-password','mismatch');await submit();assert.equal(calls,0);assert.equal(get('confirmPw').attributes['aria-invalid'],'true');
 for(const [code,key] of [['invalid','account.invalid'],['password_too_short','account.password_too_short'],['code_reused','account.code_reused'],['locked','account.locked:42'],['totp_required','account.totp_required'],['bot_unreachable','error.bot_unreachable']]){
  fill();error={code,retryAfter:42};const pending=submit();assert.equal(get('pwSubmit').disabled,true);release();await pending;
- assert.equal(get('pwNotice').textContent,key);assert.equal(get('currentTotp').value,'');assert.equal(get('pwSubmit').disabled,false);assert.equal(order.at(-1),'finish:false');
+ assert.equal(get('pwNotice').textContent,key);assert.equal(get('currentTotp').value,'');assert.equal(get('pwSubmit').disabled,code==='locked');assert.equal(order.at(-1),'finish:false');
+ if(code==='locked'){assert.ok(inputs.every(input=>input.disabled));const before=calls;await submit();assert.equal(calls,before);get('closePw').listeners.click();get('openPw').listeners.click();assert.equal(get('pwSubmit').disabled,true);assert.equal(get('pwNotice').textContent,'account.locked:42');const timer=[...timers.values()][0];assert.equal(timer.delay,42000);now+=42000;timer.fn();assert.ok(inputs.every(input=>!input.disabled));assert.equal(get('pwSubmit').disabled,false);}
 }
 error=null;fill();order.length=0;const pending=submit();await submit();assert.deepEqual(order,['begin','request']);release();await pending;
 assert.deepEqual(order,['begin','request','csrf:new-csrf','finish:true']);assert.equal(get('changeForm').hidden,true);assert.equal(get('pwNotice').textContent,'account.success');assert.ok(inputs.every(input=>input.value===''));
@@ -1182,6 +1188,49 @@ def test_password_change_client_validation_errors_and_success_order():
             PASSWORD_CHANGE_CLIENT_TESTS,
         ],
         input=json.dumps({"source": (STATIC / "js/account.js").read_text()}),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+PASSWORD_CHANGE_API_TESTS = r"""
+import assert from 'node:assert/strict';import fs from 'node:fs';import vm from 'node:vm';
+const {source}=JSON.parse(fs.readFileSync(0,'utf8'));
+const events=[];let authenticated=true,lookups=0,release=null,headers=null;
+const context=vm.createContext({document:{dispatchEvent:event=>events.push(event.type)},CustomEvent:class{constructor(type){this.type=type}},fetch:async(path,options)=>{
+ headers=options.headers;
+ if(path==='/api/auth/state'){lookups++;return {ok:true,status:200,json:async()=>({authenticated})}}
+ if(path==='/api/held'){await new Promise(resolve=>{release=resolve})}
+ return {ok:false,status:403,json:async()=>({error:'auth_required'})};
+}});
+const module=new vm.SourceTextModule(source,{context});await module.link(()=>{});await module.evaluate();const api=module.namespace;
+const flush=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate)};
+api.setCsrf('old-csrf');api.beginCredentialChange();
+await assert.rejects(api.api('/topics'));await assert.rejects(api.api('/topics'));assert.deepEqual(events,[]);
+api.setCsrf('new-csrf');api.finishCredentialChange(true);await flush();assert.equal(lookups,0);assert.deepEqual(events,[]);
+await assert.rejects(api.api('/topics',{method:'POST'}));assert.equal(headers['X-Dtw-Csrf'],'new-csrf');assert.equal(events.length,1);
+// Failed rotation validates a batch of deferred failures once and preserves a valid session.
+events.length=0;api.beginCredentialChange();await assert.rejects(api.api('/topics'));await assert.rejects(api.api('/topics'));api.finishCredentialChange(false);await flush();assert.equal(lookups,1);assert.deepEqual(events,[]);
+// A revoked session is dispatched once after a failed rotation.
+api.beginCredentialChange();await assert.rejects(api.api('/topics'));authenticated=false;api.finishCredentialChange(false);await flush();assert.equal(lookups,2);assert.deepEqual(events,['auth-required']);
+// Old REST responses arriving after a successful rotation cannot revoke the fresh session.
+events.length=0;api.beginCredentialChange();const pending=api.api('/held').catch(()=>{});await flush();api.setCsrf('fresh-csrf');api.finishCredentialChange(true);release();await pending;assert.deepEqual(events,[]);
+console.log('Concurrent REST credential-change contracts passed');
+"""
+
+
+def test_password_change_defers_concurrent_rest_auth_required():
+    result = subprocess.run(
+        [
+            "node",
+            "--experimental-vm-modules",
+            "--input-type=module",
+            "-e",
+            PASSWORD_CHANGE_API_TESTS,
+        ],
+        input=json.dumps({"source": (STATIC / "js/api.js").read_text()}),
         capture_output=True,
         text=True,
         check=False,

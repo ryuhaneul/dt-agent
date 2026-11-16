@@ -333,3 +333,7 @@ dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(2px)}
 #pwDialog .panel-head .btn{min-height:36px;width:36px;padding:0;margin-right:-10px}
 @media(max-width:760px){.pw-grid{grid-template-columns:1fr}.pw-content{padding:16px}.pw-actions .btn{width:100%}#pwDialog .pw-content{padding:16px 18px 18px}#pwDialog .panel-head{padding-left:18px;padding-right:18px}}
 @media(max-width:240px){.account-menu .menu{left:0;right:auto}}
+
+#pwDialog .pw-actions .btn{min-width:0;white-space:normal}
+#pwDialog .lb{overflow-wrap:anywhere}
+@media(max-width:240px){.bar-acts{flex-wrap:wrap;max-width:100%}}
