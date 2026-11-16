@@ -9,5 +9,5 @@ import segno
 
 def qr_svg(uri: str) -> str:
     output = io.BytesIO()
-    segno.make(uri, micro=False).save(output, kind="svg", scale=5, xmldecl=False)
+    segno.make(uri, micro=False).save(output, kind="svg", scale=5, xmldecl=False, omitsize=True)
     return output.getvalue().decode("utf-8")
