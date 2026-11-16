@@ -365,12 +365,12 @@ assert.equal(seed.textContent,''); assert.equal(ids.seedIn.value,'');
 const themeSource=fs.readFileSync(path.join(staticDir,'js/theme-init.js'),'utf8');
 for (const [saved,systemDark,wanted] of [['dark',false,'dark'],['light',true,'light'],[null,true,'dark'],['invalid',false,'light']]) {
   const root={dataset:{}};
-  vm.runInNewContext(themeSource,{document:{documentElement:root},localStorage:{getItem:()=>saved},matchMedia:()=>({matches:systemDark})});
+  vm.runInNewContext(themeSource,{setTimeout:()=>0,document:{documentElement:root},localStorage:{getItem:()=>saved},matchMedia:()=>({matches:systemDark})});
   assert.equal(root.dataset.theme,wanted);
   assert.equal(root.dataset.themePref,['dark','light'].includes(saved)?saved:'system');
 }
 const root={dataset:{}};
-vm.runInNewContext(themeSource,{document:{documentElement:root},localStorage:{getItem(){throw new Error('blocked')}},matchMedia:()=>({matches:true})});
+vm.runInNewContext(themeSource,{setTimeout:()=>0,document:{documentElement:root},localStorage:{getItem(){throw new Error('blocked')}},matchMedia:()=>({matches:true})});
 assert.equal(root.dataset.theme,'dark');
 // Exercise the actual theme module, including live system preference changes.
 const storage=new Map();
@@ -1234,6 +1234,92 @@ def test_password_change_defers_concurrent_rest_auth_required():
             PASSWORD_CHANGE_API_TESTS,
         ],
         input=json.dumps({"source": (STATIC / "js/api.js").read_text()}),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+STARTUP_CLIENT_TESTS = r"""
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+const {source}=JSON.parse(fs.readFileSync(0,'utf8'));
+for (const outcome of ['authenticated', 'anonymous', 'bridge-down', 'network-error']) {
+  const calls=[];let finish,authenticated=false,pending=true,screen=null;
+  const context=vm.createContext({document:{body:{removeAttribute(name){
+    assert.equal(name,'data-auth-pending');assert.ok(screen);pending=false;calls.push('reveal');
+  }}}});
+  const module=new vm.SourceTextModule(source,{context});
+  await module.link(async name=>{
+    const exports=name==='./router.js'?['initRouter','renderRoute']
+      :name==='./auth.js'?['initAuth','notify']
+      :[{'./account.js':'initAccount','./manage.js':'initManage','./files.js':'initFiles',
+          './topics.js':'initTopics','./chat.js':'initChat','./i18n.js':'loadI18n','./theme.js':'initTheme'}[name]];
+    const stub=new vm.SyntheticModule(exports,function(){
+      for(const key of exports)this.setExport(key,key==='initAuth'?async()=>{
+        await new Promise(resolve=>{finish=resolve});
+        if(['bridge-down','network-error'].includes(outcome))throw Error(outcome);
+        authenticated=outcome==='authenticated';
+      }:key==='renderRoute'?()=>{screen=authenticated?'app':'auth';calls.push('render')}
+        :key==='notify'?key=>calls.push(key):()=>{});
+    },{context});
+    await stub.link(()=>{});return stub;
+  });
+  await module.evaluate();
+  await new Promise(setImmediate);
+  assert.equal(pending,true);assert.equal(screen,null);
+  finish();await new Promise(setImmediate);
+  assert.equal(pending,false);assert.equal(screen,outcome==='authenticated'?'app':'auth');
+  assert.deepEqual(calls.slice(-2),['render','reveal']);
+  assert.equal(calls.includes('error.bot_unreachable'),['bridge-down','network-error'].includes(outcome));
+}
+"""
+
+
+def test_startup_hides_both_screens_until_auth_resolves_and_reveals_on_failure(markup):
+    body = next(attrs for tag, attrs in markup.tags if tag == "body")
+    assert "data-auth-pending" in body
+    css = (STATIC / "css/app.css").read_text()
+    assert "[data-auth-pending] #auth,[data-auth-pending] #app{display:none!important}" in css
+    result = subprocess.run(
+        ["node", "--experimental-vm-modules", "--input-type=module", "-e", STARTUP_CLIENT_TESTS],
+        input=json.dumps({"source": (STATIC / "js/main.js").read_text()}),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+STARTUP_FALLBACK_TESTS = r"""
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+const {source}=JSON.parse(fs.readFileSync(0,'utf8'));
+for(const normalStartup of [false,true]){
+  let callback,delay,pending=true,removals=0;
+  const document={documentElement:{dataset:{}},body:null};
+  vm.runInNewContext(source,{document,localStorage:{getItem:()=>null},
+    matchMedia:()=>({matches:false}),setTimeout:(fn,ms)=>{callback=fn;delay=ms}});
+  assert.equal(delay,4000);
+  document.body={hasAttribute:name=>name==='data-auth-pending'&&pending,
+    removeAttribute(name){assert.equal(name,'data-auth-pending');pending=false;removals++}};
+  assert.equal(pending,true);
+  // A failed module never runs start(); normal startup resolves before the deadline.
+  if(normalStartup)document.body.removeAttribute('data-auth-pending');
+  callback();
+  assert.equal(pending,false);
+  assert.equal(removals,1);
+}
+"""
+
+
+def test_classic_script_reveals_auth_after_four_seconds_unless_startup_already_resolved():
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", STARTUP_FALLBACK_TESTS],
+        input=json.dumps({"source": (STATIC / "js/theme-init.js").read_text()}),
         capture_output=True,
         text=True,
         check=False,

@@ -5,7 +5,7 @@ import { initTopics } from './topics.js';
 import { initChat } from './chat.js';
 import { loadI18n } from './i18n.js';
 import { initTheme } from './theme.js';
-import { initRouter } from './router.js';
+import { initRouter, renderRoute } from './router.js';
 import { initAuth, notify } from './auth.js';
 
 async function start() {
@@ -20,5 +20,9 @@ async function start() {
     initAccount();
     await initAuth();
   } catch { notify('error.bot_unreachable'); }
+  finally {
+    renderRoute();
+    document.body.removeAttribute('data-auth-pending');
+  }
 }
 start();

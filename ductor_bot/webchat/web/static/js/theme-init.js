@@ -9,4 +9,9 @@
   root.dataset.theme = preference === 'system'
     ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
     : preference;
+  setTimeout(() => {
+    if (document.body?.hasAttribute('data-auth-pending')) {
+      document.body.removeAttribute('data-auth-pending');
+    }
+  }, 4000);
 })();
