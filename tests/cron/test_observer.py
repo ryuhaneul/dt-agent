@@ -20,7 +20,7 @@ from ductor_bot.cron.execution import (
     parse_codex_result,
 )
 from ductor_bot.cron.manager import CronJob, CronManager
-from ductor_bot.cron.observer import CronObserver
+from ductor_bot.cron.observer import CronObserver, _ScheduledJob
 from ductor_bot.workspace.paths import DuctorPaths
 
 
@@ -236,6 +236,41 @@ class TestCronObserverScheduling:
         assert not running_task.cancelled()
         assert idle_task.cancelled()
         await observer.stop()
+
+    async def test_post_run_reschedule_uses_schedule_edited_during_run(
+        self, tmp_path: Path
+    ) -> None:
+        """A schedule edited while a job runs is used for its next run."""
+        paths = _make_paths(tmp_path)
+        mgr = _make_manager(paths)
+        mgr.add_job(_make_job("daily", schedule="38 8 13 11 *"))
+        observer = _make_observer(paths, mgr)
+        observer._running = True
+        edited = _make_job("daily", schedule="0 8 * * 1-5")
+
+        async def run_and_edit(*_args: Any) -> None:
+            _write_jobs(paths, [edited])
+            mgr.reload()
+
+        with (
+            patch.object(observer, "_ensure_cron_slot_reached", AsyncMock()),
+            patch.object(observer, "_execute_job", side_effect=run_and_edit),
+            patch.object(observer, "_schedule_job") as schedule_job,
+        ):
+            await observer._run_at(
+                0,
+                _ScheduledJob(
+                    id="daily",
+                    schedule="38 8 13 11 *",
+                    instruction="Do the daily work",
+                    task_folder="daily",
+                    timezone="",
+                ),
+            )
+
+        schedule_job.assert_called_once_with(
+            "daily", "0 8 * * 1-5", "Do the daily work", "daily", ""
+        )
 
     async def test_stop_cancels_executing_jobs(self, tmp_path: Path) -> None:
         """stop() must cancel ALL tasks including currently executing ones."""
@@ -1199,7 +1234,6 @@ class TestParseCLIResults:
     def test_parse_codex_jsonl_with_agent_message(self) -> None:
         line = b'{"type":"item.completed","item":{"type":"agent_message","text":"Weather report done."}}'
         assert parse_codex_result(line) == "Weather report done."
-
 
 
 async def test_job_routing_reaches_shared_runner(tmp_path: Path) -> None:

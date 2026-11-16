@@ -323,12 +323,13 @@ class CronObserver(BaseTaskObserver):
         if self._running:
             job = self._manager.get_job(scheduled_job.id)
             if job and job.enabled:
+                # Use the stored job: edits made while it ran were skipped by the reschedule.
                 self._schedule_job(
-                    scheduled_job.id,
-                    scheduled_job.schedule,
-                    scheduled_job.instruction,
-                    scheduled_job.task_folder,
-                    scheduled_job.timezone,
+                    job.id,
+                    job.schedule,
+                    job.agent_instruction,
+                    job.task_folder,
+                    job.timezone,
                 )
 
     async def _ensure_cron_slot_reached(self, scheduled_job: _ScheduledJob) -> None:
