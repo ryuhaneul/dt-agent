@@ -1,3 +1,4 @@
+import { initAccount } from './account.js';
 import { initManage } from './manage.js';
 import { initFiles } from './files.js';
 import { initTopics } from './topics.js';
@@ -16,6 +17,7 @@ async function start() {
     initChat();
     initManage();
     initFiles();
+    initAccount();
     await initAuth();
   } catch { notify('error.bot_unreachable'); }
 }

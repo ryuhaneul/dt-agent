@@ -166,3 +166,21 @@ web_turn_running = "Jawaban web sedang diproses di topik ini"
 
 [starflow]
 title = "Latar bintang dekoratif"
+
+[account]
+title = "Akun"
+change = "Ubah kata sandi"
+guide = "Mengubah kata sandi akan mengeluarkan semua perangkat lain."
+current_password = "Kata sandi saat ini"
+new_password = "Kata sandi baru"
+minimum = "(minimal 12 karakter)"
+confirm_password = "Konfirmasi kata sandi baru"
+code = "TOTP enam digit saat ini"
+busy = "Mengubah…"
+invalid = "Kata sandi saat ini atau kode autentikasi salah."
+password_too_short = "Kata sandi baru harus memiliki minimal 12 karakter."
+mismatch = "Kata sandi baru tidak cocok."
+code_reused = "Kode ini sudah digunakan. Tunggu kode baru."
+locked = "Terlalu banyak percobaan. Coba lagi dalam {seconds} detik."
+totp_required = "Siapkan autentikasi dua langkah sebelum mengubah kata sandi."
+success = "Kata sandi diubah. Perangkat lain telah dikeluarkan."

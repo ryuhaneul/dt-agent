@@ -166,3 +166,21 @@ web_turn_running = "A web answer is already running in this topic"
 
 [starflow]
 title = "Decorative star background"
+
+[account]
+title = "Account"
+change = "Change password"
+guide = "Changing your password logs out all other devices."
+current_password = "Current password"
+new_password = "New password"
+minimum = "(at least 12 characters)"
+confirm_password = "Confirm new password"
+code = "Current six-digit TOTP"
+busy = "Changing…"
+invalid = "The current password or authentication code is incorrect."
+password_too_short = "The new password must be at least 12 characters."
+mismatch = "The new passwords do not match."
+code_reused = "This code has already been used. Wait for a new code."
+locked = "Too many attempts. Try again in {seconds} seconds."
+totp_required = "Set up two-step authentication before changing your password."
+success = "Password changed. Other devices have been logged out."

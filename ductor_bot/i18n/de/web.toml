@@ -166,3 +166,21 @@ web_turn_running = "In diesem Thema wird bereits eine Webantwort erstellt"
 
 [starflow]
 title = "Dekorativer Sternenhintergrund"
+
+[account]
+title = "Konto"
+change = "Passwort ändern"
+guide = "Beim Ändern des Passworts werden alle anderen Geräte abgemeldet."
+current_password = "Aktuelles Passwort"
+new_password = "Neues Passwort"
+minimum = "(mindestens 12 Zeichen)"
+confirm_password = "Neues Passwort bestätigen"
+code = "Aktueller sechsstelliger TOTP-Code"
+busy = "Wird geändert…"
+invalid = "Das aktuelle Passwort oder der Authentifizierungscode ist falsch."
+password_too_short = "Das neue Passwort muss mindestens 12 Zeichen lang sein."
+mismatch = "Die neuen Passwörter stimmen nicht überein."
+code_reused = "Dieser Code wurde bereits verwendet. Warte auf einen neuen Code."
+locked = "Zu viele Versuche. Versuche es in {seconds} Sekunden erneut."
+totp_required = "Richte vor dem Ändern des Passworts die Zwei-Faktor-Authentifizierung ein."
+success = "Passwort geändert. Andere Geräte wurden abgemeldet."

@@ -1044,3 +1044,146 @@ def test_management_file_markup_matches_client_hooks(markup):
     assert sum("data-close-dialog" in attrs for _, attrs in markup.tags) == 2
     css = (STATIC / "css/app.css").read_text()
     assert ".file-notice{margin:8px 16px 0;color:var(--muted)}" in css
+
+
+def test_password_change_markup_and_module_contract(markup):
+    attrs = {item.get("id"): (tag, item) for tag, item in markup.tags if item.get("id")}
+    assert attrs["pwDialog"][0] == "dialog"
+    assert attrs["accountButton"][1]["aria-haspopup"] == "menu"
+    assert attrs["currentPw"][1]["autocomplete"] == "current-password"
+    for name in ("newPw", "confirmPw"):
+        assert attrs[name][1]["autocomplete"] == "new-password"
+    assert attrs["currentTotp"][1]["inputmode"] == "numeric"
+    assert attrs["currentTotp"][1]["pattern"] == "[0-9]{6}"
+    assert "pwState" not in attrs
+    assert not any(item.get("class") == "demo" for _, item in markup.tags)
+    source = (STATIC / "js/account.js").read_text()
+    assert "initAccount" in (STATIC / "js/main.js").read_text()
+    assert "setTimeout" not in source
+    assert "innerHTML" not in source
+    assert source.index("beginCredentialChange();") < source.index(
+        "await api('/auth/password-change'"
+    )
+    assert source.index("setCsrf(result.csrf)") < source.index("finishCredentialChange(true)")
+    assert "finishCredentialChange(false)" in source
+    for code in (
+        "invalid",
+        "password_too_short",
+        "code_reused",
+        "locked",
+        "totp_required",
+        "bot_unreachable",
+    ):
+        assert code in source
+
+
+PASSWORD_CHANGE_WS_TESTS = r"""
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+const {source}=JSON.parse(fs.readFileSync(0,'utf8'));
+const sockets=[],timers=new Map(),events=[];let count=0,lookups=0,authenticated=true,release;
+class WebSocket {
+  constructor(){this.listeners={};sockets.push(this)}
+  addEventListener(type,fn){this.listeners[type]=fn}
+  close(){this.listeners.close()}
+}
+const context=vm.createContext({WebSocket,URL,location:{href:'https://example.test/'},
+  document:{dispatchEvent:event=>events.push(event)},CustomEvent:class{constructor(type){this.type=type}},
+  setTimeout:fn=>{timers.set(++count,fn);return count},clearTimeout:id=>timers.delete(id)});
+const api=new vm.SyntheticModule(['api'],function(){this.setExport('api',async()=>{lookups++;if(release)await new Promise(resolve=>{release=resolve});return {authenticated}})},{context});
+await api.link(()=>{});await api.evaluate();
+const module=new vm.SourceTextModule(source,{context});await module.link(()=>api);await module.evaluate();
+const ws=module.namespace,stop=ws.connectEvents(()=>{},()=>{});
+const flush=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate)};
+// Closing during a delayed credential response must not query or signal login loss.
+ws.beginCredentialChange();authenticated=false;sockets[0].close();await flush();
+assert.equal(lookups,0);assert.equal(events.length,0);
+const retry=timers.values().next().value;timers.clear();retry();await flush();
+assert.equal(sockets.length,1);assert.equal(lookups,0);
+authenticated=true;ws.finishCredentialChange(true);assert.equal(sockets.length,2);
+assert.equal(timers.size,0);assert.equal(events.length,0);
+// A late close from the replaced socket must not validate the old session.
+sockets[0].close();await flush();assert.equal(lookups,0);
+// A failed request resumes the existing close path exactly once.
+ws.beginCredentialChange();sockets[1].close();await flush();ws.finishCredentialChange(false);await flush();
+assert.equal(lookups,1);assert.equal(events.length,0);
+// An earlier lookup cannot dispatch stale authentication loss across a rotation.
+stop();const nextStop=ws.connectEvents(()=>{},()=>{});release=true;sockets.at(-1).close();await new Promise(setImmediate);
+ws.beginCredentialChange();authenticated=false;release();release=null;await flush();assert.equal(events.length,0);
+ws.finishCredentialChange(true);authenticated=false;sockets.at(-1).close();await flush();
+assert.equal(events.length,1);assert.equal(events[0].type,'auth-required');nextStop();assert.equal(timers.size,0);
+console.log('Password change WS contracts passed');
+"""
+
+
+def test_password_change_ws_delayed_success_failure_and_stale_close():
+    result = subprocess.run(
+        [
+            "node",
+            "--experimental-vm-modules",
+            "--input-type=module",
+            "-e",
+            PASSWORD_CHANGE_WS_TESTS,
+        ],
+        input=json.dumps({"source": (STATIC / "js/ws.js").read_text()}),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+PASSWORD_CHANGE_CLIENT_TESTS = r"""
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+const {source}=JSON.parse(fs.readFileSync(0,'utf8'));
+const ids=['accountButton','accountMenu','pwDialog','changeForm','pwNotice','pwSubmit','currentPw','newPw','confirmPw','currentTotp','pwGuide','openPw','closePw'];
+const elements=new Map(ids.map(id=>[id,{id,value:'',hidden:false,listeners:{},attributes:{},
+ addEventListener(type,fn){this.listeners[type]=fn},setAttribute(k,v){this.attributes[k]=v},removeAttribute(k){delete this.attributes[k]},focus(){focused=id},
+ querySelector(){return elements.get('openPw')},querySelectorAll(){return inputs},reportValidity(){return true},
+ showModal(){this.open=true},close(){this.open=false;this.listeners.close?.()},reset(){inputs.forEach(input=>input.value='')}
+}]));
+const get=id=>elements.get(id),inputs=['currentPw','newPw','confirmPw','currentTotp'].map(get);
+let focused,release,error=null,calls=0;const order=[],documentListeners={};
+const context=vm.createContext({document:{querySelector:selector=>get(selector.slice(1)),addEventListener:(type,fn)=>documentListeners[type]=fn}});
+const api=new vm.SyntheticModule(['api','setCsrf'],function(){
+ this.setExport('api',async(path,{body})=>{calls++;assert.equal(path,'/auth/password-change');assert.equal(body.current_password,'current-password');assert.equal(body.code,'123456');order.push('request');await new Promise(resolve=>{release=resolve});if(error)throw error;return {csrf:'new-csrf'}});
+ this.setExport('setCsrf',value=>order.push(`csrf:${value}`));
+},{context});
+const i18n=new vm.SyntheticModule(['t'],function(){this.setExport('t',(key,values={})=>key+(key==='account.locked'&&values.seconds?`:${values.seconds}`:''))},{context});
+const ws=new vm.SyntheticModule(['beginCredentialChange','finishCredentialChange'],function(){this.setExport('beginCredentialChange',()=>order.push('begin'));this.setExport('finishCredentialChange',success=>order.push(`finish:${success}`))},{context});
+for(const module of [api,i18n,ws]){await module.link(()=>{});await module.evaluate()}
+const module=new vm.SourceTextModule(source,{context});await module.link(name=>name==='./api.js'?api:name==='./i18n.js'?i18n:ws);await module.evaluate();module.namespace.initAccount();
+const fill=(next='changed-password',confirmation=next)=>{get('currentPw').value='current-password';get('newPw').value=next;get('confirmPw').value=confirmation;get('currentTotp').value='123456'};
+const submit=()=>get('changeForm').listeners.submit({preventDefault(){}});
+get('openPw').listeners.click();assert.equal(focused,'currentPw');
+fill('short');await submit();assert.equal(calls,0);assert.equal(get('pwNotice').textContent,'account.password_too_short');
+fill('changed-password','mismatch');await submit();assert.equal(calls,0);assert.equal(get('confirmPw').attributes['aria-invalid'],'true');
+for(const [code,key] of [['invalid','account.invalid'],['password_too_short','account.password_too_short'],['code_reused','account.code_reused'],['locked','account.locked:42'],['totp_required','account.totp_required'],['bot_unreachable','error.bot_unreachable']]){
+ fill();error={code,retryAfter:42};const pending=submit();assert.equal(get('pwSubmit').disabled,true);release();await pending;
+ assert.equal(get('pwNotice').textContent,key);assert.equal(get('currentTotp').value,'');assert.equal(get('pwSubmit').disabled,false);assert.equal(order.at(-1),'finish:false');
+}
+error=null;fill();order.length=0;const pending=submit();await submit();assert.deepEqual(order,['begin','request']);release();await pending;
+assert.deepEqual(order,['begin','request','csrf:new-csrf','finish:true']);assert.equal(get('changeForm').hidden,true);assert.equal(get('pwNotice').textContent,'account.success');assert.ok(inputs.every(input=>input.value===''));
+get('closePw').listeners.click();assert.equal(focused,'accountButton');
+console.log('Password change form contracts passed');
+"""
+
+
+def test_password_change_client_validation_errors_and_success_order():
+    result = subprocess.run(
+        [
+            "node",
+            "--experimental-vm-modules",
+            "--input-type=module",
+            "-e",
+            PASSWORD_CHANGE_CLIENT_TESTS,
+        ],
+        input=json.dumps({"source": (STATIC / "js/account.js").read_text()}),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

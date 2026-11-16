@@ -166,3 +166,21 @@ web_turn_running = "Uma resposta web já está sendo gerada neste tópico"
 
 [starflow]
 title = "Fundo decorativo de estrelas"
+
+[account]
+title = "Conta"
+change = "Alterar senha"
+guide = "Alterar a senha encerra a sessão em todos os outros dispositivos."
+current_password = "Senha atual"
+new_password = "Nova senha"
+minimum = "(pelo menos 12 caracteres)"
+confirm_password = "Confirmar nova senha"
+code = "TOTP atual de seis dígitos"
+busy = "Alterando…"
+invalid = "A senha atual ou o código de autenticação está incorreto."
+password_too_short = "A nova senha deve ter pelo menos 12 caracteres."
+mismatch = "As novas senhas não coincidem."
+code_reused = "Este código já foi usado. Aguarde um novo código."
+locked = "Muitas tentativas. Tente novamente em {seconds} segundos."
+totp_required = "Configure a autenticação em duas etapas antes de alterar a senha."
+success = "Senha alterada. A sessão nos outros dispositivos foi encerrada."

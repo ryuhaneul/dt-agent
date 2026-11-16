@@ -166,3 +166,21 @@ web_turn_running = "이 토픽에서 웹 답변이 이미 진행 중입니다"
 
 [starflow]
 title = "장식용 별 배경"
+
+[account]
+title = "계정"
+change = "비밀번호 변경"
+guide = "변경하면 다른 기기의 로그인은 모두 끊겨요."
+current_password = "현재 비밀번호"
+new_password = "새 비밀번호"
+minimum = "(12자 이상)"
+confirm_password = "새 비밀번호 확인"
+code = "현재 TOTP 6자리"
+busy = "변경 중…"
+invalid = "현재 비밀번호 또는 인증 코드가 올바르지 않아요."
+password_too_short = "새 비밀번호는 12자 이상이어야 해요."
+mismatch = "새 비밀번호가 서로 일치하지 않아요."
+code_reused = "이미 사용한 코드예요. 새 코드가 나올 때까지 기다려 주세요."
+locked = "시도가 너무 많아요. {seconds}초 후 다시 시도해 주세요."
+totp_required = "비밀번호를 변경하려면 먼저 2단계 인증을 설정해 주세요."
+success = "비밀번호를 바꿨어요. 다른 기기의 로그인은 끊겼어요."

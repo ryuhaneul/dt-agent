@@ -166,3 +166,21 @@ web_turn_running = "Une réponse web est déjà en cours dans ce sujet"
 
 [starflow]
 title = "Fond étoilé décoratif"
+
+[account]
+title = "Compte"
+change = "Modifier le mot de passe"
+guide = "Modifier le mot de passe déconnectera tous les autres appareils."
+current_password = "Mot de passe actuel"
+new_password = "Nouveau mot de passe"
+minimum = "(12 caractères minimum)"
+confirm_password = "Confirmer le nouveau mot de passe"
+code = "Code TOTP actuel à six chiffres"
+busy = "Modification…"
+invalid = "Le mot de passe actuel ou le code d’authentification est incorrect."
+password_too_short = "Le nouveau mot de passe doit contenir au moins 12 caractères."
+mismatch = "Les nouveaux mots de passe ne correspondent pas."
+code_reused = "Ce code a déjà été utilisé. Attendez un nouveau code."
+locked = "Trop de tentatives. Réessayez dans {seconds} secondes."
+totp_required = "Configurez l’authentification en deux étapes avant de modifier le mot de passe."
+success = "Mot de passe modifié. Les autres appareils ont été déconnectés."
