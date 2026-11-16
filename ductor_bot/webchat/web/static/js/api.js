@@ -10,10 +10,14 @@ export function finishCredentialChange(success) {
 export function checkSession(active = () => true) {
   const epoch = credentialEpoch;
   return api('/auth/state').then(state => {
-    if (active() && !credentialChanging && epoch === credentialEpoch && !state.authenticated) {
-      csrf = null;
-      document.dispatchEvent(new CustomEvent('auth-required'));
+    if (!active() || credentialChanging || epoch !== credentialEpoch) return;
+    if (state.authenticated) {
+      // Another tab may have rotated the shared session cookie; adopt its CSRF token.
+      if (state.csrf) csrf = state.csrf;
+      return;
     }
+    csrf = null;
+    document.dispatchEvent(new CustomEvent('auth-required'));
   }).catch(() => {});
 }
 export function setCsrf(value) { csrf = value; }

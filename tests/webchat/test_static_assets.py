@@ -1198,10 +1198,10 @@ def test_password_change_client_validation_errors_and_success_order():
 PASSWORD_CHANGE_API_TESTS = r"""
 import assert from 'node:assert/strict';import fs from 'node:fs';import vm from 'node:vm';
 const {source}=JSON.parse(fs.readFileSync(0,'utf8'));
-const events=[];let authenticated=true,lookups=0,release=null,headers=null;
+const events=[];let authenticated=true,lookups=0,release=null,headers=null,stateCsrf=null;
 const context=vm.createContext({document:{dispatchEvent:event=>events.push(event.type)},CustomEvent:class{constructor(type){this.type=type}},fetch:async(path,options)=>{
  headers=options.headers;
- if(path==='/api/auth/state'){lookups++;return {ok:true,status:200,json:async()=>({authenticated})}}
+ if(path==='/api/auth/state'){lookups++;return {ok:true,status:200,json:async()=>({authenticated,csrf:stateCsrf})}}
  if(path==='/api/held'){await new Promise(resolve=>{release=resolve})}
  return {ok:false,status:403,json:async()=>({error:'auth_required'})};
 }});
@@ -1217,6 +1217,9 @@ events.length=0;api.beginCredentialChange();await assert.rejects(api.api('/topic
 api.beginCredentialChange();await assert.rejects(api.api('/topics'));authenticated=false;api.finishCredentialChange(false);await flush();assert.equal(lookups,2);assert.deepEqual(events,['auth-required']);
 // Old REST responses arriving after a successful rotation cannot revoke the fresh session.
 events.length=0;api.beginCredentialChange();const pending=api.api('/held').catch(()=>{});await flush();api.setCsrf('fresh-csrf');api.finishCredentialChange(true);release();await pending;assert.deepEqual(events,[]);
+// Another tab rotated the shared cookie: a valid session check adopts the returned CSRF token.
+authenticated=true;stateCsrf='rotated-csrf';api.setCsrf('stale-csrf');events.length=0;await api.checkSession();
+await assert.rejects(api.api('/topics',{method:'POST'}));assert.equal(headers['X-Dtw-Csrf'],'rotated-csrf');stateCsrf=null;
 console.log('Concurrent REST credential-change contracts passed');
 """
 
