@@ -351,6 +351,8 @@ def test_reset_transport_is_not_rate_limit(is_error, text):
     ("text", "expected"),
     [
         ("You've hit your limit · resets 3pm", True),
+        ("You've hit your 5-hour limit · resets 2:20pm (Asia/Seoul)", True),
+        ("You've hit your context-window limit", False),
         ("Claude usage limit reached", True),
         ("5-hour limit reached · resets 3pm", True),
         ("Error: rate limit reached, resets 3pm", True),

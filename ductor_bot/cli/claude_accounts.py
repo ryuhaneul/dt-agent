@@ -105,7 +105,7 @@ def state_file_path(ductor_home: Path) -> Path:
 _RATE_LIMIT_TOKENS = re.compile(
     r"\brate[ _-]?limit|\busage limit|(?<!context )\blimit reached\b|"
     r"\bhit the (?:usage )?limit\b|"
-    r"\bhit your (?:(?!context\b)\w+ )?limit\b|"
+    r"\bhit your (?:(?!context\b)[\w-]+ )?limit\b|"
     r"\breached your (?:(?!context\b)[\w.-]+ ){1,3}limit\b|"
     r"(?<!:)\b429\b(?!:)|(?<!disk )\bquota (?:exceeded|exhausted)\b",
     re.IGNORECASE,
