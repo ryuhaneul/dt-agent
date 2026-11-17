@@ -1,9 +1,11 @@
-"""Cron task rule file sync (create/list/delete lives in the deployed cron_tools scripts)."""
+"""Cron task rule file backfill (create/list/delete lives in the deployed cron_tools scripts)."""
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
+
+from ductor_bot.workspace.rules_boundary import rule_write_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -38,14 +40,24 @@ def ensure_task_rule_files(cron_tasks_dir: Path) -> int:
 
     Returns the number of files created.
     """
-    if not cron_tasks_dir.is_dir():
+    home = cron_tasks_dir.parent.parent
+    if not rule_write_allowed(home, cron_tasks_dir) or not cron_tasks_dir.is_dir():
         return 0
 
     expected = _detect_rule_filenames(cron_tasks_dir)
     created = 0
 
-    for task_dir in sorted(cron_tasks_dir.iterdir()):
-        if not task_dir.is_dir():
+    try:
+        task_dirs = sorted(cron_tasks_dir.iterdir())
+    except FileNotFoundError:
+        return 0
+
+    for task_dir in task_dirs:
+        if not rule_write_allowed(home, task_dir) or not task_dir.is_dir():
+            continue
+
+        # A linked source or destination makes the whole task group unsafe.
+        if not all(rule_write_allowed(home, task_dir / name) for name in _RULE_FILENAMES):
             continue
 
         # Identify existing rule files — skip dirs that have none (not a task).
@@ -58,10 +70,14 @@ def ensure_task_rule_files(cron_tasks_dir: Path) -> int:
             continue
 
         # Copy content from the first existing rule file (they're identical).
-        source_content = (task_dir / existing[0]).read_text(encoding="utf-8")
-        for name in missing:
-            (task_dir / name).write_text(source_content, encoding="utf-8")
-            created += 1
-            logger.info("Created missing rule file %s in task %s", name, task_dir.name)
+        try:
+            source_content = (task_dir / existing[0]).read_text(encoding="utf-8")
+            for name in missing:
+                target = task_dir / name
+                target.write_text(source_content, encoding="utf-8")
+                created += 1
+                logger.info("Created missing rule file %s in task %s", name, task_dir.name)
+        except FileNotFoundError:
+            logger.debug("Task disappeared during rule backfill: %s", task_dir)
 
     return created

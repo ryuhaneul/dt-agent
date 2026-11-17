@@ -21,12 +21,15 @@ from pathlib import Path
 
 from _shared import (
     CRON_TASKS_DIR,
+    DUCTOR_HOME,
     HOOKS_PATH,
     load_hooks_or_default,
     reject_wake_overrides,
     sanitize_name,
     save_hooks,
 )
+
+from ductor_bot.workspace.rules_boundary import rule_write_allowed
 
 _TUTORIAL = """\
 WEBHOOK ADD -- Register a new webhook endpoint.
@@ -144,7 +147,7 @@ EXAMPLES:
 def _create_task_folder(name: str, title: str, description: str) -> Path:
     """Create a cron_task workspace folder if it does not exist."""
     task_dir = CRON_TASKS_DIR / name
-    if task_dir.exists():
+    if not rule_write_allowed(DUCTOR_HOME, task_dir) or task_dir.exists():
         return task_dir
 
     task_dir.mkdir(parents=True, exist_ok=True)
@@ -167,8 +170,10 @@ You are an **automated agent** triggered by a webhook. Complete your task autono
 - Do not modify files outside this task folder unless explicitly instructed by the user or the assigned TASK_DESCRIPTION.md.
 - Use `.venv` for Python dependencies if needed.
 """
-    (task_dir / "CLAUDE.md").write_text(claude_content, encoding="utf-8")
-    (task_dir / "AGENTS.md").write_text(claude_content, encoding="utf-8")
+    for filename in ("CLAUDE.md", "AGENTS.md"):
+        target = task_dir / filename
+        if rule_write_allowed(DUCTOR_HOME, target):
+            target.write_text(claude_content, encoding="utf-8")
 
     task_desc = f"""\
 # {title}

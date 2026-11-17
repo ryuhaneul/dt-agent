@@ -19,6 +19,7 @@ from typing import Any
 from _shared import (
     CRON_TASKS_DIR,
     DELIVERY_MODES,
+    DUCTOR_HOME,
     JOBS_PATH,
     available_job_ids,
     describe_job,
@@ -31,6 +32,8 @@ from _shared import (
     save_jobs,
     schedule_problem,
 )
+
+from ductor_bot.workspace.rules_boundary import rule_write_allowed
 
 _TUTORIAL = """\
 CRON EDIT -- Update an existing cron job safely in place.
@@ -221,6 +224,11 @@ def _rename_task_folder(
     new_name: str,
 ) -> tuple[bool, bool, list[str]]:
     notes: list[str] = []
+    if not all(
+        rule_write_allowed(DUCTOR_HOME, CRON_TASKS_DIR / name)
+        for name in (old_task_folder, new_name)
+    ):
+        return False, False, notes
     old_folder = safe_task_dir(old_task_folder)
     new_folder = safe_task_dir(new_name)
 
@@ -253,8 +261,10 @@ def _rename_task_folder(
         notes.append("No legacy memory file found to rename.")
 
     rule_content = render_cron_task_claude_md(new_name)
-    (new_folder / "CLAUDE.md").write_text(rule_content, encoding="utf-8")
-    (new_folder / "AGENTS.md").write_text(rule_content, encoding="utf-8")
+    for filename in ("CLAUDE.md", "AGENTS.md"):
+        target = new_folder / filename
+        if rule_write_allowed(DUCTOR_HOME, target):
+            target.write_text(rule_content, encoding="utf-8")
     notes.append("Updated CLAUDE.md/AGENTS.md for renamed memory file reference.")
 
     return True, memory_renamed, notes

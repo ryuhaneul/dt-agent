@@ -7,6 +7,8 @@ import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ductor_bot.workspace.rules_boundary import rule_write_allowed
+
 if TYPE_CHECKING:
     from ductor_bot.workspace.paths import DuctorPaths
 
@@ -181,29 +183,21 @@ class RulesSelector:
 
             # Deploy based on auth status
             dst_dir = self._paths.ductor_home / rel_path
+            if not rule_write_allowed(self._paths.ductor_home, dst_dir):
+                continue
             dst_dir.mkdir(parents=True, exist_ok=True)
 
             try:
-                # Deploy CLAUDE.md if Claude is authenticated
-                if self._claude_authenticated:
-                    claude_dst = dst_dir / "CLAUDE.md"
-                    shutil.copy2(template, claude_dst)
-                    deployed_count += 1
-                    logger.debug("Deployed: %s -> CLAUDE.md", template.name)
-
-                # Deploy AGENTS.md if Codex and/or Grok is authenticated
-                if self._agents_md_needed:
-                    agents_dst = dst_dir / "AGENTS.md"
-                    shutil.copy2(template, agents_dst)
-                    deployed_count += 1
-                    logger.debug("Deployed: %s -> AGENTS.md", template.name)
-
-                # Deploy GEMINI.md if Gemini is authenticated
-                if self._gemini_authenticated:
-                    gemini_dst = dst_dir / "GEMINI.md"
-                    shutil.copy2(template, gemini_dst)
-                    deployed_count += 1
-                    logger.debug("Deployed: %s -> GEMINI.md", template.name)
+                for authenticated, filename in (
+                    (self._claude_authenticated, "CLAUDE.md"),
+                    (self._agents_md_needed, "AGENTS.md"),
+                    (self._gemini_authenticated, "GEMINI.md"),
+                ):
+                    target = dst_dir / filename
+                    if authenticated and rule_write_allowed(self._paths.ductor_home, target):
+                        shutil.copy2(template, target)
+                        deployed_count += 1
+                        logger.debug("Deployed: %s -> %s", template.name, filename)
 
             except OSError:
                 logger.exception("Failed to deploy %s", template)
@@ -246,7 +240,7 @@ class RulesSelector:
                 )
 
     def _remove_files_by_name(self, filename: str) -> int:
-        """Remove all files with given name in ~/.ductor/.
+        """Remove a provider file only at package template deployment locations.
 
         Skips files inside ``workspace/cron_tasks/`` — those are user-owned
         rule files created per task and must not be deleted on auth-status
@@ -260,7 +254,11 @@ class RulesSelector:
         """
         cron_tasks_path = self._paths.ductor_home / "workspace" / "cron_tasks"
         removed_count = 0
-        for file_path in self._paths.ductor_home.rglob(filename):
+        for directory in self.discover_template_directories():
+            relative = directory.relative_to(self._paths.home_defaults)
+            file_path = self._paths.ductor_home / relative / filename
+            if not rule_write_allowed(self._paths.ductor_home, file_path):
+                continue
             if not file_path.is_file():
                 continue
             # Protect user-owned cron task rule files
