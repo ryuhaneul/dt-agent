@@ -1,6 +1,6 @@
 [app]
-title = "Chat web de secours"
-subtitle = "Chat web de secours"
+title = "Chat web"
+subtitle = "Chat web"
 
 [auth]
 qr = "Code QR pour TOTP"

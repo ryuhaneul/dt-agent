@@ -16,7 +16,7 @@ DT Agent is a modified fork maintained at [github.com/ryuhaneul/dt-agent](https:
 
 Provider CLIs run in the bot container; Chromium runs in a separate browser container. DT Agent also changes delegation routing, interruption/recovery, onboarding, optional dependencies and safe diagnostics. See the complete [change list](docs/CHANGES.md).
 
-- Optional [conversation history and recovery queue](docs/modules/chat_log.md) records conversations and retains supported failed public Telegram bus deliveries; [emergency web chat](docs/modules/webchat.md) adds authenticated topic chat and versioned settings-file editing. See [setup](docs/installation.md#emergency-web-chat-optional).
+- Optional [conversation history and recovery queue](docs/modules/chat_log.md) records conversations and retains supported failed public Telegram bus deliveries; [web chat](docs/modules/webchat.md) adds authenticated topic chat and versioned settings-file editing. See [setup](docs/installation.md#web-chat-optional).
 
 ## 1. Requirements and a clean server
 
@@ -241,7 +241,7 @@ Optional history and web administration:
 Run these with `docker compose exec ductor-bot`; use `-it` for `set-password`.
 On the host, `python3 scripts/webchat.py up/down/status` manages the web app and
 NPMplus/CrowdSec gateway. `down --purge` deletes gateway volumes/state. Follow
-[setup](docs/installation.md#emergency-web-chat-optional) before starting it.
+[setup](docs/installation.md#web-chat-optional) before starting it.
 
 ## 5. Chat commands: Telegram and Matrix
 
@@ -294,7 +294,7 @@ ductor_bot/           # tracked Python package
   multiagent/         # supervisor, registry, inter-agent bus/API
   session/            # transport/chat/topic and named sessions
   tasks/, background/ # background tasks and named-session work
-  chat_log/, webchat/ # optional history/outbox and emergency web chat
+  chat_log/, webchat/ # optional history/outbox and web chat
   cron/, webhook/, heartbeat/, cleanup/
   workspace/          # path model, seeding, rule/skill sync
   infra/, security/, files/, text/, api/, i18n/

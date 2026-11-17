@@ -1,6 +1,6 @@
 [app]
-title = "Emergency web chat"
-subtitle = "Emergency web chat"
+title = "Web chat"
+subtitle = "Web chat"
 
 [auth]
 qr = "TOTP QR code"

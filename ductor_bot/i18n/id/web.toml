@@ -1,6 +1,6 @@
 [app]
-title = "Obrolan web darurat"
-subtitle = "Obrolan web darurat"
+title = "Obrolan web"
+subtitle = "Obrolan web"
 
 [auth]
 qr = "Kode QR TOTP"

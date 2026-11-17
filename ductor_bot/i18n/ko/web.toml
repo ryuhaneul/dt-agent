@@ -1,6 +1,6 @@
 [app]
-title = "긴급 웹 채팅"
-subtitle = "긴급 웹 채팅"
+title = "웹 채팅"
+subtitle = "웹 채팅"
 
 [auth]
 qr = "TOTP QR 코드"

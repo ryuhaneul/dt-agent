@@ -225,7 +225,7 @@ The optional `webchat` profile adds `dt-webchat-web`, `dt-webchat-npm` and
 `dt-webchat-crowdsec`. The web app and CrowdSec publish loopback ports; NPMplus
 uses host networking and exposes HTTP/HTTPS directly or on an internal bind
 address behind a trusted proxy. Host `python3 scripts/webchat.py up/down/status`
-manages these services; see [setup](installation.md#emergency-web-chat-optional).
+manages these services; see [setup](installation.md#web-chat-optional).
 
 Sources: [session key](../ductor_bot/session/key.py),
 [API construction](../ductor_bot/api/server.py),

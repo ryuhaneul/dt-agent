@@ -198,7 +198,7 @@ can change their split positions. A chunk accepted by Telegram just before its
 response is interrupted can be duplicated once. See [recording runtime](modules/chat_log.md)
 for storage, imports, restart behavior and safe disabling.
 
-## Emergency web chat (optional)
+## Web chat (optional)
 
 Enable recording first, then merge a `webchat` block. Both activation flags default
 to `false`; web startup requires `chat_log.enabled=true`. Main must use Telegram.

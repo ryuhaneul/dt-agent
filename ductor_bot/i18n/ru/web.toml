@@ -1,6 +1,6 @@
 [app]
-title = "Экстренный веб-чат"
-subtitle = "Экстренный веб-чат"
+title = "Веб-чат"
+subtitle = "Веб-чат"
 
 [auth]
 qr = "QR-код TOTP"

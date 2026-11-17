@@ -64,7 +64,7 @@ Runtime behavior notes:
 - [Configuration](config.md)
 - Module docs:
   - [Conversation history and recovery queue](modules/chat_log.md)
-  - [Emergency web chat](modules/webchat.md)
+  - [Web chat](modules/webchat.md)
   - [cli_commands](modules/cli_commands.md)
   - [config_reload](modules/config_reload.md)
   - [messenger](modules/messenger.md)

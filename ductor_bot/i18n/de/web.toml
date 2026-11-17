@@ -1,6 +1,6 @@
 [app]
-title = "Notfall-Webchat"
-subtitle = "Notfall-Webchat"
+title = "Webchat"
+subtitle = "Webchat"
 
 [auth]
 qr = "QR-Code für TOTP"

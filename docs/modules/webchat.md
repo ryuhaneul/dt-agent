@@ -1,10 +1,10 @@
-# Emergency web chat
+# Web chat
 
 The optional web UI provides main-agent Telegram topic conversations during a
 Telegram connection outage. Enable `chat_log.enabled` and `webchat.enabled`
 (both default to `false`), configure access and restart the bot. Web activation
 requires recording; `chat_log_required` rejects web startup when recording is off.
-See [installation](../installation.md#emergency-web-chat-optional) and
+See [installation](../installation.md#web-chat-optional) and
 [configuration](../config.md#webchatconfig).
 
 ## Components and activation

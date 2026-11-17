@@ -43,7 +43,7 @@ container itself. Compose environment edits require service recreation;
 `/restart` cannot refresh inherited container environment variables.
 
 Both recording and web chat default to disabled. See [history](modules/chat_log.md),
-[web chat](modules/webchat.md) and [setup](installation.md#emergency-web-chat-optional)
+[web chat](modules/webchat.md) and [setup](installation.md#web-chat-optional)
 for activation, CLI administration and storage. After documentation or config-note
 changes, regenerate the agent bundle with `python scripts/build_agent_docs.py`;
 `INDEX.md` and `commands-reference.md` in the bundle are maintained by hand.

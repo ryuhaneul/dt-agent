@@ -16,7 +16,7 @@ DT Agent는 [github.com/ryuhaneul/dt-agent](https://github.com/ryuhaneul/dt-agen
 
 Provider CLI는 봇 컨테이너에서, Chromium은 별도 브라우저 컨테이너에서 실행합니다. 위임 라우팅, 중단·복구, 초기 설정, 선택 의존성과 안전한 진단도 변경했습니다. 전체 변경은 [변경점 문서](docs/CHANGES.md)에 정리되어 있습니다.
 
-- 선택 기능인 [대화 기록·복구 큐](docs/modules/chat_log.md)는 대화를 기록하고 지원되는 공개 Telegram 버스 전송 실패분을 보관하며, [긴급 웹 채팅](docs/modules/webchat.md)은 인증된 토픽 대화와 버전 확인을 거치는 설정 파일 편집을 제공합니다. [설정 절차](docs/installation.md#emergency-web-chat-optional)를 참고하십시오.
+- 선택 기능인 [대화 기록·복구 큐](docs/modules/chat_log.md)는 대화를 기록하고 지원되는 공개 Telegram 버스 전송 실패분을 보관하며, [웹 채팅](docs/modules/webchat.md)은 인증된 토픽 대화와 버전 확인을 거치는 설정 파일 편집을 제공합니다. [설정 절차](docs/installation.md#web-chat-optional)를 참고하십시오.
 
 ## 1. 요구 사항과 깨끗한 서버 준비
 
@@ -241,7 +241,7 @@ docker compose exec ductor-bot ductor agents list
 `docker compose exec ductor-bot`으로 실행하며 `set-password`에는 `-it`를 사용합니다.
 호스트의 `python3 scripts/webchat.py up/down/status`는 웹 앱과 NPMplus·CrowdSec
 게이트웨이를 관리합니다. `down --purge`는 게이트웨이 볼륨·상태를 삭제합니다.
-시작 전에 [설정 절차](docs/installation.md#emergency-web-chat-optional)를 따르십시오.
+시작 전에 [설정 절차](docs/installation.md#web-chat-optional)를 따르십시오.
 
 ## 5. Telegram·Matrix 채팅 명령
 
@@ -294,7 +294,7 @@ ductor_bot/           # tracked Python package
   multiagent/         # supervisor, registry, inter-agent bus/API
   session/            # transport/chat/topic and named sessions
   tasks/, background/ # background tasks and named-session work
-  chat_log/, webchat/ # optional history/outbox and emergency web chat
+  chat_log/, webchat/ # optional history/outbox and web chat
   cron/, webhook/, heartbeat/, cleanup/
   workspace/          # path model, seeding, rule/skill sync
   infra/, security/, files/, text/, api/, i18n/
