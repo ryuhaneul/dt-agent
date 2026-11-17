@@ -8,6 +8,7 @@ import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import time_machine
 
 from ductor_bot.cli.process_registry import (
     _PRESERVED_LABEL_PREFIXES,
@@ -111,6 +112,7 @@ def test_multiple_chats_isolated() -> None:
     assert reg.has_active(3) is False
 
 
+@time_machine.travel(1_700_000_000, tick=False)
 def test_unregister_ignores_foreign_tracked_same_chat() -> None:
     reg = ProcessRegistry()
     proc = _mock_process(pid=11)
@@ -118,6 +120,26 @@ def test_unregister_ignores_foreign_tracked_same_chat() -> None:
     foreign = TrackedProcess(process=proc, chat_id=1, label="main")
     reg.unregister(foreign)  # no error
     assert reg.has_active(1) is True
+
+
+@pytest.mark.parametrize("remove_index", [0, 1])
+@time_machine.travel(1_700_000_000, tick=False)
+def test_unregister_only_removes_matching_handle(remove_index: int) -> None:
+    reg = ProcessRegistry()
+    proc = _mock_process(pid=11)
+    handles = [reg.register(chat_id=1, process=proc, label="main") for _ in range(2)]
+    assert handles[0] is not handles[1]
+    assert handles[0].registered_at == handles[1].registered_at
+
+    reg.unregister(handles[remove_index])
+    remaining = reg._processes[1]
+    assert len(remaining) == 1
+    assert remaining[0] is handles[1 - remove_index]
+
+    reg.unregister(handles[remove_index])
+    assert reg.has_active(1) is True
+    reg.unregister(handles[1 - remove_index])
+    assert reg.has_active(1) is False
 
 
 async def test_kill_stale_returns_zero_when_none_stale() -> None:

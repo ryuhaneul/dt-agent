@@ -28,9 +28,9 @@ _OWN_LIMIT_PREFIXES: tuple[str, ...] = ("task:", "ns:", "interagent:", "cron:")
 # Lifecycle for these subprocesses is owned by /tasks, /sessions, or TaskHub.cancel().
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, eq=False)
 class TrackedProcess:
-    """A registered subprocess with metadata."""
+    """A registered subprocess handle, compared by identity, with metadata."""
 
     process: asyncio.subprocess.Process
     chat_id: int
