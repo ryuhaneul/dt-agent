@@ -604,6 +604,7 @@ restart. Both `chat_log.enabled` and `webchat.enabled` default to `false`.
 | `allowed_ips` | `list[str]` | `[]` | IP addresses or CIDRs; required in direct mode, e.g. `203.0.113.0/24` |
 | `trusted_proxies` | `list[str]` | `[]` | IP addresses or CIDRs; required behind a proxy |
 | `bind_address` | `str` | `"127.0.0.1"` | Behind-proxy IPv4 bind: loopback or RFC1918 only |
+| `direct_bind_address` | `str` | `""` | Direct-mode IPv4 listener address; empty binds `0.0.0.0` and `[::]`, a specific address disables IPv6; validated but ignored behind a proxy |
 | `http_port` | `int` | `80` | HTTP port, 1-65535 |
 | `https_port` | `int` | `443` | HTTPS listener port, 1-65535; also bound internally in behind-proxy mode |
 | `npm_admin_port` | `int` | `81` | Admin port, 1-65535; must differ from HTTP and HTTPS ports |
@@ -631,6 +632,7 @@ the explicit chat ID, otherwise the first allowed user ID, otherwise `0`.
 | `trusted_proxies_required` | Behind-proxy mode has no trusted proxies |
 | `trusted_proxies_invalid` | Any trusted proxy entry fails the same network parser |
 | `bind_address_invalid` | Behind-proxy bind is not an IPv4 address in loopback (`127.0.0.0/8`) or RFC1918 (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`); unspecified, public, multicast, link-local, and IPv6 addresses are rejected |
+| `direct_bind_address_invalid` | Nonempty direct bind fails single IPv4 parsing or is unspecified, multicast, or `255.255.255.255` |
 | `acme_email_required` | Direct mode has an empty ACME email |
 | `acme_email_invalid` | Direct mode has a nonempty ACME email without `@` |
 | `http_port_invalid` | HTTP port is outside 1-65535 |

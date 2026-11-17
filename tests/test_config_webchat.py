@@ -45,6 +45,7 @@ def test_defaults_and_disabled_validation(tmp_path: Path) -> None:
         "allowed_ips": [],
         "trusted_proxies": [],
         "bind_address": "127.0.0.1",
+        "direct_bind_address": "",
         "http_port": 80,
         "https_port": 443,
         "npm_admin_port": 81,
@@ -76,6 +77,7 @@ def test_new_defaults_merge_without_overwriting_user_settings() -> None:
     assert config.chat_log.enabled
     assert not config.webchat.enabled
     assert config.webchat.domain == "chat.example.com"
+    assert config.webchat.direct_bind_address == ""
 
 
 def test_valid_main_and_inherited_subagent(config: AgentConfig) -> None:
@@ -167,6 +169,44 @@ def test_proxy_bind_address(config: AgentConfig, address: str, valid: bool) -> N
     config.webchat.trusted_proxies = ["198.51.100.7"]
     config.webchat.bind_address = address
     assert validate_webchat(config) == ([] if valid else ["bind_address_invalid"])
+
+
+@pytest.mark.parametrize("exposure", ["direct", "behind_proxy"])
+@pytest.mark.parametrize(
+    ("address", "valid"),
+    [
+        ("", True),
+        ("127.0.0.1", True),
+        ("192.0.2.10", True),
+        ("172.16.0.1", True),
+        ("192.168.0.1", True),
+        ("8.8.8.8", True),
+        ("169.254.0.1", True),
+        ("198.51.100.255", True),
+        ("::1", False),
+        ("::ffff:192.0.2.10", False),
+        ("localhost", False),
+        ("192.0.2.10/24", False),
+        ("0.0.0.0", False),  # noqa: S104 - reject unspecified binding
+        ("224.0.0.1", False),
+        ("239.255.255.255", False),
+        ("255.255.255.255", False),
+        ("999.0.0.1", False),
+        ("invalid", False),
+        ("192.0.2.10,192.0.2.11", False),
+    ],
+)
+def test_direct_bind_address(config: AgentConfig, exposure: str, address: str, valid: bool) -> None:
+    config.webchat.exposure = exposure
+    config.webchat.trusted_proxies = ["198.51.100.7"]
+    config.webchat.direct_bind_address = address
+    assert validate_webchat(config) == ([] if valid else ["direct_bind_address_invalid"])
+
+
+def test_direct_ignores_legacy_bind_address(config: AgentConfig) -> None:
+    config.webchat.bind_address = "invalid"
+    config.webchat.direct_bind_address = "192.0.2.10"
+    assert validate_webchat(config) == []
 
 
 @pytest.mark.parametrize(

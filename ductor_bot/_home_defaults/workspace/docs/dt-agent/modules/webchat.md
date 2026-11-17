@@ -131,6 +131,7 @@ The browser app relays bridge JSON statuses and error codes. Bridge routes use
     "allowed_ips": ["203.0.113.0/24"],
     "trusted_proxies": [],
     "bind_address": "127.0.0.1",
+    "direct_bind_address": "",
     "http_port": 80,
     "https_port": 443,
     "npm_admin_port": 81,

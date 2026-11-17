@@ -49,6 +49,16 @@ def _valid_bind_address(value: str) -> bool:
     return any(address in network for network in _BIND_NETWORKS)
 
 
+def _valid_direct_bind_address(value: str) -> bool:
+    if not value:
+        return True
+    try:
+        address = ipaddress.IPv4Address(value)
+    except ipaddress.AddressValueError:
+        return False
+    return not (address.is_unspecified or address.is_multicast or str(address) == "255.255.255.255")
+
+
 def validate_webchat(config: AgentConfig) -> list[str]:  # noqa: C901, PLR0912
     """Return stable error codes; invalid settings disable webchat only."""
     webchat = config.webchat
@@ -65,6 +75,8 @@ def validate_webchat(config: AgentConfig) -> list[str]:  # noqa: C901, PLR0912
         errors.append("allowed_ips_invalid")
     if not _valid_networks(webchat.trusted_proxies):
         errors.append("trusted_proxies_invalid")
+    if not _valid_direct_bind_address(webchat.direct_bind_address):
+        errors.append("direct_bind_address_invalid")
     if webchat.exposure == "direct":
         if not webchat.allowed_ips:
             errors.append("allowed_ips_required")

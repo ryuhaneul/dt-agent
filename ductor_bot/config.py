@@ -547,6 +547,7 @@ class WebchatConfig(BaseModel):
     allowed_ips: list[str] = Field(default_factory=list)
     trusted_proxies: list[str] = Field(default_factory=list)
     bind_address: str = "127.0.0.1"
+    direct_bind_address: str = ""
     http_port: int = 80
     https_port: int = 443
     npm_admin_port: int = 81

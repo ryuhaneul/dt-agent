@@ -217,6 +217,8 @@ For direct TLS exposure:
 }
 ```
 
+Optionally set `webchat.direct_bind_address` to a specific IPv4 address, such as a WireGuard interface address, to bind direct HTTP/HTTPS listeners there and disable their IPv6 listeners. Configure host firewall rules separately.
+
 Replace the example domain, email and reserved client range with your own values.
 Point DNS at the host and make HTTP/HTTPS ports available for the gateway and
 ACME HTTP-01 validation. External exposure requires an explicit client IP allowlist.

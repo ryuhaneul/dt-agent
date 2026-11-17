@@ -120,9 +120,11 @@ def compose_settings(config: dict[str, Any]) -> dict[str, str]:
         "DTW_WEB_PORT": str(config["web_port"]),
         "DTW_BRIDGE_PORT": str(config["bridge_port"]),
         "DTW_NPM_ADMIN_PORT": str(config["npm_admin_port"]),
-        "DTW_NPM_IPV4_BINDING": config["bind_address"] if proxy else "0.0.0.0",  # noqa: S104 - direct listener
+        "DTW_NPM_IPV4_BINDING": config["bind_address"]
+        if proxy
+        else config["direct_bind_address"] or "0.0.0.0",  # noqa: S104 - direct listener
         "DTW_NPM_IPV6_BINDING": "[::]",
-        "DTW_NPM_DISABLE_IPV6": str(proxy).lower(),
+        "DTW_NPM_DISABLE_IPV6": str(proxy or bool(config["direct_bind_address"])).lower(),
         "DTW_NPM_HTTP_PORT": str(config["http_port"]),
         "DTW_NPM_HTTPS_PORT": str(config["https_port"]),
         "DTW_ACME_EMAIL": config["acme_email"],
@@ -295,8 +297,9 @@ def proxy_payload(config: dict[str, Any], certificate_id: int = 0) -> dict[str, 
     }
 
 
-def port_is_listening(port: int) -> bool:
-    """Read Linux LISTEN sockets without opening a listener."""
+def port_is_listening(port: int) -> set[str]:
+    """Read local addresses of Linux LISTEN sockets without opening a listener."""
+    addresses: set[str] = set()
     for table in ("tcp", "tcp6"):
         try:
             rows = Path(f"/proc/net/{table}").read_text().splitlines()[1:]
@@ -306,12 +309,20 @@ def port_is_listening(port: int) -> bool:
             raise GatewayError("direct_port_check_failed") from error
         except OSError as error:
             raise GatewayError("direct_port_check_failed") from error
-        if any(
-            row.split()[3] == "0A" and int(row.split()[1].rsplit(":", 1)[1], 16) == port
-            for row in rows
-        ):
-            return True
-    return False
+        for row in rows:
+            columns = row.split()
+            local_address, local_port = columns[1].rsplit(":", 1)
+            if columns[3] != "0A" or int(local_port, 16) != port:
+                continue
+            packed = b"".join(
+                int(local_address[index : index + 8], 16).to_bytes(4, sys.byteorder)
+                for index in range(0, len(local_address), 8)
+            )
+            address = ipaddress.ip_address(packed)
+            if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+                address = address.ipv4_mapped
+            addresses.add(str(address))
+    return addresses
 
 
 class Gateway:
@@ -414,10 +425,14 @@ class Gateway:
             info = json.loads(self.run(["docker", "inspect", container]).stdout)[0]
             if info["State"]["Running"]:
                 owned = dict(item.split("=", 1) for item in info["Config"]["Env"] if "=" in item)
-        for key, field in (("HTTP_PORT", "http_port"), ("HTTPS_PORT", "https_port")):
-            if port_is_listening(self.config[field]) and (
-                owned.get(key) != str(self.config[field]) or owned.get("IPV4_BINDING") != "0.0.0.0"  # noqa: S104 - direct listener
-            ):
+        target = self.config["direct_bind_address"]
+        for field in ("http_port", "https_port"):
+            listeners = port_is_listening(self.config[field])
+            if str(self.config[field]) in (owned.get("HTTP_PORT"), owned.get("HTTPS_PORT")):
+                listeners.discard(owned.get("IPV4_BINDING", "0.0.0.0"))  # noqa: S104 - direct listener
+                if owned.get("DISABLE_IPV6", "false").lower() == "false":
+                    listeners.discard("::")
+            if listeners and (not target or listeners.intersection({target, "0.0.0.0", "::"})):  # noqa: S104 - wildcard overlap
                 raise GatewayError("direct_port_in_use")
 
     def verify_npmplus_common_template_source(self) -> None:
@@ -777,7 +792,11 @@ class Gateway:
 
     def health(self) -> None:
         proxy = self.config["exposure"] == "behind_proxy"
-        address = self.config["bind_address"] if proxy else "127.0.0.1"
+        address = (
+            self.config["bind_address"]
+            if proxy
+            else self.config["direct_bind_address"] or "127.0.0.1"
+        )
         port = self.config["http_port"] if proxy else self.config["https_port"]
         scheme = "http" if proxy else "https"
         probes = (

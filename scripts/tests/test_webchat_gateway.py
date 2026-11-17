@@ -16,6 +16,7 @@ import os
 import posixpath
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 import urllib.parse
@@ -36,6 +37,7 @@ def config(**overrides):
         "allowed_ips": ["203.0.113.7/24", "198.51.100.7"],
         "trusted_proxies": [],
         "bind_address": "127.0.0.1",
+        "direct_bind_address": "",
         "http_port": 80,
         "https_port": 443,
         "npm_admin_port": 81,
@@ -519,7 +521,7 @@ class GatewayTests(unittest.TestCase):
     def test_direct_ports_refuse_foreign_listener_and_accept_own_running_npm(self):
         with (
             patch.object(self.gateway, "compose", return_value=completed()),
-            patch.object(GW, "port_is_listening", return_value=True),
+            patch.object(GW, "port_is_listening", side_effect=lambda _port: {"0.0.0.0"}),  # noqa: S104 - wildcard listener fixture
             self.assertRaisesRegex(GW.GatewayError, "direct_port_in_use"),
         ):
             self.gateway.check_ports()
@@ -532,7 +534,7 @@ class GatewayTests(unittest.TestCase):
         with (
             patch.object(self.gateway, "compose", return_value=completed("own-container")),
             patch.object(self.gateway, "run", return_value=completed(json.dumps(info))),
-            patch.object(GW, "port_is_listening", return_value=True),
+            patch.object(GW, "port_is_listening", side_effect=lambda _port: {"0.0.0.0"}),  # noqa: S104 - wildcard listener fixture
         ):
             self.gateway.check_ports()
 
@@ -558,6 +560,116 @@ class GatewayTests(unittest.TestCase):
                             with self.assertRaisesRegex(GW.GatewayError, "direct_port_in_use"):
                                 self.gateway.check_ports()
                         else:
+                            self.gateway.check_ports()
+
+    def test_direct_ports_compare_local_addresses(self):
+        # An IPv6 wildcard conservatively overlaps IPv4, regardless of ipv6only.
+        cases = (
+            ("192.0.2.10", "192.0.2.11", False),
+            ("192.0.2.10", "192.0.2.10", True),
+            ("192.0.2.10", "0.0.0.0", True),  # noqa: S104 - wildcard overlap
+            ("192.0.2.10", "::", True),
+            ("192.0.2.10", "::1", False),
+            ("", "192.0.2.11", True),
+            ("", "::1", True),
+        )
+        for target, listener, busy in cases:
+            for port in (80, 443):
+                with self.subTest(target=target, listener=listener, port=port):
+                    self.gateway.config = config(direct_bind_address=target)
+                    with (
+                        patch.object(self.gateway, "compose", return_value=completed()),
+                        patch.object(
+                            GW,
+                            "port_is_listening",
+                            side_effect=lambda checked, p=port, addr=listener: (
+                                {addr} if checked == p else set()
+                            ),
+                        ),
+                    ):
+                        if busy:
+                            with self.assertRaisesRegex(GW.GatewayError, "direct_port_in_use"):
+                                self.gateway.check_ports()
+                        else:
+                            self.gateway.check_ports()
+
+    def test_direct_ports_exclude_own_listeners_during_address_transitions(self):
+        cases = (
+            ("0.0.0.0", "false", "192.0.2.10"),  # noqa: S104 - wildcard transition
+            ("192.0.2.10", "true", "192.0.2.11"),
+            ("192.0.2.10", "true", ""),
+            ("127.0.0.1", "true", ""),  # behind_proxy -> direct
+            ("127.0.0.1", "true", "192.0.2.10"),
+        )
+        for old, disable_ipv6, target in cases:
+            for running, foreign in ((True, False), (True, True), (False, False)):
+                with self.subTest(old=old, target=target, running=running, foreign=foreign):
+                    self.gateway.config = config(direct_bind_address=target)
+                    listeners = {old}
+                    if disable_ipv6 == "false":
+                        listeners.add("::")
+                    if foreign:
+                        listeners.add(target or "192.0.2.11")
+                    info = [
+                        {
+                            "State": {"Running": running},
+                            "Config": {
+                                "Env": [
+                                    "HTTP_PORT=80",
+                                    "HTTPS_PORT=443",
+                                    f"IPV4_BINDING={old}",
+                                    f"DISABLE_IPV6={disable_ipv6}",
+                                ]
+                            },
+                        }
+                    ]
+                    overlaps = not target or bool(listeners & {target, "0.0.0.0", "::"})  # noqa: S104 - wildcard overlap
+                    busy = foreign or (not running and overlaps)
+                    with (
+                        patch.object(self.gateway, "compose", return_value=completed("own")),
+                        patch.object(self.gateway, "run", return_value=completed(json.dumps(info))),
+                        patch.object(
+                            GW,
+                            "port_is_listening",
+                            side_effect=lambda _p, addresses=listeners: set(addresses),
+                        ),
+                    ):
+                        if busy:
+                            with self.assertRaisesRegex(GW.GatewayError, "direct_port_in_use"):
+                                self.gateway.check_ports()
+                        else:
+                            self.gateway.check_ports()
+
+    def test_listener_table_decodes_ipv4_ipv6_and_mapped_addresses(self):
+        header = "sl local_address rem_address st\n"
+        for address in ("192.0.2.10", "::ffff:192.0.2.10", "::", "::1"):
+            with self.subTest(address=address):
+                packed = ipaddress.ip_address(address).packed
+                encoded = "".join(
+                    f"{int.from_bytes(packed[i : i + 4], sys.byteorder):08X}"
+                    for i in range(0, len(packed), 4)
+                )
+                tables = {"tcp": header, "tcp6": header}
+                tables["tcp6" if ":" in address else "tcp"] += (
+                    f"0: {encoded}:0050 {encoded}:0000 0A\n"
+                )
+                expected = "192.0.2.10" if "ffff" in address else address
+                self.gateway.config = config(direct_bind_address="192.0.2.10")
+                with (
+                    patch.object(self.gateway, "compose", return_value=completed()),
+                    patch.object(
+                        Path,
+                        "read_text",
+                        autospec=True,
+                        side_effect=lambda path, contents=tables: contents[path.name],
+                    ),
+                ):
+                    self.assertEqual(GW.port_is_listening(80), {expected})
+                    self.assertEqual(GW.port_is_listening(443), set())
+                    if address == "::1":
+                        self.gateway.check_ports()
+                    else:
+                        with self.assertRaisesRegex(GW.GatewayError, "direct_port_in_use"):
                             self.gateway.check_ports()
 
     def test_direct_ports_with_no_listeners_never_bind(self):
@@ -993,6 +1105,26 @@ class GatewayTests(unittest.TestCase):
                 all(call.args[0][1:3] == ["--noproxy", "*"] for call in run.call_args_list)
             )
 
+    def test_health_resolves_selected_listener_address(self):
+        for exposure, direct, address, port in (
+            ("direct", "", "127.0.0.1", 443),
+            ("direct", "192.0.2.10", "192.0.2.10", 443),
+            ("behind_proxy", "192.0.2.10", "127.0.0.2", 80),
+        ):
+            with self.subTest(exposure=exposure, direct=direct):
+                self.gateway.config = config(
+                    exposure=exposure, direct_bind_address=direct, bind_address="127.0.0.2"
+                )
+                with (
+                    patch.object(self.gateway, "run", return_value=completed("200")) as run,
+                    contextlib.redirect_stdout(io.StringIO()),
+                ):
+                    self.gateway.health()
+                args = run.call_args.args[0]
+                self.assertEqual(
+                    args[args.index("--resolve") + 1], f"chat.example.com:{port}:{address}"
+                )
+
     def test_health_rejects_auth_challenge_5xx_and_connection_failure(self):
         for response in (
             completed("\n500"),
@@ -1135,6 +1267,20 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(settings["DTW_NPM_HTTP_PORT"], "80")
         self.assertEqual(settings["DTW_NPM_HTTPS_PORT"], "443")
         self.assertNotIn("DTW_NPM_DISABLE_HTTPS", settings)
+
+    def test_settings_direct_binding_disables_ipv6_and_proxy_ignores_it(self):
+        baseline = GW.compose_settings(config())
+        selected = GW.compose_settings(
+            config(direct_bind_address="192.0.2.10", bind_address="127.0.0.2")
+        )
+        self.assertEqual(
+            selected, dict(baseline, DTW_NPM_IPV4_BINDING="192.0.2.10", DTW_NPM_DISABLE_IPV6="true")
+        )
+        self.assertEqual(GW.compose_settings(config(bind_address="127.0.0.2")), baseline)
+        self.assertEqual(
+            GW.compose_settings(config(exposure="behind_proxy", direct_bind_address="192.0.2.10")),
+            GW.compose_settings(config(exposure="behind_proxy")),
+        )
 
     def test_down_purge_is_idempotent_when_volumes_are_already_absent(self):
         with (

@@ -114,6 +114,7 @@ top-level key.
 | `webchat.allowed_ips` | `list[str]` | `[]` | restart | IP addresses or CIDRs; required in direct mode, e.g. `203.0.113.0/24` |
 | `webchat.trusted_proxies` | `list[str]` | `[]` | restart | IP addresses or CIDRs; required behind a proxy |
 | `webchat.bind_address` | `str` | `"127.0.0.1"` | restart | Behind-proxy IPv4 bind: loopback or RFC1918 only |
+| `webchat.direct_bind_address` | `str` | `""` | restart | Direct-mode IPv4 listener address; empty binds `0.0.0.0` and `[::]`, a specific address disables IPv6; validated but ignored behind a proxy |
 | `webchat.http_port` | `int` | `80` | restart | HTTP port, 1-65535 |
 | `webchat.https_port` | `int` | `443` | restart | HTTPS listener port, 1-65535; also bound internally in behind-proxy mode |
 | `webchat.npm_admin_port` | `int` | `81` | restart | Admin port, 1-65535; must differ from HTTP and HTTPS ports |
