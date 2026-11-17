@@ -369,3 +369,101 @@ def test_estimated_reset_notice_differs_from_known_reset_in_every_locale(languag
         assert "2026-04-21 15:00" not in estimated
     finally:
         init("en")
+
+
+async def test_auth_expired_top_is_not_probed_while_other_slot_is_cooling(registry, utc):
+    from ductor_bot.cli.slot_rotation import record_auth_failure
+
+    registry.save(SlotSnapshot(cooldowns={"claude-alt": 9999999999}))
+    await record_auth_failure(registry, "claude", registry.credential_mtimes("claude"))
+    attempter = _ScriptedAttempter([_ok()])
+    result = await run_with_rotation(
+        accounts=["claude", "claude-alt"],
+        registry=registry,
+        default_tz=utc,
+        attempt=attempter,
+    )
+    assert attempter.calls == ["claude-alt"]
+    assert result.all_cooling is True
+    assert "claude" in registry.load().auth_failures
+
+
+@pytest.mark.parametrize("language", ["en", "de", "nl", "es", "fr", "id", "pt", "ru", "ko"])
+def test_auth_notice_localized_and_stripped_for_structured_output(language):
+    from ductor_bot.cli.slot_rotation import (
+        build_auth_fallback_prefix,
+        build_reauth_notice,
+        strip_fallback_prefix,
+    )
+    from ductor_bot.i18n import t
+
+    init(language)
+    try:
+        prefix = build_auth_fallback_prefix("claude", "claude-alt")
+        assert t("slot.switched_auth") in prefix
+        assert "slot." not in prefix
+        assert strip_fallback_prefix(prefix + '{"ok": true}') == '{"ok": true}'
+        assert t("slot.reauth_required") in build_reauth_notice()
+        assert "slot." not in build_reauth_notice()
+    finally:
+        init("en")
+
+
+@pytest.mark.parametrize("old_success", [False, True])
+async def test_old_attempt_cannot_overwrite_or_clear_new_login_quarantine(
+    registry, utc, old_success
+):
+    import asyncio
+    import os
+
+    from ductor_bot.cli.slot_rotation import hot_slots, record_auth_failure
+    from tests.cli.test_claude_accounts import _AUTH_EXPIRED
+
+    credential = registry.state_path.parent / "claude-a" / ".credentials.json"
+    credential.parent.mkdir()
+    credential.write_text("{}")
+    accounts = ["claude-a"] if old_success else ["claude-a", "claude-b"]
+    if old_success:
+        await record_auth_failure(registry, "claude-a", registry.credential_mtimes("claude-a"))
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def old_attempt(slot):
+        if slot == "claude-a":
+            entered.set()
+            await release.wait()
+            if old_success:
+                return _ok()
+            return AttemptOutcome(1, True, _AUTH_EXPIRED, ""), _Payload("old-failure")
+        return _ok()
+
+    async def new_attempt(slot):
+        if slot == "claude-a":
+            return AttemptOutcome(1, True, _AUTH_EXPIRED, ""), _Payload("new-failure")
+        return _ok()
+
+    pending = asyncio.create_task(
+        run_with_rotation(
+            accounts=accounts,
+            registry=registry,
+            default_tz=utc,
+            attempt=old_attempt,
+        )
+    )
+    try:
+        await entered.wait()
+        old = credential.stat().st_mtime_ns
+        os.utime(credential, ns=(old + 1000000, old + 1000000))
+        newest = registry.credential_mtimes("claude-a")
+        await run_with_rotation(
+            accounts=accounts,
+            registry=registry,
+            default_tz=utc,
+            attempt=new_attempt,
+        )
+        assert registry.load().auth_failures["claude-a"] == newest
+    finally:
+        release.set()
+        await pending
+    assert registry.load().auth_failures.get("claude-a") == newest
+    assert await hot_slots(registry, accounts) == ([] if old_success else ["claude-b"])

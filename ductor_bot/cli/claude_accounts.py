@@ -45,6 +45,7 @@ class SlotSnapshot:
 
     cooldowns: dict[str, float] = field(default_factory=dict)
     last_used: str | None = None
+    auth_failures: dict[str, dict[str, int | None]] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +134,44 @@ def detect_rate_limit(
     if not is_error and not (stderr or result):
         return False
     return bool(_RATE_LIMIT_TOKENS.search(haystack))
+
+
+# Claude Code 2.1.326 auth error text (installed CLI's embedded JavaScript).
+# Match only diagnostics that require signing in again, not transient refresh,
+# network, disk, gateway, MCP, or external API-key errors.
+_AUTH_FAILURE_TOKENS = re.compile(
+    r"^(?:"
+    r"Failed to authenticate: this login reached its time limit"
+    r"(?: and cannot be renewed\.| · Sign in again to continue)|"
+    r"Failed to authenticate: OAuth token revoked\. Please log in again|"
+    r"(?:Login expired|Login reached its time limit|OAuth token revoked) · Please run /login|"
+    r"Login expired · Run /login to sign in again, or re-authenticate your Anthropic profile|"
+    r"Anthropic profile login expired · Re-authenticate your Anthropic profile|"
+    r"Authentication required · Sign in again to continue|"
+    r"Not logged in · Please run /login|"
+    r"Not logged in\. Run claude auth login to authenticate\.|"
+    r"Session expired\. Please run /login to sign in again\."
+    r")",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def detect_auth_failure(
+    *,
+    returncode: int | None,
+    is_error: bool,
+    stderr: str,
+    result: str = "",
+) -> bool:
+    """Recognize Claude login expiry/revocation on failed subprocesses only.
+
+    As with rate-limit detection, result text is trusted only on error results;
+    normal assistant prose about authentication must never disable a slot.
+    """
+    if returncode in (0, None):
+        return False
+    haystack = (stderr or "") + ("\n" + (result or "") if is_error else "")
+    return bool(_AUTH_FAILURE_TOKENS.search(haystack))
 
 
 # ---------------------------------------------------------------------------
@@ -347,6 +386,16 @@ class SlotRegistry:
     def state_path(self) -> Path:
         return self._state_path
 
+    def credential_mtimes(self, slot: str) -> dict[str, int | None]:
+        """Fingerprint both credential filenames without reading their contents."""
+        mtimes: dict[str, int | None] = {}
+        for name in ("credentials.json", ".credentials.json"):
+            try:
+                mtimes[name] = (self._state_path.parent / slot / name).stat().st_mtime_ns
+            except OSError:
+                mtimes[name] = None
+        return mtimes
+
     def load(self) -> SlotSnapshot:
         """Load cooldown state; return empty snapshot on any error."""
         if not self._state_path.is_file():
@@ -367,7 +416,17 @@ class SlotRegistry:
         last_used = raw.get("last_used")
         if not isinstance(last_used, str):
             last_used = None
-        return SlotSnapshot(cooldowns=cooldowns, last_used=last_used)
+        failures_raw = raw.get("auth_failures", {})
+        auth_failures = {
+            slot: mtimes
+            for slot, mtimes in (failures_raw.items() if isinstance(failures_raw, dict) else [])
+            if isinstance(slot, str)
+            and isinstance(mtimes, dict)
+            and set(mtimes) == {"credentials.json", ".credentials.json"}
+            and all(value is None or type(value) is int for value in mtimes.values())
+            and mtimes == self.credential_mtimes(slot)
+        }
+        return SlotSnapshot(cooldowns=cooldowns, last_used=last_used, auth_failures=auth_failures)
 
     def update(self, fn: Callable[[SlotSnapshot], None]) -> None:
         """Read, transform, and persist under one file lock."""
@@ -375,6 +434,8 @@ class SlotRegistry:
             snapshot = self.load()
             fn(snapshot)
             payload: dict[str, object] = {"cooldowns": snapshot.cooldowns}
+            if snapshot.auth_failures:
+                payload["auth_failures"] = snapshot.auth_failures
             if snapshot.last_used is not None:
                 payload["last_used"] = snapshot.last_used
             atomic_json_save(self._state_path, payload)
@@ -385,6 +446,9 @@ class SlotRegistry:
         def replace(current: SlotSnapshot) -> None:
             current.cooldowns = dict(snapshot.cooldowns)
             current.last_used = snapshot.last_used
+            current.auth_failures = {
+                slot: dict(mtimes) for slot, mtimes in snapshot.auth_failures.items()
+            }
 
         self.update(replace)
 

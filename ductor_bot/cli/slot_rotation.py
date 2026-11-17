@@ -32,6 +32,7 @@ from ductor_bot.cli.claude_accounts import (
     SlotRegistry,
     SlotSnapshot,
     container_slot_config_dir,
+    detect_auth_failure,
     detect_rate_limit,
     host_slot_config_dir,
     parse_reset_time,
@@ -106,6 +107,11 @@ class RotationResult(Generic[T]):
     all_rate_limited:
         True when every hot slot was rate-limited;
         the caller surfaces the final 429 payload unchanged (no prefix).
+    first_auth_slot:
+        First login failure before a successful switch; used for its notice.
+    reauth_required:
+        All available attempts failed and at least one login expired, or
+        the all-expired probe reports login expiry. Append re-login help to the real error.
     """
 
     payload: T | None
@@ -116,6 +122,8 @@ class RotationResult(Generic[T]):
     unparsable_stderr: str | None = None
     all_cooling: bool = False
     all_rate_limited: bool = False
+    first_auth_slot: str | None = None
+    reauth_required: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -166,11 +174,56 @@ async def hot_slots(
     registry: SlotRegistry | None,
     accounts: Sequence[str],
 ) -> list[str]:
-    """Return the priority-ordered list of slots whose cooldown expired."""
+    """Return priority-ordered slots without a cooldown or failed login."""
     async with _get_lock():
         snapshot = await asyncio.to_thread(registry.load) if registry else SlotSnapshot()
     now = time.time()
-    return [s for s in accounts if snapshot.cooldowns.get(s, 0.0) <= now]
+    return [
+        s
+        for s in accounts
+        if s not in snapshot.auth_failures and snapshot.cooldowns.get(s, 0.0) <= now
+    ]
+
+
+async def fallback_slot(registry: SlotRegistry | None, accounts: Sequence[str]) -> str:
+    """Choose the first non-expired slot, or probe top once if all expired."""
+    snapshot = await asyncio.to_thread(registry.load) if registry else SlotSnapshot()
+    return next((slot for slot in accounts if slot not in snapshot.auth_failures), accounts[0])
+
+
+async def record_auth_failure(
+    registry: SlotRegistry | None, slot: str, credential_mtimes: dict[str, int | None]
+) -> None:
+    """Quarantine only the credentials fingerprinted before the failed attempt."""
+    if registry is None:
+        return
+
+    def record(snapshot: SlotSnapshot) -> None:
+        if (
+            registry.credential_mtimes(slot) == credential_mtimes
+            and snapshot.auth_failures.get(slot, credential_mtimes) == credential_mtimes
+        ):
+            snapshot.auth_failures[slot] = credential_mtimes
+
+    async with _get_lock():
+        await asyncio.to_thread(registry.update, record)
+
+
+async def clear_auth_failure(
+    registry: SlotRegistry | None, slot: str, credential_mtimes: dict[str, int | None]
+) -> None:
+    """Allow a successful all-expired probe to recover without an mtime change."""
+    if registry is None:
+        return
+
+    def clear(snapshot: SlotSnapshot) -> None:
+        if snapshot.auth_failures.get(slot) == credential_mtimes:
+            snapshot.auth_failures.pop(slot, None)
+
+    async with _get_lock():
+        snapshot = await asyncio.to_thread(registry.load)
+        if snapshot.auth_failures.get(slot) == credential_mtimes:
+            await asyncio.to_thread(registry.update, clear)
 
 
 async def record_cooldown(
@@ -234,6 +287,18 @@ def build_fallback_prefix(
     )
 
 
+def build_auth_fallback_prefix(from_slot: str, to_slot: str) -> str:
+    """Use the same prefix shape as quota switches for structured consumers."""
+    return _FALLBACK_NOTICE.format(
+        from_slot=from_slot, to_slot=to_slot, message=t("slot.switched_auth")
+    )
+
+
+def build_reauth_notice() -> str:
+    """Tell the user how to re-login to the expired slots."""
+    return "\n\n" + t("slot.reauth_required")
+
+
 def strip_fallback_prefix(result: str) -> str:
     """Remove a leading account switch notice before consuming structured output."""
     return _FALLBACK_NOTICE_PATTERN.sub("", result, count=1)
@@ -249,7 +314,7 @@ def build_unparsable_prefix(raw_stderr: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def run_with_rotation(
+async def run_with_rotation(  # noqa: C901 -- auth/quota rotation shares one state machine
     *,
     accounts: Sequence[str],
     registry: SlotRegistry | None,
@@ -267,10 +332,10 @@ async def run_with_rotation(
     chat provider used before extraction:
 
     * Empty accounts → single ``attempt(None)`` call.
-    * No hot slots → single attempt on the top priority; ``all_cooling``
+    * No hot slots → probe the first non-expired slot, or top if all expired; ``all_cooling``
       is set so the caller surfaces the raw response.
-    * Otherwise, iterate hot slots; stop on the first non-rate-limited
-      response. Missing reset times use a one-hour cooldown.
+    * Otherwise, iterate hot slots, skipping login failures and rate limits.
+      Missing reset times use a one-hour cooldown.
     """
     account_list = list(accounts)
 
@@ -285,8 +350,19 @@ async def run_with_rotation(
         # once so the user still sees a response, but don't add a prefix
         # (it would misleadingly imply a successful switch).
         logger.info("Claude: all slots cooling down; attempting top slot once")
-        top = account_list[0]
+        top = await fallback_slot(registry, account_list)
+        mtimes = await asyncio.to_thread(registry.credential_mtimes, top) if registry else {}
         outcome, payload = await attempt(top)
+        if detect_auth_failure(
+            returncode=outcome.returncode,
+            is_error=outcome.is_error,
+            stderr=outcome.stderr,
+            result=outcome.result_text,
+        ):
+            await record_auth_failure(registry, top, mtimes)
+            return RotationResult(payload=payload, slot=top, all_cooling=True, reauth_required=True)
+        if outcome.returncode == 0 and not outcome.is_error:
+            await clear_auth_failure(registry, top, mtimes)
         if detect_rate_limit(
             returncode=outcome.returncode,
             is_error=outcome.is_error,
@@ -305,18 +381,35 @@ async def run_with_rotation(
                     time.time() + UNPARSABLE_RESET_COOLDOWN_SECONDS, tz=default_tz
                 )
             await record_cooldown(registry, top, reset_dt.timestamp())
-        return RotationResult(payload=payload, slot=top, all_cooling=True)
+        return RotationResult(
+            payload=payload,
+            slot=top,
+            all_cooling=True,
+        )
 
     first_rl_slot: str | None = None
+    first_auth_slot: str | None = None
     first_rl_reset: datetime | None = None
     first_rl_reset_estimated = False
     last_payload: T | None = None
     last_slot: str | None = None
 
     for slot in hot:
+        mtimes = await asyncio.to_thread(registry.credential_mtimes, slot) if registry else {}
         outcome, payload = await attempt(slot)
         last_payload = payload
         last_slot = slot
+
+        if detect_auth_failure(
+            returncode=outcome.returncode,
+            is_error=outcome.is_error,
+            stderr=outcome.stderr,
+            result=outcome.result_text,
+        ):
+            await record_auth_failure(registry, slot, mtimes)
+            if first_auth_slot is None:
+                first_auth_slot = slot
+            continue
 
         is_rate_limited = detect_rate_limit(
             returncode=outcome.returncode,
@@ -329,6 +422,9 @@ async def run_with_rotation(
             return RotationResult(
                 payload=payload,
                 slot=slot,
+                first_auth_slot=first_auth_slot
+                if outcome.returncode == 0 and not outcome.is_error
+                else None,
                 first_rl_slot=first_rl_slot,
                 first_rl_reset=first_rl_reset,
                 first_rl_reset_estimated=first_rl_reset_estimated,
@@ -359,14 +455,14 @@ async def run_with_rotation(
             reset_dt.isoformat(timespec="minutes"),
         )
 
-    # Every hot slot was rate-limited — surface the
-    # final 429 response unchanged; a "switched" prefix would be misleading.
-    logger.info("Claude: all %d hot slots rate-limited; surfacing last 429", len(hot))
+    # Every hot slot failed due to quota or login expiry; never imply success.
+    logger.info("Claude: all %d hot slots unavailable; surfacing last error", len(hot))
     return RotationResult(
         payload=last_payload,
         slot=last_slot,
         first_rl_slot=first_rl_slot,
         first_rl_reset=first_rl_reset,
         first_rl_reset_estimated=first_rl_reset_estimated,
-        all_rate_limited=True,
+        all_rate_limited=first_auth_slot is None,
+        reauth_required=first_auth_slot is not None,
     )

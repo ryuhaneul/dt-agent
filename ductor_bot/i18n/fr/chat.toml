@@ -489,6 +489,8 @@ done = "✓ Terminé · {secs}s"
 quarantine_stopped = "Les vérifications heartbeat sont arrêtées : la session CLI de cette conversation ne peut pas être reprise. Elles redémarreront automatiquement quand la récupération réussira dans une conversation ultérieure et qu'une nouvelle session sera créée."
 
 [slot]
+switched_auth = "basculement (connexion expirée)"
+reauth_required = "La connexion Claude a expiré. Reconnecte-toi avec ./scripts/login.sh claude <name> (omets <name> pour le compte par défaut)."
 switched_estimated = "changement effectué (quota épuisé, heure de réinitialisation inconnue, réessayer dans environ 1 h)"
 switched = "basculé (quota épuisé, réinitialisation {reset})"
 cooldown_unparsable = "cooldown illisible, stderr brut ci-dessous"
@@ -690,6 +692,7 @@ btn_cancel = "Annuler"
 
 
 [accounts]
+auth_expired = "Connexion expirée ; reconnecte-toi"
 error = "La gestion des comptes a échoué. Veuillez réessayer."
 title = "Comptes Claude (priorité en haut)"
 authenticated = "Authentifié"

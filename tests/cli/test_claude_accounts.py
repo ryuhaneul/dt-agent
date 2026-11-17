@@ -513,3 +513,136 @@ def test_usage_limits_still_trigger_rotation(text):
 ])
 def test_context_limit_is_not_a_usage_limit(text, expected):
     assert detect_rate_limit(returncode=1, is_error=True, stderr=text) is expected
+
+
+# Claude Code 2.1.326 auth error text; first case is the user's exact diagnostic.
+_AUTH_EXPIRED = (
+    "Failed to authenticate: this login reached its time limit and cannot be renewed. "
+    "Run claude auth login to sign in again, or use claude setup-token and set "
+    "CLAUDE_CODE_OAUTH_TOKEN for unattended jobs"
+)
+
+
+@pytest.mark.parametrize("channel", ["stderr", "result"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        _AUTH_EXPIRED,
+        _AUTH_EXPIRED.replace("claude auth login", "`claude auth login`").replace(
+            "claude setup-token", "`claude setup-token`"
+        ),
+        "Login expired · Please run /login",
+        "Login reached its time limit · Please run /login",
+        "OAuth token revoked · Please run /login",
+        "Failed to authenticate: OAuth token revoked. Please log in again or contact your administrator.",
+        "Failed to authenticate: this login reached its time limit · Sign in again to continue",
+        "Authentication required · Sign in again to continue",
+        "Not logged in · Please run /login",
+        "Not logged in. Run claude auth login to authenticate.",
+        "Session expired. Please run /login to sign in again.",
+        "Anthropic profile login expired · Re-authenticate your Anthropic profile",
+        "Login expired · Run /login to sign in again, or re-authenticate your Anthropic profile",
+    ],
+)
+def test_detect_auth_failure_cli_diagnostics(text, channel):
+    from ductor_bot.cli.claude_accounts import detect_auth_failure
+
+    assert detect_auth_failure(
+        returncode=1,
+        is_error=True,
+        stderr=text if channel == "stderr" else "",
+        result=text if channel == "result" else "",
+    )
+
+
+@pytest.mark.parametrize("returncode", [0, None, 1])
+@pytest.mark.parametrize("is_error", [False, True])
+def test_auth_failure_obeys_process_and_result_error_flags(returncode, is_error):
+    from ductor_bot.cli.claude_accounts import detect_auth_failure
+
+    assert detect_auth_failure(
+        returncode=returncode,
+        is_error=is_error,
+        stderr="",
+        result=_AUTH_EXPIRED,
+    ) is (returncode == 1 and is_error)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Here is how to authenticate with an API.",
+        "Authentication error · This may be a temporary network issue, please try again",
+        "Authentication error · The gateway could not authenticate with its upstream provider",
+        "Could not refresh your login because another Claude Code process is refreshing it",
+        "Could not refresh your login: the disk that holds the Claude Code config directory is full",
+        "Invalid API key · Fix external API key",
+        "Invalid auth token · Fix external auth token",
+        "MCP authentication failed",
+        "HTTP 401 Unauthorized",
+    ],
+)
+def test_detect_auth_failure_does_not_match_unrelated_errors(text):
+    from ductor_bot.cli.claude_accounts import detect_auth_failure
+
+    assert not detect_auth_failure(returncode=1, is_error=True, stderr=text, result=text)
+
+
+@pytest.mark.parametrize("filename", ["credentials.json", ".credentials.json"])
+@pytest.mark.parametrize("change", ["modified", "removed", "created"])
+async def test_auth_failure_state_tracks_both_credential_filenames(tmp_path, filename, change):
+    import os
+
+    from ductor_bot.cli.slot_rotation import record_auth_failure
+
+    registry = SlotRegistry(tmp_path / "_claude-slots.json")
+    slot = tmp_path / "claude-a"
+    slot.mkdir()
+    credential = slot / filename
+    if change != "created":
+        credential.write_text("{}")
+    await record_auth_failure(registry, "claude-a", registry.credential_mtimes("claude-a"))
+    # Re-open the file-backed registry as another process would.
+    registry = SlotRegistry(registry.state_path)
+    assert "claude-a" in registry.load().auth_failures
+    registry.update(lambda snapshot: snapshot.cooldowns.update({"claude-b": 1234}))
+    assert "claude-a" in registry.load().auth_failures
+    if change == "modified":
+        old = credential.stat().st_mtime_ns
+        os.utime(credential, ns=(old + 1000000, old + 1000000))
+    elif change == "removed":
+        credential.unlink()
+    else:
+        credential.write_text("{}")
+    assert registry.load().auth_failures == {}
+    assert registry.load().cooldowns == {"claude-b": 1234}
+
+
+@pytest.mark.parametrize(
+    "raw", [[], None, {"claude-a": 1}, {"claude-a": {}}, {"claude-a": {"credentials.json": "bad"}}]
+)
+def test_malformed_auth_failure_state_is_ignored(tmp_path, raw):
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps({"cooldowns": {"claude-b": 1234}, "auth_failures": raw}))
+    snapshot = SlotRegistry(path).load()
+    assert snapshot.auth_failures == {}
+    assert snapshot.cooldowns == {"claude-b": 1234}
+
+
+@pytest.mark.parametrize("channel", ["stderr", "result"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "[mcp:foo] Not logged in · Please run /login\nError: max turns",
+        "Tool failed; output was: Not logged in · Please run /login",
+    ],
+)
+def test_auth_diagnostic_must_start_its_own_line(channel, text):
+    from ductor_bot.cli.claude_accounts import detect_auth_failure
+
+    assert not detect_auth_failure(
+        returncode=1,
+        is_error=True,
+        stderr=text if channel == "stderr" else "",
+        result=text if channel == "result" else "",
+    )

@@ -485,6 +485,8 @@ done = "✓ Fertig · {secs}s"
 quarantine_stopped = "Heartbeat-Prüfungen angehalten: Die CLI-Session dieser Unterhaltung lässt sich nicht fortsetzen. Sobald die Wiederherstellung in einer späteren Unterhaltung gelingt und eine neue Session entsteht, starten die Prüfungen automatisch wieder."
 
 [slot]
+switched_auth = "gewechselt (Anmeldung abgelaufen)"
+reauth_required = "Claude-Anmeldung abgelaufen. Erneut anmelden mit ./scripts/login.sh claude <name> (<name> beim Standard-Slot weglassen)."
 switched_estimated = "gewechselt (Kontingent erschöpft, Rücksetzzeit unbekannt, in ca. 1 Std. erneut versuchen)"
 switched = "gewechselt (Kontingent erschöpft, Reset {reset})"
 cooldown_unparsable = "Cooldown nicht lesbar, stderr-Rohtext folgt"
@@ -686,6 +688,7 @@ btn_cancel = "Abbrechen"
 
 
 [accounts]
+auth_expired = "Anmeldung abgelaufen; erneut anmelden"
 error = "Die Kontenverwaltung ist fehlgeschlagen. Bitte erneut versuchen."
 title = "Claude-Konten (höchste Priorität zuerst)"
 authenticated = "Angemeldet"

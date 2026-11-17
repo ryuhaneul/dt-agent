@@ -192,3 +192,49 @@ async def test_oneshot_rotation_collects_each_attempt_and_survives_save_error(
         assert slots["claude-a"].windows["five_hour"].utilization == 1.0
         assert slots["claude-b"].status == "allowed"
         assert slots["claude-b"].windows["five_hour"].utilization == 0.2
+
+
+@pytest.mark.parametrize("all_expired", [False, True])
+async def test_oneshot_auth_expiry_rotates_and_retries_exhausted_top(
+    tmp_path, monkeypatch, all_expired
+):
+    from pathlib import Path
+
+    from tests.cli.test_claude_accounts import _AUTH_EXPIRED
+
+    home, control, calls = _install_slot_cli(tmp_path, monkeypatch)
+    limited = ["claude-a", "claude-b"] if all_expired else ["claude-a"]
+    control.write_text(json.dumps({"limited": limited, "error": _AUTH_EXPIRED}))
+    config = AgentConfig(
+        ductor_home=str(home),
+        provider="claude",
+        model="opus",
+        claude_accounts=["claude-a", "claude-b"],
+        user_timezone="UTC",
+    )
+    exec_config = resolve_cli_config(config, None)
+    options = TaskRunOptions(cwd=tmp_path, timeout_seconds=10, timeout_label="test")
+    first = await run_oneshot_task(exec_config, "hello", options)
+    assert [Path(row["auth"]).name for row in _read_slot_calls(calls)] == ["claude-a", "claude-b"]
+    if all_expired:
+        assert first.status != "success"
+        assert _AUTH_EXPIRED in first.result_text
+        assert "login.sh claude" in first.result_text
+    else:
+        assert first.status == "success"
+        assert first.result_text.startswith("[Claude: claude-a → claude-b ")
+        assert "login expired" in first.result_text
+        assert first.result_text.endswith("\n\nok")
+    calls.write_text("")
+    second = await run_oneshot_task(exec_config, "hello", options)
+    expected = ["claude-a"] if all_expired else ["claude-b"]
+    assert [Path(row["auth"]).name for row in _read_slot_calls(calls)] == expected
+    assert ("login.sh claude" in second.result_text) is all_expired
+    if all_expired:
+        control.write_text(json.dumps({"limited": []}))
+        calls.write_text("")
+        recovered = await run_oneshot_task(exec_config, "hello", options)
+        assert recovered.status == "success"
+        assert recovered.result_text == "ok"
+        registry = SlotRegistry(home / ".cli-auth" / "_claude-slots.json")
+        assert "claude-a" not in registry.load().auth_failures

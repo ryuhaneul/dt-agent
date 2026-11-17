@@ -26,6 +26,7 @@ class SlotOverview(TypedDict):
 
     name: str
     authenticated: bool
+    auth_expired: bool
     cooldown_until: float | None
 
 
@@ -121,7 +122,9 @@ def overview(home: Path, config: AgentConfig) -> Overview:
         slots.append(
             {
                 "name": name,
-                "authenticated": slot_is_authenticated(host_slot_config_dir(home, name)),
+                "authenticated": name not in snapshot.auth_failures
+                and slot_is_authenticated(host_slot_config_dir(home, name)),
+                "auth_expired": name in snapshot.auth_failures,
                 "cooldown_until": reset if reset is not None and reset > now else None,
             }
         )

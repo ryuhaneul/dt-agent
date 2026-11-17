@@ -487,6 +487,8 @@ done = "✓ Concluído · {secs}s"
 quarantine_stopped = "As verificações de heartbeat foram interrompidas: a sessão de CLI desta conversa não pode ser continuada. Elas recomeçam automaticamente quando a recuperação funcionar em uma conversa posterior e uma nova sessão for criada."
 
 [slot]
+switched_auth = "alternado (sessão expirada)"
+reauth_required = "A sessão do Claude expirou. Entre novamente com ./scripts/login.sh claude <name> (omita <name> para a conta padrão)."
 switched_estimated = "troca realizada (cota esgotada, horário de redefinição desconhecido, tente novamente em ~1 h)"
 switched = "trocado (cota esgotada, reinicia {reset})"
 cooldown_unparsable = "cooldown ilegível, stderr original abaixo"
@@ -688,6 +690,7 @@ btn_cancel = "Cancelar"
 
 
 [accounts]
+auth_expired = "Sessão expirada; entre novamente"
 error = "Falha no gerenciamento de contas. Tente novamente."
 title = "Contas Claude (prioridade no topo)"
 authenticated = "Autenticada"

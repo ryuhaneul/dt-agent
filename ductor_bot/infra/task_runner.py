@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -181,7 +182,7 @@ async def run_oneshot_task(
     )
 
 
-async def _run_claude_with_rotation(
+async def _run_claude_with_rotation(  # noqa: C901 -- preserve real payloads for auth/quota failures
     exec_config: TaskExecutionConfig,
     prompt: str,
     options: TaskRunOptions,
@@ -189,7 +190,9 @@ async def _run_claude_with_rotation(
     """Execute the Claude one-shot path through the shared rotation driver."""
     from ductor_bot.cli.slot_rotation import (
         AttemptOutcome,
+        build_auth_fallback_prefix,
         build_fallback_prefix,
+        build_reauth_notice,
         build_unparsable_prefix,
         make_registry,
         run_with_rotation,
@@ -240,9 +243,27 @@ async def _run_claude_with_rotation(
             execution.stdout, exec_config.working_dir, slot or "claude", captured_at=captured_at
         )
         stderr_text = execution.stderr.decode(errors="replace") if execution.stderr else ""
+        # Match the provider: normal JSON result prose is not an error signal,
+        # even when subprocess cleanup returns a non-zero exit code.
+        try:
+            result_data = json.loads(execution.stdout)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            result_data = None
+        if isinstance(result_data, list):
+            result_data = next(
+                (
+                    event
+                    for event in reversed(result_data)
+                    if isinstance(event, dict) and event.get("type") == "result"
+                ),
+                None,
+            )
+        is_error = (
+            bool(result_data.get("is_error", False)) if isinstance(result_data, dict) else True
+        )
         outcome = AttemptOutcome(
             returncode=execution.returncode,
-            is_error=execution.returncode not in (0, None),
+            is_error=is_error,
             stderr=stderr_text,
             result_text=execution.result_text,
         )
@@ -263,7 +284,13 @@ async def _run_claude_with_rotation(
             execution=None,
         )
 
-    if rotation.unparsable_stderr is not None:
+    if rotation.reauth_required:
+        original = execution.result_text or execution.stderr.decode(errors="replace")
+        execution = replace(execution, result_text=original + build_reauth_notice())
+    elif rotation.first_auth_slot is not None and rotation.slot is not None:
+        prefix = build_auth_fallback_prefix(rotation.first_auth_slot, rotation.slot)
+        execution = replace(execution, result_text=prefix + (execution.result_text or ""))
+    elif rotation.unparsable_stderr is not None:
         prefix = build_unparsable_prefix(rotation.unparsable_stderr)
         execution = replace(execution, result_text=prefix + (execution.result_text or ""))
     elif (

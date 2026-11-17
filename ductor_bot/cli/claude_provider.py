@@ -22,7 +22,7 @@ from ductor_bot.cli.base import (
     add_cli_opt,
     format_cli_cmd,
 )
-from ductor_bot.cli.claude_accounts import SlotRegistry, detect_rate_limit
+from ductor_bot.cli.claude_accounts import SlotRegistry, detect_auth_failure, detect_rate_limit
 from ductor_bot.cli.claude_usage import UsageStore, extract_usage_events, usage_file_path
 from ductor_bot.cli.executor import (
     PostHandler,
@@ -36,11 +36,16 @@ from ductor_bot.cli.slot_rotation import (
     UNPARSABLE_RESET_COOLDOWN_SECONDS,
     AttemptOutcome,
     RotationResult,
+    build_auth_fallback_prefix,
     build_fallback_prefix,
+    build_reauth_notice,
     build_unparsable_prefix,
+    clear_auth_failure,
+    fallback_slot,
     hot_slots,
     make_registry,
     parse_reset_from_text,
+    record_auth_failure,
     record_cooldown,
     run_with_rotation,
     slot_extra_env,
@@ -199,7 +204,7 @@ class ClaudeCodeCLI(BaseCLI):
                 stderr=response.stderr,
                 result_text=response.result or "",
             )
-            return outcome, response
+            return outcome, response.model_copy(update={"stderr": response.stderr[:2000]})
 
         rotation = await run_with_rotation(
             accounts=list(self._config.claude_accounts),
@@ -213,6 +218,14 @@ class ClaudeCodeCLI(BaseCLI):
         """Turn a :class:`RotationResult` into the final CLIResponse."""
         assert rotation.payload is not None  # accounts empty path still attempts once
         payload = rotation.payload
+
+        if rotation.reauth_required:
+            return payload.model_copy(
+                update={"result": (payload.result or payload.stderr) + build_reauth_notice()}
+            )
+        if rotation.first_auth_slot is not None and rotation.slot is not None:
+            prefix = build_auth_fallback_prefix(rotation.first_auth_slot, rotation.slot)
+            return payload.model_copy(update={"result": prefix + (payload.result or "")})
 
         if rotation.unparsable_stderr is not None:
             prefix = build_unparsable_prefix(rotation.unparsable_stderr)
@@ -255,7 +268,11 @@ class ClaudeCodeCLI(BaseCLI):
             nonlocal usage_output
             usage_output = stdout
             return _parse_response(
-                stdout, stderr, returncode, private_output=self._config.private_task_question
+                stdout,
+                stderr,
+                returncode,
+                private_output=self._config.private_task_question,
+                truncate_stderr=False,
             )
 
         try:
@@ -307,7 +324,7 @@ class ClaudeCodeCLI(BaseCLI):
             cmd.append("--include-partial-messages")
         return cmd
 
-    async def send_streaming(  # noqa: C901, PLR0912
+    async def send_streaming(  # noqa: C901, PLR0912, PLR0915 -- live auth/quota rotation
         self,
         prompt: str,
         resume_session: str | None = None,
@@ -345,7 +362,7 @@ class ClaudeCodeCLI(BaseCLI):
             # priority once so the user still sees a response. No fallback
             # prefix (it would misleadingly imply a successful switch).
             logger.info("Claude: all slots cooling down; attempting top slot once")
-            top = accounts[0]
+            top = await fallback_slot(self._registry, accounts)
             async for event in self._stream_single_attempt_with_cooldown(
                 prompt,
                 resume_session=resume_session,
@@ -358,6 +375,7 @@ class ClaudeCodeCLI(BaseCLI):
                 yield event
             return
 
+        first_auth_slot: str | None = None
         first_rl_slot: str | None = None
         first_rl_reset = None
         first_rl_reset_estimated = False
@@ -365,6 +383,11 @@ class ClaudeCodeCLI(BaseCLI):
         for idx, slot in enumerate(hot):
             is_last = idx == len(hot) - 1
             capture = _StreamPassOutcome()
+            mtimes = (
+                await asyncio.to_thread(self._registry.credential_mtimes, slot)
+                if self._registry
+                else {}
+            )
 
             async for event in self._stream_attempt(
                 prompt,
@@ -391,6 +414,23 @@ class ClaudeCodeCLI(BaseCLI):
                 result_text=final.result if final is not None else "",
             )
 
+            if detect_auth_failure(
+                returncode=attempt.returncode,
+                is_error=attempt.is_error,
+                stderr=attempt.stderr,
+                result=attempt.result_text,
+            ):
+                await record_auth_failure(self._registry, slot, mtimes)
+                if first_auth_slot is None:
+                    first_auth_slot = slot
+                if is_last and final is not None:
+                    yield final.model_copy(
+                        update={
+                            "result": (final.result or capture.stderr_text) + build_reauth_notice()
+                        }
+                    )
+                continue
+
             is_rl = detect_rate_limit(
                 returncode=attempt.returncode,
                 is_error=attempt.is_error,
@@ -401,7 +441,10 @@ class ClaudeCodeCLI(BaseCLI):
             if not is_rl:
                 if final is None:
                     return
-                if first_rl_slot is not None and first_rl_reset is not None:
+                if first_auth_slot is not None and returncode == 0 and not final.is_error:
+                    prefix = build_auth_fallback_prefix(first_auth_slot, slot)
+                    yield final.model_copy(update={"result": prefix + (final.result or "")})
+                elif first_rl_slot is not None and first_rl_reset is not None:
                     prefix = build_fallback_prefix(
                         first_rl_slot,
                         slot,
@@ -450,6 +493,13 @@ class ClaudeCodeCLI(BaseCLI):
                     len(hot),
                 )
                 if final is not None:
+                    if first_auth_slot is not None:
+                        final = final.model_copy(
+                            update={
+                                "result": (final.result or capture.stderr_text)
+                                + build_reauth_notice()
+                            }
+                        )
                     yield final
                 return
 
@@ -505,7 +555,7 @@ class ClaudeCodeCLI(BaseCLI):
             finally:
                 await _cleanup_prompt_files(prompt_files)
 
-    async def _stream_single_attempt_with_cooldown(  # noqa: PLR0913
+    async def _stream_single_attempt_with_cooldown(  # noqa: C901, PLR0913 -- auth/quota probe
         self,
         prompt: str,
         *,
@@ -523,6 +573,11 @@ class ClaudeCodeCLI(BaseCLI):
         cooldown we observe, but we do NOT retry on other slots.
         """
         capture = _StreamPassOutcome()
+        mtimes = (
+            await asyncio.to_thread(self._registry.credential_mtimes, slot_name)
+            if self._registry
+            else {}
+        )
         async for event in self._stream_attempt(
             prompt,
             resume_session=resume_session,
@@ -532,16 +587,36 @@ class ClaudeCodeCLI(BaseCLI):
             slot_name=slot_name,
             capture=capture,
         ):
-            yield event
+            if not isinstance(event, ResultEvent):
+                yield event
 
         if not record_on_rate_limit:
+            if capture.final_result is not None:
+                yield capture.final_result
             return
 
         final = capture.final_result
         returncode = capture.returncode
         if returncode is None and final is not None:
             returncode = final.returncode
-        if detect_rate_limit(
+        is_auth_failure = detect_auth_failure(
+            returncode=returncode,
+            is_error=bool(final.is_error) if final is not None else False,
+            stderr=capture.stderr_text,
+            result=final.result if final is not None else "",
+        )
+        if is_auth_failure:
+            await record_auth_failure(self._registry, slot_name, mtimes)
+        elif returncode == 0 and final is not None and not final.is_error:
+            await clear_auth_failure(self._registry, slot_name, mtimes)
+        if final is not None:
+            if is_auth_failure:
+                final = final.model_copy(
+                    update={"result": (final.result or capture.stderr_text) + build_reauth_notice()}
+                )
+            yield final
+
+        if not is_auth_failure and detect_rate_limit(
             returncode=returncode,
             is_error=bool(final.is_error) if final is not None else False,
             stderr=capture.stderr_text,
@@ -705,10 +780,17 @@ def _log_cmd(cmd: list[str], *, streaming: bool = False) -> None:
 
 
 def _parse_response(
-    stdout: bytes, stderr: bytes, returncode: int | None, *, private_output: bool = False
+    stdout: bytes,
+    stderr: bytes,
+    returncode: int | None,
+    *,
+    private_output: bool = False,
+    truncate_stderr: bool = True,
 ) -> CLIResponse:
     """Parse CLI subprocess output into a CLIResponse."""
-    stderr_text = stderr.decode(errors="replace")[:2000] if stderr else ""
+    stderr_text = stderr.decode(errors="replace") if stderr else ""
+    if truncate_stderr:
+        stderr_text = stderr_text[:2000]
     if stderr_text:
         logger.warning(
             "CLI stderr: %s",
@@ -721,7 +803,7 @@ def _parse_response(
     if not raw:
         logger.error("CLI returned empty output (exit=%s)", returncode)
         return CLIResponse(
-            result=stderr_text.strip(),
+            result=stderr_text[:2000].strip(),
             is_error=True,
             returncode=returncode,
             stderr=stderr_text,

@@ -1799,3 +1799,304 @@ async def test_partial_messages_are_opt_in_and_never_duplicate_final_text(
         finals[0].result
         == "A small river flows quietly past the old stone bridge under the morning sky."
     )
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_auth_expiry_rotates_skips_and_reenables_after_login(
+    tmp_path, monkeypatch, streaming
+):
+    import os
+
+    from ductor_bot.cli.claude_accounts import SlotRegistry
+    from tests.cli.test_claude_accounts import _AUTH_EXPIRED
+
+    home, control, calls = _install_slot_cli(tmp_path, monkeypatch)
+    control.write_text(json.dumps({"limited": ["claude-a"], "error": _AUTH_EXPIRED}))
+
+    async def send():
+        cli = ClaudeCodeCLI(
+            CLIConfig(
+                provider="claude",
+                model="opus",
+                ductor_home=home,
+                working_dir=str(tmp_path),
+                claude_accounts=["claude-a", "claude-b"],
+                user_timezone="UTC",
+            )
+        )
+        if streaming:
+            events = [event async for event in cli.send_streaming("hello")]
+            return next(event for event in events if isinstance(event, ResultEvent))
+        return await cli.send("hello")
+
+    first = await send()
+    assert first.result.startswith("[Claude: claude-a → claude-b ")
+    assert "login expired" in first.result
+    assert first.result.endswith("\n\nok")
+    registry = SlotRegistry(home / ".cli-auth" / "_claude-slots.json")
+    assert "claude-a" in registry.load().auth_failures
+    assert registry.load().cooldowns == {}
+    calls.write_text("")
+    assert (await send()).result == "ok"
+    assert [Path(row["auth"]).name for row in _read_slot_calls(calls)] == ["claude-b"]
+    control.write_text(json.dumps({"limited": []}))
+    cred = home / ".cli-auth" / "claude-a" / ".credentials.json"
+    old = cred.stat().st_mtime_ns
+    os.utime(cred, ns=(old + 1000000, old + 1000000))
+    calls.write_text("")
+    assert (await send()).result == "ok"
+    assert [Path(row["auth"]).name for row in _read_slot_calls(calls)] == ["claude-a"]
+    assert "claude-a" not in registry.load().auth_failures
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_all_auth_expired_retry_top_and_recover_without_mtime_change(
+    tmp_path, monkeypatch, streaming
+):
+    from ductor_bot.cli.claude_accounts import SlotRegistry
+    from tests.cli.test_claude_accounts import _AUTH_EXPIRED
+
+    home, control, calls = _install_slot_cli(tmp_path, monkeypatch)
+    control.write_text(json.dumps({"limited": ["claude-a", "claude-b"], "error": _AUTH_EXPIRED}))
+    cli = ClaudeCodeCLI(
+        CLIConfig(
+            provider="claude",
+            model="opus",
+            ductor_home=home,
+            working_dir=str(tmp_path),
+            claude_accounts=["claude-a", "claude-b"],
+            user_timezone="UTC",
+        )
+    )
+
+    async def send():
+        if streaming:
+            events = [event async for event in cli.send_streaming("hello")]
+            return next(event for event in events if isinstance(event, ResultEvent))
+        return await cli.send("hello")
+
+    for expected in (["claude-a", "claude-b"], ["claude-a"]):
+        calls.write_text("")
+        response = await send()
+        assert response.is_error
+        assert _AUTH_EXPIRED in response.result
+        assert "login.sh claude" in response.result
+        assert not response.result.startswith("[Claude:")
+        assert [Path(row["auth"]).name for row in _read_slot_calls(calls)] == expected
+    control.write_text(json.dumps({"limited": []}))
+    calls.write_text("")
+    assert (await send()).result == "ok"
+    assert [Path(row["auth"]).name for row in _read_slot_calls(calls)] == ["claude-a"]
+    registry = SlotRegistry(home / ".cli-auth" / "_claude-slots.json")
+    assert "claude-a" not in registry.load().auth_failures
+    assert "claude-b" in registry.load().auth_failures
+
+
+@pytest.mark.parametrize("driver", ["send", "streaming", "task"])
+@pytest.mark.parametrize("renew_during_attempt", [False, True])
+async def test_relogin_during_failed_attempt_preserves_new_credentials(
+    tmp_path, monkeypatch, driver, renew_during_attempt
+):
+    from ductor_bot.cli.claude_accounts import SlotRegistry
+    from ductor_bot.cli.param_resolver import resolve_cli_config
+    from ductor_bot.config import AgentConfig
+    from ductor_bot.infra.task_runner import TaskRunOptions, run_oneshot_task
+    from tests.cli.test_claude_accounts import _AUTH_EXPIRED
+
+    home, control, calls = _install_slot_cli(tmp_path, monkeypatch)
+    script = tmp_path / "fake-claude"
+    text = script.read_text()
+    text = text.replace(
+        "if error: print(text, file=sys.stderr)",
+        "if error and control.get('renew'):\n"
+        "    cred = auth / '.credentials.json'\n"
+        "    old = cred.stat().st_mtime_ns\n"
+        "    os.utime(cred, ns=(old + 1000000, old + 1000000))\n"
+        "if error: print(text, file=sys.stderr)",
+    )
+    script.write_text(text)
+    control.write_text(
+        json.dumps(
+            {
+                "limited": ["claude-a"],
+                "error": _AUTH_EXPIRED,
+                "renew": renew_during_attempt,
+            }
+        )
+    )
+    cli = ClaudeCodeCLI(
+        CLIConfig(
+            provider="claude",
+            model="opus",
+            ductor_home=home,
+            working_dir=str(tmp_path),
+            claude_accounts=["claude-a", "claude-b"],
+            user_timezone="UTC",
+        )
+    )
+
+    async def send():
+        if driver == "task":
+            config = AgentConfig(
+                ductor_home=str(home),
+                provider="claude",
+                model="opus",
+                claude_accounts=["claude-a", "claude-b"],
+                user_timezone="UTC",
+            )
+            return (
+                await run_oneshot_task(
+                    resolve_cli_config(config, None),
+                    "hello",
+                    TaskRunOptions(cwd=tmp_path, timeout_seconds=10, timeout_label="test"),
+                )
+            ).result_text
+        if driver == "streaming":
+            events = [event async for event in cli.send_streaming("hello")]
+            return next(event.result for event in events if isinstance(event, ResultEvent))
+        return (await cli.send("hello")).result
+
+    assert (await send()).endswith("\n\nok")
+    registry = SlotRegistry(home / ".cli-auth" / "_claude-slots.json")
+    assert ("claude-a" in registry.load().auth_failures) is not renew_during_attempt
+    control.write_text(json.dumps({"limited": []}))
+    calls.write_text("")
+    assert await send() == "ok"
+    expected = "claude-a" if renew_during_attempt else "claude-b"
+    assert [Path(row["auth"]).name for row in _read_slot_calls(calls)] == [expected]
+
+
+@pytest.mark.parametrize("driver", ["send", "streaming", "task"])
+@pytest.mark.parametrize("scenario", ["long-stderr", "normal-result", "error-result"])
+async def test_auth_rotation_uses_full_stderr_and_only_error_results(
+    tmp_path, monkeypatch, driver, scenario
+):
+    from ductor_bot.cli.claude_accounts import SlotRegistry
+    from ductor_bot.cli.param_resolver import resolve_cli_config
+    from ductor_bot.config import AgentConfig
+    from ductor_bot.infra.task_runner import TaskRunOptions, run_oneshot_task
+    from tests.cli.test_claude_accounts import _AUTH_EXPIRED
+
+    home, control, calls = _install_slot_cli(tmp_path, monkeypatch)
+    script = tmp_path / "fake-claude"
+    source = script.read_text()
+    source = source.replace(
+        "if error: print(text, file=sys.stderr)",
+        "if error: print(control['stderr'], file=sys.stderr)",
+    ).replace(
+        "print(json.dumps({'type': 'result', 'is_error': error, 'result': text}))",
+        "if not error or control['emit_result']:\n"
+        "    print(json.dumps({'type': 'result', 'is_error': error and control['is_error'], 'result': text}))",
+    )
+    script.write_text(source)
+    control.write_text(
+        json.dumps(
+            {
+                "limited": ["claude-a"],
+                "error": _AUTH_EXPIRED
+                if scenario == "error-result"
+                else "The diagnostic being explained is: " + _AUTH_EXPIRED,
+                "stderr": ("startup warning " + "." * 200 + "\n") * 12 + _AUTH_EXPIRED
+                if scenario == "long-stderr"
+                else "cleanup failed",
+                "emit_result": scenario != "long-stderr",
+                "is_error": scenario != "normal-result",
+            }
+        )
+    )
+    if driver == "task":
+        config = AgentConfig(
+            ductor_home=str(home),
+            provider="claude",
+            model="opus",
+            claude_accounts=["claude-a", "claude-b"],
+            user_timezone="UTC",
+        )
+        result = (
+            await run_oneshot_task(
+                resolve_cli_config(config, None),
+                "hello",
+                TaskRunOptions(cwd=tmp_path, timeout_seconds=10, timeout_label="test"),
+            )
+        ).result_text
+    else:
+        cli = ClaudeCodeCLI(
+            CLIConfig(
+                provider="claude",
+                model="opus",
+                ductor_home=home,
+                working_dir=str(tmp_path),
+                claude_accounts=["claude-a", "claude-b"],
+                user_timezone="UTC",
+            )
+        )
+        if driver == "streaming":
+            events = [event async for event in cli.send_streaming("hello")]
+            result = next(event.result for event in events if isinstance(event, ResultEvent))
+        else:
+            response = await cli.send("hello")
+            assert len(response.stderr) <= 2000
+            result = response.result
+    rotates = scenario != "normal-result"
+    assert [Path(row["auth"]).name for row in _read_slot_calls(calls)] == (
+        ["claude-a", "claude-b"] if rotates else ["claude-a"]
+    )
+    registry = SlotRegistry(home / ".cli-auth" / "_claude-slots.json")
+    assert ("claude-a" in registry.load().auth_failures) is rotates
+    if rotates:
+        assert result.endswith("\n\nok")
+
+
+@pytest.mark.parametrize("driver", ["send", "streaming", "task"])
+@pytest.mark.parametrize("error", ["API Error: 529 overloaded", "Usage limit; resets at 18:30"])
+async def test_expired_probe_unrelated_error_does_not_append_relogin_hint(
+    tmp_path, monkeypatch, driver, error
+):
+    from ductor_bot.cli.claude_accounts import SlotRegistry
+    from ductor_bot.cli.param_resolver import resolve_cli_config
+    from ductor_bot.cli.slot_rotation import record_auth_failure
+    from ductor_bot.config import AgentConfig
+    from ductor_bot.infra.task_runner import TaskRunOptions, run_oneshot_task
+
+    home, control, calls = _install_slot_cli(tmp_path, monkeypatch)
+    registry = SlotRegistry(home / ".cli-auth" / "_claude-slots.json")
+    for slot in ["claude-a", "claude-b"]:
+        await record_auth_failure(registry, slot, registry.credential_mtimes(slot))
+    before = registry.load().auth_failures
+    control.write_text(json.dumps({"limited": ["claude-a"], "error": error}))
+    if driver == "task":
+        config = AgentConfig(
+            ductor_home=str(home),
+            provider="claude",
+            model="opus",
+            claude_accounts=["claude-a", "claude-b"],
+            user_timezone="UTC",
+        )
+        result = (
+            await run_oneshot_task(
+                resolve_cli_config(config, None),
+                "hello",
+                TaskRunOptions(cwd=tmp_path, timeout_seconds=10, timeout_label="test"),
+            )
+        ).result_text
+    else:
+        cli = ClaudeCodeCLI(
+            CLIConfig(
+                provider="claude",
+                model="opus",
+                ductor_home=home,
+                working_dir=str(tmp_path),
+                claude_accounts=["claude-a", "claude-b"],
+                user_timezone="UTC",
+            )
+        )
+        if driver == "streaming":
+            events = [event async for event in cli.send_streaming("hello")]
+            result = next(event.result for event in events if isinstance(event, ResultEvent))
+        else:
+            result = (await cli.send("hello")).result
+    assert error in result
+    assert "login.sh claude" not in result
+    assert [Path(row["auth"]).name for row in _read_slot_calls(calls)] == ["claude-a"]
+    assert registry.load().auth_failures == before
+    assert ("claude-a" in registry.load().cooldowns) is error.startswith("Usage limit")

@@ -96,9 +96,24 @@ def test_clear_preserves_other_entries_and_overview_contract(home):
     config = AgentConfig(claude_accounts=["claude-a", "claude-b", "claude-c"])
     assert overview(home, config) == {
         "slots": [
-            {"name": "claude-a", "authenticated": True, "cooldown_until": reset},
-            {"name": "claude-b", "authenticated": False, "cooldown_until": reset},
-            {"name": "claude-c", "authenticated": False, "cooldown_until": None},
+            {
+                "name": "claude-a",
+                "authenticated": True,
+                "auth_expired": False,
+                "cooldown_until": reset,
+            },
+            {
+                "name": "claude-b",
+                "authenticated": False,
+                "auth_expired": False,
+                "cooldown_until": reset,
+            },
+            {
+                "name": "claude-c",
+                "authenticated": False,
+                "auth_expired": False,
+                "cooldown_until": None,
+            },
         ]
     }
     clear_cooldown(home, "claude-a")
@@ -301,3 +316,27 @@ def test_config_update_preserves_missing_none_noop(home):
     before = path.read_bytes()
     update_config_file(path, gemini_api_key=None)
     assert path.read_bytes() == before
+
+
+async def test_auth_expiry_overview_and_clear_cooldown_preserve_block(home):
+    from ductor_bot.cli.claude_slots import clear_cooldown, overview
+    from ductor_bot.cli.slot_rotation import record_auth_failure
+
+    auth = home / ".cli-auth" / "claude-a"
+    auth.mkdir(parents=True)
+    cred = auth / ".credentials.json"
+    cred.write_text("{}")
+    registry = SlotRegistry(state_file_path(home))
+    registry.save(SlotSnapshot(cooldowns={"claude-a": time.time() + 3600}))
+    await record_auth_failure(registry, "claude-a", registry.credential_mtimes("claude-a"))
+    config = AgentConfig(claude_accounts=["claude-a"])
+    slot = overview(home, config)["slots"][0]
+    assert slot["auth_expired"] is True
+    assert slot["authenticated"] is False
+    clear_cooldown(home, "claude-a")
+    assert overview(home, config)["slots"][0]["auth_expired"] is True
+    old = cred.stat().st_mtime_ns
+    os.utime(cred, ns=(old + 1000000, old + 1000000))
+    slot = overview(home, config)["slots"][0]
+    assert slot["auth_expired"] is False
+    assert slot["authenticated"] is True

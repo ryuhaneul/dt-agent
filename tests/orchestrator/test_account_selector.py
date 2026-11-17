@@ -407,3 +407,16 @@ async def test_bad_usage_does_not_remove_account_controls(page, monkeypatch, une
     assert "acs:c:claude-a" in _data(response)
     assert "acs:r" in _data(response)
     assert (t("usage.account_empty") if unexpected else "5h 11% · ?") in response.text
+
+
+@pytest.mark.parametrize("language", ["en", "de", "nl", "es", "fr", "id", "pt", "ru", "ko"])
+async def test_expired_slot_is_visible_on_accounts_page(page, language):
+    from ductor_bot.cli.slot_rotation import record_auth_failure
+
+    selector, home, config = page
+    registry = SlotRegistry(state_file_path(home))
+    await record_auth_failure(registry, "claude-a", registry.credential_mtimes("claude-a"))
+    init(language)
+    response = await selector.account_selector_start(home, config)
+    assert f"1. claude-a  {t('accounts.auth_expired')}" in response.text
+    assert "accounts.auth_expired" not in response.text

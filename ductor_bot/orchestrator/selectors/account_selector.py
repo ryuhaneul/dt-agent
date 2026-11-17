@@ -92,7 +92,13 @@ def _build_page(home: Path, config: AgentConfig, note: str = "") -> SelectorResp
         lines.extend(["", t("accounts.empty")])
     for index, slot in enumerate(slots):
         name = slot["name"]
-        auth = t("accounts.authenticated" if slot["authenticated"] else "accounts.unauthenticated")
+        auth = t(
+            "accounts.auth_expired"
+            if slot["auth_expired"]
+            else "accounts.authenticated"
+            if slot["authenticated"]
+            else "accounts.unauthenticated"
+        )
         reset = slot["cooldown_until"]
         cooldown = t("accounts.no_cooldown")
         if reset is not None and reset > now:

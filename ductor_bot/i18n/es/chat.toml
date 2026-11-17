@@ -489,6 +489,8 @@ done = "✓ Listo · {secs}s"
 quarantine_stopped = "Se detuvieron las comprobaciones de heartbeat: la sesión de CLI de esta conversación no se puede continuar. Se reanudarán automáticamente cuando una conversación posterior recupere la sesión y se cree una nueva."
 
 [slot]
+switched_auth = "cambiado (sesión caducada)"
+reauth_required = "La sesión de Claude ha caducado. Vuelve a iniciar sesión con ./scripts/login.sh claude <name> (omite <name> para la cuenta predeterminada)."
 switched_estimated = "cambio realizado (cuota agotada, hora de restablecimiento desconocida, reintentar en ~1 h)"
 switched = "cambio (cuota agotada, se restablece {reset})"
 cooldown_unparsable = "no se pudo leer el cooldown, stderr original a continuación"
@@ -690,6 +692,7 @@ btn_cancel = "Cancelar"
 
 
 [accounts]
+auth_expired = "Sesión caducada; inicia sesión de nuevo"
 error = "Falló la gestión de cuentas. Inténtalo de nuevo."
 title = "Cuentas Claude (primera prioridad arriba)"
 authenticated = "Autenticada"
