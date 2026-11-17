@@ -91,7 +91,7 @@ Observer / TaskHub / InterAgentBus callback
 - Workspace init is zone-based:
   - Zone 2 overwrite: `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, framework-managed tool scripts
   - Zone 3 seed-once: user-owned files
-- Rule sync is mtime-based for sibling `CLAUDE.md` / `AGENTS.md` / `GEMINI.md`; cron task folders additionally get missing rule backfill.
+- Provider rule files are deployed from templates at startup; no periodic content synchronization runs. Every 10 seconds, only direct cron task folders get missing provider rule files. Editing one filename does not update its siblings; static rules are redeployed on startup and existing cron task rule contents are preserved.
 - Skill sync links workspace skills with provider CLI skill directories inside the bot container.
 - `ductor agents add` is a Telegram-focused scaffold; Matrix sub-agents are supported through `agents.json` or the bundled agent tool scripts.
 

@@ -22,7 +22,8 @@ logger = logging.getLogger(__name__)
 
 # Files that are ALWAYS overwritten on every start (Zone 2).
 # Everything else is seeded only once (Zone 3).
-_ZONE2_FILES = frozenset({"CLAUDE.md", "AGENTS.md", "GEMINI.md"})
+_RULE_FILE_NAMES = ("CLAUDE.md", "AGENTS.md", "GEMINI.md")
+_ZONE2_FILES = frozenset(_RULE_FILE_NAMES)
 
 # Directories where ALL .py files are Zone 2 (framework-managed).
 # User-owned scripts should go in tools/user_tools/ (Zone 3).
@@ -334,70 +335,6 @@ def _walk_and_copy(
 
 
 # ---------------------------------------------------------------------------
-# Rule file sync (CLAUDE.md <-> AGENTS.md)
-# ---------------------------------------------------------------------------
-
-
-_RULE_FILE_NAMES = ("CLAUDE.md", "AGENTS.md", "GEMINI.md")
-
-
-def sync_rule_files(root: Path) -> None:
-    """Recursively sync CLAUDE.md <-> AGENTS.md <-> GEMINI.md by mtime.
-
-    For each directory under root (including root itself):
-    - Find the newest rule file among the three by mtime.
-    - Copy the newest to all others that exist or are missing.
-    - Skip directories in _SKIP_DIRS.
-    """
-    if not root.is_dir():
-        return
-    _sync_group(root)
-    try:
-        entries = list(root.rglob("*"))
-    except PermissionError:
-        logger.debug("Permission denied walking %s, skipping rule-file sync subtree", root)
-        return
-    for dirpath in entries:
-        try:
-            is_dir = dirpath.is_dir()
-        except PermissionError:
-            continue
-        if not is_dir:
-            continue
-        if any(part in _SKIP_DIRS for part in dirpath.parts):
-            continue
-        _sync_group(dirpath)
-
-
-def _sync_group(directory: Path) -> None:
-    """Sync all rule files (CLAUDE.md, AGENTS.md, GEMINI.md) in a single directory."""
-    files = {name: directory / name for name in _RULE_FILE_NAMES}
-    try:
-        existing = {name: path for name, path in files.items() if path.exists()}
-    except PermissionError:
-        logger.debug("Permission denied checking rule files in %s, skipping", directory)
-        return
-    if not existing:
-        return
-
-    try:
-        newest_name, newest_path = max(existing.items(), key=lambda item: item[1].stat().st_mtime)
-        newest_mtime = newest_path.stat().st_mtime
-    except PermissionError:
-        logger.debug("Permission denied reading stat in %s, skipping", directory)
-        return
-
-    for name, path in files.items():
-        if name == newest_name:
-            continue
-        try:
-            if path.exists() and path.stat().st_mtime < newest_mtime:
-                shutil.copy2(newest_path, path)
-        except PermissionError:
-            logger.debug("Permission denied syncing %s in %s, skipping", name, directory)
-
-
-# ---------------------------------------------------------------------------
 # Config smart-merge
 # ---------------------------------------------------------------------------
 
@@ -486,7 +423,7 @@ def _ensure_required_dirs(paths: DuctorPaths) -> None:
 
 
 def init_workspace(paths: DuctorPaths) -> None:
-    """Initialize the workspace: defaults sync, rule sync, config merge, cleanup."""
+    """Initialize the workspace: defaults deployment, cron rule backfill, config merge, cleanup."""
     logger.info("Workspace init started home=%s", paths.ductor_home)
     _migrate_tasks_to_cron_tasks(paths)
     sync_bundled_skills(paths)
@@ -501,7 +438,6 @@ def init_workspace(paths: DuctorPaths) -> None:
         logger.exception("Failed to deploy rule files")
 
     ensure_task_rule_files(paths.cron_tasks_dir)
-    sync_rule_files(paths.workspace)
     _smart_merge_config(paths)
     _clean_orphan_symlinks(paths)
     sync_skills(paths)
@@ -758,22 +694,19 @@ def inject_runtime_environment(
     )
 
 
-_RULE_SYNC_INTERVAL = 10.0  # seconds
+_RULE_BACKFILL_INTERVAL = 10.0  # seconds
 
 
-async def watch_rule_files(workspace: Path, *, interval: float = _RULE_SYNC_INTERVAL) -> None:
-    """Continuously sync CLAUDE.md <-> AGENTS.md <-> GEMINI.md across the workspace.
+async def watch_rule_files(workspace: Path, *, interval: float = _RULE_BACKFILL_INTERVAL) -> None:
+    """Backfill missing cron provider rule files every *interval* seconds.
 
-    Every *interval* seconds:
-    1. ``ensure_task_rule_files`` adds missing rule files to existing cron
-       tasks (e.g. GEMINI.md after a new provider was authenticated).
-    2. ``sync_rule_files`` propagates content changes across all rule files.
+    Only the cron_tasks directory's direct children are inspected. Existing
+    rule contents are never propagated between sibling filenames.
     """
     cron_tasks_dir = workspace / "cron_tasks"
     while True:
         await asyncio.sleep(interval)
         try:
             await asyncio.to_thread(ensure_task_rule_files, cron_tasks_dir)
-            await asyncio.to_thread(sync_rule_files, workspace)
         except Exception:
-            logger.exception("Rule file sync failed")
+            logger.exception("Cron rule backfill failed")

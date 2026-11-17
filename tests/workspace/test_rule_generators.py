@@ -37,6 +37,32 @@ def seed_parent(home: Path, names=NAMES) -> Path:
     return cron
 
 
+@pytest.mark.parametrize("names", [NAMES, ("GEMINI.md",), ("AGENTS.md",), ()])
+def test_rename_renders_parent_provider_names(tmp_path: Path, load_tool, names) -> None:
+    cron = seed_parent(tmp_path, names)
+    old = cron / "old"
+    old.mkdir()
+    for name in names or ("CLAUDE.md",):
+        (old / name).write_text("old instructions")
+    tool = load_tool("cron_tools", "cron_edit")
+    renamed, _, _ = tool._rename_task_folder(old_task_folder="old", old_id="old", new_name="new")
+    assert renamed
+    content = [(cron / "new" / n).read_text() for n in names or ("CLAUDE.md",)]
+    assert len(set(content)) == 1
+    assert "new_MEMORY.md" in content[0]
+    assert {p.name for p in (cron / "new").iterdir()} == set(names or ("CLAUDE.md",))
+
+
+@pytest.mark.parametrize("names", [NAMES, ("GEMINI.md",), ("AGENTS.md",), ()])
+def test_webhook_creates_parent_provider_names(tmp_path: Path, load_tool, names) -> None:
+    cron = seed_parent(tmp_path, names)
+    tool = load_tool("webhook_tools", "webhook_add")
+    tool._create_task_folder("hook", "Hook", "Description")
+    expected = set(names or ("CLAUDE.md",))
+    assert {p.name for p in (cron / "hook").iterdir() if p.name in NAMES} == expected
+    assert len({(cron / "hook" / n).read_text() for n in expected}) == 1
+
+
 @pytest.mark.parametrize("name", NAMES)
 def test_rename_never_writes_through_rule_file_link(tmp_path: Path, load_tool, name: str) -> None:
     cron = seed_parent(tmp_path)
@@ -49,9 +75,11 @@ def test_rename_never_writes_through_rule_file_link(tmp_path: Path, load_tool, n
     old.mkdir()
     (old / name).symlink_to(target)
     tool = load_tool("cron_tools", "cron_edit")
-    tool._rename_task_folder(old_task_folder="old", old_id="old", new_name="new")
+    with pytest.raises(ValueError, match="Unsafe task rule file"):
+        tool._rename_task_folder(old_task_folder="old", old_id="old", new_name="new")
     assert (target.read_bytes(), target.stat().st_mtime_ns) == before
-    assert (cron / "new" / name).is_symlink()
+    assert (cron / "old" / name).is_symlink()
+    assert not (cron / "new").exists()
 
 
 @pytest.mark.parametrize("generator", ["rename", "webhook"])
@@ -74,10 +102,12 @@ def test_generators_skip_linked_directories(
     before = {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in project.iterdir()}
     if generator == "rename":
         tool = load_tool("cron_tools", "cron_edit")
-        tool._rename_task_folder(old_task_folder="old", old_id="old", new_name="new")
+        with pytest.raises(ValueError, match="Unsafe task folder"):
+            tool._rename_task_folder(old_task_folder="old", old_id="old", new_name="new")
     else:
         tool = load_tool("webhook_tools", "webhook_add")
-        tool._create_task_folder("old", "Hook", "Description")
+        with pytest.raises(ValueError, match="Unsafe task folder"):
+            tool._create_task_folder("old", "Hook", "Description")
     assert {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in project.iterdir()} == before
 
 
@@ -100,6 +130,7 @@ def test_webhook_checks_rule_file_after_mkdir(
 
     monkeypatch.setattr(Path, "mkdir", mkdir)
     tool = load_tool("webhook_tools", "webhook_add")
-    tool._create_task_folder("hook", "Hook", "Description")
+    with pytest.raises(ValueError, match="Unsafe task rule file"):
+        tool._create_task_folder("hook", "Hook", "Description")
     assert (target.read_bytes(), target.stat().st_mtime_ns) == before
     assert (cron / "hook" / name).is_symlink()

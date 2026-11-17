@@ -2,7 +2,6 @@
 
 from ductor_bot.workspace.cron_tasks import ensure_task_rule_files as ensure_task_rule_files
 from ductor_bot.workspace.init import init_workspace as init_workspace
-from ductor_bot.workspace.init import sync_rule_files as sync_rule_files
 from ductor_bot.workspace.init import watch_rule_files as watch_rule_files
 from ductor_bot.workspace.loader import read_file as read_file
 from ductor_bot.workspace.loader import read_mainmemory as read_mainmemory
@@ -24,7 +23,6 @@ __all__ = [
     "resolve_paths",
     "resolve_project_root",
     "sync_bundled_skills",
-    "sync_rule_files",
     "sync_skills",
     "watch_rule_files",
     "watch_skill_sync",

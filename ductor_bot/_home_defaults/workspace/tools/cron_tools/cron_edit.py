@@ -17,12 +17,14 @@ import sys
 from typing import Any
 
 from _shared import (
+    _RULE_FILENAMES,
     CRON_TASKS_DIR,
     DELIVERY_MODES,
     DUCTOR_HOME,
     JOBS_PATH,
     available_job_ids,
     describe_job,
+    detect_rule_filenames,
     find_job_by_id_or_task_folder,
     load_jobs_strict,
     read_user_timezone,
@@ -228,7 +230,7 @@ def _rename_task_folder(
         rule_write_allowed(DUCTOR_HOME, CRON_TASKS_DIR / name)
         for name in (old_task_folder, new_name)
     ):
-        return False, False, notes
+        raise ValueError("Unsafe task folder: rename through a symbolic link or outside the agent home is not allowed")
     old_folder = safe_task_dir(old_task_folder)
     new_folder = safe_task_dir(new_name)
 
@@ -241,6 +243,15 @@ def _rename_task_folder(
             f"Task folder cron_tasks/{old_task_folder} did not exist; JSON was updated only."
         )
         return False, False, notes
+
+    rule_filenames = set(detect_rule_filenames())
+    rule_filenames.update(
+        name
+        for name in _RULE_FILENAMES
+        if (old_folder / name).exists() or (old_folder / name).is_symlink()
+    )
+    if not all(rule_write_allowed(DUCTOR_HOME, old_folder / name) for name in rule_filenames):
+        raise ValueError("Unsafe task rule file: rename through a symbolic link is not allowed")
 
     old_folder.rename(new_folder)
 
@@ -261,11 +272,13 @@ def _rename_task_folder(
         notes.append("No legacy memory file found to rename.")
 
     rule_content = render_cron_task_claude_md(new_name)
-    for filename in ("CLAUDE.md", "AGENTS.md"):
+    for filename in sorted(rule_filenames):
         target = new_folder / filename
-        if rule_write_allowed(DUCTOR_HOME, target):
-            target.write_text(rule_content, encoding="utf-8")
-    notes.append("Updated CLAUDE.md/AGENTS.md for renamed memory file reference.")
+        if not rule_write_allowed(DUCTOR_HOME, target):
+            raise ValueError("Unsafe task rule file: rename through a symbolic link is not allowed")
+        target.write_text(rule_content, encoding="utf-8")
+
+    notes.append("Updated provider rule files for renamed memory file reference.")
 
     return True, memory_renamed, notes
 

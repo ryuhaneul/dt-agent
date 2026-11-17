@@ -169,3 +169,24 @@ def test_backfill_tolerates_disappearing_task(
 
     monkeypatch.setattr(Path, method, disappeared)
     assert ensure_task_rule_files(paths.cron_tasks_dir) == 0
+
+
+@pytest.mark.parametrize("resolved_target", [False, True])
+@pytest.mark.parametrize("linked_child", [False, True])
+def test_home_symlink_is_allowed_while_child_symlinks_are_rejected(
+    tmp_path, resolved_target, linked_child
+):
+    from ductor_bot.workspace.rules_boundary import rule_write_allowed
+
+    real = tmp_path / "real"
+    real.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(real, target_is_directory=True)
+    if linked_child:
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (real / "workspace").symlink_to(outside, target_is_directory=True)
+    else:
+        (real / "workspace").mkdir()
+    target = (real if resolved_target else alias) / "workspace" / "AGENTS.md"
+    assert rule_write_allowed(alias, target) is not linked_child

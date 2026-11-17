@@ -48,10 +48,9 @@ Important runtime paths:
 4. ensure required directories
 5. `RulesSelector(paths).deploy_rules()`
 6. `ensure_task_rule_files(paths.cron_tasks_dir)`
-7. `sync_rule_files(paths.workspace)`
-8. `_smart_merge_config(paths)`
-9. `_clean_orphan_symlinks(paths)`
-10. `sync_skills(paths)`
+7. `_smart_merge_config(paths)`
+8. `_clean_orphan_symlinks(paths)`
+9. `sync_skills(paths)`
 
 Idempotent by design (called from multiple startup paths).
 
@@ -117,28 +116,25 @@ Deployment outputs per authenticated provider:
 
 rule-file names above.
 
-Cleanup removes stale provider files for unauthenticated providers, except inside `workspace/cron_tasks/` (user-owned task rules).
+Cleanup removes stale provider files only at directories with package rule templates,
+except `workspace/cron_tasks/` (preserved task rules). Repositories, arbitrary work
+folders, nested skills and other agents' homes are not cleanup targets. Deployment,
+cleanup and cron rule generation skip symbolic links in any destination component,
+including the rule file itself, and reject paths outside the agent home.
 
-## Rule sync (`sync_rule_files`)
+## Startup deployment and cron rule backfill
 
-Recursive mtime-based sync for:
+Provider rule filenames receive the same selected template at startup. There is no
+periodic content synchronization or newest-mtime selection. Editing one filename
+while the bot is running does not update its siblings. Static deployment files are
+replaced from their templates on the next startup; existing cron task rule contents
+are preserved. Change task behavior in `TASK_DESCRIPTION.md`.
 
-- `CLAUDE.md`
-- `AGENTS.md`
-- `GEMINI.md`
-
-Per directory:
-
-- pick newest existing file
-- copy to outdated existing siblings
-- missing siblings are generally not created, except task-folder backfill via `ensure_task_rule_files(...)`
-
-Background watcher: `watch_rule_files(workspace, interval=10s)`.
-
-Watcher detail per cycle:
-
-1. `ensure_task_rule_files(cron_tasks_dir)` backfills missing provider rule files in existing task folders.
-2. `sync_rule_files(workspace)` propagates newest content to older sibling rule files.
+`watch_rule_files(workspace, interval=10s)` only calls
+`ensure_task_rule_files(workspace / "cron_tasks")`. It inspects direct task children
+and adds missing provider filenames using an existing task rule file. It never
+walks the workspace or agent home recursively and never overwrites existing task
+rule contents. Symlinked task directories, ancestors or rule files are skipped.
 
 ## Runtime environment injection
 
@@ -173,7 +169,7 @@ Rule file selection is based on which provider rule files exist in the parent `c
 
 Path traversal protection is enforced for create/delete operations.
 
-`sync_rule_files()` itself only updates already-existing rule files by mtime. Missing task-folder rule files are created by `ensure_task_rule_files(...)` in init and watcher cycles.
+Missing task-folder rule files are created by `ensure_task_rule_files(...)` at startup and every 10 seconds. Cron rename and webhook task creation use the same provider filenames as cron creation, based on the parent directory, with a `CLAUDE.md` fallback.
 
 ## Skill sync summary
 

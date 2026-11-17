@@ -335,10 +335,15 @@ Zone rules (`workspace/init.py`):
 - Zone 3 seed-once for other files
 - `RULES*.md` templates are selected/deployed by `RulesSelector`
 
-Rule sync:
+Rule deployment and backfill:
 
-- recursive mtime sync for `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`
-- task-folder provider rules backfilled by `ensure_task_rule_files(...)`
+- provider rule files receive the selected template at startup; no periodic content sync
+- only direct cron task folders are checked for missing provider filenames every 10 seconds
+- stale cleanup is limited to template deployment locations and preserves cron task rules
+- writes and deletion reject symlink destinations or ancestors and paths outside the agent home
+- repositories, nested skills and arbitrary work folders are not scanned or modified
+- editing a rule filename does not propagate to siblings; static rules are redeployed on startup,
+  while existing cron rules are preserved (edit task behavior in `TASK_DESCRIPTION.md`)
 
 ## Multi-Agent Notes
 

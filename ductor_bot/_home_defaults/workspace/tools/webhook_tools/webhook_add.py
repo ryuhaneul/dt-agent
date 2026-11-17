@@ -29,6 +29,7 @@ from _shared import (
     save_hooks,
 )
 
+from ductor_bot.workspace.cron_tasks import _detect_rule_filenames
 from ductor_bot.workspace.rules_boundary import rule_write_allowed
 
 _TUTORIAL = """\
@@ -147,7 +148,13 @@ EXAMPLES:
 def _create_task_folder(name: str, title: str, description: str) -> Path:
     """Create a cron_task workspace folder if it does not exist."""
     task_dir = CRON_TASKS_DIR / name
-    if not rule_write_allowed(DUCTOR_HOME, task_dir) or task_dir.exists():
+    if not rule_write_allowed(DUCTOR_HOME, task_dir):
+        raise ValueError("Unsafe task folder: creation through a symbolic link or outside the agent home is not allowed")
+    rule_filenames = _detect_rule_filenames(CRON_TASKS_DIR)
+    if not all(rule_write_allowed(DUCTOR_HOME, task_dir / name) for name in rule_filenames):
+        raise ValueError("Unsafe task rule file: creation through a symbolic link is not allowed")
+
+    if task_dir.exists():
         return task_dir
 
     task_dir.mkdir(parents=True, exist_ok=True)
@@ -170,10 +177,13 @@ You are an **automated agent** triggered by a webhook. Complete your task autono
 - Do not modify files outside this task folder unless explicitly instructed by the user or the assigned TASK_DESCRIPTION.md.
 - Use `.venv` for Python dependencies if needed.
 """
-    for filename in ("CLAUDE.md", "AGENTS.md"):
+    for filename in rule_filenames:
         target = task_dir / filename
-        if rule_write_allowed(DUCTOR_HOME, target):
-            target.write_text(claude_content, encoding="utf-8")
+        if not rule_write_allowed(DUCTOR_HOME, target):
+            raise ValueError(
+                "Unsafe task rule file: creation through a symbolic link is not allowed"
+            )
+        target.write_text(claude_content, encoding="utf-8")
 
     task_desc = f"""\
 # {title}
@@ -337,7 +347,11 @@ def main() -> None:
     if args.mode == "cron_task":
         task_folder = sanitize_name(args.task_folder)
         folder_existed = (CRON_TASKS_DIR / task_folder).exists()
-        _create_task_folder(task_folder, args.title, args.description)
+        try:
+            _create_task_folder(task_folder, args.title, args.description)
+        except ValueError as exc:
+            print(json.dumps({"error": str(exc)}))
+            sys.exit(1)
         folder_created = not folder_existed
 
     # Generate per-hook bearer token (only for bearer mode)

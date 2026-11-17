@@ -30,7 +30,7 @@ class RulesSelector:
     - AGENTS.md (created if Codex and/or Grok authenticated — both harnesses
       load project rules from AGENTS.md)
     - GEMINI.md (created if Gemini authenticated)
-    - All synchronized via sync_rule_files() when multiple exist
+    - All selected names receive the same template at startup
 
     Usage:
         selector = RulesSelector(paths)

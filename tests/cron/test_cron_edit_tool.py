@@ -116,9 +116,9 @@ def test_cron_edit_rename_updates_json_and_folder(tmp_path: Path) -> None:
     assert new_dir.is_dir()
     assert (new_dir / "new-name_MEMORY.md").exists()
     claude = (new_dir / "CLAUDE.md").read_text()
-    agents = (new_dir / "AGENTS.md").read_text()
     assert "new-name_MEMORY.md" in claude
-    assert agents == claude
+    # No provider rules in the parent: creation and rename both fall back to Claude.
+    assert not (new_dir / "AGENTS.md").exists()
 
 
 def test_cron_edit_disable_then_enable(tmp_path: Path) -> None:
@@ -327,3 +327,117 @@ def test_cron_edit_keeps_the_run_status_the_manager_saved(tmp_path: Path) -> Non
     assert result.returncode == 0
     job = _job(tmp_path, "status-moved")
     assert (job["last_run_status"], job["last_delivery_status"]) == ("success", "ok")
+
+
+@pytest.mark.parametrize("parent_rule", ["CLAUDE.md", "AGENTS.md"])
+def test_rename_rewrites_existing_and_detected_provider_rules(tmp_path, parent_rule):
+    _add_job(tmp_path, "old-name")
+    tasks = tmp_path / "workspace" / "cron_tasks"
+    (tasks / parent_rule).write_text("selected provider")
+    (tasks / "old-name" / "AGENTS.md").write_text("Read old-name_MEMORY.md")
+    result = _run(tmp_path, TOOL_EDIT, ["old-name", "--name", "new-name"])
+    assert result.returncode == 0
+    for filename in ["CLAUDE.md", "AGENTS.md"]:
+        content = (tasks / "new-name" / filename).read_text()
+        assert "new-name_MEMORY.md" in content
+        assert "old-name_MEMORY.md" not in content
+
+
+@pytest.mark.parametrize("filename", ["CLAUDE.md", "AGENTS.md", "GEMINI.md"])
+@pytest.mark.parametrize("dangling", [False, True])
+def test_rename_refuses_individual_rule_link_without_registry_change(tmp_path, filename, dangling):
+    home = tmp_path / "home"
+    home.mkdir()
+    _add_job(home, "old-name")
+    old = home / "workspace" / "cron_tasks" / "old-name"
+    outside = tmp_path / "outside.md"
+    if not dangling:
+        outside.write_text("outside sentinel")
+    rule = old / filename
+    if rule.exists():
+        rule.unlink()
+    rule.symlink_to(outside)
+    before = (home / "cron_jobs.json").read_bytes()
+    result = _run(home, TOOL_EDIT, ["old-name", "--name", "new-name"])
+    code = result.returncode
+    assert code == 1
+    assert (home / "cron_jobs.json").read_bytes() == before
+    assert old.is_dir()
+    assert rule.is_symlink()
+    assert not (old.parent / "new-name").exists()
+    if not dangling:
+        assert outside.read_text() == "outside sentinel"
+
+
+@pytest.mark.parametrize("filename", ["CLAUDE.md", "AGENTS.md", "GEMINI.md"])
+def test_webhook_refuses_individual_rule_link_without_registry_change(tmp_path, filename):
+    home = tmp_path / "home"
+    tasks = home / "workspace" / "cron_tasks"
+    task = tasks / "existing"
+    task.mkdir(parents=True)
+    (tasks / filename).write_text("selected provider")
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside sentinel")
+    (task / filename).symlink_to(outside)
+    hooks = home / "webhooks.json"
+    hooks.write_text('{"hooks": []}\n')
+    before = hooks.read_bytes()
+    tool = TOOL_EDIT.parents[1] / "webhook_tools" / "webhook_add.py"
+    result = _run(
+        home,
+        tool,
+        [
+            "--name",
+            "hook",
+            "--title",
+            "Hook",
+            "--description",
+            "Test",
+            "--mode",
+            "cron_task",
+            "--task-folder",
+            "existing",
+            "--prompt-template",
+            "Hello",
+        ],
+    )
+    code = result.returncode
+    assert code == 1
+    assert hooks.read_bytes() == before
+    assert outside.read_text() == "outside sentinel"
+    assert (task / filename).is_symlink()
+
+
+@pytest.mark.parametrize("operation", ["rename", "webhook"])
+def test_tools_accept_symlinked_home_but_keep_task_boundary(tmp_path, operation):
+    home = tmp_path / "real-home"
+    home.mkdir()
+    _add_job(home, "old-name")
+    alias = tmp_path / "alias-home"
+    alias.symlink_to(home, target_is_directory=True)
+    if operation == "rename":
+        result = _run(alias, TOOL_EDIT, ["old-name", "--name", "new-name"])
+        expected = "new-name"
+    else:
+        tool = TOOL_EDIT.parents[1] / "webhook_tools" / "webhook_add.py"
+        result = _run(
+            alias,
+            tool,
+            [
+                "--name",
+                "hook",
+                "--title",
+                "Hook",
+                "--description",
+                "Test",
+                "--mode",
+                "cron_task",
+                "--task-folder",
+                "new-hook",
+                "--prompt-template",
+                "Hello",
+            ],
+        )
+        expected = "new-hook"
+    assert result.returncode == 0
+    assert (home / "workspace" / "cron_tasks" / expected / "CLAUDE.md").is_file()

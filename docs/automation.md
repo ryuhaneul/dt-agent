@@ -95,15 +95,19 @@ Typical task folder:
   scripts/
 ```
 
-Rule files are kept in sync automatically (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`) based on newest mtime per directory.
+Provider rule files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`) are deployed from the
+same selected template at startup. Existing cron task rule contents are preserved.
+Every 10 seconds, `watch_rule_files` only backfills missing provider filenames in
+direct cron task folders; it does not recursively scan the workspace or agent home.
+Cron rename and webhook task creation render every provider name present in the
+parent `cron_tasks/` directory, falling back to `CLAUDE.md` if none are present.
+Rule writes and stale cleanup reject symlink files, directories and ancestors.
+Stale cleanup only touches template deployment locations and preserves cron task rules.
 
-Rule-file sync behavior (all workspace directories, recursive):
-
-- files: `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`
-- source of truth per directory: newest file by mtime
-- sync runs at init (`sync_rule_files`) and continuously (`watch_rule_files`, every 10s)
-- result: edits are propagated to older existing sibling rule files
-- missing siblings are generally not auto-created, except cron task folders where `ensure_task_rule_files(...)` backfills missing provider rule files
+Editing one rule file while running does not propagate its contents to sibling
+filenames. Static framework rules are overwritten from their templates on the next
+startup. Change cron task behavior in `TASK_DESCRIPTION.md`. Repositories and other
+work folders are outside rule deployment, backfill and stale cleanup.
 
 Runtime behavior:
 

@@ -190,7 +190,7 @@ class ObserverManager:
             await self.memory_lint.start()
 
         self._rule_sync_task = asyncio.create_task(watch_rule_files(self._paths.workspace))
-        logger.info("Rule file watcher started (CLAUDE.md <-> AGENTS.md <-> GEMINI.md)")
+        logger.info("Cron rule backfill watcher started")
 
         self._skill_sync_task = asyncio.create_task(watch_skill_sync(self._paths))
         logger.info("Skill sync watcher started")
