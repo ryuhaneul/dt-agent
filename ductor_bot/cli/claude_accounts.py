@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import time
 from collections.abc import Callable
@@ -405,8 +406,8 @@ class SlotRegistry:
             return SlotSnapshot()
         try:
             raw = json.loads(self._state_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
-            logger.warning("Failed to read %s: %s", self._state_path, type(exc).__name__)
+        except (ValueError, RecursionError, OSError) as exc:
+            logger.warning("Failed to read %s: %s", self._state_path, exc)
             return SlotSnapshot()
         if not isinstance(raw, dict):
             return SlotSnapshot()
@@ -416,9 +417,11 @@ class SlotRegistry:
             for key, value in cooldowns_raw.items():
                 if isinstance(key, str) and isinstance(value, (int, float)):
                     try:
-                        cooldowns[key] = float(value)
+                        cooldown = float(value)
                     except OverflowError:
                         continue
+                    if math.isfinite(cooldown):
+                        cooldowns[key] = cooldown
         last_used = raw.get("last_used")
         if not isinstance(last_used, str):
             last_used = None

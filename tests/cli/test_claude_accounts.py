@@ -268,11 +268,30 @@ class TestSlotRegistry:
             snapshot = SlotRegistry(path).load()
         assert snapshot == SlotSnapshot()
         assert "Failed to read" in caplog.text
+        assert "invalid start byte" in caplog.text
         assert "private-state-content" not in caplog.text
         assert path.read_bytes() == contents
 
-    @pytest.mark.parametrize("overflow", [10**400, -(10**400)], ids=["positive", "negative"])
-    def test_load_skips_overflow_preserving_valid_state(self, tmp_path, overflow):
+    @pytest.mark.parametrize(
+        "contents",
+        [b'{"cooldowns":{"bad":' + b"9" * 4301 + b"}}", b"[" * 2000 + b"]" * 2000],
+        ids=["integer-limit", "deep-json"],
+    )
+    def test_load_invalid_json_limits_returns_empty_and_warns(self, tmp_path, caplog, contents):
+        path = tmp_path / "state.json"
+        path.write_bytes(contents)
+        with caplog.at_level(logging.WARNING):
+            snapshot = SlotRegistry(path).load()
+        assert snapshot == SlotSnapshot()
+        assert "Failed to read" in caplog.text
+        assert path.read_bytes() == contents
+
+    @pytest.mark.parametrize(
+        "overflow",
+        [10**400, -(10**400), float("nan"), float("inf"), float("-inf")],
+        ids=["positive-overflow", "negative-overflow", "nan", "infinity", "negative-infinity"],
+    )
+    def test_load_skips_invalid_numbers_preserving_valid_state(self, tmp_path, overflow):
         path = tmp_path / "state.json"
         mtimes = {"credentials.json": None, ".credentials.json": None}
         path.write_text(
@@ -296,8 +315,11 @@ class TestSlotRegistry:
             b"not json",
             b"private-state-content\xff",
             json.dumps({"cooldowns": {"bad": 10**400, "good": 99}}).encode(),
+            b'{"cooldowns":{"bad":' + b"9" * 4301 + b"}}",
+            b"[" * 2000 + b"]" * 2000,
+            b'{"cooldowns":{"nan":NaN,"inf":Infinity,"neg":-Infinity,"overflow":1e400,"good":99}}',
         ],
-        ids=["invalid-json", "non-utf8", "overflow"],
+        ids=["invalid-json", "non-utf8", "overflow", "integer-limit", "deep-json", "nonfinite"],
     )
     def test_update_recovers_corrupt_state(self, tmp_path, contents):
         path = tmp_path / "state.json"

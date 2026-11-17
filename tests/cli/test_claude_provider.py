@@ -2108,8 +2108,11 @@ async def test_expired_probe_unrelated_error_does_not_append_relogin_hint(
     [
         b"private-state-content\xff",
         json.dumps({"cooldowns": {"bad": 10**400, "good": 99}}).encode(),
+        b'{"cooldowns":{"bad":' + b"9" * 4301 + b"}}",
+        b"[" * 2000 + b"]" * 2000,
+        b'{"cooldowns":{"bad":NaN,"inf":Infinity,"neg":-Infinity,"overflow":1e400,"good":99}}',
     ],
-    ids=["non-utf8", "overflow"],
+    ids=["non-utf8", "overflow", "integer-limit", "deep-json", "nonfinite"],
 )
 async def test_corrupt_slot_state_does_not_block_requests(tmp_path, monkeypatch, driver, contents):
     from ductor_bot.cli.claude_accounts import SlotRegistry
@@ -2155,6 +2158,6 @@ async def test_corrupt_slot_state_does_not_block_requests(tmp_path, monkeypatch,
     assert [Path(row["auth"]).name for row in _read_slot_calls(calls)] == ["claude-a", "claude-b"]
     snapshot = registry.load()
     assert snapshot.cooldowns["claude-a"] > 0
-    assert "bad" not in snapshot.cooldowns
+    assert not {"bad", "inf", "neg", "overflow"} & snapshot.cooldowns.keys()
     if b'"good"' in contents:
         assert snapshot.cooldowns["good"] == 99
