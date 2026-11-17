@@ -662,7 +662,7 @@ class WebSocket extends Element{
   close(){this.closed=true;this.emit('close')}
 }
 const storage=new Map(), calls=[], notices=[], routes=[];
-let topicsHold=null;
+let topicsHold=null, failGet=null;
 let blockedStorage=false, session=true, coarse=false, failSend=null, turnNumber=0;
 const localStorage={getItem:key=>{if(blockedStorage)throw Error('blocked');return storage.get(key)??null},setItem:(key,value)=>{if(blockedStorage)throw Error('blocked');storage.set(key,value)}};
 const makeEntry=(seq,extras={})=>({id:`e${seq}`,seq,ts:'2025-01-01T01:01:00Z',role:'bot',source:'telegram',kind:'message',text:`Entry ${seq}`,imported:seq<0,mirror:null,...extras});
@@ -684,6 +684,7 @@ async function fetch(url,options={}){
   if(parsed.pathname==='/api/i18n')return response(200,{lang:'en',strings});
   if(parsed.pathname==='/api/auth/state')return response(200,{authenticated:session,csrf:'fake-csrf'});
   if(!session)return response(403,{error:'auth_required'});
+  if(parsed.pathname===failGet)return response(503,{error:'history_busy'});
   if(options.method==='POST'){
     assert.equal(options.headers['X-Dtw-Client'],'web');assert.equal(options.headers['X-Dtw-Csrf'],'fake-csrf');
     if(parsed.pathname.endsWith('/abort'))return response(200,{killed:1});
@@ -781,6 +782,12 @@ final.mirror={state:'failed'};await chat.namespace.handleEvent({type:'outbox',pe
 // Telegram busy displays metadata only, never a synthetic body or web stop action.
 await chat.namespace.handleEvent({type:'busy',tid:'1.2',busy:true,source:'telegram'});assert.ok(thread.innerHTML.includes(strings['chat.answering']));assert.equal(send.className,'btn btn-primary');
 await chat.namespace.handleEvent({type:'busy',tid:'1.2',busy:false,source:'telegram'});
+for(const path of ['/api/topics','/api/topics/1.2/messages']){
+  failGet=path;const before=notices.length;
+  await chat.namespace.handleEvent({type:'bridge',up:true});await flush();
+  assert.equal(notices.length,before+1);assert.equal(notices.at(-1),'error.generic');
+  failGet=null;await chat.namespace.handleEvent({type:'bridge',up:true});await flush();
+}
 failSend='web_turn_running';input.value='retry me';send.emit('click');await flush();assert.equal(input.value,'retry me');assert.equal(notices.at(-1),'error.web_turn_running');failSend=null;
 const bus=makeEntry(207,{role:'event',source:'system',kind:'task_result',status:'failed',title:'Task <img>',text:'failure',mirror:{state:'pending'}});historyA.push(bus);await chat.namespace.handleEvent({type:'entry',tid:'1.2',entry:bus});assert.ok(thread.innerHTML.includes('badge-down'));assert.ok(thread.innerHTML.includes('Task &lt;img&gt;'));
 // Hidden views keep unseen entries unread. Local storage denial never breaks selection.

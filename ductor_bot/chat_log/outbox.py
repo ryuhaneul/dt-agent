@@ -9,6 +9,7 @@ import os
 import re
 import tempfile
 import time
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -368,13 +369,27 @@ class Outbox:
                 logger.warning("Outbox query skipped %s: %s", path.name, type(exc).__name__)
         return items
 
-    async def mirror_state(self, history_id: str) -> Literal["pending", "sent", "failed"] | None:
+    async def mirror_states(
+        self, history_ids: Iterable[str]
+    ) -> dict[str, Literal["pending", "sent", "failed"] | None]:
+        states: dict[str, Literal["pending", "sent", "failed"] | None] = dict.fromkeys(history_ids)
+        if not states:
+            return states
         async with self._lock:
             items = await complete_write(self._pending, skip_unreadable=True)
             items += await complete_write(self._recent_done)
-        matching = [item for item in items if item.history_id == history_id]
-        if not matching:
-            return None
-        if any(item.state == "pending" for item in matching):
-            return "pending"
-        return "sent" if all(item.state == "sent" for item in matching) else "failed"
+        for item in items:
+            history_id = item.history_id
+            if history_id is None or history_id not in states:
+                continue
+            current = states[history_id]
+            if item.state == "pending" or current == "pending":
+                states[history_id] = "pending"
+            elif item.state != "sent" or current == "failed":
+                states[history_id] = "failed"
+            else:
+                states[history_id] = "sent"
+        return states
+
+    async def mirror_state(self, history_id: str) -> Literal["pending", "sent", "failed"] | None:
+        return (await self.mirror_states([history_id]))[history_id]

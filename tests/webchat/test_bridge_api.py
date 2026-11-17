@@ -8,6 +8,7 @@ import json
 import logging
 import socket
 import stat
+import sys
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1953,3 +1954,166 @@ async def test_password_change_route_rotates_generation(bridge, monkeypatch):
     assert result["credential_generation"] != before["credential_generation"]
     after = await (await client.get(f"{_PREFIX}/auth/state", headers=headers())).json()
     assert result["credential_generation"] == after["credential_generation"]
+
+
+async def test_history_queries_bound_file_reads_and_preserve_pagination(conversation, monkeypatch):
+    from unittest.mock import Mock
+
+    h = conversation
+    for index in range(12):
+        await h.runtime.history.append("-123.7", Entry(role="user", source="web", text=str(index)))
+    await h.client.get(f"{_PREFIX}/topics", headers=headers())
+    full_read = Mock(wraps=h.runtime.history._read)
+    read = AsyncMock(wraps=h.runtime.history.read)
+    pending = Mock(wraps=h.runtime.outbox._pending)
+    done = Mock(wraps=h.runtime.outbox._recent_done)
+    monkeypatch.setattr(h.runtime.history, "_read", full_read)
+    monkeypatch.setattr(h.runtime.history, "read", read)
+    monkeypatch.setattr(h.runtime.outbox, "_pending", pending)
+    monkeypatch.setattr(h.runtime.outbox, "_recent_done", done)
+    response = await h.client.get(f"{_PREFIX}/topics", headers=headers())
+    topic = (await response.json())["topics"][0]
+    assert (topic["count"], topic["preview"], topic["imported_count"]) == (12, "11", 0)
+    response = await h.client.get(f"{_PREFIX}/topics/-123.7/messages?limit=5", headers=headers())
+    body = await response.json()
+    assert [row["seq"] for row in body["entries"]] == [8, 9, 10, 11, 12]
+    assert all(row["mirror"] is None for row in body["entries"])
+    assert body["has_more"] is True
+    assert full_read.call_count == 0
+    assert read.call_count <= 1
+    assert pending.call_count == done.call_count == 1
+
+
+async def test_duplicate_sequence_has_more_and_topic_summary_semantics(conversation):
+    from dataclasses import asdict
+
+    h = conversation
+    rows = [
+        Entry(role="user", source="import", text=str(i), seq=7, imported=True, ts=None)
+        for i in range(3)
+    ]
+    path = h.runtime.history._path("-123.7")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(asdict(row)) + "\n" for row in rows))
+    response = await h.client.get(f"{_PREFIX}/topics/-123.7/messages?limit=2", headers=headers())
+    body = await response.json()
+    assert [row["id"] for row in body["entries"]] == [row.id for row in rows[-2:]]
+    assert body["has_more"] is False
+    response = await h.client.get(f"{_PREFIX}/topics", headers=headers())
+    topic = (await response.json())["topics"][0]
+    assert (topic["last_ts"], topic["preview"], topic["count"], topic["imported_count"]) == (
+        None,
+        "2",
+        3,
+        3,
+    )
+
+
+async def test_topics_match_full_read_reference_including_empty_imported(conversation, monkeypatch):
+    from ductor_bot.chat_log.history import HistorySummary
+
+    h = conversation
+    sessions = [
+        SessionData(-123, topic_id=topic_id, last_active="2000-01-01T00:00:00Z")
+        for topic_id in (7, 8)
+    ]
+    await h.bot._orch._sessions._save(
+        {session.session_key.storage_key: session for session in sessions}
+    )
+    # Resolve another source through the registry rather than a session.
+    h.paths.webchat_dir.mkdir(parents=True, exist_ok=True)
+    (h.paths.webchat_dir / "topics.json").write_text(
+        json.dumps(
+            [
+                {
+                    "chat_id": -123,
+                    "topic_id": 9,
+                    "name": "registered",
+                    "created_at": "2020-01-01T00:00:00Z",
+                }
+            ]
+        )
+    )
+    await h.runtime.history.append(
+        "-123.7", Entry(role="user", source="import", text="old", imported=True, seq=-3, ts=None)
+    )
+    await h.runtime.history.append(
+        "unknown",
+        Entry(role="bot", source="import", text="unknown", imported=True, seq=-1, ts=None),
+    )
+    await h.runtime.history.append("-123.9", Entry(role="user", source="web", text="x" * 200))
+    response = await h.client.get(f"{_PREFIX}/topics", headers=headers())
+    indexed = (await response.json())["topics"]
+
+    async def reference(tid):
+        rows = h.runtime.history._read(h.runtime.history._path(tid))
+        return HistorySummary(
+            len(rows), sum(row.imported for row in rows), rows[-1] if rows else None
+        )
+
+    monkeypatch.setattr(h.runtime.history, "summary", reference)
+    response = await h.client.get(f"{_PREFIX}/topics", headers=headers())
+    expected = (await response.json())["topics"]
+    assert indexed == expected
+    by_id = {row["tid"]: row for row in indexed}
+    assert by_id["-123.8"]["group"] == "imported"
+    assert by_id["-123.8"]["preview"] == "0 imported messages"
+    assert by_id["-123.7"]["last_ts"] is None
+    assert len(by_id["-123.9"]["preview"]) == 120
+
+
+@pytest.mark.parametrize("bus_state", ["pending", "sent", "failed"])
+async def test_null_history_id_does_not_match_bus_mirror(conversation, bus_state):
+    h = conversation
+    row = await h.runtime.history.append("-123.7", Entry(role="user", source="web", text="valid"))
+    path = h.runtime.history._path("-123.7")
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(
+            json.dumps({"id": None, "seq": 2, "role": "user", "source": "web", "text": "legacy"})
+            + "\n"
+        )
+    await h.runtime.outbox.enqueue(
+        kind="user_mirror", chat_id=-123, topic_id=7, text="valid", history_id=row.id
+    )
+    bus = await h.runtime.outbox.enqueue(kind="bus", chat_id=-123, topic_id=7, text="delivery")
+    if bus_state == "sent":
+        await h.runtime.outbox.mark_sent(bus.id)
+    elif bus_state == "failed":
+        await h.runtime.outbox.mark_failed(bus.id)
+    response = await h.client.get(f"{_PREFIX}/topics/-123.7/messages", headers=headers())
+    assert response.status == 200
+    entries = (await response.json())["entries"]
+    assert [(entry["id"], entry["mirror"]) for entry in entries] == [
+        (row.id, {"state": "pending"}),
+        (None, None),
+    ]
+
+
+@pytest.mark.parametrize("path", ["topics", "topics/-123.7/messages"])
+async def test_history_lock_timeout_is_retryable_and_recovers(conversation, path):
+    h = conversation
+    await h.runtime.history.append("-123.7", Entry(role="user", source="web", text="saved"))
+    lock_path = h.runtime.history._path("-123.7").with_suffix(".jsonl.lock")
+    holder = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        "import fcntl, sys; "
+        "f = open(sys.argv[1], 'a'); fcntl.flock(f, fcntl.LOCK_EX); "
+        "print('locked', flush=True); sys.stdin.read()",
+        str(lock_path),
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+    )
+    try:
+        assert await holder.stdout.readline() == b"locked\n"
+        response = await h.client.get(f"{_PREFIX}/{path}", headers=headers())
+        assert response.status == 503
+        assert await response.json() == {"error": "history_busy"}
+        assert "WWW-Authenticate" not in response.headers
+        health = await h.client.get(f"{_PREFIX}/health", headers=headers())
+        assert health.status == 200
+    finally:
+        holder.stdin.close()
+        assert await holder.wait() == 0
+    response = await h.client.get(f"{_PREFIX}/{path}", headers=headers())
+    assert response.status == 200

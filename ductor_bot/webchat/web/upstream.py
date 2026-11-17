@@ -39,8 +39,13 @@ class BridgeClient:
             method == "POST"
             and re.fullmatch(r"/topics/[^/]+/(?:abort|messages)", resource) is not None
         )
+        history_read = method == "GET" and (
+            resource == "/topics" or re.fullmatch(r"/topics/[^/]+/messages", resource) is not None
+        )
         timeout = (
-            aiohttp.ClientTimeout(total=45) if topic_mutation or abort else self._client.timeout
+            aiohttp.ClientTimeout(total=45)
+            if topic_mutation or abort or history_read
+            else self._client.timeout
         )
         try:
             async with self._client.request(

@@ -110,6 +110,28 @@ async def test_validation_and_no_constructor_side_effects(tmp_path: Path) -> Non
         await store.read("1", limit=0)
 
 
+@pytest.mark.parametrize("read_only", [False, True])
+async def test_missing_history_reads_do_not_create_locks(tmp_path: Path, read_only: bool) -> None:
+    store = HistoryStore(tmp_path)
+    if read_only:
+        await asyncio.to_thread(tmp_path.chmod, 0o500)
+    try:
+        if read_only:
+            with pytest.raises(PermissionError):
+                (tmp_path / "write-probe").touch()
+        for tid in ("555", "556"):
+            assert await store.read(tid) == []
+            assert await store.read_page(tid) == ([], False)
+            summary = await store.summary(tid)
+            assert summary.count == 0
+            assert summary.imported_count == 0
+            assert summary.last is None
+        assert await asyncio.to_thread(lambda: list(tmp_path.glob("*.lock"))) == []
+        assert await asyncio.to_thread(lambda: list(tmp_path.iterdir())) == []
+    finally:
+        await asyncio.to_thread(tmp_path.chmod, 0o700)
+
+
 @pytest.mark.parametrize("tid", ["1", "-123.7", "0.0"])
 def test_id_roundtrip(tid: str) -> None:
     assert to_tid(from_tid(tid)) == tid
@@ -214,3 +236,175 @@ async def test_unreadable_sequence_checkpoint_falls_back_to_history(tmp_path, mo
 
     monkeypatch.setattr(Path, "read_text", unreadable)
     assert (await HistoryStore(tmp_path).append("1", entry("next"))).seq == last.seq + 1
+
+
+async def test_index_reuses_parsing_and_updates_local_append(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    store = HistoryStore(tmp_path)
+    for index in range(30):
+        await store.append("1", entry(str(index)))
+    assert len(await store.read("1", limit=3)) == 3
+    parser = Mock(wraps=json.loads)
+    monkeypatch.setattr(json, "loads", parser)
+    assert [row.seq for row in await store.read("1", limit=3)] == [28, 29, 30]
+    assert await store.count("1") == 30
+    assert (await store.last("1")).seq == 30
+    assert parser.call_count <= 4
+    parser.reset_mock()
+    await store.append("1", entry("new"))
+    assert await store.count("1") == 31
+    assert parser.call_count == 0
+
+
+async def test_index_randomized_reference_equivalence(tmp_path):  # noqa: C901, PLR0912 - mutation matrix
+    import random
+    from datetime import UTC, datetime, timedelta
+
+    from ductor_bot.chat_log.outbox import Outbox
+    from ductor_bot.chat_log.prune import RetentionPruner
+    from ductor_bot.infra.atomic_io import atomic_bytes_save
+    from ductor_bot.infra.file_lock import exclusive_file_lock
+
+    rng = random.Random(19406)  # noqa: S311 - reproducible test cases
+    store = HistoryStore(tmp_path)
+    other = HistoryStore(tmp_path)
+    path = store._path("1")
+    pruner = RetentionPruner(store, Outbox(tmp_path / "outbox"), tmp_path / "backups")
+    operations = [
+        "append",
+        "import",
+        "duplicate",
+        "replace",
+        "corrupt",
+        "truncate",
+        "delete",
+        "other",
+        "prune",
+        "undo",
+        "valid_tail",
+    ]
+    for step in range(150):
+        operation = operations[step % len(operations)]
+        if operation in {"append", "other"}:
+            writer = store if operation == "append" else other
+            await writer.append("1", entry(str(step)))
+        elif operation == "import":
+            await store.append(
+                "1", entry(str(step), imported=True, seq=-rng.randint(1, 20), ts=None)
+            )
+        elif operation in {"duplicate", "replace", "corrupt", "truncate", "valid_tail"}:
+            with exclusive_file_lock(path):
+                if operation == "replace":
+                    rows = [entry(str(step), seq=rng.randint(-10, 10), ts=None) for _ in range(5)]
+                    atomic_bytes_save(
+                        path, b"".join((json.dumps(asdict(row)) + "\n").encode() for row in rows)
+                    )
+                else:
+                    with path.open("ab") as stream:
+                        if operation == "corrupt":
+                            stream.write(b'\n{invalid}\n{"unexpected":true}\n')
+                        elif operation == "truncate":
+                            stream.write(b'\n{"text":"\xe2\x82')
+                        else:
+                            row = entry(str(step), seq=7)
+                            stream.write(
+                                b"\n"
+                                + json.dumps(asdict(row)).encode()
+                                + (b"\n" if operation == "duplicate" else b"")
+                            )
+        elif operation == "delete":
+            await other.delete("1")
+        elif operation == "undo":
+            await other.remove_imported()
+        else:
+            await store.append(
+                "1", entry("expired", ts=(datetime.now(UTC) - timedelta(days=100)).isoformat())
+            )
+            await pruner.prune(history_days=30)
+        expected = store._read(path)
+        summary = await store.summary("1")
+        assert summary.count == len(expected)
+        assert summary.imported_count == sum(row.imported for row in expected)
+        assert summary.last == (expected[-1] if expected else None)
+        assert await store.count("1") == len(expected)
+        assert await store.last("1") == (expected[-1] if expected else None)
+        for before in (None, -5, 0, 7, 8, 100):
+            limit = rng.randint(1, 10)
+            selected = [row for row in expected if before is None or row.seq < before][-limit:]
+            assert await store.read("1", before=before, limit=limit) == selected
+            page, more = await store.read_page("1", before=before, limit=limit)
+            assert page == selected
+            assert more == bool(selected and any(row.seq < selected[0].seq for row in expected))
+
+
+async def test_index_reads_during_concurrent_append(tmp_path):
+    store, other = HistoryStore(tmp_path), HistoryStore(tmp_path)
+    await store.append("1", entry("first"))
+    await store.read("1")
+
+    async def write():
+        for index in range(50):
+            await other.append("1", entry(str(index)))
+
+    async def read():
+        for _ in range(50):
+            page, more = await store.read_page("1", limit=200)
+            assert [row.seq for row in page] == list(range(1, len(page) + 1))
+            assert not more
+
+    await asyncio.gather(write(), read())
+    assert await store.read("1", limit=200) == store._read(store._path("1"))
+    assert await store.count("1") == 51
+
+
+async def test_index_replacement_identity_and_stale_append_invalidation(tmp_path):
+    import os
+
+    from ductor_bot.infra.atomic_io import atomic_bytes_save
+    from ductor_bot.infra.file_lock import exclusive_file_lock
+
+    store = HistoryStore(tmp_path)
+    first = await store.append("1", entry("first"))
+    assert await store.last("1") == first
+    path = store._path("1")
+    previous = path.stat()
+    replacement = entry("other", seq=first.seq, id=first.id, ts=first.ts)
+    with exclusive_file_lock(path):
+        atomic_bytes_save(
+            path, (json.dumps(asdict(replacement), ensure_ascii=False) + "\n").encode()
+        )
+        os.utime(path, ns=(previous.st_atime_ns, previous.st_mtime_ns))
+    assert path.stat().st_size == previous.st_size
+    assert await store.last("1") == replacement
+    other = HistoryStore(tmp_path)
+    await other.append("1", entry("external"))
+    await store.append("1", entry("local after external"))
+    assert "1" not in store._indexes
+    assert await store.read("1") == store._read(path)
+    assert [row.text for row in await store.read("1")] == [
+        "other",
+        "external",
+        "local after external",
+    ]
+    await other.delete("1")
+    assert await store.read("1") == []
+    assert "1" not in store._indexes
+    await other.append("1", entry("recreated"))
+    assert [row.text for row in await store.read("1")] == ["recreated"]
+
+
+async def test_index_accepts_rows_that_the_full_reader_accepts(tmp_path):
+    # A row with a non-boolean "imported" value still parses as an Entry, so it must
+    # not stop the indexed read or the count.
+    history = HistoryStore(tmp_path)
+    path = history.directory / history_filename("1")
+    path.write_text(
+        '{"role":"user","source":"web","text":"old","seq":1,"imported":null}\n'
+        '{"role":"bot","source":"web","text":"latest","seq":2,"imported":false}\n',
+        encoding="utf-8",
+    )
+    expected = [entry.text for entry in HistoryStore._read(path)][-1:]
+    assert [entry.text for entry in await history.read("1", limit=1)] == expected == ["latest"]
+    assert await history.count("1") == 2
+    assert (await history.read("1", before=2, limit=1))[0].text == "old"

@@ -7,9 +7,10 @@ import contextlib
 import json
 import logging
 import os
+from bisect import bisect_left, bisect_right
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, BinaryIO, Literal
 
 from ductor_bot.chat_log.events import EventHub
 from ductor_bot.chat_log.ids import filename_tid, history_filename, new_id, timestamp, to_tid
@@ -37,12 +38,41 @@ class Entry:
     v: int = 1
 
 
+@dataclass(frozen=True, slots=True)
+class HistorySummary:
+    count: int = 0
+    imported_count: int = 0
+    last: Entry | None = None
+
+
+@dataclass(slots=True)
+class _HistoryIndex:
+    key: tuple[int, int, int, int]
+    rows: list[tuple[int, int, int]]
+    imported_count: int
+    last: Entry | None
+
+
+def _file_key(stream: BinaryIO) -> tuple[int, int, int, int]:
+    info = os.fstat(stream.fileno())
+    return info.st_dev, info.st_ino, info.st_mtime_ns, info.st_size
+
+
+def _parse_entry(line: bytes, path: Path, line_no: int) -> Entry | None:
+    try:
+        return Entry(**json.loads(line.decode("utf-8")))
+    except (ValueError, TypeError):
+        logger.warning("Skipping corrupt history line %s:%d", path.name, line_no)
+        return None
+
+
 class HistoryStore:
     def __init__(self, directory: Path, events: EventHub | None = None) -> None:
         self.directory = directory
         self._events = events
         self._locks: dict[str, asyncio.Lock] = {}
         self._sequences: dict[str, tuple[int, int]] = {}
+        self._indexes: dict[str, _HistoryIndex] = {}
 
     def _lock(self, tid: str) -> asyncio.Lock:
         return self._locks.setdefault(tid, asyncio.Lock())
@@ -66,11 +96,67 @@ class HistoryStore:
         entries = []
         with path.open("rb") as stream:
             for line_no, line in enumerate(stream, 1):
-                try:
-                    entries.append(Entry(**json.loads(line.decode("utf-8"))))
-                except (ValueError, TypeError):
-                    logger.warning("Skipping corrupt history line %s:%d", path.name, line_no)
+                entry = _parse_entry(line, path, line_no)
+                if entry is not None:
+                    entries.append(entry)
         return sorted(entries, key=lambda entry: entry.seq)
+
+    def _index(self, tid: str, stream: BinaryIO) -> _HistoryIndex:
+        key = _file_key(stream)
+        cached = self._indexes.get(tid)
+        if cached is not None and cached.key == key:
+            return cached
+        rows = []
+        imported_count = 0
+        last = None
+        offset = 0
+        path = self._path(tid)
+        for line_no, line in enumerate(stream, 1):
+            entry = _parse_entry(line, path, line_no)
+            if entry is not None:
+                rows.append((entry.seq, offset, len(line)))
+                imported_count += bool(entry.imported)
+                if last is None or entry.seq >= last.seq:
+                    last = entry
+            offset += len(line)
+        rows.sort(key=lambda row: row[0])
+        index = _HistoryIndex(key, rows, imported_count, last)
+        self._indexes[tid] = index
+        return index
+
+    def _query(
+        self, tid: str, before: int | None = None, limit: int = 0
+    ) -> tuple[list[Entry], bool, HistorySummary]:
+        path = self._path(tid)
+        # Missing history is an empty snapshot; existing files still require the lock.
+        if not path.exists():
+            self._indexes.pop(tid, None)
+            return [], False, HistorySummary()
+        with exclusive_file_lock(path):
+            try:
+                stream = path.open("rb")
+            except FileNotFoundError:
+                self._indexes.pop(tid, None)
+                return [], False, HistorySummary()
+            with stream:
+                index = self._index(tid, stream)
+                summary = HistorySummary(len(index.rows), index.imported_count, index.last)
+                if not limit:
+                    return [], False, summary
+                end = (
+                    len(index.rows)
+                    if before is None
+                    else bisect_left(index.rows, before, key=lambda row: row[0])
+                )
+                selected = index.rows[max(0, end - limit) : end]
+                entries = []
+                for _, offset, length in selected:
+                    stream.seek(offset)
+                    entry = _parse_entry(stream.read(length), path, 0)
+                    if entry is not None:
+                        entries.append(entry)
+                more = bool(selected and index.rows[0][0] < selected[0][0])
+                return entries, more, summary
 
     def _append(self, tid: str, entry: Entry) -> Entry:
         path = self._path(tid)
@@ -86,14 +172,27 @@ class HistoryStore:
                 raise ValueError("Imported history requires a negative sequence")
             content = (json.dumps(asdict(saved), ensure_ascii=False) + "\n").encode("utf-8")
             with path.open("ab+") as stream:
+                index = self._indexes.get(tid)
+                if index is not None and index.key != _file_key(stream):
+                    self._indexes.pop(tid, None)
+                    index = None
+                offset = size
                 # Separate an incomplete final line left by an interrupted append.
                 if size:
                     stream.seek(-1, os.SEEK_END)
                     if stream.read(1) != b"\n":
                         stream.write(b"\n")
+                        offset += 1
                 stream.write(content)
                 stream.flush()
                 os.fsync(stream.fileno())
+                if index is not None:
+                    position = bisect_right(index.rows, saved.seq, key=lambda row: row[0])
+                    index.rows.insert(position, (saved.seq, offset, len(content)))
+                    index.imported_count += bool(saved.imported)
+                    if index.last is None or saved.seq >= index.last.seq:
+                        index.last = saved
+                    index.key = _file_key(stream)
             self._sequences[tid] = (max(maximum, saved.seq), path.stat().st_size)
             return saved
 
@@ -105,20 +204,29 @@ class HistoryStore:
             self._events.publish({"type": "entry", "tid": tid, "entry": asdict(saved)})
         return saved
 
-    async def read(self, tid: str, before: int | None = None, limit: int = 100) -> list[Entry]:
+    async def read_page(
+        self, tid: str, before: int | None = None, limit: int = 100
+    ) -> tuple[list[Entry], bool]:
         if not 1 <= limit <= 200:
             raise ValueError("History limit must be between 1 and 200")
         async with self._lock(tid):
-            entries = await asyncio.to_thread(self._read, self._path(tid))
-        return [entry for entry in entries if before is None or entry.seq < before][-limit:]
+            entries, more, _ = await asyncio.to_thread(self._query, tid, before, limit)
+        return entries, more
+
+    async def read(self, tid: str, before: int | None = None, limit: int = 100) -> list[Entry]:
+        entries, _ = await self.read_page(tid, before=before, limit=limit)
+        return entries
+
+    async def summary(self, tid: str) -> HistorySummary:
+        async with self._lock(tid):
+            _, _, summary = await asyncio.to_thread(self._query, tid)
+        return summary
 
     async def count(self, tid: str) -> int:
-        async with self._lock(tid):
-            return len(await asyncio.to_thread(self._read, self._path(tid)))
+        return (await self.summary(tid)).count
 
     async def last(self, tid: str) -> Entry | None:
-        entries = await self.read(tid, limit=1)
-        return entries[0] if entries else None
+        return (await self.summary(tid)).last
 
     def tids(self) -> list[str]:
         tids = []
@@ -136,6 +244,7 @@ class HistoryStore:
             path.unlink(missing_ok=True)
             self._sequence_path(tid).unlink(missing_ok=True)
             self._sequences.pop(tid, None)
+            self._indexes.pop(tid, None)
             return count
 
     async def delete(self, tid: str) -> int:

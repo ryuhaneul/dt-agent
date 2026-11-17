@@ -896,3 +896,59 @@ async def test_unreadable_done_file_does_not_starve_worker_after_twelve_wakes(tm
     ):
         await drainer._run()
     assert (reads, ops.send_text.await_count) == (1, 1)
+
+
+async def test_bulk_mirrors_match_legacy_priority_and_recent_window(tmp_path, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+    from unittest.mock import Mock
+
+    from ductor_bot.chat_log.outbox import OutboxItem, _save
+
+    outbox = Outbox(tmp_path)
+    states = {
+        "pending-wins": ["pending", "sent", "failed", "dropped"],
+        "all-sent": ["sent", "sent"],
+        "failed": ["sent", "failed"],
+        "dropped": ["dropped"],
+    }
+    old = (datetime.now(UTC) - timedelta(days=8)).isoformat()
+    for history_id, values in states.items():
+        for index, state in enumerate(values):
+            item = OutboxItem(
+                kind="user_mirror",
+                chat_id=1,
+                topic_id=None,
+                tid="1",
+                text="mirror",
+                history_id=history_id,
+                state=state,
+            )
+            directory = outbox._pending_dir if state == "pending" else outbox._done_dir
+            _save(directory / f"{index:020d}-{item.id}.json", item)
+    expired = OutboxItem(
+        kind="user_mirror",
+        chat_id=1,
+        topic_id=None,
+        tid="1",
+        text="old",
+        history_id="expired",
+        state="sent",
+        updated=old,
+    )
+    _save(outbox._done_dir / f"00000000000000000000-{expired.id}.json", expired)
+    ids = [*states, "expired", "missing"]
+    pending = Mock(wraps=outbox._pending)
+    done = Mock(wraps=outbox._recent_done)
+    monkeypatch.setattr(outbox, "_pending", pending)
+    monkeypatch.setattr(outbox, "_recent_done", done)
+    result = await outbox.mirror_states(ids)
+    assert result == {
+        "pending-wins": "pending",
+        "all-sent": "sent",
+        "failed": "failed",
+        "dropped": "failed",
+        "expired": None,
+        "missing": None,
+    }
+    assert pending.call_count == done.call_count == 1
+    assert result == {history_id: await outbox.mirror_state(history_id) for history_id in ids}

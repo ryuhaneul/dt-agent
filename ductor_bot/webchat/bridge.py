@@ -17,6 +17,7 @@ from aiohttp import ClientError, web
 
 from ductor_bot.config import resolve_user_timezone
 from ductor_bot.infra.atomic_io import atomic_text_save
+from ductor_bot.infra.file_lock import LockTimeoutError
 from ductor_bot.infra.secret_store import store_path
 from ductor_bot.webchat.auth import AuthError, BridgeAuth
 from ductor_bot.webchat.files import WebFileError, WebFiles
@@ -138,7 +139,11 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
     sockets: set[web.WebSocketResponse] = set()
 
     async def list_topics(_request: web.Request) -> web.Response:
-        return web.json_response({"topics": await topics.list()})
+        try:
+            listed = await topics.list()
+        except LockTimeoutError:
+            return _error("history_busy", 503)
+        return web.json_response({"topics": listed})
 
     async def create_topic(request: web.Request) -> web.Response:
         name = _name(await _body(request))
@@ -182,14 +187,16 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
         try:
             before = int(request.query["before"]) if "before" in request.query else None
             limit = int(request.query.get("limit", "100"))
-            entries = await runtime.history.read(tid, before=before, limit=limit)
+            entries, more = await runtime.history.read_page(tid, before=before, limit=limit)
         except ValueError:
             return _error("bad_request", 400)
+        except LockTimeoutError:
+            return _error("history_busy", 503)
+        mirrors = await runtime.outbox.mirror_states([entry.id for entry in entries])
         rendered = []
         for entry in entries:
-            mirror = await runtime.outbox.mirror_state(entry.id)
+            mirror = mirrors[entry.id]
             rendered.append({**asdict(entry), "mirror": {"state": mirror} if mirror else None})
-        more = bool(entries and await runtime.history.read(tid, before=entries[0].seq, limit=1))
         return web.json_response({"entries": rendered, "has_more": more})
 
     async def send_or_abort(request: web.Request) -> web.Response:  # noqa: PLR0911

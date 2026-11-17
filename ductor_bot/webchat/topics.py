@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from aiogram.exceptions import TelegramBadRequest
 
-from ductor_bot.chat_log.ids import from_tid, history_filename, timestamp, to_tid
+from ductor_bot.chat_log.ids import from_tid, timestamp, to_tid
 from ductor_bot.i18n.loader import load_web_strings
 from ductor_bot.infra.atomic_io import complete_write
 from ductor_bot.infra.json_store import atomic_json_save
@@ -72,19 +72,15 @@ class WebTopics:
         }
         topics: list[dict[str, Any]] = []
         for tid in set(sessions) | set(registered) | set(self.runtime.history.tids()):
-            history = self.runtime.history
-            async with history._lock(tid):
-                entries = await asyncio.to_thread(
-                    history._read, history.directory / history_filename(tid)
-                )
+            summary = await self.runtime.history.summary(tid)
             session = sessions.get(tid)
             saved = registered.get(tid, {})
             unknown = tid == "unknown"
             key = None if unknown else from_tid(tid)
-            imported_count = sum(entry.imported for entry in entries)
+            imported_count = summary.imported_count
             active = _date(session.last_active) if session else None
             imported = (
-                imported_count == len(entries)
+                imported_count == summary.count
                 and active is not None
                 and active < datetime.now(UTC) - timedelta(days=30)
             )
@@ -107,17 +103,17 @@ class WebTopics:
                 )
             )
             last_ts = (
-                entries[-1].ts
-                if entries
+                summary.last.ts
+                if summary.last is not None
                 else session.last_active
                 if session
                 else saved.get("created_at")
             )
             preview = (
-                self._strings["topic.imported_preview"].format(n=len(entries))
+                self._strings["topic.imported_preview"].format(n=summary.count)
                 if group == "imported"
-                else entries[-1].text[:120]
-                if entries
+                else summary.last.text[:120]
+                if summary.last is not None
                 else ""
             )
             topics.append(
@@ -129,7 +125,7 @@ class WebTopics:
                     "group": group,
                     "last_ts": last_ts,
                     "preview": preview,
-                    "count": len(entries),
+                    "count": summary.count,
                     "imported_count": imported_count,
                     "created_at": session.created_at if session else saved.get("created_at"),
                     "turn_id": self.turns.active_turn_id(tid),

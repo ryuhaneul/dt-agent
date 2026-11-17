@@ -741,3 +741,32 @@ async def test_password_change_denials_preserve_session(site):
     assert "WWW-Authenticate" not in response.headers
     assert client.app[STATE].sessions.count() == 1
     assert (await client.get("/api/topics", headers=headers)).status == 200
+
+
+@pytest.mark.parametrize(
+    ("path", "error"),
+    [
+        ("/api/topics", "history_busy"),
+        ("/api/topics/-123.7/messages", "history_busy"),
+        ("/api/state", "bot_unreachable"),
+    ],
+)
+async def test_history_reads_preserve_slow_busy_errors_only(site, path, error):
+    from aiohttp.test_utils import TestServer
+
+    client, fake = site
+    headers, _ = await login(client)
+
+    async def busy(request):
+        if request.path.removeprefix("/webchat/v1") == path.removeprefix("/api"):
+            await asyncio.sleep(6)
+            return web.json_response({"error": "history_busy"}, status=503)
+        return await fake.handle(request)
+
+    upstream = web.Application()
+    upstream.router.add_get("/webchat/v1/{path:.*}", busy)
+    async with TestServer(upstream) as server:
+        client.app[STATE].bridge._url = str(server.make_url("/webchat/v1"))
+        response = await client.get(path, headers=headers)
+        assert response.status == 503
+        assert await response.json() == {"error": error}
