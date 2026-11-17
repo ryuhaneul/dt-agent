@@ -44,7 +44,11 @@ def _load_language(lang: str) -> tuple[dict[str, str], dict[str, str], dict[str,
 
     Returns (chat_keys, cli_keys, cmd_keys).
     """
-    lang_dir = _I18N_DIR / lang
+    from ductor_bot.i18n import LANGUAGES
+
+    # Build paths from a supported directory key, never from caller input.
+    language = next((code for code in LANGUAGES if code == lang), "en")
+    lang_dir = _I18N_DIR / language
     chat = _load_toml(lang_dir / "chat.toml")
     cli = _load_toml(lang_dir / "cli.toml")
     cmd = _load_toml(lang_dir / "commands.toml")
@@ -55,6 +59,9 @@ class TranslationStore:
     """Holds translations for one language with English fallback."""
 
     def __init__(self, language: str) -> None:
+        from ductor_bot.i18n import LANGUAGES
+
+        language = language if language in LANGUAGES else "en"
         self.language = language
         # Always load English as fallback.
         self._en_chat, self._en_cli, self._en_cmd = _load_language("en")

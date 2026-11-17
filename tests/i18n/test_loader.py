@@ -5,8 +5,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 from ductor_bot.i18n import LANGUAGES, init, t, t_cmd, t_plural, t_rich
-from ductor_bot.i18n.loader import TranslationStore, _flatten, _load_toml
+from ductor_bot.i18n.loader import TranslationStore, _flatten, _load_language, _load_toml
 
 _I18N_ROOT = Path(__file__).resolve().parent.parent.parent / "ductor_bot" / "i18n"
 
@@ -69,6 +71,30 @@ def test_store_english() -> None:
     # chat.toml must have at least some keys.
     assert len(_en_chat_keys()) > 0
     assert len(_en_cmd_keys()) > 0
+
+
+@pytest.mark.parametrize(
+    "language",
+    ["xx_unknown", "", "..", "../en", "../ko", "../../ko", "/tmp", r"..\ko"],
+)
+def test_unsupported_language_falls_back_to_english(language: str) -> None:
+    english = _load_language("en")
+    assert _load_language(language) == english
+    store = TranslationStore(language)
+    assert store.language == "en"
+    assert (store._chat, store._cli, store._cmd) == english
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_supported_language_loads_its_own_catalogs(language: str) -> None:
+    expected = tuple(
+        _load_toml(_I18N_ROOT / language / filename)
+        for filename in ("chat.toml", "cli.toml", "commands.toml")
+    )
+    assert _load_language(language) == expected
+    store = TranslationStore(language)
+    assert store.language == language
+    assert (store._chat, store._cli, store._cmd) == expected
 
 
 def test_store_fallback_missing_key() -> None:
