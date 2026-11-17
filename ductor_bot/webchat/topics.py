@@ -93,16 +93,30 @@ class WebTopics:
     async def restore_names(bot: TelegramBot) -> None:
         """Restore registry-only topics before their first foreground session."""
         directory = bot._orch.paths.webchat_dir
-        entries = await asyncio.to_thread(WebTopics._read_registry, directory / "topics.json")
+        path = directory / "topics.json"
+        if not path.exists():
+            return
+        entries = json.loads(await asyncio.to_thread(path.read_text, encoding="utf-8"))
+        if not isinstance(entries, list):
+            raise TypeError("topics_registry_invalid")
         deleted = await asyncio.to_thread(
             WebTopics._read_deleted, directory / "deleted_topics.json"
         )
         for item in entries:
-            chat_id, topic_id = item["chat_id"], item["topic_id"]
+            if not isinstance(item, dict):
+                continue
+            chat_id, topic_id, name = item.get("chat_id"), item.get("topic_id"), item.get("name")
+            if (
+                type(chat_id) is not int
+                or type(topic_id) is not int
+                or not isinstance(name, str)
+                or not name.strip()
+            ):
+                continue
             if (chat_id, topic_id) not in deleted and bot._topic_names.get(
                 chat_id, topic_id
             ) is None:
-                bot._topic_names.set(chat_id, topic_id, item["name"])
+                bot._topic_names.set(chat_id, topic_id, name)
 
     async def list(self) -> list[dict[str, Any]]:
         sessions = {

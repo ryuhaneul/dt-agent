@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
@@ -29,6 +30,7 @@ from ductor_bot.messenger.telegram.startup import (
 from ductor_bot.orchestrator.core import Orchestrator
 from ductor_bot.orchestrator.registry import OrchestratorResult
 from ductor_bot.session.key import SessionKey
+from ductor_bot.session.manager import SessionManager
 from ductor_bot.workspace.paths import DuctorPaths
 
 
@@ -467,3 +469,81 @@ async def test_webchat_skipped_info_once_without_secrets(make_bot, caplog, optio
     ] == [f"Webchat startup skipped: {reason}"]
     assert bot.config.telegram_token not in caplog.text
     assert bot.config.webchat.acme_email not in caplog.text
+
+
+@pytest.mark.parametrize("registry", ["{", "{}", "[{}]", "directory", "unreadable"])
+async def test_optional_title_registry_failure_does_not_abort_startup(make_bot, registry, caplog):
+    bot = make_bot()
+    bot.config.webchat.enabled = False
+    orch = MagicMock()
+    orch.paths = DuctorPaths(ductor_home=Path(bot.config.ductor_home))
+    orch._sessions = SessionManager(orch.paths.ductor_home / "sessions.json", bot.config)
+    key = SessionKey.telegram(123, 42)
+    await orch._sessions.resolve_session(key)
+    await orch._sessions.set_topic_name(key, "Actual session title")
+    path = orch.paths.webchat_dir / "topics.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if registry == "directory":
+        path.mkdir()
+        original = None
+    else:
+        original = b"synthetic-sensitive" if registry == "unreadable" else registry.encode()
+        path.write_bytes(original)
+    if registry == "unreadable":
+        path.chmod(0o000)
+    try:
+        with patch.object(Orchestrator, "create", new_callable=AsyncMock, return_value=orch):
+            await _run_primary_startup(bot, local=True)
+    finally:
+        if registry == "unreadable":
+            path.chmod(0o600)
+    orch.wire_observers_to_bus.assert_called_once()
+    orch._observers.heartbeat.set_chat_validator.assert_called_once()
+    assert bot._topic_names.get(123, 42) == "Actual session title"
+    session, _ = await orch._sessions.resolve_session(SessionKey.telegram(123, 43))
+    assert session.topic_name == "Topic #43"
+    if original is None:
+        assert path.is_dir()
+    else:
+        assert path.read_bytes() == original
+    if registry != "[{}]":
+        assert "Topic title restoration skipped:" in caplog.text
+    assert "synthetic-sensitive" not in caplog.text
+    assert "topics_registry_invalid" not in caplog.text
+    assert "Traceback" not in caplog.text
+
+
+async def test_startup_skips_invalid_rows_and_restores_valid_titles(make_bot):
+    bot = make_bot()
+    bot.config.webchat.enabled = False
+    orch = MagicMock()
+    orch.paths = DuctorPaths(ductor_home=Path(bot.config.ductor_home))
+    orch._sessions = SessionManager(orch.paths.ductor_home / "sessions.json", bot.config)
+    key = SessionKey.telegram(123, 42)
+    await orch._sessions.resolve_session(key)
+    await orch._sessions.set_topic_name(key, "Actual session title")
+    path = orch.paths.webchat_dir / "topics.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            [
+                None,
+                "invalid row",
+                {},
+                {"chat_id": "123", "topic_id": 43, "name": "Invalid chat ID"},
+                {"chat_id": 123, "topic_id": True, "name": "Invalid topic ID"},
+                {"chat_id": 123, "topic_id": 43, "name": []},
+                {"chat_id": 123, "topic_id": 43, "name": " "},
+                {"chat_id": 123, "topic_id": 42, "name": "Registry title"},
+                {"chat_id": 123, "topic_id": 43, "name": "Restored title"},
+            ]
+        )
+    )
+    original = path.read_bytes()
+    with patch.object(Orchestrator, "create", new_callable=AsyncMock, return_value=orch):
+        await _run_primary_startup(bot, local=True)
+    orch.wire_observers_to_bus.assert_called_once()
+    assert bot._topic_names.get(123, 42) == "Actual session title"
+    session, _ = await orch._sessions.resolve_session(SessionKey.telegram(123, 43))
+    assert session.topic_name == "Restored title"
+    assert path.read_bytes() == original

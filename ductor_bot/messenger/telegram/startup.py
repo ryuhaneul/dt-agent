@@ -149,7 +149,10 @@ async def _run_primary_startup(bot: TelegramBot, *, local: bool = False) -> None
     if bot.config.chat_log.enabled and bot._agent_name == "main":
         from ductor_bot.webchat.topics import WebTopics
 
-        await WebTopics.restore_names(bot)
+        try:
+            await WebTopics.restore_names(bot)
+        except Exception as exc:
+            logger.warning("Topic title restoration skipped: %s", type(exc).__name__)
     bot._orch._sessions.set_topic_name_resolver(bot._topic_names.resolve)
 
     sentinel = None if local else await _handle_restart_sentinel(bot)
