@@ -650,8 +650,12 @@ async def test_close_kills_running_native_probe_group(rig, tmp_path, monkeypatch
     await asyncio.wait_for(manager.close(), 0.5)
     assert process.returncode is not None
     for pid in pids:
-        stat = Path(f"/proc/{pid}/stat")
-        assert not stat.exists() or stat.read_text().split()[2] == "Z"
+        # The process can be reaped between the check and the read.
+        try:
+            state = Path(f"/proc/{pid}/stat").read_text().split()[2]
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        assert state == "Z"
 
 
 @pytest.mark.parametrize(
