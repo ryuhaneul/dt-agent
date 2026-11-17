@@ -11,7 +11,7 @@ let active = false, epoch = 0, stopEvents = null, telegram = { state: 'unknown' 
 let botUp = false, webSessions = null, pending = 0, outbox = [], sending = false;
 let view = 'chat', loading = false, selection = 0, commandMenu = null;
 function history(tid) {
-  if (!histories.has(tid)) histories.set(tid, { entries: new Map(), hasMore: false, loaded: false });
+  if (!histories.has(tid)) histories.set(tid, { entries: new Map(), meta: new Map(), choices: new Map(), hasMore: false, loaded: false });
   return histories.get(tid);
 }
 export function mergeEntries(entries, incoming) {
@@ -42,17 +42,78 @@ function sourceTag(entry) {
   return ['telegram', 'web', 'api', 'imported'].includes(source)
     ? `<span class="tag">${esc(t(`tag.${source}`))}</span>` : '';
 }
-function responseButtons(buttons) {
+function mergeButtonMeta(state, entryId, incoming) {
+  const meta = { ...state.meta.get(entryId) };
+  if ((incoming.selector_revision ?? 0) >= (meta.selector_revision ?? 0)) {
+    for (const field of ['text', 'buttons', 'button_kinds', 'selector_revision']) {
+      if (Object.hasOwn(incoming, field)) meta[field] = incoming[field];
+    }
+  }
+  if (typeof incoming.answered === 'string') meta.answered = incoming.answered;
+  state.meta.set(entryId, meta);
+  return meta;
+}
+function mergeHistory(state, incoming) {
+  return mergeEntries(state.entries, incoming.map(entry => ({
+    ...entry, ...mergeButtonMeta(state, entry.id, entry),
+  })));
+}
+function responseButtons(entry) {
+  const buttons = entry.buttons;
   if (!Array.isArray(buttons) || !buttons.length) return '';
-  return '<div class="response-buttons">' + buttons.map(row => '<div class="response-button-row">' + row.map(button => {
+  const state = history(getTopic().tid), waiting = state.choices.has(entry.id);
+  const answered = typeof entry.answered === 'string', locked = answered || waiting || getTopic().read_only;
+  const rows = buttons.map((row, rowIndex) => '<div class="response-button-row">' + row.map((button, buttonIndex) => {
     let url = null;
     if (button.url) {
       try { const parsed = new URL(button.url); if (['http:', 'https:'].includes(parsed.protocol)) url = parsed.href; }
       catch { /* Invalid URLs remain non-interactive labels. */ }
     }
-    return url ? `<a class="btn" href="${esc(url)}" target="_blank" rel="noopener">${esc(button.text)}</a>`
-      : `<button class="btn" type="button" disabled aria-disabled="true">${esc(button.text)}</button>`;
-  }).join('') + '</div>').join('') + '</div>';
+    const kind = entry.role !== 'user' && entry.button_kinds?.[rowIndex]?.[buttonIndex];
+    const ordinary = kind === 'reply', selector = kind === 'selector';
+    const selected = answered && entry.answered === button.text;
+    const disabled = locked || !(ordinary || selector);
+    const attrs = ordinary ? ` data-response-entry="${esc(entry.id)}" data-response-label="${esc(button.text)}"`
+      : selector ? ` data-callback-entry="${esc(entry.id)}" data-callback-data="${esc(button.callback_data)}"` : '';
+    return url && !answered && !waiting ? `<a class="btn" href="${esc(url)}" target="_blank" rel="noopener">${esc(button.text)}</a>`
+      : `<button class="btn${selected ? ' response-selected' : ''}" type="button"${attrs} aria-pressed="${selected}"${disabled ? ' disabled' : ''} aria-disabled="${!!disabled}">${esc(button.text)}</button>`;
+  }).join('') + '</div>').join('');
+  const status = answered ? t('buttons.answered', { label: entry.answered }) : waiting ? t('buttons.sending') : '';
+  return `<div class="response-buttons" aria-busy="${waiting}">${rows}${status ? `<div class="response-status" role="status">${esc(status)}</div>` : ''}</div>`;
+}
+async function chooseButton(entryId, value, kind) {
+  const topic = getTopic();
+  if (!active || !topic || topic.read_only) return;
+  const state = history(topic.tid), entry = state.entries.get(entryId);
+  if (!entry || entry.role === 'user' || typeof entry.answered === 'string' || state.choices.has(entryId)
+      || !entry.buttons?.some((row, rowIndex) => row.some((button, buttonIndex) =>
+        entry.button_kinds?.[rowIndex]?.[buttonIndex] === kind
+        && (kind === 'selector' ? button.callback_data : button.text) === value))) return;
+  const generation = epoch;
+  state.choices.set(entryId, value); renderThread();
+  try {
+    const selector = kind === 'selector';
+    const result = await api(`/topics/${encodeURIComponent(topic.tid)}/${selector ? 'callbacks' : 'buttons'}`, {
+      method: 'POST', body: selector
+        ? { entry_id: entryId, data: value, revision: entry.selector_revision ?? 0 }
+        : { entry_id: entryId, label: value },
+    });
+    if (!active || generation !== epoch) return;
+    mergeButtonMeta(state, entryId, kind === 'selector' ? result : { answered: result.answered });
+    mergeHistory(state, [state.entries.get(entryId)]);
+    if (result.turn_id && !turns.has(result.turn_id)) turns.set(result.turn_id, { id: result.turn_id, tid: topic.tid, phase: 'queued', text: '' });
+  } catch (error) {
+    if (!active || generation !== epoch) return;
+    if (['already_answered', 'stale_selector'].includes(error.code)) {
+      notify(`buttons.${error.code}`);
+      try { await loadHistory(topic.tid, { target: entry.seq }); }
+      catch (refreshError) { if (active && generation === epoch) errorNotice(refreshError); }
+    } else if (error.status === 400) notify('buttons.invalid');
+    else errorNotice(error);
+  } finally {
+    state.choices.delete(entryId);
+    if (active && generation === epoch) renderThread();
+  }
 }
 function entryMarkup(entry) {
   const time = esc(formatTime(entry.ts));
@@ -60,11 +121,11 @@ function entryMarkup(entry) {
     const failed = ['failed', 'error', 'cancelled'].includes(entry.status);
     const key = entry.kind === 'task_result' && failed ? 'task_failed' : entry.kind;
     const kind = ['task_result', 'task_failed', 'task_question', 'heartbeat', 'interagent', 'cron', 'webhook', 'background'].includes(key) ? key : 'background';
-    return `<div class="event${entry.imported ? ' old' : ''}" data-entry-seq="${entry.seq}"><span class="badge ${kind === 'task_result' ? 'badge-ok' : kind === 'task_failed' ? 'badge-down' : 'badge-off'}">${esc(t(`event.${kind}`))}</span><div><div class="meta">${sourceTag(entry)}<span class="tm">${time}</span>${entry.title ? `<b>${esc(entry.title)}</b>` : ''}</div><div class="md">${md(entry.text || '')}</div>${mirror(entry)}</div></div>`;
+    return `<div class="event${entry.imported ? ' old' : ''}" data-entry-seq="${entry.seq}"><span class="badge ${kind === 'task_result' ? 'badge-ok' : kind === 'task_failed' ? 'badge-down' : 'badge-off'}">${esc(t(`event.${kind}`))}</span><div><div class="meta">${sourceTag(entry)}<span class="tm">${time}</span>${entry.title ? `<b>${esc(entry.title)}</b>` : ''}</div><div class="md">${md(entry.text || '')}</div>${responseButtons(entry)}${mirror(entry)}</div></div>`;
   }
   const turn = turns.get(entry.turn_id);
   const stopped = entry.status === 'aborted' || (entry.role === 'bot' && turn?.phase === 'aborted');
-  return `<div class="msg ${entry.role === 'user' ? 'me' : 'bot'}${entry.imported ? ' old' : ''}${entry.kind === 'command' ? ' command-message' : ''}" data-entry-seq="${entry.seq}"><div class="meta">${sourceTag(entry)}<span class="tm">${time}</span></div><div class="bubble md">${entry.kind === 'command' ? esc(entry.text || '') : md(entry.text || '')}${responseButtons(entry.buttons)}</div>${stopped ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : ''}${mirror(entry)}</div>`;
+  return `<div class="msg ${entry.role === 'user' ? 'me' : 'bot'}${entry.imported ? ' old' : ''}${entry.kind === 'command' ? ' command-message' : ''}" data-entry-seq="${entry.seq}"><div class="meta">${sourceTag(entry)}<span class="tm">${time}</span></div><div class="bubble md">${entry.kind === 'command' ? esc(entry.text || '') : md(entry.text || '')}${responseButtons(entry)}</div>${stopped ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : ''}${mirror(entry)}</div>`;
 }
 function streamMarkup(turn) {
   const live = ['queued', 'started'].includes(turn.phase);
@@ -135,7 +196,7 @@ async function loadHistory(tid, { older = false, target = null } = {}) {
   do {
     const data = await api(`/topics/${encodeURIComponent(tid)}/messages?limit=100${before}`);
     if (!active || generation !== epoch) return;
-    mergeEntries(state.entries, data.entries);
+    mergeHistory(state, data.entries);
     for (const entry of data.entries) {
       const turn = entry.role === 'bot' && turns.get(entry.turn_id);
       if (turn) {
@@ -227,8 +288,15 @@ export async function handleEvent(event) {
     case 'entry': {
       const state = history(tid), entry = event.entry;
       if (!state.entries.has(entry.id)) noteEntry(tid, entry);
-      mergeEntries(state.entries, [entry]);
+      mergeHistory(state, [entry]);
       if (!getTopics().some(item => item.tid === tid)) await refreshTopics();
+      break;
+    }
+    case 'entry_meta': {
+      const state = history(tid);
+      mergeButtonMeta(state, event.entry_id, event.meta || {});
+      const entry = state.entries.get(event.entry_id);
+      if (entry) mergeHistory(state, [entry]);
       break;
     }
     case 'busy':
@@ -313,6 +381,12 @@ export function initChat() {
     }
   });
   document.querySelector('#stopBtn').addEventListener('click', sendOrStop);
+  thread.addEventListener('click', event => {
+    const button = event.target.closest('[data-response-entry]');
+    if (button && !button.disabled) void chooseButton(button.dataset.responseEntry, button.dataset.responseLabel, 'reply');
+    const selector = event.target.closest('[data-callback-entry]');
+    if (selector && !selector.disabled) void chooseButton(selector.dataset.callbackEntry, selector.dataset.callbackData, 'selector');
+  });
   thread.addEventListener('scroll', async () => {
     const topic = getTopic();
     if (!topic || loading) return;

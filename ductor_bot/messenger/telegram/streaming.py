@@ -22,6 +22,7 @@ from ductor_bot.messenger.telegram.formatting import (
     markdown_to_telegram_html,
     split_html_message,
 )
+from ductor_bot.messenger.telegram.sender import message_html_text
 from ductor_bot.text.response_format import normalize_tool_name
 
 if TYPE_CHECKING:
@@ -38,11 +39,13 @@ class StreamEditorProtocol(Protocol):
     """Interface shared by append-mode and edit-mode stream editors."""
 
     @property
+    def keyboard_html_text(self) -> str | None: ...
+    @property
     def has_content(self) -> bool: ...
     async def append_text(self, text: str) -> None: ...
     async def append_tool(self, tool_name: str) -> None: ...
     async def append_system(self, text: str) -> None: ...
-    async def finalize(self, full_text: str) -> None: ...
+    async def finalize(self, full_text: str) -> int | None: ...
 
 
 class StreamEditor:
@@ -70,6 +73,13 @@ class StreamEditor:
         self._thread_id = thread_id
         self._messages_sent = 0
         self._last_msg: Message | None = None
+        self._last_html_text: str | None = None
+        self._keyboard_html_text: str | None = None
+
+    @property
+    def keyboard_html_text(self) -> str | None:
+        """Snapshot of the message whose keyboard was successfully attached."""
+        return self._keyboard_html_text
 
     @property
     def has_content(self) -> bool:
@@ -96,21 +106,25 @@ class StreamEditor:
         indicator = f"<i>[{html.escape(text)}]</i>"
         await self._send(indicator)
 
-    async def finalize(self, full_text: str) -> None:
+    async def finalize(self, full_text: str) -> int | None:
         """Attach button keyboard to the last sent message, if any."""
+        self._keyboard_html_text = None
         if self._last_msg is None:
-            return
+            return None
         _, markup = extract_buttons(full_text)
         if markup is None:
-            return
+            return None
         try:
-            await self._bot.edit_message_reply_markup(
+            attached = await self._bot.edit_message_reply_markup(
                 chat_id=self._chat_id,
                 message_id=self._last_msg.message_id,
                 reply_markup=markup,
             )
         except TelegramBadRequest:
             logger.warning("Failed to attach button keyboard")
+            return None
+        self._keyboard_html_text = message_html_text(attached) or self._last_html_text
+        return self._last_msg.message_id
 
     async def _send(
         self,
@@ -135,6 +149,9 @@ class StreamEditor:
                     message_thread_id=self._thread_id,
                 )
             self._last_msg = msg
+            self._last_html_text = message_html_text(msg) or (
+                html.escape(display) if parse_mode is None else display
+            )
             self._messages_sent += 1
         except TelegramBadRequest:
             if parse_mode is not None:

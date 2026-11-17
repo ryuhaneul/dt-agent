@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from aiogram.exceptions import TelegramAPIError
 from aiohttp import ClientError, web
 
+from ductor_bot.chat_log.history import InvalidSelectorButtonError, SelectorConflictError
 from ductor_bot.chat_log.ids import from_tid
 from ductor_bot.config import resolve_user_timezone
 from ductor_bot.i18n import LANGUAGES
@@ -22,6 +23,18 @@ from ductor_bot.i18n.loader import TranslationStore
 from ductor_bot.infra.atomic_io import atomic_text_save
 from ductor_bot.infra.file_lock import LockTimeoutError
 from ductor_bot.infra.secret_store import store_path
+from ductor_bot.messenger.telegram.buttons import extract_button_rows
+from ductor_bot.messenger.telegram.callbacks import (
+    edit_button_choice,
+    edit_recorded_selector,
+    process_button_choice,
+    response_button_data,
+    selector_button_data,
+    selector_callback_lock_key,
+    selector_callback_response,
+    selector_fields,
+    selector_rows,
+)
 from ductor_bot.text.response_format import stop_text
 from ductor_bot.webchat.auth import AuthError, BridgeAuth
 from ductor_bot.webchat.commands import (
@@ -221,16 +234,24 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
         metadata = await runtime.history.metadata(tid)
         for entry in entries:
             mirror = mirrors[entry.id]
+            legacy: dict[str, Any] = {}
+            if entry.role != "user":
+                text, buttons = extract_button_rows(entry.text)
+                legacy = {"text": text}
+                if buttons is not None:
+                    legacy["buttons"] = buttons
             rendered.append(
                 {
                     **asdict(entry),
+                    **legacy,
                     **metadata.get(entry.id, {}),
+                    **selector_fields({**legacy, **metadata.get(entry.id, {})}),
                     "mirror": {"state": mirror} if mirror else None,
                 }
             )
         return web.json_response({"entries": rendered, "has_more": more})
 
-    async def send_or_abort(request: web.Request) -> web.Response:  # noqa: C901, PLR0911
+    async def send_or_abort(request: web.Request) -> web.Response:
         tid = request.match_info["tid"]
         if tid == "unknown":
             return _error("read_only", 409)
@@ -256,55 +277,275 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
             if abort:
                 return web.json_response({"killed": await turns.abort(tid)})
             assert isinstance(text, str)
-            key = from_tid(tid)
-
-            async def record_input() -> None:
-                entry = await runtime.recorder.command_input(key, text)
-                await runtime.outbox.enqueue(
-                    kind="user_mirror",
-                    chat_id=key.chat_id,
-                    topic_id=key.topic_id,
-                    text=strings.chat("chat_log.mirror_command", text=text),
-                    history_id=entry.id,
-                )
-                runtime.drainer.wake()
-
-            async def record_result(result: CommandResponse) -> None:
-                entry = await runtime.recorder.command_result(
-                    key, result["text"], result["buttons"]
-                )
-                await runtime.outbox.enqueue(
-                    kind="reply_mirror",
-                    chat_id=key.chat_id,
-                    topic_id=key.topic_id,
-                    text=result["text"],
-                    history_id=entry.id,
-                )
-                runtime.drainer.wake()
-
-            if text.strip().lower() == "/stop":
-                await record_input()
-                killed = await turns.abort(tid)
-                await record_result(
-                    {
-                        "text": stop_text(
-                            bool(killed), bot._orch.active_provider_name if killed else ""
-                        ),
-                        "buttons": None,
-                    }
-                )
-                return web.json_response({"killed": killed}, status=202)
             try:
-                command = await dispatcher.dispatch(
-                    tid, text, on_start=record_input, on_finish=record_result
-                )
+                return await dispatch_text(tid, text)
             except WebCommandBusyError:
                 return _error("web_turn_running", 409)
-            if command is not None:
-                return web.json_response(command)
+
+    async def dispatch_text(  # noqa: C901 -- preserve existing command/message ingress
+        tid: str,
+        text: str,
+        *,
+        session_name: str | None = None,
+        accept: Callable[[], Awaitable[None]] | None = None,
+    ) -> web.Response:
+        key = from_tid(tid)
+        if session_name is not None:
             if turns.busy(tid):
+                raise WebCommandBusyError
+            if accept is not None:
+                await accept()
+            return web.json_response(
+                {"turn_id": turns.submit(tid, text, session_name=session_name)}, status=202
+            )
+
+        async def record_input() -> None:
+            if accept is not None:
+                await accept()
+            entry = await runtime.recorder.command_input(key, text)
+            await runtime.outbox.enqueue(
+                kind="user_mirror",
+                chat_id=key.chat_id,
+                topic_id=key.topic_id,
+                text=strings.chat("chat_log.mirror_command", text=text),
+                history_id=entry.id,
+            )
+            runtime.drainer.wake()
+
+        async def record_result(result: CommandResponse) -> None:
+            entry = await runtime.recorder.command_result(key, result["text"], result["buttons"])
+            await runtime.outbox.enqueue(
+                kind="reply_mirror",
+                chat_id=key.chat_id,
+                topic_id=key.topic_id,
+                text=result["text"],
+                history_id=entry.id,
+            )
+            runtime.drainer.wake()
+
+        if text.strip().lower() == "/stop":
+            await record_input()
+            killed = await turns.abort(tid)
+            await record_result(
+                {
+                    "text": stop_text(
+                        bool(killed), bot._orch.active_provider_name if killed else ""
+                    ),
+                    "buttons": None,
+                }
+            )
+            return web.json_response({"killed": killed}, status=202)
+        command = await dispatcher.dispatch(
+            tid, text, on_start=record_input, on_finish=record_result
+        )
+        if command is not None:
+            if accept is not None:
+                await accept()
+            return web.json_response(command)
+        if turns.busy(tid):
+            raise WebCommandBusyError
+        if accept is not None:
+            await accept()
+        return web.json_response({"turn_id": turns.submit(tid, text)}, status=202)
+
+    async def button_context(
+        tid: str,
+        entry_id: str,
+        label: str,
+        *,
+        register: bool = False,
+    ) -> tuple[dict[str, Any], str]:
+        if await topics.lookup(tid) is None:
+            raise web.HTTPNotFound(
+                text='{"error":"unknown_topic"}', content_type="application/json"
+            )
+        entry = await runtime.history.get_entry(tid, entry_id)
+        if entry is None:
+            raise web.HTTPNotFound(
+                text='{"error":"unknown_entry"}', content_type="application/json"
+            )
+        meta = (await runtime.history.metadata(tid)).get(entry_id, {})
+        rows = meta.get("buttons")
+        if rows is None:
+            _, rows = extract_button_rows(entry.text)
+        data = response_button_data(rows, label) if entry.role != "user" else None
+        if data is None:
+            raise web.HTTPBadRequest(text='{"error":"bad_button"}', content_type="application/json")
+        if register and not meta:
+            assert rows is not None
+            meta = await runtime.history.record_buttons(tid, entry_id, rows, only_if_missing=True)
+            data = response_button_data(meta.get("buttons"), label)
+            if data is None:
+                raise web.HTTPBadRequest(
+                    text='{"error":"bad_button"}', content_type="application/json"
+                )
+        return meta, data
+
+    async def annotation_metadata(
+        tid: str, entry_id: str, fallback: dict[str, Any]
+    ) -> dict[str, Any]:
+        try:
+            return (await runtime.history.metadata(tid))[entry_id]
+        except Exception as exc:
+            logger.warning("Accepted choice metadata failed: %s", type(exc).__name__)
+            return fallback
+
+    async def buttons(request: web.Request) -> web.Response:  # noqa: PLR0911 -- request status cases
+        tid = request.match_info["tid"]
+        if tid == "unknown":
+            return _error("read_only", 409)
+        data = await _body(request)
+        entry_id, label = data.get("entry_id"), data.get("label")
+        if not isinstance(entry_id, str) or not entry_id or not isinstance(label, str) or not label:
+            return _error("bad_request", 400)
+        _, preview = await button_context(tid, entry_id, label)
+        command = parse_command(preview)
+        control = command is not None and command[0] in {"stop", "interrupt", "stop_all"}
+        async with control_gate(tid) if control else topics.gate(tid):
+            if tid in turns.blocked or await topics.lookup(tid) is None:
+                return _error("unknown_topic", 404)
+            meta, callback_data = await button_context(tid, entry_id, label, register=True)
+            if meta.get("answered") is not None:
+                return _error("already_answered", 409)
+            response: web.Response | None = None
+            key = from_tid(tid)
+
+            async def claim() -> bool:
+                return await runtime.history.mark_answered(tid, entry_id, label)
+
+            async def annotate() -> None:
+                latest = await annotation_metadata(tid, entry_id, {**meta, "answered": label})
+                await edit_button_choice(
+                    bot.bot_instance,
+                    key.chat_id,
+                    latest.get("telegram_message_id"),
+                    label,
+                    html_text=latest.get("telegram_html_text"),
+                )
+
+            async def submit(
+                text: str, session_name: str | None, accept: Callable[[], Awaitable[None]]
+            ) -> None:
+                nonlocal response
+                response = await dispatch_text(tid, text, session_name=session_name, accept=accept)
+
+            try:
+                accepted = await process_button_choice(callback_data, claim, annotate, submit)
+            except WebCommandBusyError:
                 return _error("web_turn_running", 409)
-            return web.json_response({"turn_id": turns.submit(tid, text)}, status=202)
+            if not accepted:
+                return _error("already_answered", 409)
+            assert response is not None
+            return web.json_response(
+                {**json.loads(response.text or "{}"), "entry_id": entry_id, "answered": label},
+                status=response.status,
+            )
+
+    async def callbacks(request: web.Request) -> web.Response:  # noqa: C901, PLR0911, PLR0912 -- explicit callback admission and HTTP statuses
+        tid = request.match_info["tid"]
+        if tid == "unknown":
+            return _error("read_only", 409)
+        payload = await _body(request)
+        entry_id, data, revision = (
+            payload.get("entry_id"),
+            payload.get("data"),
+            payload.get("revision"),
+        )
+        if (
+            not isinstance(entry_id, str)
+            or not entry_id
+            or not isinstance(data, str)
+            or not data
+            or type(revision) is not int
+            or revision < 0
+        ):
+            return _error("bad_request", 400)
+        async with topics.gate(tid):
+            if tid in turns.blocked or await topics.lookup(tid) is None:
+                return _error("unknown_topic", 404)
+            key = from_tid(tid)
+            pool = bot._orch._lock_pool
+            assert pool is not None
+            selector_lock_key = selector_callback_lock_key(key, data)
+            if selector_lock_key is not None and (
+                turns.busy(tid) or pool.get(selector_lock_key).locked()
+            ):
+                return _error("web_turn_running", 409)
+            entry = await runtime.history.get_entry(tid, entry_id)
+            if entry is None:
+                return _error("unknown_entry", 404)
+            if entry.role == "user":
+                return _error("bad_callback", 400)
+            try:
+                async with runtime.history.selector_step(tid, entry_id, data, revision) as meta:
+                    if not selector_button_data(data):
+                        return _error("bad_callback", 400)
+                    if selector_lock_key is not None and (
+                        turns.busy(tid) or pool.get(selector_lock_key).locked()
+                    ):
+                        return _error("web_turn_running", 409)
+                    step = await selector_callback_response(bot, key, data)
+                    if step.prompt is not None:
+                        label = next(
+                            button["text"]
+                            for row in meta["buttons"]
+                            for button in row
+                            if button.get("callback_data") == data
+                        )
+
+                        accepted_meta = {**meta, "answered": label}
+
+                        async def accept() -> None:
+                            nonlocal accepted_meta
+                            if not await runtime.history.mark_answered(tid, entry_id, label):
+                                raise SelectorConflictError  # noqa: TRY301 -- acceptance runs inside dispatch ingress
+                            accepted_meta = await annotation_metadata(tid, entry_id, accepted_meta)
+                            await edit_button_choice(
+                                bot.bot_instance,
+                                key.chat_id,
+                                accepted_meta.get("telegram_message_id"),
+                                label,
+                                html_text=accepted_meta.get("telegram_html_text"),
+                            )
+
+                        response = await dispatch_text(tid, step.prompt, accept=accept)
+                        latest = accepted_meta
+                        return web.json_response(
+                            {
+                                **json.loads(response.text or "{}"),
+                                "entry_id": entry_id,
+                                "text": latest.get("text", entry.text),
+                                "buttons": latest["buttons"],
+                                "answered": latest["answered"],
+                                **selector_fields(latest),
+                            },
+                            status=response.status,
+                        )
+                    if step.response is None:
+                        return _error("bad_callback", 400)
+                    latest = await runtime.history.record_selector_response(
+                        tid, entry_id, step.response.text, selector_rows(step.response)
+                    )
+                    await edit_recorded_selector(
+                        bot.bot_instance,
+                        key.chat_id,
+                        latest.get("telegram_message_id"),
+                        step.response,
+                    )
+                    return web.json_response(
+                        {
+                            "entry_id": entry_id,
+                            "text": latest["text"],
+                            "buttons": latest["buttons"],
+                            **selector_fields(latest),
+                        }
+                    )
+            except SelectorConflictError:
+                return _error("stale_selector", 409)
+            except InvalidSelectorButtonError:
+                return _error("bad_callback", 400)
+            except WebCommandBusyError:
+                return _error("web_turn_running", 409)
 
     async def search(request: web.Request) -> web.Response:
         query = request.query.get("q", "")
@@ -330,9 +571,12 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
                         **event,
                         "entry": {
                             **event["entry"],
+                            **selector_fields(event["entry"]),
                             "mirror": {"state": mirror} if mirror else None,
                         },
                     }
+                if event.get("type") == "entry_meta":
+                    event = {**event, "meta": {**event["meta"], **selector_fields(event["meta"])}}
                 if tid not in turns.blocked:
                     await ws.send_json(event)
 
@@ -365,6 +609,8 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
     app.router.add_get(f"{_PREFIX}/topics/{{tid}}/messages", messages)
     app.router.add_post(f"{_PREFIX}/topics/{{tid}}/messages", send_or_abort)
     app.router.add_post(f"{_PREFIX}/topics/{{tid}}/abort", send_or_abort)
+    app.router.add_post(f"{_PREFIX}/topics/{{tid}}/buttons", buttons)
+    app.router.add_post(f"{_PREFIX}/topics/{{tid}}/callbacks", callbacks)
     app.router.add_get(f"{_PREFIX}/search", search)
     app.router.add_get(f"{_PREFIX}/events", events)
 

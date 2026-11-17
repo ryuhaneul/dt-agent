@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -523,3 +524,385 @@ def test_defer_retry_preserves_later_deadline(tmp_path, monkeypatch):
     assert runtime.drainer._retry_at == 170.0
     runtime.drainer.defer_retry(100)
     assert runtime.drainer._retry_at == 201.0
+
+
+async def test_named_session_direct_and_queued_keyboard_ids_match_history(tmp_path):
+    from ductor_bot.chat_log.history import HistoryStore
+    from ductor_bot.chat_log.outbox import Outbox, OutboxItem
+    from ductor_bot.chat_log.recorder import HistoryRecorder
+
+    bot = make_bot(tmp_path)
+    bot._orch.named_sessions = SimpleNamespace(update_after_response=MagicMock())
+    bot.bot_instance.edit_message_reply_markup = AsyncMock()
+    history = HistoryStore(tmp_path / "history")
+    outbox = Outbox(tmp_path / "outbox")
+    bot._telegram_transport.set_outbox(outbox, history=history)
+    recorder = HistoryRecorder(history, EventHub(), [123])
+    env = Envelope(
+        Origin.BACKGROUND, 123, topic_id=7, session_name="worker", result_text="Pick [button:Yes]"
+    )
+    await bot._telegram_transport.deliver(env)
+    await recorder.on_delivered(env)
+    entry = (await history.read("123.7"))[-1]
+    meta = (await history.metadata("123.7"))[entry.id]
+    assert meta["telegram_message_id"] == 1
+    assert meta["buttons"][0][0]["callback_data"] == "ns:worker:Yes"
+
+    # Queue the next named-session delivery; no new OutboxItem fields are needed.
+    env = Envelope(
+        Origin.BACKGROUND,
+        123,
+        topic_id=7,
+        session_name="worker",
+        result_text="Pick [button:Yes]",
+        metadata={"chat_log_queued": True},
+    )
+    await bot._telegram_transport.deliver(env)
+    await recorder.on_delivered(env)
+    pending = (await outbox.pending())[0]
+    raw_path = next((tmp_path / "outbox" / "pending").glob("*.json"))
+    raw = raw_path.read_bytes()
+    assert OutboxItem(**json.loads(raw)) == pending
+    ops = TelegramWebchatOps(bot)
+    link = TelegramLinkMonitor(ops, EventHub())
+    link.record(up=True)
+    bot.bot_instance.send_message = AsyncMock(return_value=SimpleNamespace(message_id=2))
+    await OutboxDrainer(outbox, ops, link, history=history).drain()
+    meta = (await history.metadata("123.7"))[pending.history_id]
+    assert meta["telegram_message_id"] == 2
+    assert meta["buttons"][0][0]["callback_data"] == "ns:worker:Yes"
+    assert not await outbox.pending()
+
+
+@pytest.mark.parametrize("callback", ["Yes", "ns:worker:Yes", "ns:other:Yes"])
+async def test_legacy_named_keyboard_rows_keep_callback_destination(tmp_path, callback):
+    bot = make_bot(tmp_path)
+    observer = AsyncMock()
+    result = await TelegramWebchatOps(bot).send_text(
+        123,
+        7,
+        "Pick",
+        0,
+        "worker",
+        buttons=[[{"text": "Yes", "callback_data": callback}]],
+        on_keyboard=observer,
+    )
+    assert result.telegram_message_id == 1
+    expected = callback if callback.startswith("ns:") else "ns:worker:Yes"
+    assert observer.await_args.args[1].inline_keyboard[0][0].callback_data == expected
+
+
+async def test_reply_mirror_binds_last_keyboard_before_checkpoint_and_restores(tmp_path):
+    from ductor_bot.chat_log.history import Entry, HistoryStore
+    from ductor_bot.chat_log.outbox import Outbox
+
+    bot = make_bot(tmp_path)
+    history = HistoryStore(tmp_path / "history")
+    outbox = Outbox(tmp_path / "outbox")
+    text = "answer " * 2000 + "\n[button:Yes]"
+    entry = await history.append("123.7", Entry("bot", "web", text))
+    await outbox.enqueue(
+        kind="reply_mirror", chat_id=123, topic_id=7, text=text, history_id=entry.id
+    )
+    bot.bot_instance.send_message = AsyncMock(
+        side_effect=[SimpleNamespace(message_id=i) for i in range(10, 30)]
+    )
+    original = outbox.mark_progress
+    checkpoints = []
+
+    async def checkpoint(*args, **kwargs):
+        if bot.bot_instance.send_message.call_args.kwargs.get("reply_markup"):
+            meta = (await history.metadata("123.7"))[entry.id]
+            checkpoints.append(meta["telegram_message_id"])
+        await original(*args, **kwargs)
+
+    outbox.mark_progress = checkpoint
+    ops = TelegramWebchatOps(bot)
+    link = TelegramLinkMonitor(ops, EventHub())
+    link.record(up=True)
+    await OutboxDrainer(outbox, ops, link, history=history).drain()
+    meta = (await HistoryStore(tmp_path / "history").metadata("123.7"))[entry.id]
+    assert meta["telegram_message_id"] > 10
+    assert checkpoints
+    assert checkpoints[-1] == meta["telegram_message_id"]
+    assert not await outbox.pending()
+    before = bot.bot_instance.send_message.await_count
+    await OutboxDrainer(outbox, ops, link, history=history).drain()
+    assert bot.bot_instance.send_message.await_count == before
+
+
+async def test_url_keyboard_binding_preserves_existing_command_metadata(tmp_path):
+    from ductor_bot.chat_log.history import Entry, HistoryStore
+    from ductor_bot.chat_log.outbox import Outbox
+
+    bot = make_bot(tmp_path)
+    history = HistoryStore(tmp_path / "history")
+    outbox = Outbox(tmp_path / "outbox")
+    buttons = [[{"text": "Docs", "url": "https://example.com/docs"}]]
+    entry = await history.append("123", Entry("bot", "web", "Docs"), buttons=buttons)
+    await outbox.enqueue(kind="reply_mirror", chat_id=123, text="Docs", history_id=entry.id)
+    ops = TelegramWebchatOps(bot)
+    link = TelegramLinkMonitor(ops, EventHub())
+    link.record(up=True)
+    await OutboxDrainer(outbox, ops, link, history=history).drain()
+    metadata = (await history.metadata("123"))[entry.id]
+    assert metadata["telegram_message_id"] == 1
+    assert metadata["buttons"] == buttons
+
+
+@pytest.mark.parametrize("queued", [False, True])
+async def test_direct_and_mirror_preserve_actual_keyboard_html_snapshot(tmp_path, queued):
+    from ductor_bot.chat_log.history import HistoryStore
+    from ductor_bot.chat_log.outbox import Outbox, OutboxItem
+    from ductor_bot.chat_log.recorder import HistoryRecorder
+
+    bot = make_bot(tmp_path)
+    bot._orch.named_sessions = SimpleNamespace(update_after_response=MagicMock())
+    sent = []
+
+    async def send(**kwargs):
+        sent.append(kwargs)
+        return SimpleNamespace(message_id=len(sent), text="parsed", html_text=kwargs["text"])
+
+    bot.bot_instance.send_message = AsyncMock(side_effect=send)
+    history = HistoryStore(tmp_path / "history")
+    outbox = Outbox(tmp_path / "outbox")
+    bot._telegram_transport.set_outbox(outbox, history=history)
+    recorder = HistoryRecorder(history, EventHub())
+    envelope = Envelope(
+        Origin.BACKGROUND,
+        123,
+        topic_id=7,
+        session_name="worker",
+        result_text="**Real body** [button:Yes]",
+        metadata={"chat_log_queued": True} if queued else {},
+    )
+    await bot._telegram_transport.deliver(envelope)
+    await recorder.on_delivered(envelope)
+    entry = (await history.read("123.7"))[-1]
+    if queued:
+        item = (await outbox.pending())[0]
+        raw = next((tmp_path / "outbox" / "pending").glob("*.json")).read_text()
+        assert OutboxItem(**json.loads(raw)) == item
+        assert "telegram_html_text" not in raw
+        ops = TelegramWebchatOps(bot)
+        link = TelegramLinkMonitor(ops, EventHub())
+        link.record(up=True)
+        await OutboxDrainer(outbox, ops, link, history=history).drain()
+    metadata = (await HistoryStore(tmp_path / "history").metadata("123.7"))[entry.id]
+    assert metadata["telegram_html_text"] == sent[-1]["text"]
+    assert "<b>Real body</b>" in metadata["telegram_html_text"]
+    assert metadata["buttons"][0][0]["callback_data"] == "ns:worker:Yes"
+
+
+async def test_command_sync_no_id_then_mirror_uses_latest_screen(tmp_path):
+    from ductor_bot.chat_log.history import Entry, HistoryStore
+    from ductor_bot.chat_log.outbox import Outbox
+
+    bot = make_bot(tmp_path)
+    history = HistoryStore(tmp_path / "history")
+    outbox = Outbox(tmp_path / "outbox")
+    entry = await history.append(
+        "123.7",
+        Entry("bot", "web", "Old screen"),
+        buttons=[[{"text": "Old", "callback_data": "ms:p:claude"}]],
+    )
+    await outbox.enqueue(
+        kind="reply_mirror", chat_id=123, topic_id=7, text="Old screen", history_id=entry.id
+    )
+    latest = [[{"text": "Opus", "callback_data": "ms:m:opus"}]]
+    await history.record_selector_response("123.7", entry.id, "Latest screen", latest)
+    ops = TelegramWebchatOps(bot)
+    link = TelegramLinkMonitor(ops, EventHub())
+    link.record(up=True)
+    await OutboxDrainer(outbox, ops, link, history=history).drain()
+    call = bot.bot_instance.send_message.call_args.kwargs
+    assert call["text"] == "Latest screen"
+    assert call["reply_markup"].inline_keyboard[0][0].callback_data == "ms:m:opus"
+    meta = (await history.metadata("123.7"))[entry.id]
+    assert meta["telegram_message_id"] == 1
+    assert meta["buttons"] == latest
+
+
+@pytest.mark.parametrize("fail_edit", [False, True])
+async def test_command_sync_late_old_binding_reconciles_once(tmp_path, fail_edit, caplog):
+    from ductor_bot.chat_log.history import Entry, HistoryStore
+    from ductor_bot.chat_log.outbox import Outbox
+
+    bot = make_bot(tmp_path)
+    history = HistoryStore(tmp_path / "history")
+    outbox = Outbox(tmp_path / "outbox")
+    entry = await history.append(
+        "123",
+        Entry("bot", "web", "Old"),
+        buttons=[[{"text": "Old", "callback_data": "ms:p:claude"}]],
+    )
+    await outbox.enqueue(kind="reply_mirror", chat_id=123, text="Old", history_id=entry.id)
+    latest = [[{"text": "Next", "callback_data": "ms:m:opus"}]]
+
+    async def sent(**_kwargs):
+        await history.record_selector_response("123", entry.id, "Latest", latest)
+        return SimpleNamespace(message_id=99, html_text="Old")
+
+    bot.bot_instance.send_message = AsyncMock(side_effect=sent)
+    bot.bot_instance.edit_message_text = AsyncMock(
+        side_effect=OSError("edit offline") if fail_edit else None
+    )
+    ops = TelegramWebchatOps(bot)
+    link = TelegramLinkMonitor(ops, EventHub())
+    link.record(up=True)
+    await OutboxDrainer(outbox, ops, link, history=history).drain()
+    meta = (await history.metadata("123"))[entry.id]
+    assert meta["text"] == "Latest"
+    assert meta["buttons"] == latest
+    assert meta["telegram_message_id"] == 99
+    assert meta["selector_revision"] == 1
+    assert bot.bot_instance.edit_message_text.await_count == 1
+    assert bot.bot_instance.edit_message_text.call_args.kwargs["text"] == "Latest"
+
+    if fail_edit:
+        assert "Failed to reconcile selector keyboard" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("changed", "fail_changed_once"), [(False, False), (True, False), (True, True)]
+)
+async def test_command_sync_partial_mirror_resumes_or_restarts_for_revision(
+    tmp_path, monkeypatch, changed, fail_changed_once
+):
+    from aiogram.exceptions import TelegramNetworkError
+
+    from ductor_bot.chat_log.history import Entry, HistoryStore
+    from ductor_bot.chat_log.outbox import Outbox, OutboxItem
+
+    bot = make_bot(tmp_path)
+    history = HistoryStore(tmp_path / "history")
+    outbox = Outbox(tmp_path / "outbox")
+    rows = [[{"text": "Pick", "callback_data": "ms:p:claude"}]]
+    entry = await history.append("123", Entry("bot", "web", "Old body"), buttons=rows)
+    item = await outbox.enqueue(
+        kind="reply_mirror", chat_id=123, text="Old body", history_id=entry.id
+    )
+    monkeypatch.setattr(
+        "ductor_bot.messenger.telegram.sender._ia_text_chunks",
+        lambda text: (
+            ["Latest one", "Latest two"]
+            if text.startswith("Latest")
+            else ["Old one", "Old two", "Old three"]
+        ),
+    )
+    bot.bot_instance.send_message = AsyncMock(
+        side_effect=[SimpleNamespace(message_id=1), TelegramNetworkError(MagicMock(), "offline")]
+    )
+    ops = TelegramWebchatOps(bot)
+    link = TelegramLinkMonitor(ops, EventHub())
+    link.record(up=True)
+    await OutboxDrainer(outbox, ops, link, history=history).drain()
+    assert (await outbox.pending())[0].sent_chunks == 1
+    if changed:
+        rows = [[{"text": "Next", "callback_data": "ms:m:opus"}]]
+        await history.record_selector_response("123", entry.id, "Latest body", rows)
+    if fail_changed_once:
+        bot.bot_instance.send_message = AsyncMock(
+            side_effect=[
+                SimpleNamespace(message_id=10),
+                TelegramNetworkError(MagicMock(), "still offline"),
+            ]
+        )
+        failed_link = TelegramLinkMonitor(ops, EventHub())
+        failed_link.record(up=True)
+        await OutboxDrainer(outbox, ops, failed_link, history=history).drain()
+        assert bot.bot_instance.send_message.await_args_list[0].kwargs["text"] == "Latest one"
+        assert (await history.metadata("123"))[entry.id].get("mirror_revision", 0) == 0
+    bot.bot_instance.send_message = AsyncMock(
+        side_effect=[SimpleNamespace(message_id=20), SimpleNamespace(message_id=21)]
+    )
+    restarted = Outbox(tmp_path / "outbox")
+    restored = HistoryStore(tmp_path / "history")
+    link = TelegramLinkMonitor(ops, EventHub())
+    link.record(up=True)
+    await OutboxDrainer(restarted, ops, link, history=restored).drain()
+    assert [call.kwargs["text"] for call in bot.bot_instance.send_message.await_args_list] == (
+        ["Latest one", "Latest two"] if changed else ["Old two", "Old three"]
+    )
+    final = bot.bot_instance.send_message.call_args.kwargs
+    assert final["reply_markup"].inline_keyboard[0][0].callback_data == rows[0][0]["callback_data"]
+    meta = (await restored.metadata("123"))[entry.id]
+    assert meta["telegram_message_id"] == 21
+    assert meta["mirror_revision"] == int(changed)
+    saved = json.loads(next((tmp_path / "outbox" / "done").glob(f"*-{item.id}.json")).read_text())
+    assert OutboxItem(**saved).text == "Old body"
+    assert not await restarted.has_pending()
+
+
+async def test_command_sync_completed_mirror_does_not_restore_old_markers(tmp_path):
+    from ductor_bot.chat_log.history import Entry, HistoryStore
+    from ductor_bot.chat_log.outbox import Outbox
+
+    bot = make_bot(tmp_path)
+    history = HistoryStore(tmp_path / "history")
+    outbox = Outbox(tmp_path / "outbox")
+    entry = await history.append("123", Entry("bot", "web", "Old [button:Old]"))
+    await outbox.enqueue(
+        kind="reply_mirror", chat_id=123, text="Old [button:Old]", history_id=entry.id
+    )
+    await history.record_selector_response("123", entry.id, "Finished", [])
+    ops = TelegramWebchatOps(bot)
+    link = TelegramLinkMonitor(ops, EventHub())
+    link.record(up=True)
+    await OutboxDrainer(outbox, ops, link, history=history).drain()
+    call = bot.bot_instance.send_message.call_args.kwargs
+    assert call["text"] == "Finished"
+    assert call["reply_markup"].inline_keyboard == []
+    assert (await history.metadata("123"))[entry.id]["buttons"] == []
+
+
+async def test_command_sync_keyboard_binding_does_not_wait_for_entry_gate(tmp_path):
+    import asyncio
+
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    from ductor_bot.chat_log.history import Entry, HistoryStore
+    from ductor_bot.messenger.telegram.callbacks import recorded_keyboard_observer
+    from ductor_bot.session.key import SessionKey
+
+    history = HistoryStore(tmp_path / "history")
+    entry = await history.append("123", Entry("bot", "telegram", "Choose"))
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="Pick", callback_data="ms:p:claude")]]
+    )
+    observer = recorded_keyboard_observer(history, MagicMock(), SessionKey(chat_id=123), entry.id)
+    session_lock = asyncio.Lock()
+    async with session_lock, history.selector_gate("123", entry.id):
+        await asyncio.wait_for(observer(99, markup, "Choose"), timeout=1)
+    assert (await history.metadata("123"))[entry.id]["telegram_message_id"] == 99
+
+
+@pytest.mark.parametrize("continuous", [False, True])
+async def test_command_sync_keyboard_reconciliation_is_bounded(tmp_path, continuous, caplog):
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    from ductor_bot.chat_log.history import Entry, HistoryStore
+    from ductor_bot.messenger.telegram.callbacks import recorded_keyboard_observer
+    from ductor_bot.session.key import SessionKey
+
+    history = HistoryStore(tmp_path / "history")
+    entry = await history.append("123", Entry("bot", "telegram", "Old"))
+    rows = [[{"text": "Pick", "callback_data": "ms:p:claude"}]]
+    await history.record_selector_response("123", entry.id, "Latest", rows)
+    bot = MagicMock()
+
+    async def edit(**_kwargs):
+        if continuous:
+            await history.record_selector_response("123", entry.id, "Changed again", rows)
+
+    bot.edit_message_text = AsyncMock(side_effect=edit)
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="Old", callback_data="ms:p:codex")]]
+    )
+    observer = recorded_keyboard_observer(history, bot, SessionKey(chat_id=123), entry.id)
+    await observer(99, markup, "Old")
+    assert bot.edit_message_text.await_count == (3 if continuous else 1)
+    assert bot.edit_message_text.call_args_list[0].kwargs["text"] == "Latest"
+    assert (await history.metadata("123"))[entry.id]["buttons"] == rows
+    assert ("after three state changes" in caplog.text) is continuous

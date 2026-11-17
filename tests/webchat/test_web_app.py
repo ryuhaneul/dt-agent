@@ -31,6 +31,7 @@ class FakeBridge:
     connected: asyncio.Event = field(default_factory=asyncio.Event)
     connections: int = 0
     delay: float = 0
+    delay_path: str | None = None
 
     async def handle(self, request):  # noqa: C901, PLR0912 - explicit fake API contract
         assert request.headers.get("X-Dtw-Bridge-Token") == "fake-bridge-token"
@@ -52,7 +53,7 @@ class FakeBridge:
             finally:
                 self.sockets.discard(socket)
             return socket
-        if self.delay:
+        if self.delay and (self.delay_path is None or path == self.delay_path):
             await asyncio.sleep(self.delay)
         raw = await request.read()
         body = json.loads(raw) if raw else None
@@ -770,3 +771,66 @@ async def test_history_reads_preserve_slow_busy_errors_only(site, path, error):
         response = await client.get(path, headers=headers)
         assert response.status == 503
         assert await response.json() == {"error": error}
+
+
+async def test_buttons_relay_requires_session_client_header_and_csrf(site):
+    client, fake = site
+    path = "/api/topics/1.7/buttons"
+    for request_headers in [{}, CLIENT]:
+        response = await client.post(
+            path, json={"entry_id": "entry", "label": "Yes"}, headers=request_headers
+        )
+        assert response.status == 403
+        assert "WWW-Authenticate" not in response.headers
+    headers, _ = await login(client)
+    for request_headers in [
+        {key: value for key, value in headers.items() if key != "X-Dtw-Csrf"},
+        {**headers, "X-Dtw-Csrf": "bad"},
+        {key: value for key, value in headers.items() if key != "X-Dtw-Client"},
+    ]:
+        response = await client.post(
+            path, json={"entry_id": "entry", "label": "Yes"}, headers=request_headers
+        )
+        assert response.status == 403
+    response = await client.post(path, json={"entry_id": "entry", "label": "Yes"}, headers=headers)
+    assert response.status == 200
+    assert (await response.json())["body"] == {"entry_id": "entry", "label": "Yes"}
+    assert any(call[1] == "/topics/1.7/buttons" for call in fake.calls)
+
+
+async def test_selector_sync_relay_auth_csrf_and_exact_payload(site):
+    client, fake = site
+    path = "/api/topics/1.7/callbacks"
+    body = {"entry_id": "e1", "data": "ms:p:claude", "revision": 0}
+    response = await client.post(path, json=body)
+    assert response.status == 403
+    assert "WWW-Authenticate" not in response.headers
+    authorized, _ = await login(client)
+    for missing in ("X-Dtw-Client", "X-Dtw-Csrf"):
+        response = await client.post(
+            path, json=body, headers={k: v for k, v in authorized.items() if k != missing}
+        )
+        assert response.status == 403
+        assert "WWW-Authenticate" not in response.headers
+    response = await client.post(path, json=body, headers=authorized)
+    assert response.status == 200
+    assert fake.calls[-1][1] == "/topics/1.7/callbacks"
+    assert fake.calls[-1][3] == body
+
+
+@pytest.mark.parametrize(
+    ("route", "body"),
+    [
+        ("buttons", {"entry_id": "e1", "label": "Yes"}),
+        ("callbacks", {"entry_id": "e1", "data": "ms:p:claude", "revision": 0}),
+    ],
+)
+async def test_button_relays_allow_six_second_bridge_response(site, route, body):
+    client, fake = site
+    authorized, _ = await login(client)
+    fake.delay = 6
+    fake.delay_path = f"/topics/1.7/{route}"
+    response = await client.post(f"/api/topics/1.7/{route}", json=body, headers=authorized)
+    assert response.status == 200
+    assert await response.json() == {"path": f"/topics/1.7/{route}", "body": body}
+    assert fake.calls[-1][1] == f"/topics/1.7/{route}"

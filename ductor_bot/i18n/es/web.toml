@@ -192,3 +192,11 @@ list = "Lista de comandos"
 help = "↑↓ Mover · Enter / Tab Elegir · Esc Cerrar"
 empty = "No hay comandos coincidentes."
 run = "Comando ejecutado"
+
+[buttons]
+sending = "Enviando…"
+answered = "Respuesta: {label}"
+already_answered = "Este mensaje ya tiene respuesta."
+invalid = "Este botón ya no está disponible. Actualiza el chat e inténtalo de nuevo."
+
+stale_selector = "Esta pantalla de selección ha cambiado. Se han cargado las opciones más recientes."

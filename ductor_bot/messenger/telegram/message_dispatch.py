@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ductor_bot.cli.coalescer import CoalesceConfig, StreamCoalescer
 from ductor_bot.i18n import t
+from ductor_bot.messenger.telegram.callbacks import recorded_keyboard_observer
 from ductor_bot.messenger.telegram.sender import (
     SendRichOpts,
     send_files_from_text,
@@ -23,7 +25,7 @@ from ductor_bot.text.response_format import system_status_label
 
 if TYPE_CHECKING:
     from aiogram import Bot
-    from aiogram.types import Message
+    from aiogram.types import InlineKeyboardMarkup, Message
 
     from ductor_bot.config import SceneConfig, StreamingConfig
     from ductor_bot.messenger.telegram.reply_phase import ReplyPhase
@@ -199,6 +201,29 @@ def _sending(phase: ReplyPhase | None) -> contextlib.AbstractContextManager[None
     return phase.sending() if phase is not None else contextlib.nullcontext()
 
 
+def _keyboard_observer(
+    dispatch: NonStreamingDispatch | StreamingDispatch, result: OrchestratorResult
+) -> Callable[[int, InlineKeyboardMarkup, str | None], Awaitable[None]] | None:
+    entry_id = getattr(result, "_chat_log_entry_id", None)
+    if entry_id is None:
+        return None
+    recorder = dispatch.orchestrator._history_recorder
+    if recorder is None:
+        return None
+
+    observer = recorded_keyboard_observer(recorder._history, dispatch.bot, dispatch.key, entry_id)
+
+    async def record(
+        message_id: int, markup: InlineKeyboardMarkup, html_text: str | None = None
+    ) -> None:
+        from ductor_bot.chat_log.ids import to_tid
+
+        if to_tid(dispatch.key) not in recorder.blocked:
+            await observer(message_id, markup, html_text)
+
+    return record
+
+
 async def run_non_streaming_message(
     dispatch: NonStreamingDispatch,
 ) -> str:
@@ -232,6 +257,7 @@ async def run_non_streaming_message(
                 reply_to_message_id=reply_id,
                 allowed_roots=dispatch.allowed_roots,
                 thread_id=dispatch.thread_id,
+                on_keyboard=_keyboard_observer(dispatch, result),
             ),
         )
         return result.text
@@ -367,7 +393,19 @@ async def run_streaming_message(  # noqa: C901, PLR0915
         if footer:
             await editor.append_text(footer)
             result.text += footer
-        await editor.finalize(result.text)
+        keyboard_message_id = await editor.finalize(result.text)
+        if type(keyboard_message_id) is int:
+            from ductor_bot.messenger.telegram.buttons import extract_buttons
+            from ductor_bot.messenger.telegram.sender import report_keyboard
+
+            _, markup = extract_buttons(result.text)
+            if markup is not None:
+                await report_keyboard(
+                    _keyboard_observer(dispatch, result),
+                    keyboard_message_id,
+                    markup,
+                    editor.keyboard_html_text,
+                )
 
         logger.info(
             "Streaming flow completed fallback=%s content=%s",
@@ -384,6 +422,7 @@ async def run_streaming_message(  # noqa: C901, PLR0915
                     reply_to_message_id=dispatch.message.message_id,
                     allowed_roots=dispatch.allowed_roots,
                     thread_id=dispatch.thread_id,
+                    on_keyboard=_keyboard_observer(dispatch, result),
                 ),
             )
         else:

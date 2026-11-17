@@ -1029,3 +1029,104 @@ def test_ia_button_only_prompt_translated_in_all_supported_languages() -> None:
         store = TranslationStore(language)
         assert "telegram.choose_option" in store._chat
         assert store.chat("telegram.choose_option")
+
+
+async def test_keyboard_observer_reports_last_rich_chunk_and_progress_message():
+    from ductor_bot.messenger.telegram.sender import (
+        SendRichOpts,
+        send_rich,
+        send_rich_progress_detailed,
+    )
+
+    bot = MagicMock()
+    bot.send_message = AsyncMock(side_effect=[SimpleNamespace(message_id=i) for i in range(1, 20)])
+    bot.edit_message_reply_markup = AsyncMock()
+    observer = AsyncMock()
+    opts = SendRichOpts(on_keyboard=observer)
+    assert await send_rich(bot, 1, "text " * 2000 + "\n[button:Yes]", opts)
+    last_id = bot.edit_message_reply_markup.call_args.kwargs["message_id"]
+    assert last_id > 1
+    assert observer.await_args.args[0] == last_id
+    observer.reset_mock()
+    progress = await send_rich_progress_detailed(bot, 1, "text " * 2000 + "\n[button:Yes]", opts)
+    assert progress.delivered
+    assert progress.telegram_message_id is not None
+    assert progress.telegram_message_id > last_id
+    assert observer.await_args.args[0] == progress.telegram_message_id
+    assert observer.await_args.args[1].inline_keyboard[0][0].callback_data == "Yes"
+
+
+async def test_failed_keyboard_attachment_does_not_report_message_id():
+    from ductor_bot.messenger.telegram.sender import SendRichOpts, send_rich
+
+    bot = MagicMock()
+    bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=7))
+    bot.edit_message_reply_markup = AsyncMock(
+        side_effect=TelegramBadRequest(method=MagicMock(), message="rejected")
+    )
+    observer = AsyncMock()
+    assert await send_rich(bot, 1, "Pick [button:Yes]", SendRichOpts(on_keyboard=observer))
+    observer.assert_not_awaited()
+
+
+async def test_keyboard_observer_captures_actual_last_chunk_html():
+    from ductor_bot.messenger.telegram.sender import (
+        SendRichOpts,
+        send_rich,
+        send_rich_progress_detailed,
+    )
+
+    for send in [send_rich, send_rich_progress_detailed]:
+        bot = MagicMock()
+        sent = []
+
+        async def message(sent=sent, **kwargs):
+            sent.append(kwargs)
+            return SimpleNamespace(message_id=len(sent), text="parsed", html_text=kwargs["text"])
+
+        bot.send_message = AsyncMock(side_effect=message)
+        bot.edit_message_reply_markup = AsyncMock()
+        observer = AsyncMock()
+        result = await send(
+            bot, 1, "**answer** " * 2000 + "\n[button:Yes]", SendRichOpts(on_keyboard=observer)
+        )
+        assert len(sent) > 1
+        assert observer.await_args.args[0] == len(sent)
+        assert observer.await_args.args[2] == sent[-1]["text"]
+        if send is send_rich_progress_detailed:
+            assert result.telegram_html_text == sent[-1]["text"]
+
+
+async def test_caption_keyboard_observer_has_no_text_snapshot(tmp_path):
+    from ductor_bot.messenger.telegram.sender import SendRichOpts, send_rich_progress_detailed
+
+    file = tmp_path / "answer.txt"
+    file.write_text("file body")
+    bot = MagicMock()
+    bot.send_document = AsyncMock(
+        return_value=SimpleNamespace(message_id=7, text=None, caption="caption")
+    )
+    observer = AsyncMock()
+    result = await send_rich_progress_detailed(
+        bot, 1, f"<file:{file}> [button:Yes]", SendRichOpts(on_keyboard=observer)
+    )
+    assert result.telegram_message_id == 7
+    assert result.telegram_html_text is None
+    assert observer.await_args.args[2] is None
+
+
+async def test_rich_snapshot_uses_the_keyboard_attachment_response():
+    from ductor_bot.messenger.telegram.sender import SendRichOpts, send_rich
+
+    bot = MagicMock()
+    bot.send_message = AsyncMock(
+        return_value=SimpleNamespace(message_id=1, text="Before", html_text="Before")
+    )
+    bot.edit_message_reply_markup = AsyncMock(
+        return_value=SimpleNamespace(
+            message_id=1, text="Actual", html_text="<b>Actual at attachment</b>"
+        )
+    )
+    observer = AsyncMock()
+    await send_rich(bot, 1, "Before [button:Yes]", SendRichOpts(on_keyboard=observer))
+    assert observer.await_args.args[2] == "<b>Actual at attachment</b>"

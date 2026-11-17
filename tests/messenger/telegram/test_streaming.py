@@ -289,3 +289,127 @@ class TestStreamEditorThreadId:
         await editor.append_text("First")
         await editor.append_text("Second")
         assert bot.send_message.call_args.kwargs["message_thread_id"] == 77
+
+
+async def test_finalize_returns_keyboard_message_id_not_completion_marker():
+    from types import SimpleNamespace
+
+    from ductor_bot.config import StreamingConfig
+    from ductor_bot.messenger.telegram.edit_streaming import EditStreamEditor
+    from ductor_bot.messenger.telegram.streaming import StreamEditor
+
+    for editor_type in [StreamEditor, EditStreamEditor]:
+        bot = MagicMock()
+        bot.send_message = AsyncMock(
+            side_effect=[SimpleNamespace(message_id=i) for i in range(1, 10)]
+        )
+        bot.edit_message_reply_markup = AsyncMock()
+        bot.edit_message_text = AsyncMock()
+        editor = editor_type(
+            bot,
+            1,
+            **(
+                {"cfg": StreamingConfig(edit_interval_seconds=0)}
+                if editor_type is EditStreamEditor
+                else {}
+            ),
+        )
+        await editor.append_text("Answer")
+        message_id = await editor.finalize("Answer [button:Yes]")
+        assert message_id == bot.edit_message_reply_markup.call_args.kwargs["message_id"]
+        assert message_id == 1
+        assert await editor.finalize("No buttons") is None
+
+
+async def test_streaming_snapshot_tracks_answer_not_completion_or_failed_edit():
+    from types import SimpleNamespace
+
+    from ductor_bot.config import StreamingConfig
+    from ductor_bot.messenger.telegram.edit_streaming import EditStreamEditor
+
+    for editor_type in [StreamEditor, EditStreamEditor]:
+        bot = MagicMock()
+        sent, edited = [], []
+
+        async def send(sent=sent, **kwargs):
+            sent.append(kwargs["text"])
+            return SimpleNamespace(message_id=len(sent), text="parsed", html_text=kwargs["text"])
+
+        async def edit(edited=edited, **kwargs):
+            edited.append(kwargs["text"])
+            return SimpleNamespace(message_id=1, text="parsed", html_text=kwargs["text"])
+
+        bot.send_message = AsyncMock(side_effect=send)
+        bot.edit_message_text = AsyncMock(side_effect=edit)
+        bot.edit_message_reply_markup = AsyncMock()
+        editor = editor_type(
+            bot,
+            1,
+            **(
+                {"cfg": StreamingConfig(edit_interval_seconds=0)}
+                if editor_type is EditStreamEditor
+                else {}
+            ),
+        )
+        await editor.append_text("First")
+        await editor.append_text(" **second**")
+        await editor.finalize("First **second** [button:Yes]")
+        expected = edited[-1] if edited else sent[-1]
+        assert editor.keyboard_html_text == expected
+        assert "<b>second</b>" in editor.keyboard_html_text
+        if editor_type is EditStreamEditor:
+            assert editor.keyboard_html_text != sent[-1]
+
+
+async def test_failed_edit_keeps_last_successful_keyboard_html_snapshot():
+    from types import SimpleNamespace
+
+    from aiogram.exceptions import TelegramBadRequest
+
+    from ductor_bot.config import StreamingConfig
+    from ductor_bot.messenger.telegram.edit_streaming import EditStreamEditor
+
+    bot = MagicMock()
+    bot.send_message = AsyncMock(
+        return_value=SimpleNamespace(message_id=1, text="First", html_text="<b>Confirmed</b>")
+    )
+    bot.edit_message_text = AsyncMock(side_effect=TelegramBadRequest(MagicMock(), "edit rejected"))
+    bot.edit_message_reply_markup = AsyncMock()
+    editor = EditStreamEditor(
+        bot, 1, cfg=StreamingConfig(edit_interval_seconds=0, max_edit_failures=10)
+    )
+    await editor.append_text("First")
+    await editor.append_text(" second")
+    await editor.finalize("First second [button:Yes]")
+    assert editor.keyboard_html_text == "<b>Confirmed</b>"
+
+
+async def test_stream_snapshot_uses_the_keyboard_attachment_response():
+    from types import SimpleNamespace
+
+    from ductor_bot.config import StreamingConfig
+    from ductor_bot.messenger.telegram.edit_streaming import EditStreamEditor
+
+    for editor_type in [StreamEditor, EditStreamEditor]:
+        bot = MagicMock()
+        bot.send_message = AsyncMock(
+            return_value=SimpleNamespace(message_id=1, text="Before", html_text="Before")
+        )
+        bot.edit_message_text = AsyncMock()
+        bot.edit_message_reply_markup = AsyncMock(
+            return_value=SimpleNamespace(
+                message_id=1, text="Actual", html_text="<b>Actual at attachment</b>"
+            )
+        )
+        editor = editor_type(
+            bot,
+            1,
+            **(
+                {"cfg": StreamingConfig(edit_interval_seconds=0)}
+                if editor_type is EditStreamEditor
+                else {}
+            ),
+        )
+        await editor.append_text("Before")
+        await editor.finalize("Before [button:Yes]")
+        assert editor.keyboard_html_text == "<b>Actual at attachment</b>"

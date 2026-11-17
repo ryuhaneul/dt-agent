@@ -11,6 +11,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, Chat, Message, User
 
 from ductor_bot.config import AgentConfig, StreamingConfig
+from tests.messenger.telegram import test_usage as usage_contract
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -125,7 +126,7 @@ def _make_message(
     return msg
 
 
-def _make_callback_query(
+def _make_callback_query(  # noqa: PLR0917 -- existing callback fixture positional compatibility
     data: str = "Yes",
     chat_id: int = 1,
     message_id: int = 42,
@@ -1871,3 +1872,145 @@ async def test_session_extraction_preserves_value_error_boundary(stage):
             await tg._on_session(_make_message(text="/session @codex hello"))
             assert send.call_args.args[2] == "session error"
             assert send.await_count == (2 if stage == "send" else 1)
+
+
+@pytest.mark.parametrize(
+    ("method", "keyboard"),
+    [
+        ("_on_help", False),
+        ("_on_agent_commands", False),
+        ("_on_info", True),
+        ("_on_showfiles", True),
+        ("_show_welcome", True),
+        ("_on_accounts", True),
+    ],
+)
+async def test_command_sync_direct_reply_paths_record_and_bind(tmp_path, method, keyboard):
+    from ductor_bot.chat_log.events import EventHub
+    from ductor_bot.chat_log.history import HistoryStore
+    from ductor_bot.chat_log.recorder import HistoryRecorder
+    from ductor_bot.orchestrator.selectors.models import Button, ButtonGrid, SelectorResponse
+
+    bot, _ = _make_tg_bot()
+    orch = _make_orchestrator()
+    orch.paths.ductor_home = tmp_path
+    store = HistoryStore(tmp_path / "history")
+    orch._history_recorder = HistoryRecorder(store, EventHub())
+    bot._orchestrator = orch
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="Next", callback_data="sf:")]]
+    )
+
+    async def sent(_bot, _chat, _text, opts):
+        if opts.reply_markup is not None:
+            await opts.on_keyboard(88, opts.reply_markup, "Actual reply")
+        return True
+
+    with (
+        patch("ductor_bot.messenger.telegram.app.send_rich", side_effect=sent),
+        patch("ductor_bot.cli.auth.check_all_auth", return_value={}),
+        patch(
+            "ductor_bot.messenger.telegram.app.file_browser_start",
+            AsyncMock(return_value=("Files", markup)),
+        ),
+        patch(
+            "ductor_bot.orchestrator.selectors.account_selector.account_selector_start",
+            AsyncMock(
+                return_value=SelectorResponse(
+                    "Accounts", ButtonGrid([[Button("Refresh", "acs:r")]])
+                )
+            ),
+        ),
+    ):
+        await getattr(bot, method)(_make_message(text="/test", topic_thread_id=7))
+    entries = await store.read("1.7")
+    assert len(entries) == 1
+    assert entries[0].source == "telegram"
+    if keyboard:
+        meta = (await store.metadata("1.7"))[entries[0].id]
+        assert meta["buttons"]
+        assert meta["telegram_message_id"] == 88
+
+
+usage_bot = usage_contract.usage_bot
+
+
+@pytest.mark.parametrize("failure", [None, "bad_request", "network"])
+async def test_command_sync_usage_binds_only_successful_keyboard_edit(usage_bot, tmp_path, failure):
+    from ductor_bot.chat_log.events import EventHub
+    from ductor_bot.chat_log.history import HistoryStore
+    from ductor_bot.chat_log.recorder import HistoryRecorder
+
+    path = usage_bot
+    store = HistoryStore(tmp_path / "history")
+    path.bot._orchestrator._history_recorder = HistoryRecorder(store, EventHub())
+    if failure == "bad_request":
+        path.api.edit_message_text.side_effect = TelegramBadRequest(MagicMock(), "cannot edit")
+    elif failure == "network":
+        path.api.edit_message_text.side_effect = OSError("offline")
+    await path.bot._on_usage(usage_contract.message("/usage"))
+    entries = await store.read("1")
+    assert len(entries) == 1
+    meta = (await store.metadata("1"))[entries[0].id]
+    assert meta["buttons"][0][0]["callback_data"] == "usg:refresh"
+    if failure is None:
+        assert meta["telegram_message_id"] == 400
+    else:
+        assert "telegram_message_id" not in meta
+    assert meta["selector_revision"] == 1
+
+
+@pytest.mark.parametrize("method", ["_handle_where", "_handle_leave", "_on_session", "_on_restart"])
+async def test_command_sync_remaining_direct_acknowledgements(tmp_path, method):
+    from ductor_bot.chat_log.events import EventHub
+    from ductor_bot.chat_log.history import HistoryStore
+    from ductor_bot.chat_log.recorder import HistoryRecorder
+
+    bot, _ = _make_tg_bot()
+    orch = _make_orchestrator()
+    store = HistoryStore(tmp_path / "history")
+    orch._history_recorder = HistoryRecorder(store, EventHub())
+    bot._orchestrator = orch
+    bot._format_where = MagicMock(return_value="Where")
+    bot._build_session_help = MagicMock(return_value="Session help")
+    bot._dp.stop_polling = AsyncMock()
+    msg = _make_message(text="/session", topic_thread_id=7)
+    with (
+        patch("ductor_bot.messenger.telegram.app.send_rich", new_callable=AsyncMock) as send,
+        patch(
+            "ductor_bot.messenger.telegram.app.leave_chat_response", AsyncMock(return_value="Left")
+        ),
+        patch(
+            "ductor_bot.messenger.telegram.app.prepare_restart_response",
+            AsyncMock(return_value="Restarting"),
+        ),
+    ):
+        if method.startswith("_handle_"):
+            await getattr(bot, method)(1, msg)
+        else:
+            await getattr(bot, method)(msg)
+    rows = await store.read("1.7")
+    assert len(rows) == 1
+    assert rows[0].text == send.call_args.args[2]
+
+
+@pytest.mark.parametrize("failure", ["screen", "binding"])
+async def test_command_sync_usage_recording_failures_do_not_replace_telegram_reply(
+    usage_bot, tmp_path, monkeypatch, failure
+):
+    from ductor_bot.chat_log.events import EventHub
+    from ductor_bot.chat_log.history import HistoryStore
+    from ductor_bot.chat_log.recorder import HistoryRecorder
+
+    path = usage_bot
+    store = HistoryStore(tmp_path / "history")
+    path.bot._orchestrator._history_recorder = HistoryRecorder(store, EventHub())
+    method = "record_selector_response" if failure == "screen" else "bind_telegram_message"
+    monkeypatch.setattr(store, method, AsyncMock(side_effect=OSError("disk offline")))
+    await path.bot._on_usage(usage_contract.message("/usage"))
+    assert path.api.edit_message_text.await_count == 1
+    call = path.api.edit_message_text.call_args.kwargs
+    assert call["reply_markup"].inline_keyboard[0][0].callback_data == "usg:refresh"
+    assert call["text"] != usage_contract.t("usage.error")

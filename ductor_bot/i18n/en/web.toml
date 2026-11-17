@@ -192,3 +192,11 @@ list = "Command list"
 help = "↑↓ Move · Enter / Tab Select · Esc Close"
 empty = "No matching commands."
 run = "Command executed"
+
+[buttons]
+sending = "Sending…"
+answered = "Answered: {label}"
+already_answered = "This message has already been answered."
+invalid = "This button is no longer available. Refresh the chat and try again."
+
+stale_selector = "This selection screen has changed. The latest options have been loaded."

@@ -24,6 +24,7 @@ from ductor_bot.messenger.telegram.formatting import (
     markdown_to_telegram_html,
     split_html_message,
 )
+from ductor_bot.messenger.telegram.sender import message_html_text
 from ductor_bot.text.response_format import normalize_tool_name
 
 if TYPE_CHECKING:
@@ -126,6 +127,13 @@ class EditStreamEditor:
         self._thread_id = thread_id
         self._s = _EditorState()
         self._s.start_time = time.monotonic()
+        self._active_html_text: str | None = None
+        self._keyboard_html_text: str | None = None
+
+    @property
+    def keyboard_html_text(self) -> str | None:
+        """Snapshot of the answer bubble, excluding the later completion marker."""
+        return self._keyboard_html_text
 
     @property
     def has_content(self) -> bool:
@@ -169,7 +177,7 @@ class EditStreamEditor:
         self._s.tool_tracker.add(text, style="system")
         await self._schedule_edit()
 
-    async def finalize(self, full_text: str) -> None:
+    async def finalize(self, full_text: str) -> int | None:
         """Keep the streamed thinking/tool trace and append a compact.
 
         Completion marker as a NEW message (for Telegram notification).
@@ -180,15 +188,16 @@ class EditStreamEditor:
         the dispatcher's `has_content` branch skips send_rich() — only
         send_files_from_text() still runs to deliver <file:…> attachments.
         """
+        self._keyboard_html_text = None
         self._cancel_timer()
         if self._s.fallen_back:
-            return
+            return None
         # Flush throttled indicators so the last streamed bubble reflects
         # the final trace state.
         if self._s.tool_tracker.has_entries or self._s.raw_text_parts:
             await self._do_edit()
         # Attach quick-reply buttons to the answer bubble before we let go of it.
-        await self._attach_buttons(full_text)
+        keyboard_message_id = await self._attach_buttons(full_text)
         elapsed = time.monotonic() - self._s.start_time
         summary = t("stream.done", secs=f"{elapsed:.1f}")
         try:
@@ -204,6 +213,7 @@ class EditStreamEditor:
             logger.debug("Failed to send completion marker")
         # Drop our handle to the active bubble so no further edits touch it.
         self._s.active_msg = None
+        return keyboard_message_id
 
     # ------------------------------------------------------------------
     # Internal: segment management
@@ -347,6 +357,7 @@ class EditStreamEditor:
                     message_thread_id=self._thread_id,
                 )
             self._s.active_msg = msg
+            self._active_html_text = message_html_text(msg) or display
             self._s.messages_sent += 1
             self._s.sent_message_ids.append(msg.message_id)
             logger.debug("Message created msg_id=%d", msg.message_id)
@@ -364,6 +375,9 @@ class EditStreamEditor:
                 message_thread_id=self._thread_id,
             )
             self._s.active_msg = msg
+            self._active_html_text = message_html_text(msg) or html.escape(
+                text[:TELEGRAM_MSG_LIMIT]
+            )
             self._s.messages_sent += 1
             self._s.sent_message_ids.append(msg.message_id)
         except TelegramBadRequest:
@@ -375,12 +389,13 @@ class EditStreamEditor:
             return
         display = text[:TELEGRAM_MSG_LIMIT]
         try:
-            await self._bot.edit_message_text(
+            response = await self._bot.edit_message_text(
                 text=display,
                 chat_id=self._chat_id,
                 message_id=self._s.active_msg.message_id,
                 parse_mode=ParseMode.HTML,
             )
+            self._active_html_text = message_html_text(response) or display
             self._s.consecutive_failures = 0
         except TelegramBadRequest as exc:
             if "message is not modified" in str(exc).lower():
@@ -398,12 +413,13 @@ class EditStreamEditor:
         except TelegramRetryAfter as exc:
             await asyncio.sleep(exc.retry_after)
             try:
-                await self._bot.edit_message_text(
+                response = await self._bot.edit_message_text(
                     text=display,
                     chat_id=self._chat_id,
                     message_id=self._s.active_msg.message_id,
                     parse_mode=ParseMode.HTML,
                 )
+                self._active_html_text = message_html_text(response) or display
                 self._s.consecutive_failures = 0
             except (TelegramBadRequest, TelegramRetryAfter):
                 logger.warning("Edit retry after rate-limit also failed")
@@ -412,21 +428,24 @@ class EditStreamEditor:
     # Internal: button keyboard attachment
     # ------------------------------------------------------------------
 
-    async def _attach_buttons(self, full_text: str) -> None:
+    async def _attach_buttons(self, full_text: str) -> int | None:
         """Parse buttons from *full_text* and attach keyboard to the active message."""
         if self._s.active_msg is None:
-            return
+            return None
         _, markup = extract_buttons(full_text)
         if markup is None:
-            return
+            return None
         try:
-            await self._bot.edit_message_reply_markup(
+            attached = await self._bot.edit_message_reply_markup(
                 chat_id=self._chat_id,
                 message_id=self._s.active_msg.message_id,
                 reply_markup=markup,
             )
         except (TelegramBadRequest, TelegramRetryAfter):
             logger.warning("Failed to attach button keyboard")
+            return None
+        self._keyboard_html_text = message_html_text(attached) or self._active_html_text
+        return self._s.active_msg.message_id
 
     # ------------------------------------------------------------------
     # Internal: append-mode fallback

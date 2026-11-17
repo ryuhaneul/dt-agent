@@ -43,25 +43,34 @@ from ductor_bot.messenger.commands import classify_command
 from ductor_bot.messenger.notifications import NotificationService
 from ductor_bot.messenger.telegram.callbacks import (
     button_grid_to_markup,
+    edit_button_choice,
+    edit_recorded_selector,
     edit_selector_response,
     mark_button_choice,
     parse_ns_callback,
+    process_button_choice,
+    recorded_keyboard_observer,
+    response_button_data,
+    restore_recorded_selector,
+    selector_callback_response,
+    selector_rows,
 )
 from ductor_bot.messenger.telegram.chat_tracker import ChatRecord, ChatTracker
 from ductor_bot.messenger.telegram.file_browser import (
     file_browser_start,
-    handle_file_browser_callback,
     is_file_browser_callback,
 )
 from ductor_bot.messenger.telegram.formatting import markdown_to_telegram_html
 from ductor_bot.messenger.telegram.handlers import (
     build_reply_prompt,
+    command_reply_options,
     handle_abort,
     handle_abort_all,
     handle_command,
     handle_interrupt,
     handle_new_session,
     prepend_reply_to_media,
+    record_command_reply,
     strip_mention,
 )
 from ductor_bot.messenger.telegram.media import (
@@ -86,7 +95,7 @@ from ductor_bot.messenger.telegram.middleware import (
 from ductor_bot.messenger.telegram.polling import PollingDispatcher
 from ductor_bot.messenger.telegram.reply_phase import ReplyPhase
 from ductor_bot.messenger.telegram.secret_input import SecretInput
-from ductor_bot.messenger.telegram.sender import SendRichOpts, send_rich
+from ductor_bot.messenger.telegram.sender import SendRichOpts, report_keyboard, send_rich
 from ductor_bot.messenger.telegram.sender import (
     send_files_from_text as _send_files_from_text,
 )
@@ -786,8 +795,7 @@ class TelegramBot:
 
     async def _handle_where(self, chat_id: int, message: Message) -> None:
         """Handle /where: show all tracked chats/groups."""
-        await send_rich(
-            self._bot,
+        await self._send_command_response(
             chat_id,
             self._format_where(),
             SendRichOpts(
@@ -802,8 +810,7 @@ class TelegramBot:
         text = await leave_chat_response(
             message.text or "", self._bot.leave_chat, self._chat_tracker
         )
-        await send_rich(
-            self._bot,
+        await self._send_command_response(
             chat_id,
             text,
             SendRichOpts(reply_to_message_id=message.message_id, thread_id=thread_id),
@@ -823,8 +830,7 @@ class TelegramBot:
         text = build_welcome_text(user_name, auth_results, self._config)
         keyboard = build_welcome_keyboard()
 
-        await send_rich(
-            self._bot,
+        await self._send_command_response(
             chat_id,
             text,
             SendRichOpts(
@@ -833,6 +839,19 @@ class TelegramBot:
                 thread_id=thread_id,
             ),
         )
+
+    async def _send_command_response(
+        self, chat_id: int, text: str, opts: SendRichOpts | None = None
+    ) -> bool:
+        options = opts or SendRichOpts()
+        options = await command_reply_options(
+            self._orchestrator,
+            self._bot,
+            SessionKey.telegram(chat_id, options.thread_id),
+            text,
+            options,
+        )
+        return await send_rich(self._bot, chat_id, text, options)
 
     async def _on_start(self, message: Message) -> None:
         """Handle /start: always show welcome screen."""
@@ -849,8 +868,7 @@ class TelegramBot:
             return
         if self._config.group_mention_only and not self._is_addressed(message):
             return
-        await send_rich(
-            self._bot,
+        await self._send_command_response(
             message.chat.id,
             _build_help_text(),
             SendRichOpts(reply_to_message_id=message.message_id, thread_id=get_thread_id(message)),
@@ -866,8 +884,7 @@ class TelegramBot:
         thread_id = get_thread_id(message)
 
         text = build_agent_commands_text()
-        await send_rich(
-            self._bot,
+        await self._send_command_response(
             chat_id,
             text,
             SendRichOpts(reply_to_message_id=message.message_id, thread_id=thread_id),
@@ -880,8 +897,7 @@ class TelegramBot:
         if self._config.group_mention_only and not self._is_addressed(message):
             return
         text, keyboard = build_info_response()
-        await send_rich(
-            self._bot,
+        await self._send_command_response(
             message.chat.id,
             text,
             SendRichOpts(
@@ -894,8 +910,7 @@ class TelegramBot:
     async def _on_showfiles(self, message: Message) -> None:
         """Handle /showfiles: interactive file browser for ~/.ductor."""
         text, keyboard = await file_browser_start(self._orch.paths)
-        await send_rich(
-            self._bot,
+        await self._send_command_response(
             message.chat.id,
             text,
             SendRichOpts(
@@ -1219,8 +1234,7 @@ class TelegramBot:
         thread_id = get_thread_id(message)
 
         if len(parts) < 2 or not parts[1].strip():
-            await send_rich(
-                self._bot,
+            await self._send_command_response(
                 chat_id,
                 self._build_session_help(),
                 SendRichOpts(reply_to_message_id=message.message_id, thread_id=thread_id),
@@ -1232,15 +1246,13 @@ class TelegramBot:
             response = self._submit_session_response(
                 chat_id, parsed_prompt, message.message_id, thread_id
             )
-            await send_rich(
-                self._bot,
+            await self._send_command_response(
                 chat_id,
                 response,
                 SendRichOpts(reply_to_message_id=message.message_id, thread_id=thread_id),
             )
         except ValueError as exc:
-            await send_rich(
-                self._bot,
+            await self._send_command_response(
                 chat_id,
                 exc.shown() if isinstance(exc, ProductError) else str(exc),
                 SendRichOpts(reply_to_message_id=message.message_id, thread_id=thread_id),
@@ -1276,6 +1288,9 @@ class TelegramBot:
             initial = await self._usage_response(None)
         except Exception as exc:
             logger.warning("Usage display failed: %s", type(exc).__name__)
+            await record_command_reply(
+                self._orchestrator, get_session_key(message), t("usage.error")
+            )
             await self._bot.send_message(
                 chat_id=message.chat.id,
                 text=t("usage.error"),
@@ -1283,6 +1298,9 @@ class TelegramBot:
                 message_thread_id=get_thread_id(message),
             )
             return
+        initial_entry_id = await record_command_reply(
+            self._orchestrator, get_session_key(message), initial.text
+        )
         sent = await self._bot.send_message(
             chat_id=message.chat.id,
             text=markdown_to_telegram_html(initial.text),
@@ -1290,16 +1308,58 @@ class TelegramBot:
             reply_parameters=ReplyParameters(message_id=message.message_id),
             message_thread_id=get_thread_id(message),
         )
-        await self._handle_usage_refresh(message.chat.id, sent.message_id)
+        await self._handle_usage_refresh(
+            message.chat.id,
+            sent.message_id,
+            topic_key=get_session_key(message),
+            initial_entry_id=initial_entry_id,
+        )
 
-    async def _handle_usage_refresh(self, chat_id: int, message_id: int) -> None:
+    async def _handle_usage_refresh(
+        self,
+        chat_id: int,
+        message_id: int,
+        *,
+        topic_key: SessionKey | None = None,
+        initial_entry_id: str | None = None,
+    ) -> None:
         """Refresh the same message without changing account or usage files."""
-        from ductor_bot.cli.codex_usage import query_codex_usage
         from ductor_bot.orchestrator.selectors.models import SelectorResponse
 
         try:
-            response = await self._usage_response(await query_codex_usage())
-            await edit_selector_response(self._bot, chat_id, message_id, response)
+            key = topic_key or SessionKey(chat_id=chat_id)
+            recorder = self._orch._history_recorder
+            if initial_entry_id is None or recorder is None:
+                await self._run_selector_callback(key, message_id, "usg:refresh")
+            else:
+                history = recorder._history
+                step = await selector_callback_response(self, key, "usg:refresh")
+                assert step.response is not None
+                from ductor_bot.chat_log.ids import to_tid
+
+                try:
+                    meta = await history.record_selector_response(
+                        to_tid(key),
+                        initial_entry_id,
+                        step.response.text,
+                        selector_rows(step.response),
+                    )
+                except Exception as exc:
+                    logger.warning("Native command history failed: %s", type(exc).__name__)
+                    meta = None
+                edited = await edit_recorded_selector(self._bot, chat_id, message_id, step.response)
+                markup = button_grid_to_markup(step.response.buttons)
+                if edited and markup is not None and meta is not None:
+                    observer = recorded_keyboard_observer(
+                        history,
+                        self._bot,
+                        key,
+                        initial_entry_id,
+                        revision=meta["selector_revision"],
+                    )
+                    await report_keyboard(
+                        observer, message_id, markup, markdown_to_telegram_html(step.response.text)
+                    )
         except TelegramRetryAfter:
             logger.debug("Usage message edit throttled")
         except Exception as exc:
@@ -1324,8 +1384,7 @@ class TelegramBot:
             resp = SelectorResponse(text=t("accounts.main_only"))
         else:
             resp = await account_selector_start(self._orch.paths.ductor_home, self._config)
-        await send_rich(
-            self._bot,
+        await self._send_command_response(
             message.chat.id,
             resp.text,
             SendRichOpts(
@@ -1345,8 +1404,7 @@ class TelegramBot:
         if self._config.group_mention_only and not self._is_addressed(message):
             return
         text = await prepare_restart_response(message.chat.id, self._orch.paths)
-        await send_rich(
-            self._bot,
+        await self._send_command_response(
             message.chat.id,
             text,
             SendRichOpts(reply_to_message_id=message.message_id, thread_id=get_thread_id(message)),
@@ -1394,16 +1452,61 @@ class TelegramBot:
                 return
             data = resolved
 
-        if await self._route_special_callback(key, msg.message_id, data, thread_id=thread_id):
+        if data.startswith("ns:") or await self._route_special_callback(
+            key, msg.message_id, data, thread_id=thread_id
+        ):
+            if data.startswith("ns:"):
+                await self._apply_response_choice(
+                    callback, key, data, display_label, self._named_submitter(key, thread_id)
+                )
             return
 
         command = data.split(None, 1)[0] if data.strip() else ""
         name = command.removeprefix("/").split("@", 1)[0].lower()
         if data.startswith("/") and classify_command(name) != "unknown":
-            await self._mark_button_choice(chat_id, msg, display_label)
+            await self._apply_response_choice(
+                callback, key, data, display_label, self._command_submitter(callback, command)
+            )
+            return
+
+        choice = (chat_id, msg.message_id, callback.data or "")
+        if choice in self._button_choices or self._shutdown_begun():
+            return
+        self._button_choices.add(choice)
+        try:
+            await self._apply_response_choice(
+                callback,
+                key,
+                data,
+                display_label,
+                self._choice_submitter(msg, key, display_label, thread_id),
+            )
+        finally:
+            self._button_choices.discard(choice)
+
+    def _named_submitter(
+        self, key: SessionKey, thread_id: int | None
+    ) -> Callable[[str, str | None, Callable[[], Awaitable[None]]], Awaitable[None]]:
+        async def submit_named(
+            text: str, session_name: str | None, accept: Callable[[], Awaitable[None]]
+        ) -> None:
+            await accept()
+            await self._handle_ns_callback(key, f"ns:{session_name}:{text}", thread_id=thread_id)
+
+        return submit_named
+
+    def _command_submitter(
+        self, callback: CallbackQuery, command: str
+    ) -> Callable[[str, str | None, Callable[[], Awaitable[None]]], Awaitable[None]]:
+        msg = cast("Message", callback.message)
+
+        async def submit_command(
+            text: str, _session: str | None, accept: Callable[[], Awaitable[None]]
+        ) -> None:
+            await accept()
             command_message = msg.model_copy(
                 update={
-                    "text": data,
+                    "text": text,
                     "from_user": callback.from_user,
                     "entities": [MessageEntity(type="bot_command", offset=0, length=len(command))],
                     "caption": None,
@@ -1427,24 +1530,98 @@ class TelegramBot:
                 bot=self._bot,
                 command_callback_id=callback.id,
             )
-            return
 
-        choice = (chat_id, msg.message_id, callback.data or "")
-        if choice in self._button_choices or self._shutdown_begun():
-            return
-        self._button_choices.add(choice)
-        try:
-            await self._mark_button_choice(chat_id, msg, display_label)
+        return submit_command
+
+    def _choice_submitter(
+        self,
+        msg: Message,
+        key: SessionKey,
+        display_label: str,
+        thread_id: int | None,
+    ) -> Callable[[str, str | None, Callable[[], Awaitable[None]]], Awaitable[None]]:
+        async def submit_choice(
+            text: str, _session: str | None, accept: Callable[[], Awaitable[None]]
+        ) -> None:
+            await accept()
 
             async def handle_choice() -> None:
                 if self._config.streaming.enabled:
-                    await self._handle_streaming(msg, key, data, thread_id=thread_id)
+                    await self._handle_streaming(msg, key, text, thread_id=thread_id)
                 else:
-                    await self._handle_non_streaming(msg, key, data, thread_id=thread_id)
+                    await self._handle_non_streaming(msg, key, text, thread_id=thread_id)
 
             await self._sequential.run_callback(handle_choice, msg, display_label)
-        finally:
-            self._button_choices.discard(choice)
+
+        return submit_choice
+
+    async def _apply_response_choice(  # noqa: C901 -- recording failures must preserve native callback processing
+        self,
+        callback: CallbackQuery,
+        key: SessionKey,
+        data: str,
+        display_label: str,
+        submit: Callable[[str, str | None, Callable[[], Awaitable[None]]], Awaitable[None]],
+    ) -> None:
+        """Claim a tracked keyboard, keeping unrecorded callbacks on their old path."""
+        from ductor_bot.chat_log.ids import to_tid
+
+        msg = cast("Message", callback.message)
+        assert msg is not None
+        runtime = self._chat_log_runtime
+        tid = to_tid(key)
+        entry_id = None
+        meta = {}
+        try:
+            if runtime is not None:
+                entry_id = await runtime.history.entry_for_telegram_message(tid, msg.message_id)
+                if entry_id is not None:
+                    meta = (await runtime.history.metadata(tid)).get(entry_id, {})
+        except Exception as exc:
+            logger.warning("Button history failed: %s", type(exc).__name__)
+            entry_id = None
+        label = display_label
+        if entry_id is not None:
+            labels = [
+                button["text"]
+                for row in meta.get("buttons", [])
+                for button in row
+                if button.get("callback_data") == callback.data
+            ]
+            if not labels:
+                return
+            label = labels[0]
+            if response_button_data(meta.get("buttons"), label) is None and not is_welcome_callback(
+                callback.data or ""
+            ):
+                entry_id = None
+
+        async def claim() -> bool:
+            nonlocal entry_id
+            if runtime is None or entry_id is None:
+                return True
+            try:
+                return await runtime.history.mark_answered(tid, entry_id, label)
+            except Exception as exc:
+                logger.warning("Button history failed: %s", type(exc).__name__)
+                entry_id = None
+                return True
+
+        async def annotate() -> None:
+            if entry_id is None:
+                if data.startswith("ns:"):
+                    return
+                await self._mark_button_choice(key.chat_id, msg, display_label)
+            else:
+                await edit_button_choice(
+                    self._bot,
+                    key.chat_id,
+                    msg.message_id,
+                    label,
+                    html_text=meta.get("telegram_html_text"),
+                )
+
+        await process_button_choice(data, claim, annotate, submit)
 
     async def _route_special_callback(
         self,
@@ -1458,7 +1635,7 @@ class TelegramBot:
         from ductor_bot.orchestrator.selectors.account_selector import is_account_selector_callback
 
         if is_account_selector_callback(data):
-            await self._handle_account_selector(key.chat_id, message_id, data)
+            await self._handle_account_selector(key.chat_id, message_id, data, topic_key=key)
             return True
         if await self._route_prefix_callback(key, message_id, data, thread_id=thread_id):
             return True
@@ -1476,7 +1653,7 @@ class TelegramBot:
         )
 
         if is_cron_selector_callback(data):
-            await self._handle_cron_selector(key.chat_id, message_id, data)
+            await self._handle_cron_selector(key.chat_id, message_id, data, topic_key=key)
             return True
 
         if is_file_browser_callback(data):
@@ -1499,7 +1676,7 @@ class TelegramBot:
             await self._handle_queue_cancel(chat_id, data)
             return True
         if data.startswith("usg:"):
-            await self._handle_usage_refresh(key.chat_id, message_id)
+            await self._handle_usage_refresh(key.chat_id, message_id, topic_key=key)
             return True
 
         from ductor_bot.orchestrator.selectors.session_selector import (
@@ -1510,11 +1687,11 @@ class TelegramBot:
         )
 
         if is_session_selector_callback(data):
-            await self._handle_session_selector(chat_id, message_id, data)
+            await self._handle_session_selector(chat_id, message_id, data, topic_key=key)
             return True
 
         if is_task_selector_callback(data):
-            await self._handle_task_selector(chat_id, message_id, data)
+            await self._handle_task_selector(chat_id, message_id, data, topic_key=key)
             return True
 
         if data.startswith("ns:"):
@@ -1523,54 +1700,106 @@ class TelegramBot:
 
         return False
 
+    async def _run_selector_callback(  # noqa: C901, PLR0912 -- isolate each recording failure from selector effects
+        self,
+        key: SessionKey,
+        message_id: int,
+        data: str,
+        send_prompt: Callable[[str], Awaitable[None]] | None = None,
+    ) -> None:
+        from ductor_bot.chat_log.history import InvalidSelectorButtonError, SelectorConflictError
+        from ductor_bot.chat_log.ids import to_tid
+
+        runtime = self._chat_log_runtime
+        tid = to_tid(key)
+        entry_id = None
+        before = {}
+        try:
+            if runtime is not None:
+                entry_id = await runtime.history.entry_for_telegram_message(tid, message_id)
+                if entry_id is not None:
+                    before = (await runtime.history.metadata(tid)).get(entry_id, {})
+        except Exception as exc:
+            logger.warning("Selector history failed: %s", type(exc).__name__)
+            entry_id = None
+        async with contextlib.AsyncExitStack() as stack:
+            if runtime is not None and entry_id is not None:
+                try:
+                    await stack.enter_async_context(
+                        runtime.history.selector_step(
+                            tid, entry_id, data, before.get("selector_revision", 0)
+                        )
+                    )
+                except (SelectorConflictError, InvalidSelectorButtonError):
+                    await restore_recorded_selector(
+                        runtime.history, self._bot, key, entry_id, message_id
+                    )
+                    return
+                except Exception as exc:
+                    logger.warning("Selector history failed: %s", type(exc).__name__)
+                    entry_id = None
+            step = await selector_callback_response(self, key, data)
+            if step.prompt is not None:
+                if runtime is not None and entry_id is not None:
+                    label = next(
+                        button["text"]
+                        for row in before["buttons"]
+                        for button in row
+                        if button.get("callback_data") == data
+                    )
+                    try:
+                        claimed = await runtime.history.mark_answered(tid, entry_id, label)
+                    except Exception as exc:
+                        logger.warning("Selector history failed: %s", type(exc).__name__)
+                    else:
+                        if not claimed:
+                            return
+            elif step.response is not None:
+                if runtime is not None and entry_id is not None:
+                    try:
+                        await runtime.history.record_selector_response(
+                            tid, entry_id, step.response.text, selector_rows(step.response)
+                        )
+                    except Exception as exc:
+                        logger.warning("Selector history failed: %s", type(exc).__name__)
+                        entry_id = None
+                if runtime is not None and entry_id is not None:
+                    await edit_recorded_selector(self._bot, key.chat_id, message_id, step.response)
+                else:
+                    await edit_selector_response(self._bot, key.chat_id, message_id, step.response)
+        if step.prompt is not None and send_prompt is not None:
+            await send_prompt(step.prompt)
+
     async def _handle_model_selector(self, key: SessionKey, message_id: int, data: str) -> None:
-        """Handle model selector wizard by editing the message in-place."""
-        from ductor_bot.orchestrator.selectors.model_selector import (
-            handle_model_callback,
+        await self._run_selector_callback(key, message_id, data)
+
+    async def _handle_cron_selector(
+        self, chat_id: int, message_id: int, data: str, *, topic_key: SessionKey | None = None
+    ) -> None:
+        await self._run_selector_callback(
+            topic_key or SessionKey(chat_id=chat_id), message_id, data
         )
 
-        async with input_lock(self._sequential.get_lock(key.lock_key)):
-            resp = await handle_model_callback(self._orch, key, data)
-        await edit_selector_response(self._bot, key.chat_id, message_id, resp)
-
-    async def _handle_cron_selector(self, chat_id: int, message_id: int, data: str) -> None:
-        """Handle cron selector wizard by editing the message in-place."""
-        from ductor_bot.orchestrator.selectors.cron_selector import handle_cron_callback
-
-        async with input_lock(self._sequential.get_lock(chat_id)):
-            resp = await handle_cron_callback(self._orch, data)
-        await edit_selector_response(self._bot, chat_id, message_id, resp)
-
-    async def _handle_session_selector(self, chat_id: int, message_id: int, data: str) -> None:
-        """Handle session selector wizard by editing the message in-place."""
-        from ductor_bot.orchestrator.selectors.session_selector import (
-            handle_session_callback,
+    async def _handle_session_selector(
+        self, chat_id: int, message_id: int, data: str, *, topic_key: SessionKey | None = None
+    ) -> None:
+        await self._run_selector_callback(
+            topic_key or SessionKey(chat_id=chat_id), message_id, data
         )
 
-        async with input_lock(self._sequential.get_lock(chat_id)):
-            resp = await handle_session_callback(self._orch, chat_id, data)
-        await edit_selector_response(self._bot, chat_id, message_id, resp)
+    async def _handle_account_selector(
+        self, chat_id: int, message_id: int, data: str, *, topic_key: SessionKey | None = None
+    ) -> None:
+        await self._run_selector_callback(
+            topic_key or SessionKey(chat_id=chat_id), message_id, data
+        )
 
-    async def _handle_account_selector(self, chat_id: int, message_id: int, data: str) -> None:
-        """Check the main-agent boundary before applying any account action."""
-        from ductor_bot.orchestrator.selectors.account_selector import handle_account_callback
-        from ductor_bot.orchestrator.selectors.models import SelectorResponse
-
-        if self._agent_name != "main":
-            resp = SelectorResponse(text=t("accounts.main_only"))
-        else:
-            resp = await handle_account_callback(self._orch.paths.ductor_home, self._config, data)
-        await edit_selector_response(self._bot, chat_id, message_id, resp)
-
-    async def _handle_task_selector(self, chat_id: int, message_id: int, data: str) -> None:
-        """Handle task selector wizard by editing the message in-place."""
-        from ductor_bot.orchestrator.selectors.task_selector import handle_task_callback
-
-        hub = self._orch.task_hub
-        if hub is None:
-            return
-        resp = await handle_task_callback(hub, chat_id, data)
-        await edit_selector_response(self._bot, chat_id, message_id, resp)
+    async def _handle_task_selector(
+        self, chat_id: int, message_id: int, data: str, *, topic_key: SessionKey | None = None
+    ) -> None:
+        await self._run_selector_callback(
+            topic_key or SessionKey(chat_id=chat_id), message_id, data
+        )
 
     async def _handle_ns_callback(
         self, key: SessionKey, data: str, *, thread_id: int | None = None
@@ -1611,37 +1840,22 @@ class TelegramBot:
         thread_id: int | None = None,
     ) -> None:
         """Handle file browser navigation or file request."""
-        chat_id = key.chat_id
-        text, keyboard, prompt = await handle_file_browser_callback(self._orch.paths, data)
 
-        if prompt:
-            # File request: remove the keyboard and send prompt to orchestrator
+        async def send_prompt(prompt: str) -> None:
             with contextlib.suppress(TelegramBadRequest):
                 await self._bot.edit_message_reply_markup(
-                    chat_id=chat_id, message_id=message_id, reply_markup=None
+                    chat_id=key.chat_id, message_id=message_id, reply_markup=None
                 )
             async with input_lock(self._sequential.get_lock(key.lock_key)):
                 if self._config.streaming.enabled:
                     fake_msg = await self._bot.send_message(
-                        chat_id,
-                        prompt,
-                        parse_mode=None,
-                        message_thread_id=thread_id,
+                        key.chat_id, prompt, parse_mode=None, message_thread_id=thread_id
                     )
                     await self._handle_streaming(fake_msg, key, prompt, thread_id=thread_id)
                 else:
                     await self._handle_non_streaming(None, key, prompt, thread_id=thread_id)
-            return
 
-        # Directory navigation: edit message in-place
-        with contextlib.suppress(TelegramBadRequest):
-            await self._bot.edit_message_text(
-                text=markdown_to_telegram_html(text),
-                chat_id=chat_id,
-                message_id=message_id,
-                reply_markup=keyboard,
-                parse_mode=ParseMode.HTML,
-            )
+        await self._run_selector_callback(key, message_id, data, send_prompt)
 
     async def _handle_queue_cancel(self, chat_id: int, data: str) -> None:
         """Handle a ``mq:<entry_id>`` callback to cancel a queued message."""

@@ -192,3 +192,11 @@ list = "Befehlsliste"
 help = "↑↓ Bewegen · Enter / Tab Auswählen · Esc Schließen"
 empty = "Keine passenden Befehle."
 run = "Befehl ausgeführt"
+
+[buttons]
+sending = "Wird gesendet…"
+answered = "Antwort: {label}"
+already_answered = "Diese Nachricht wurde bereits beantwortet."
+invalid = "Diese Schaltfläche ist nicht mehr verfügbar. Lade den Chat neu und versuche es erneut."
+
+stale_selector = "Diese Auswahlansicht hat sich geändert. Die aktuellen Optionen wurden geladen."

@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from ductor_bot.i18n import t
-from ductor_bot.messenger.telegram.callbacks import button_grid_to_markup
+from ductor_bot.messenger.telegram.buttons import serialize_keyboard
+from ductor_bot.messenger.telegram.callbacks import (
+    button_grid_to_markup,
+    recorded_keyboard_observer,
+)
 from ductor_bot.messenger.telegram.sender import SendRichOpts, send_rich
 from ductor_bot.messenger.telegram.topic import (
     TopicNameCache,
@@ -20,11 +25,64 @@ from ductor_bot.text.response_format import new_session_text, stop_text
 
 if TYPE_CHECKING:
     from aiogram import Bot
-    from aiogram.types import Message
+    from aiogram.types import InlineKeyboardMarkup, Message
 
+    from ductor_bot.chat_log.recorder import HistoryRecorder
     from ductor_bot.orchestrator.core import Orchestrator
 
 logger = logging.getLogger(__name__)
+
+
+async def record_command_reply(
+    orchestrator: Orchestrator | None,
+    key: SessionKey,
+    text: str,
+    markup: InlineKeyboardMarkup | None = None,
+) -> str | None:
+    """Optional history failures must not replace a native Telegram command reply."""
+    from ductor_bot.chat_log.ids import to_tid
+
+    recorder: HistoryRecorder | None = getattr(orchestrator, "_history_recorder", None)
+    try:
+        if recorder is None or to_tid(key) in recorder.blocked:
+            return None
+        entry = await recorder.direct_result(
+            key, text, serialize_keyboard(markup) if markup is not None else None
+        )
+    except Exception as exc:
+        logger.warning("Native command history failed: %s", type(exc).__name__)
+        return None
+    else:
+        return entry.id
+
+
+async def command_reply_options(  # noqa: PLR0913 -- native delivery context and existing entry
+    orchestrator: Orchestrator | None,
+    bot: Bot,
+    key: SessionKey,
+    text: str,
+    opts: SendRichOpts,
+    *,
+    entry_id: str | None = None,
+) -> SendRichOpts:
+    recorder: HistoryRecorder | None = getattr(orchestrator, "_history_recorder", None)
+    if recorder is None:
+        return opts
+    if not isinstance(entry_id, str):
+        entry_id = await record_command_reply(orchestrator, key, text, opts.reply_markup)
+    if entry_id is None:
+        return opts
+    observer = recorded_keyboard_observer(recorder._history, bot, key, entry_id)
+
+    async def record(
+        message_id: int, markup: InlineKeyboardMarkup, html_text: str | None = None
+    ) -> None:
+        from ductor_bot.chat_log.ids import to_tid
+
+        if to_tid(key) not in recorder.blocked:
+            await observer(message_id, markup, html_text)
+
+    return replace(opts, on_keyboard=record)
 
 
 def interrupt_response(orchestrator: Orchestrator, chat_id: int) -> str:
@@ -97,7 +155,13 @@ async def handle_interrupt(
         bot,
         chat_id,
         msg,
-        SendRichOpts(reply_to_message_id=message.message_id, thread_id=get_thread_id(message)),
+        await command_reply_options(
+            orchestrator,
+            bot,
+            SessionKey.telegram(chat_id, get_thread_id(message)),
+            msg,
+            SendRichOpts(reply_to_message_id=message.message_id, thread_id=get_thread_id(message)),
+        ),
     )
     return True
 
@@ -136,7 +200,13 @@ async def handle_abort(
         bot,
         chat_id,
         text,
-        SendRichOpts(reply_to_message_id=message.message_id, thread_id=get_thread_id(message)),
+        await command_reply_options(
+            orchestrator,
+            bot,
+            SessionKey.telegram(chat_id, get_thread_id(message)),
+            text,
+            SendRichOpts(reply_to_message_id=message.message_id, thread_id=get_thread_id(message)),
+        ),
     )
     return True
 
@@ -161,7 +231,13 @@ async def handle_abort_all(
         bot,
         chat_id,
         text,
-        SendRichOpts(reply_to_message_id=message.message_id, thread_id=get_thread_id(message)),
+        await command_reply_options(
+            orchestrator,
+            bot,
+            SessionKey.telegram(chat_id, get_thread_id(message)),
+            text,
+            SendRichOpts(reply_to_message_id=message.message_id, thread_id=get_thread_id(message)),
+        ),
     )
     return True
 
@@ -181,10 +257,17 @@ async def handle_command(orchestrator: Orchestrator, bot: Bot, message: Message)
         bot,
         chat_id,
         result.text,
-        SendRichOpts(
-            reply_to_message_id=message.message_id,
-            reply_markup=markup,
-            thread_id=thread_id,
+        await command_reply_options(
+            orchestrator,
+            bot,
+            SessionKey.telegram(chat_id, get_thread_id(message)),
+            result.text,
+            SendRichOpts(
+                reply_to_message_id=message.message_id,
+                reply_markup=markup,
+                thread_id=thread_id,
+            ),
+            entry_id=getattr(result, "_chat_log_entry_id", None),
         ),
     )
 
@@ -219,7 +302,13 @@ async def handle_new_session(
         bot,
         chat_id,
         response,
-        SendRichOpts(reply_to_message_id=message.message_id, thread_id=thread_id),
+        await command_reply_options(
+            orchestrator,
+            bot,
+            SessionKey.telegram(chat_id, get_thread_id(message)),
+            response,
+            SendRichOpts(reply_to_message_id=message.message_id, thread_id=thread_id),
+        ),
     )
 
 

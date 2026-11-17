@@ -580,7 +580,11 @@ class TestReplies:
         orch = MagicMock()
         orch.resolve_session_directive.return_value = None
         orch.config.provider = "claude"
-        stub = SimpleNamespace(_orch=orch, _bot=MagicMock(), _build_session_help=lambda: "help")
+        orch._history_recorder = None
+        stub = SimpleNamespace(
+            _orch=orch, _orchestrator=orch, _bot=MagicMock(), _build_session_help=lambda: "help"
+        )
+        stub._send_command_response = MethodType(TelegramBot._send_command_response, stub)
         stub._parse_session_prompt = MethodType(TelegramBot._parse_session_prompt, stub)
         stub._submit_session_response = MethodType(TelegramBot._submit_session_response, stub)
         message = MagicMock()

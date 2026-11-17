@@ -1,5 +1,3 @@
-# ruff: noqa: INP001
-
 """Static and non-browser checks for the web shell and authentication client."""
 
 from __future__ import annotations
@@ -431,7 +429,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 const {chromium} = await import(process.env.DTW_PLAYWRIGHT_MODULE);
-const {origin, width, artifactDir, strings} = JSON.parse(fs.readFileSync(0,'utf8'));
+const {origin, width, artifactDir, strings, commands} = JSON.parse(fs.readFileSync(0,'utf8'));
 const browser = await chromium.launch({headless:true});
 try {
   const context = await browser.newContext({viewport:{width,height:900},reducedMotion:'reduce'});
@@ -451,6 +449,7 @@ try {
     let status=200, result={ok:true};
     if (request.method()==='POST') assert.equal(request.headers()['x-dtw-client'],'web');
     if (url.pathname==='/api/i18n') result={lang:'en',strings};
+    else if (url.pathname==='/api/commands') result={commands};
     else if (url.pathname==='/api/auth/state') result={authenticated,totp_configured:configured,csrf:authenticated?'fake-csrf':null,bridge_up:true};
     else if (url.pathname==='/api/auth/password') {
       if (body.password!=='good-password') {status=403;result={error:'invalid'};}
@@ -527,7 +526,7 @@ try {
   await page.locator('#stopBtn').click();await page.getByText(strings['chat.stopped'],{exact:true}).waitFor();
   assert.equal(await page.locator('#streamMsg .caret').count(),0);
   await page.locator('#telegramBadge').click();await page.locator('#connPanel h2').focus();
-  await page.getByText('Task result',{exact:true}).waitFor();
+  await page.getByText('Task result · '+strings['chat.pending_mirror'],{exact:true}).waitFor();
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
   await page.screenshot({path:path.join(artifactDir,`chat-status-${width}.png`),fullPage:true});
   // Deferred management and file checks: native modal focus, API mutations and mobile views.
@@ -600,12 +599,15 @@ try {
 @pytest.mark.parametrize("width", [1280, 768, 375])
 def test_browser_auth_theme_keyboard_and_capture(width, tmp_path):
     """Deferred: run only against an explicitly approved test origin with Playwright."""
+    from ductor_bot.webchat.commands import command_list
+
     assert os.environ.get("DTW_PLAYWRIGHT_MODULE")
     result = subprocess.run(
         ["node", "--input-type=module", "-e", BROWSER_TESTS],
         input=json.dumps(
             {
                 "origin": os.environ["DTW_UI_TEST_ORIGIN"],
+                "commands": command_list("en"),
                 "width": width,
                 "artifactDir": str(tmp_path),
                 "strings": STRINGS,
@@ -636,7 +638,7 @@ class Element {
   replaceChildren(){this.children=[];this.html='';}
   remove(){}
   focus(){document.activeElement=this;}
-  closest(selector){return selector==='[data-tid]'&&this.dataset.tid?this:null;}
+  closest(selector){return (selector==='[data-tid]'&&this.dataset.tid)||(selector==='[data-response-entry]'&&this.dataset.responseEntry)||(selector==='[data-callback-entry]'&&this.dataset.callbackEntry)?this:null;}
   querySelector(selector){
     if(selector.startsWith('[data-entry-seq=')){
       const seq=Number(selector.match(/"(-?\d+)"/)[1]);
@@ -662,7 +664,7 @@ class WebSocket extends Element{
   close(){this.closed=true;this.emit('close')}
 }
 const storage=new Map(), calls=[], notices=[], routes=[];
-let topicsHold=null, failGet=null, slowCommandHold=null;
+let topicsHold=null, failGet=null, slowCommandHold=null, buttonsHold=null, buttonsFailure=null, historyHold=null, callbackResult=null;
 let blockedStorage=false, session=true, coarse=false, failSend=null, turnNumber=0;
 const localStorage={getItem:key=>{if(blockedStorage)throw Error('blocked');return storage.get(key)??null},setItem:(key,value)=>{if(blockedStorage)throw Error('blocked');storage.set(key,value)}};
 const makeEntry=(seq,extras={})=>({id:`e${seq}`,seq,ts:'2025-01-01T01:01:00Z',role:'bot',source:'telegram',kind:'message',text:`Entry ${seq}`,imported:seq<0,mirror:null,...extras});
@@ -687,6 +689,16 @@ async function fetch(url,options={}){
   if(parsed.pathname===failGet)return response(503,{error:'history_busy'});
   if(options.method==='POST'){
     assert.equal(options.headers['X-Dtw-Client'],'web');assert.equal(options.headers['X-Dtw-Csrf'],'fake-csrf');
+    if(parsed.pathname.endsWith('/callbacks')){
+      if(buttonsHold)await buttonsHold;
+      if(buttonsFailure)return response(buttonsFailure.status,{error:buttonsFailure.code});
+      return response(200,callbackResult);
+    }
+    if(parsed.pathname.endsWith('/buttons')){
+      if(buttonsHold)await buttonsHold;
+      if(buttonsFailure)return response(buttonsFailure.status,{error:buttonsFailure.code});
+      return response(202,{turn_id:'button-turn',entry_id:body.entry_id,answered:body.label});
+    }
     if(parsed.pathname.endsWith('/abort'))return response(200,{killed:1});
     if(parsed.pathname.endsWith('/messages')){
       if(body.text==='/usage'){await slowCommandHold;return response(200,{text:'Usage',buttons:null});}
@@ -707,11 +719,11 @@ async function fetch(url,options={}){
     const tid=decodeURIComponent(parsed.pathname.split('/')[3]);
     let entries=tid==='1.2'?historyA:tid==='1.3'?historyB:tid==='unknown'?historyUnknown:[];
     if(parsed.searchParams.has('before'))entries=entries.filter(entry=>entry.seq<Number(parsed.searchParams.get('before')));
-    return response(200,{entries:entries.slice(-100),has_more:entries.length>100});
+    const snapshot={entries:entries.slice(-100),has_more:entries.length>100};if(historyHold)await historyHold;return response(200,snapshot);
   }
   throw Error(`Unexpected API: ${url}`);
 }
-const context=vm.createContext({document,CustomEvent,WebSocket,fetch,URL,localStorage,console,
+const context=vm.createContext({document,CustomEvent,WebSocket,fetch,URL,TextEncoder,TextDecoder,localStorage,console,
   location:{href:'https://chat.example.com/#list',hash:'#list'},
   setTimeout:(callback,delay)=>{const id=++timerId;timers.set(id,{callback,delay});return id},
   clearTimeout:id=>timers.delete(id),
@@ -809,7 +821,7 @@ for(const path of ['/api/topics','/api/topics/1.2/messages']){
   failGet=null;await chat.namespace.handleEvent({type:'bridge',up:true});await flush();
 }
 failSend='web_turn_running';input.value='retry me';send.emit('click');await flush();assert.equal(input.value,'retry me');assert.equal(notices.at(-1),'error.web_turn_running');failSend=null;
-const bus=makeEntry(207,{role:'event',source:'system',kind:'task_result',status:'failed',title:'Task <img>',text:'failure',mirror:{state:'pending'}});historyA.push(bus);await chat.namespace.handleEvent({type:'entry',tid:'1.2',entry:bus});assert.ok(thread.innerHTML.includes('badge-down'));assert.ok(thread.innerHTML.includes('Task &lt;img&gt;'));
+const bus=makeEntry(207,{role:'event',source:'system',kind:'task_result',status:'failed',title:'Task <img>',text:'failure',button_kinds:[['reply']],buttons:[[{text:'Retry event',callback_data:'Retry event'}]],mirror:{state:'pending'}});historyA.push(bus);await chat.namespace.handleEvent({type:'entry',tid:'1.2',entry:bus});assert.ok(thread.innerHTML.includes('badge-down'));assert.ok(thread.innerHTML.includes('Task &lt;img&gt;'));assert.ok(thread.innerHTML.includes('data-response-entry="e207"'));assert.ok(thread.innerHTML.includes('aria-disabled="false">Retry event</button>'));
 // Command inputs use the approved tag; results preserve rows and safe URL chips.
 await chat.namespace.handleEvent({type:'entry',tid:'1.2',entry:makeEntry(209,{role:'user',source:'web',kind:'command',text:'/model <img>'})});
 await chat.namespace.handleEvent({type:'entry',tid:'1.2',entry:makeEntry(210,{source:'web',text:'Choose a model',buttons:[[{text:'<img onerror="x">',callback_data:'ms:claude'}],[{text:'Project "site"',url:'https://example.com/?x="&y=<'},{text:'Unsafe',url:'javascript:alert(1)'}]]})});
@@ -820,6 +832,96 @@ assert.ok(rendered.includes('aria-disabled="true"'));assert.ok(rendered.includes
 assert.ok(rendered.includes('target="_blank" rel="noopener"'));assert.ok(!rendered.includes('href="javascript:'));
 assert.ok(rendered.includes('Project &quot;site&quot;'));
 
+// Ordinary reply clicks use labels, keep selectors disabled, and share all entry states.
+const replyKinds=[['reply','reply'],['reply','disabled']];
+const replyRows=[[{text:'Accept <img>',callback_data:'Accept <img>'},{text:'Revise',callback_data:'Revise'}],
+ [{text:'Named',callback_data:'ns:review:Named'},{text:'ms:blocked',callback_data:'ms:blocked'}]];
+const reply=makeEntry(211,{button_kinds:replyKinds,buttons:replyRows});historyA.push(reply);
+await chat.namespace.handleEvent({type:'entry',tid:'1.2',entry:reply});
+function markup(seq){return thread.innerHTML.split(`data-entry-seq="${seq}"`)[1]?.split('data-entry-seq=')[0]||''}
+function clickChoice(id,label,extras={}){const target=new Element();target.dataset={responseEntry:id,responseLabel:label,...extras};thread.emit('click',{target});}
+assert.ok(markup(211).includes('aria-disabled="false">Accept &lt;img&gt;'));
+assert.ok(markup(211).includes('aria-disabled="false">Named'));
+assert.ok(markup(211).includes('aria-disabled="true">ms:blocked'));
+let releaseButtons;buttonsHold=new Promise(resolve=>releaseButtons=resolve);
+clickChoice('e211','Accept <img>');await new Promise(setImmediate);
+assert.ok(markup(211).includes('aria-busy="true"'));assert.ok(markup(211).includes(strings['buttons.sending']));
+const buttonCalls=()=>calls.filter(call=>call.url.endsWith('/buttons'));
+assert.equal(buttonCalls().length,1);assert.deepEqual(buttonCalls()[0].body,{entry_id:'e211',label:'Accept <img>'});
+clickChoice('e211','Revise');await new Promise(setImmediate);assert.equal(buttonCalls().length,1);
+await chat.namespace.handleEvent({type:'entry',tid:'1.2',entry:{...reply,source:'web',mirror:{state:'sent'}}});
+releaseButtons();buttonsHold=null;await flush();
+assert.ok(markup(211).includes(strings['chat.delivered']));
+assert.ok(markup(211).includes('aria-pressed="true"'));assert.ok(markup(211).includes('aria-disabled="true"'));assert.ok(markup(211).includes(strings['buttons.answered'].replace('{label}','Accept &lt;img&gt;')));
+clickChoice('e211','Revise');await flush();assert.equal(buttonCalls().length,1);
+// Telegram metadata can arrive before an entry and survive stale snapshots.
+await chat.namespace.handleEvent({type:'entry_meta',tid:'1.2',entry_id:'e212',meta:{answered:'Revise',button_kinds:replyKinds,buttons:replyRows}});
+const remote=makeEntry(212,{button_kinds:replyKinds,buttons:replyRows});historyA.push(remote);await chat.namespace.handleEvent({type:'entry',tid:'1.2',entry:remote});
+assert.ok(markup(212).includes(strings['buttons.answered'].replace('{label}','Revise')));
+let releaseHistory;historyHold=new Promise(resolve=>releaseHistory=resolve);
+const reload=chat.namespace.handleEvent({type:'bridge',up:true});await new Promise(setImmediate);
+await chat.namespace.handleEvent({type:'entry_meta',tid:'1.2',entry_id:'e210',meta:{answered:'Project "site"'}});
+releaseHistory();historyHold=null;await reload;await flush();
+assert.ok(markup(212).includes('aria-pressed="true"'));assert.ok(markup(210).includes('Project &quot;site&quot;'));
+// 409 refreshes the actual chosen label; busy/400 leave chips retryable.
+const retry=makeEntry(213,{button_kinds:replyKinds,buttons:replyRows});historyA.push(retry);await chat.namespace.handleEvent({type:'entry',tid:'1.2',entry:retry});
+for(const [status,code,key]of [[400,'bad_button','buttons.invalid'],[409,'web_turn_running','error.web_turn_running']]){
+ buttonsFailure={status,code};clickChoice('e213','Revise');await flush();assert.equal(notices.at(-1),key);assert.ok(!markup(213).includes('aria-busy="true"'));assert.ok(markup(213).includes('aria-disabled="false"'));
+}
+buttonsFailure={status:409,code:'already_answered'};retry.answered='Accept <img>';clickChoice('e213','Revise');await flush();
+assert.equal(notices.at(-1),'buttons.already_answered');assert.ok(markup(213).includes(strings['buttons.answered'].replace('{label}','Accept &lt;img&gt;')));assert.ok(markup(213).includes('aria-pressed="true"'));buttonsFailure=null;
+// Named buttons submit their visible label; the server retains the session destination.
+const named=makeEntry(215,{button_kinds:[['reply']],buttons:[[{text:'Named',callback_data:'ns:review:Named'}]]});
+await chat.namespace.handleEvent({type:'entry',tid:'1.2',entry:named});clickChoice('e215','Named');await flush();
+assert.deepEqual(buttonCalls().at(-1).body,{entry_id:'e215',label:'Named'});
+assert.ok(markup(215).includes(strings['buttons.answered'].replace('{label}','Named')));
+// Long UTF-8 labels match server truncation, selectors and user messages cannot submit.
+const longLabel='界😀'.repeat(20),bytes=new TextEncoder().encode(longLabel);
+let end=64;while((bytes[end]&0xc0)===0x80)--end;
+const unicode=makeEntry(214,{button_kinds:[['reply']],buttons:[[{text:longLabel,callback_data:new TextDecoder().decode(bytes.slice(0,end))}]]});
+await chat.namespace.handleEvent({type:'entry',tid:'1.2',entry:unicode});assert.ok(markup(214).includes('aria-disabled="false"'));
+const beforeInvalid=buttonCalls().length;clickChoice('e210','<img onerror="x">');clickChoice('e211','missing');await flush();assert.equal(buttonCalls().length,beforeInvalid);
+// Selector requests use server kinds and revision, lock duplicates and preserve the latest screen.
+function clickSelector(id,data){const target=new Element();target.dataset={callbackEntry:id,callbackData:data};thread.emit('click',{target});}
+const selectorRows=[[{text:'Provider <img>',callback_data:'server:opaque'}]];
+const selector=makeEntry(216,{text:'Choose provider',buttons:selectorRows,button_kinds:[['selector']],selector_revision:0});
+historyA.push(selector);await chat.namespace.handleEvent({type:'entry',tid:'1.2',entry:selector});
+assert.ok(markup(216).includes('data-callback-data="server:opaque"'));assert.ok(markup(216).includes('aria-disabled="false"'));
+buttonsHold=new Promise(resolve=>releaseButtons=resolve);
+callbackResult={entry_id:'e216',text:'Choose model <script>',buttons:[[{text:'Opus',callback_data:'ms:m:opus'}]],button_kinds:[['selector']],selector_revision:1};
+clickSelector('e216','server:opaque');await new Promise(setImmediate);
+const callbackCalls=()=>calls.filter(call=>call.url.endsWith('/callbacks'));
+assert.deepEqual(callbackCalls().at(-1).body,{entry_id:'e216',data:'server:opaque',revision:0});
+assert.ok(markup(216).includes('aria-busy="true"'));assert.ok(markup(216).includes('aria-disabled="true"'));
+const count=callbackCalls().length;clickSelector('e216','server:opaque');await new Promise(setImmediate);assert.equal(callbackCalls().length,count);
+releaseButtons();buttonsHold=null;await flush();
+assert.ok(markup(216).includes('Choose model &lt;script&gt;'));assert.ok(markup(216).includes('data-callback-data="ms:m:opus"'));
+assert.ok(!markup(216).includes('aria-busy="true"'));
+// A newer Telegram event survives stale history and a delayed response from an older screen.
+buttonsHold=new Promise(resolve=>releaseButtons=resolve);clickSelector('e216','ms:m:opus');await new Promise(setImmediate);
+assert.equal(callbackCalls().at(-1).body.revision,1);
+const remoteScreen={text:'Telegram model screen',buttons:[[{text:'New model',callback_data:'ms:m:new'}]],button_kinds:[['selector']],selector_revision:2};
+await chat.namespace.handleEvent({type:'entry_meta',tid:'1.2',entry_id:'e216',meta:remoteScreen});
+releaseButtons();buttonsHold=null;await flush();await chat.namespace.handleEvent({type:'bridge',up:true});await flush();
+assert.ok(markup(216).includes('Telegram model screen'));assert.ok(markup(216).includes('data-callback-data="ms:m:new"'));
+// Invalid and stale screens announce the outcome; stale refresh restores a newer persisted screen.
+buttonsFailure={status:400,code:'bad_callback'};clickSelector('e216','ms:m:new');await flush();assert.equal(notices.at(-1),'buttons.invalid');
+Object.assign(selector,{text:'Persisted next screen',buttons:[[{text:'Finish',callback_data:'ms:m:finish'}]],button_kinds:[['selector']],selector_revision:3});
+buttonsFailure={status:409,code:'stale_selector'};clickSelector('e216','ms:m:new');await flush();
+assert.equal(notices.at(-1),'buttons.stale_selector');assert.ok(markup(216).includes('Persisted next screen'));
+buttonsFailure=null;callbackResult={entry_id:'e216',text:'Model changed.',buttons:[],button_kinds:[],selector_revision:4};
+clickSelector('e216','ms:m:finish');await flush();Object.assign(selector,callbackResult);
+assert.ok(markup(216).includes('Model changed.'));assert.ok(!markup(216).includes('response-buttons'));
+// Prompt selectors (welcome and file selection) become answered and never resubmit.
+for(const [seq,data]of [[217,'w:review'],[218,'sf!file']]){
+ const prompt=makeEntry(seq,{text:'Prompt',buttons:[[{text:'Open',callback_data:data}]],button_kinds:[['selector']],selector_revision:0});historyA.push(prompt);
+ await chat.namespace.handleEvent({type:'entry',tid:'1.2',entry:prompt});callbackResult={entry_id:prompt.id,answered:'Open'};
+ clickSelector(prompt.id,data);await flush();assert.ok(markup(seq).includes('aria-pressed="true"'));assert.ok(markup(seq).includes('aria-disabled="true"'));
+ const before=callbackCalls().length;clickSelector(prompt.id,data);await flush();assert.equal(callbackCalls().length,before);
+}
+// Unknown kinds cannot dispatch even when callback data looks familiar.
+const disabled=makeEntry(219,{buttons:selectorRows,button_kinds:[['disabled']]});await chat.namespace.handleEvent({type:'entry',tid:'1.2',entry:disabled});
+const countDisabled=callbackCalls().length;clickSelector('e219','server:opaque');await flush();assert.equal(callbackCalls().length,countDisabled);
 // Hidden views keep unseen entries unread. Local storage denial never breaks selection.
 q.value='';q.emit('input');
 context.location.hash='#files';document.emit('route-change',{detail:{route:'files',view:'files'}});
@@ -850,7 +952,7 @@ await chat.namespace.handleEvent({type:'telegram',state:'up'});
 await chat.namespace.handleEvent({type:'turn',tid:'1.3',turn_id:'unrelated-turn',phase:'started'});
 await chat.namespace.handleEvent({type:'busy',tid:'1.2',busy:false});
 releaseTopics();topicsHold=null;await flush();
-topics.selectTopic('1.2');await flush();assert.equal(send.className,'btn btn-danger');
+topics.selectTopic('1.2');await flush();assert.equal(send.className,'btn btn-danger');assert.ok(markup(216).includes('Model changed.'));
 const restoredAborts=calls.filter(call=>call.url.endsWith('/abort')).length;
 send.emit('click');await flush();assert.equal(calls.filter(call=>call.url.endsWith('/abort')).length,restoredAborts+1);
 topicRows[0].turn_id=null;await chat.namespace.handleEvent({type:'bridge',up:true});await flush();
@@ -862,6 +964,13 @@ await chat.namespace.handleEvent({type:'turn',tid:'1.2',turn_id:'newer-turn',pha
 releaseTopics();topicsHold=null;await syncing;await flush();assert.equal(send.className,'btn btn-danger');
 await chat.namespace.handleEvent({type:'turn',tid:'1.2',turn_id:'newer-turn',phase:'done'});
 topicRows[0].busy=false;document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:false}}));
+// Fresh authentication/history state restores persisted answered after restart.
+reply.answered='Accept <img>';remote.answered='Revise';
+document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:false}}));
+document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));await flush();topics.selectTopic('1.2');await flush();
+assert.ok(markup(211).includes('aria-pressed="true"'));assert.ok(markup(212).includes('aria-pressed="true"'));
+document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:false}}));
+
 // No topic means no send target: keep the composer hidden rather than accepting a lost draft.
 topicRows=[];document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));await flush();assert.equal(document.querySelector('.composer').hidden,true);assert.equal(send.disabled,true);document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:false}}));
 console.log('Chat contracts passed: groups, search, unread, pagination, safe Markdown, turns, stop, status, outbox, reconnect and session reset');
@@ -1425,6 +1534,49 @@ def test_command_autocomplete_client_contract():
         input=json.dumps(
             {"staticDir": str(STATIC), "strings": STRINGS, "commands": command_list("en")}
         ),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+MARKDOWN_RENDER_TESTS = r"""
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+const source=fs.readFileSync(0,'utf8');
+const {md}=await import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
+assert.equal(md('# Title\n## Sub\n- **bold**\n- `code`\n[x](https://example.com)'),
+ '<h1>Title</h1><h2>Sub</h2><ul><li><b>bold</b></li><li><code>code</code></li></ul><p>[x](https://example.com)</p>');
+const table=md('| Left | Center | Right |\n| :--- | :---: | ---: |\n| **A** | `B` | <img onerror="x"> |');
+assert.ok(table.startsWith('<div class="table-scroll" tabindex="0"><table>'));
+assert.ok(table.endsWith('</tbody></table></div>'));
+for(const align of ['left','center','right'])assert.ok(table.includes(`class="align-${align}"`));
+assert.ok(table.includes('<b>A</b>'));assert.ok(table.includes('<code>B</code>'));
+assert.ok(table.includes('&lt;img onerror=&quot;x&quot;&gt;'));assert.ok(!table.includes('<img'));
+assert.ok(md('a | b\n--- | ---\nx | y').includes('<table>'));
+assert.ok(!md('a | b\n---\nx | y').includes('<table>'));
+assert.ok(md('| a | b |\n| --- | --- |\n| x\\|y | z |').includes('<td>x|y</td>'));
+assert.ok(md('| a | b |\n| --- | --- |\n| x |').includes('<td>x</td><td></td>'));
+assert.equal(md('```html\n<script>alert("x")</script>\n**bold** [button:keep]\n```'),
+ '<pre tabindex="0"><code>&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;\n**bold** [button:keep]\n</code></pre>');
+assert.ok(md('a | b\n--- | ---\nx\n# After').includes('<td>x</td><td></td></tr></tbody></table></div><h1>After</h1>'));
+assert.ok(md('a | b\n--- | ---\n```js\nconst value = \"a|b\";\n```').includes('<pre tabindex=\"0\"><code>const value = &quot;a|b&quot;;\n</code></pre>'));
+assert.equal(md('~~~js\nconst x = 1;\n~~~'),'<pre tabindex="0"><code>const x = 1;\n</code></pre>');
+assert.equal(md('```\n<svg onload=x>'),'<pre tabindex="0"><code>&lt;svg onload=x&gt;</code></pre>');
+assert.ok(!md('```"><img src=x>\nX\n```').includes('<img'));
+assert.equal(md('- item\n```\n- raw\n```\n# After'),'<ul><li>item</li></ul><pre tabindex="0"><code>- raw\n</code></pre><h1>After</h1>');
+for(const payload of ['<script>alert(1)</script>','<svg onload="x">','[x](javascript:alert(1))','<a href="javascript:x">']){
+ const html=md(payload+'\n\n| x |\n| --- |\n| '+payload+' |\n\n```\n'+payload+'\n```');
+ assert.ok(!html.includes('<script'));assert.ok(!html.includes('<svg'));assert.ok(!html.includes('<a '));
+}
+"""
+
+
+def test_markdown_tables_fences_escaping_and_existing_rules():
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", MARKDOWN_RENDER_TESTS],
+        input=(STATIC / "js/md.js").read_text(),
         capture_output=True,
         text=True,
         check=False,

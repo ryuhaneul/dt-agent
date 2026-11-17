@@ -417,3 +417,120 @@ async def test_cancel_during_begin_still_finishes_busy(orch: Orchestrator) -> No
         await orch.handle_message(SessionKey.telegram(1), "hello")
     assert [event["busy"] for event in events(queue)] == [True, False]
     orch._route_message.assert_not_awaited()
+
+
+@pytest.mark.parametrize("mode", ["plain", "append", "edit"])
+async def test_recorded_reply_links_actual_keyboard_message(orch, monkeypatch, mode):
+    from ductor_bot.config import StreamingConfig
+    from ductor_bot.messenger.telegram.message_dispatch import (
+        NonStreamingDispatch,
+        StreamingDispatch,
+        run_non_streaming_message,
+        run_streaming_message,
+    )
+
+    store, _, recorder = storage(orch)
+    orch.set_history_recorder(recorder)
+    result = OrchestratorResult(text="Answer [button:Yes]")
+
+    async def route(dispatch):
+        if dispatch.on_text_delta:
+            await dispatch.on_text_delta("Answer")
+        return result
+
+    monkeypatch.setattr(orch, "_route_message", route)
+    bot = MagicMock()
+    bot.send_message = AsyncMock(
+        side_effect=[
+            SimpleNamespace(message_id=i, text="parsed", html_text="<b>Actual bubble</b>")
+            for i in range(10, 30)
+        ]
+    )
+    bot.edit_message_reply_markup = AsyncMock()
+    bot.edit_message_text = AsyncMock(
+        return_value=SimpleNamespace(text="parsed", html_text="<b>Actual bubble</b>")
+    )
+    bot.send_chat_action = AsyncMock()
+    message = MagicMock()
+    message.message_id = 1
+    message.answer = AsyncMock(
+        return_value=SimpleNamespace(message_id=5, text="parsed", html_text="<b>Actual bubble</b>")
+    )
+    key = SessionKey.telegram(1, 7)
+    if mode == "plain":
+        await run_non_streaming_message(
+            NonStreamingDispatch(bot, orch, key, "hello", None, thread_id=7)
+        )
+    else:
+        await run_streaming_message(
+            StreamingDispatch(
+                bot,
+                orch,
+                message,
+                key,
+                "hello",
+                StreamingConfig(append_mode=mode == "append", edit_interval_seconds=0),
+                None,
+                thread_id=7,
+            )
+        )
+    reply = (await store.read("1.7"))[-1]
+    metadata = (await store.metadata("1.7"))[reply.id]
+    assert (
+        metadata["telegram_message_id"]
+        == bot.edit_message_reply_markup.call_args.kwargs["message_id"]
+    )
+    assert metadata["buttons"] == [[{"text": "Yes", "callback_data": "Yes"}]]
+    assert metadata["telegram_html_text"] == "<b>Actual bubble</b>"
+    assert result._chat_log_entry_id == reply.id
+    assert "_chat_log_entry_id" not in result.model_dump()
+
+
+@pytest.mark.parametrize("session", ["", "worker"])
+async def test_background_history_preserves_optional_session_destination(orch, session):
+    store, _, recorder = storage(orch)
+    await recorder.on_delivered(
+        Envelope(Origin.BACKGROUND, 123, session_name=session, result_text="Pick [button:Yes]")
+    )
+    entry = (await store.read("123"))[-1]
+    data = (await store.metadata("123"))[entry.id]["buttons"][0][0]["callback_data"]
+    assert data == ("ns:worker:Yes" if session else "Yes")
+
+
+async def test_late_keyboard_observer_does_not_recreate_deleted_history(orch):
+    from ductor_bot.messenger.telegram.buttons import extract_buttons
+    from ductor_bot.messenger.telegram.message_dispatch import (
+        NonStreamingDispatch,
+        _keyboard_observer,
+    )
+
+    store, _, recorder = storage(orch)
+    orch.set_history_recorder(recorder)
+    result = OrchestratorResult(text="[button:Yes]")
+    dispatch = SimpleNamespace(key=SessionKey.telegram(1), transport_override=None)
+    await recorder.finish(dispatch, result)
+    observer = _keyboard_observer(
+        NonStreamingDispatch(MagicMock(), orch, dispatch.key, "", None), result
+    )
+    assert observer is not None
+    recorder.blocked.add("1")
+    await store.delete("1")
+    _, markup = extract_buttons(result.text)
+    await observer(42, markup)
+    assert not store._metadata_path("1").exists()
+
+
+async def test_command_sync_recorder_preserves_selector_grid(orch):
+    from ductor_bot.orchestrator.selectors.models import Button, ButtonGrid
+
+    store, _, recorder = storage(orch)
+    orch.set_history_recorder(recorder)
+    result = OrchestratorResult(
+        text="Choose", buttons=ButtonGrid([[Button("Claude", "ms:p:claude")]])
+    )
+    orch._route_message.return_value = result
+    await orch.handle_message(SessionKey.telegram(123, 7), "/model")
+    reply = (await store.read("123.7"))[-1]
+    assert (await store.metadata("123.7"))[reply.id]["buttons"] == [
+        [{"text": "Claude", "callback_data": "ms:p:claude"}]
+    ]

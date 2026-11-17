@@ -192,3 +192,11 @@ list = "명령어 목록"
 help = "↑↓ 이동 · Enter / Tab 선택 · Esc 닫기"
 empty = "일치하는 명령어가 없어요."
 run = "명령어 실행"
+
+[buttons]
+sending = "보내는 중…"
+answered = "답변: {label}"
+already_answered = "이미 답변한 메시지입니다."
+invalid = "이 버튼은 더 이상 사용할 수 없습니다. 채팅을 새로고침한 뒤 다시 시도하세요."
+
+stale_selector = "선택 화면이 변경되었습니다. 최신 선택 항목을 불러왔습니다."

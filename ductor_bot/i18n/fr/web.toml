@@ -192,3 +192,11 @@ list = "Liste des commandes"
 help = "↑↓ Déplacer · Entrée / Tab Choisir · Échap Fermer"
 empty = "Aucune commande correspondante."
 run = "Commande exécutée"
+
+[buttons]
+sending = "Envoi en cours…"
+answered = "Réponse : {label}"
+already_answered = "Ce message a déjà reçu une réponse."
+invalid = "Ce bouton n’est plus disponible. Actualisez la discussion et réessayez."
+
+stale_selector = "Cet écran de sélection a changé. Les dernières options ont été chargées."

@@ -1436,3 +1436,42 @@ async def test_codex_topic_effort_is_session_scoped(orch: Orchestrator) -> None:
     assert session is not None
     assert session.reasoning_effort == "high"
     assert orch._config.reasoning_effort == global_before
+
+
+async def test_selector_sync_shared_model_and_effort_steps_keep_real_responses(orch):
+    import asyncio
+    from types import SimpleNamespace
+
+    from ductor_bot.messenger.telegram.callbacks import selector_callback_response
+
+    key = SessionKey(chat_id=1)
+    locks = {}
+    bot = SimpleNamespace(
+        _orch=orch,
+        _sequential=SimpleNamespace(get_lock=lambda value: locks.setdefault(value, asyncio.Lock())),
+    )
+    with _patch_auth(
+        {"claude": _AUTHED_CLAUDE, "codex": _NOT_FOUND_CODEX, "gemini": _NOT_FOUND_GEMINI}
+    ):
+        models = (await selector_callback_response(bot, key, "ms:p:claude")).response
+        assert "Select Claude model" in models.text
+        assert models.buttons is not None
+        model_data = next(
+            button.callback_data
+            for row in models.buttons.rows
+            for button in row
+            if button.callback_data.startswith("ms:m:")
+        )
+        effort = (await selector_callback_response(bot, key, model_data)).response
+        assert effort.buttons is not None
+        effort_data = next(
+            button.callback_data
+            for row in effort.buttons.rows
+            for button in row
+            if button.callback_data.startswith("ms:r:")
+        )
+        final = (await selector_callback_response(bot, key, effort_data)).response
+        assert final.buttons is None
+        direct_effort = (await selector_callback_response(bot, key, "ms:e:high")).response
+        assert direct_effort.buttons is None
+        assert direct_effort.text

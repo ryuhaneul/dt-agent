@@ -576,3 +576,88 @@ async def test_new_response_matches_handler_and_typing_order(text: str, use_cach
         if text == "/new @missing"
         else ["typing", ("reset", expected_key), "typing_done", "send"]
     )
+
+
+async def test_command_sync_registry_binds_last_keyboard_without_duplicate_entry(tmp_path):
+    from types import SimpleNamespace
+
+    from ductor_bot.chat_log.events import EventHub
+    from ductor_bot.chat_log.history import Entry, HistoryStore
+    from ductor_bot.chat_log.recorder import HistoryRecorder
+    from ductor_bot.messenger.telegram.handlers import handle_command
+    from ductor_bot.orchestrator.registry import OrchestratorResult
+    from ductor_bot.orchestrator.selectors.models import Button, ButtonGrid
+
+    store = HistoryStore(tmp_path)
+    recorder = HistoryRecorder(store, EventHub())
+    rows = [[{"text": "Claude", "callback_data": "ms:p:claude"}]]
+    entry = await store.append("1.7", Entry("bot", "telegram", "Choose"), buttons=rows)
+    result = OrchestratorResult(
+        text="Choose", buttons=ButtonGrid([[Button("Claude", "ms:p:claude")]])
+    )
+    result._chat_log_entry_id = entry.id
+    orch = SimpleNamespace(
+        handle_message=AsyncMock(return_value=result), _history_recorder=recorder
+    )
+    api = SimpleNamespace(send_chat_action=AsyncMock())
+
+    async def sent(_bot, _chat, _text, opts):
+        assert opts.on_keyboard is not None
+        await opts.on_keyboard(77, opts.reply_markup, "Actual last chunk")
+        return True
+
+    with patch("ductor_bot.messenger.telegram.handlers.send_rich", side_effect=sent):
+        await handle_command(orch, api, _make_message(text="/model", topic_thread_id=7))
+    assert len(await store.read("1.7")) == 1
+    assert (await store.metadata("1.7"))[entry.id]["telegram_message_id"] == 77
+
+
+async def test_command_sync_recording_failure_keeps_direct_delivery():
+    from types import SimpleNamespace
+
+    from ductor_bot.messenger.telegram.handlers import handle_new_session
+
+    orch = SimpleNamespace(
+        _history_recorder=SimpleNamespace(
+            direct_result=AsyncMock(side_effect=OSError("disk")), blocked=set()
+        ),
+        reset_active_provider_session=AsyncMock(return_value="Claude"),
+    )
+    with patch("ductor_bot.messenger.telegram.handlers.send_rich", new_callable=AsyncMock) as send:
+        await handle_new_session(orch, MagicMock(), _make_message(text="/new"))
+    send.assert_awaited_once()
+
+
+@pytest.mark.parametrize("command", ["new", "interrupt", "stop", "stop_all"])
+async def test_command_sync_plain_control_replies_are_recorded(tmp_path, command):
+    from types import SimpleNamespace
+
+    from ductor_bot.chat_log.events import EventHub
+    from ductor_bot.chat_log.history import HistoryStore
+    from ductor_bot.chat_log.recorder import HistoryRecorder
+    from ductor_bot.messenger.telegram import handlers
+
+    store = HistoryStore(tmp_path / "history")
+    orch = SimpleNamespace(
+        _history_recorder=HistoryRecorder(store, EventHub()),
+        reset_active_provider_session=AsyncMock(return_value="Claude"),
+        interrupt=MagicMock(return_value=1),
+        abort=AsyncMock(return_value=1),
+        abort_all=AsyncMock(return_value=1),
+        active_provider_name="Claude",
+    )
+    msg = _make_message(text=f"/{command}", topic_thread_id=7)
+    with patch("ductor_bot.messenger.telegram.handlers.send_rich", new_callable=AsyncMock) as send:
+        if command == "new":
+            await handlers.handle_new_session(orch, MagicMock(), msg)
+        else:
+            function = {
+                "interrupt": handlers.handle_interrupt,
+                "stop": handlers.handle_abort,
+                "stop_all": handlers.handle_abort_all,
+            }[command]
+            await function(orch, MagicMock(), chat_id=1, message=msg)
+    rows = await store.read("1.7")
+    assert len(rows) == 1
+    assert rows[0].text == send.call_args.args[2]
+    assert rows[0].source == "telegram"

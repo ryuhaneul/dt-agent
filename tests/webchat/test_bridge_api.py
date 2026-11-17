@@ -2117,3 +2117,1228 @@ async def test_history_lock_timeout_is_retryable_and_recovers(conversation, path
         assert await holder.wait() == 0
     response = await h.client.get(f"{_PREFIX}/{path}", headers=headers())
     assert response.status == 200
+
+
+async def test_legacy_response_markers_are_display_only_and_sidecar_rows_win(conversation):
+    from dataclasses import asdict
+
+    from ductor_bot.messenger.telegram.buttons import extract_button_rows
+
+    h = conversation
+    text = "Choose\n```\n[button:in code]\n```\n[button:Yes] [button:No]"
+    entries = [
+        Entry(role="bot", source="telegram", text=text, seq=1),
+        Entry(role="user", source="telegram", text=text, seq=2),
+        Entry(role="bot", source="web", text=text, seq=3),
+    ]
+    path = h.runtime.history.directory / history_filename("-123.7")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    original = "".join(json.dumps(asdict(entry)) + "\n" for entry in entries).encode()
+    path.write_bytes(original)
+    selector = [[{"text": "Model", "callback_data": "ms:claude"}]]
+    h.runtime.history._append_metadata("-123.7", entries[2].id, selector)
+    cleaned, rows = extract_button_rows(text)
+    for _ in range(2):
+        response = await h.client.get(f"{_PREFIX}/topics/-123.7/messages", headers=headers())
+        assert response.status == 200
+        rendered = (await response.json())["entries"]
+        assert rendered[0]["text"] == cleaned
+        assert rendered[0]["buttons"] == rows
+        assert "[button:in code]" in rendered[0]["text"]
+        assert rendered[1]["text"] == text
+        assert "buttons" not in rendered[1]
+        assert rendered[2]["buttons"] == selector
+        assert path.read_bytes() == original
+    assert await h.runtime.history.metadata("-123.7") == {entries[2].id: {"buttons": selector}}
+
+
+async def test_response_button_claim_dispatch_edit_and_duplicate(conversation, monkeypatch):
+    h = conversation
+    h.bot.bot_instance = SimpleNamespace(
+        edit_message_text=AsyncMock(), edit_message_reply_markup=AsyncMock()
+    )
+    submit = MagicMock(return_value="button-turn")
+    monkeypatch.setattr(WebTurns, "submit", submit)
+    entry = await h.runtime.history.append(h.key, Entry("bot", "telegram", "Pick [button:Yes]"))
+    await h.runtime.history.bind_telegram_message(
+        "-123.7", entry.id, 42, html_text="<b>Actual chunk</b>"
+    )
+    queue = h.runtime.events.subscribe()
+    url = f"{_PREFIX}/topics/-123.7/buttons"
+    response = await h.client.post(
+        url, json={"entry_id": entry.id, "label": "Yes"}, headers=headers()
+    )
+    assert response.status == 202
+    assert await response.json() == {
+        "turn_id": "button-turn",
+        "entry_id": entry.id,
+        "answered": "Yes",
+    }
+    submit.assert_called_once_with("-123.7", "Yes")
+    edit = h.bot.bot_instance.edit_message_text.await_args.kwargs
+    assert edit["chat_id"] == -123
+    assert edit["message_id"] == 42
+    assert edit["reply_markup"] is None
+    assert edit["text"].startswith("<b>Actual chunk</b>\n\n")
+    assert (await h.runtime.history.metadata("-123.7"))[entry.id]["answered"] == "Yes"
+    assert any(queue.get_nowait()["type"] == "entry_meta" for _ in range(queue.qsize()))
+    duplicate = await h.client.post(
+        url, json={"entry_id": entry.id, "label": "Yes"}, headers=headers()
+    )
+    assert duplicate.status == 409
+    assert await duplicate.json() == {"error": "already_answered"}
+    assert submit.call_count == 1
+    invalid = await h.client.post(
+        url, json={"entry_id": entry.id, "label": "No"}, headers=headers()
+    )
+    assert invalid.status == 400
+
+
+async def test_response_button_named_destination_and_selector_rejection(conversation, monkeypatch):
+    h = conversation
+    h.bot.bot_instance = SimpleNamespace(
+        edit_message_text=AsyncMock(), edit_message_reply_markup=AsyncMock()
+    )
+    submit = MagicMock(return_value="named-turn")
+    monkeypatch.setattr(WebTurns, "submit", submit)
+    entry = await h.runtime.history.append(
+        h.key,
+        Entry("event", "system", "Pick"),
+        buttons=[[{"text": "Yes", "callback_data": "ns:worker:Yes"}]],
+    )
+    response = await h.client.post(
+        f"{_PREFIX}/topics/-123.7/buttons",
+        json={"entry_id": entry.id, "label": "Yes"},
+        headers=headers(),
+    )
+    assert response.status == 202
+    submit.assert_called_once_with("-123.7", "Yes", session_name="worker")
+    h.bot.bot_instance.edit_message_text.assert_not_awaited()
+    selector = await h.runtime.history.append(
+        h.key,
+        Entry("bot", "web", "Model"),
+        buttons=[[{"text": "Claude", "callback_data": "ms:p:claude"}]],
+    )
+    response = await h.client.post(
+        f"{_PREFIX}/topics/-123.7/buttons",
+        json={"entry_id": selector.id, "label": "Claude"},
+        headers=headers(),
+    )
+    assert response.status == 400
+    assert not await h.runtime.history.is_answered("-123.7", selector.id)
+
+
+async def test_response_button_busy_does_not_claim_and_legacy_remains_immutable(
+    conversation, monkeypatch
+):
+    h = conversation
+    h.bot.bot_instance = SimpleNamespace(
+        edit_message_text=AsyncMock(), edit_message_reply_markup=AsyncMock()
+    )
+    entry = await h.runtime.history.append(h.key, Entry("bot", "telegram", "Pick [button:Yes]"))
+    monkeypatch.setattr(WebTurns, "busy", lambda _self, _tid: True)
+    response = await h.client.post(
+        f"{_PREFIX}/topics/-123.7/buttons",
+        json={"entry_id": entry.id, "label": "Yes"},
+        headers=headers(),
+    )
+    assert response.status == 409
+    assert not await h.runtime.history.is_answered("-123.7", entry.id)
+    monkeypatch.setattr(WebTurns, "busy", lambda _self, _tid: False)
+    monkeypatch.setattr(WebTurns, "submit", MagicMock(return_value="legacy-turn"))
+    path = h.runtime.history._path("-123.7")
+    h.runtime.history._metadata_path("-123.7").unlink()
+    # Old entries can still contain literal markers, without a sidecar.
+    from dataclasses import asdict
+
+    path.write_text(json.dumps(asdict(entry) | {"text": "Pick [button:Yes]"}) + "\n")
+    original = path.read_bytes()
+    response = await h.client.post(
+        f"{_PREFIX}/topics/-123.7/buttons",
+        json={"entry_id": entry.id, "label": "Yes"},
+        headers=headers(),
+    )
+    assert response.status == 202
+    assert path.read_bytes() == original
+    assert await h.runtime.history.is_answered("-123.7", entry.id)
+    h.bot.bot_instance.edit_message_reply_markup.assert_not_awaited()
+
+
+async def test_response_button_named_turn_reaches_named_session_and_keeps_reply_buttons(
+    conversation, monkeypatch
+):
+    from ductor_bot.orchestrator import flows
+
+    h = conversation
+    h.bot.bot_instance = SimpleNamespace(
+        edit_message_text=AsyncMock(), edit_message_reply_markup=AsyncMock()
+    )
+    named = AsyncMock(return_value=OrchestratorResult(text="Named reply [button:Again]"))
+    monkeypatch.setattr(flows, "named_session_streaming", named)
+    entry = await h.runtime.history.append(
+        h.key,
+        Entry("bot", "telegram", "Named"),
+        buttons=[[{"text": "Yes", "callback_data": "ns:worker:Yes"}]],
+    )
+    work = []
+    original = WebTurns.submit
+
+    def submit(self, tid, text, **kwargs):
+        result = original(self, tid, text, **kwargs)
+        work.append(self._tasks[tid])
+        return result
+
+    monkeypatch.setattr(WebTurns, "submit", submit)
+    response = await h.client.post(
+        f"{_PREFIX}/topics/-123.7/buttons",
+        json={"entry_id": entry.id, "label": "Yes"},
+        headers=headers(),
+    )
+    assert response.status == 202
+    await asyncio.wait_for(work[0], 5)
+    assert named.await_args.args == (h.bot._orch, h.key, "worker", "Yes")
+    assert named.await_args.kwargs["transport_override"] == "api"
+    h.bot._orch.handle_message_streaming.assert_not_awaited()
+    reply = (await h.runtime.history.read("-123.7"))[-1]
+    assert reply.source == "web"
+    assert (await h.runtime.history.metadata("-123.7"))[reply.id]["buttons"][0][0][
+        "callback_data"
+    ] == "ns:worker:Again"
+    assert any(item.buttons_session == "worker" for item in await h.runtime.outbox.pending())
+
+
+async def test_telegram_choice_prevents_web_replay(conversation, monkeypatch):
+    from tests.messenger.telegram.test_app import _make_callback_query
+    from tests.messenger.telegram.test_callback_queue import setup_bot
+
+    h = conversation
+    bot, _, _ = setup_bot()
+    bot._chat_log_runtime = SimpleNamespace(history=h.runtime.history)
+    entry = await h.runtime.history.append(h.key, Entry("bot", "telegram", "Pick [button:Yes]"))
+    await h.runtime.history.bind_telegram_message("-123.7", entry.id, 42, html_text="Actual")
+    await bot._on_callback_query(
+        _make_callback_query(data="Yes", chat_id=-123, message_id=42, topic_thread_id=7)
+    )
+    bot._handle_streaming.assert_awaited_once()
+    submit = MagicMock(return_value="must-not-run")
+    monkeypatch.setattr(WebTurns, "submit", submit)
+    response = await h.client.post(
+        f"{_PREFIX}/topics/-123.7/buttons",
+        json={"entry_id": entry.id, "label": "Yes"},
+        headers=headers(),
+    )
+    assert response.status == 409
+    submit.assert_not_called()
+
+
+async def test_response_button_rejects_busy_command_before_claim(conversation):
+    h = conversation
+    entry = await h.runtime.history.append(h.key, Entry("bot", "telegram", "Pick [button:/new]"))
+    lock = h.pool.get(h.key.lock_key)
+    async with lock:
+        response = await h.client.post(
+            f"{_PREFIX}/topics/-123.7/buttons",
+            json={"entry_id": entry.id, "label": "/new"},
+            headers=headers(),
+        )
+    assert response.status == 409
+    assert not await h.runtime.history.is_answered("-123.7", entry.id)
+
+
+async def test_response_button_bridge_token_forbidden(conversation):
+    for request_headers in [{}, {"X-Dtw-Bridge-Token": "bad"}, {"Authorization": "Bearer test"}]:
+        response = await conversation.client.post(
+            f"{_PREFIX}/topics/-123.7/buttons",
+            json={"entry_id": "entry", "label": "Yes"},
+            headers=request_headers,
+        )
+        assert response.status == 403
+        assert "WWW-Authenticate" not in response.headers
+
+
+async def test_response_button_waits_for_telegram_busy_and_rejects_web_busy(
+    conversation, monkeypatch
+):
+    h = conversation
+    h.bot.bot_instance = SimpleNamespace(
+        edit_message_text=AsyncMock(), edit_message_reply_markup=AsyncMock()
+    )
+    first = await h.runtime.history.append(h.key, Entry("bot", "telegram", "Pick [button:Yes]"))
+    second = await h.runtime.history.append(h.key, Entry("bot", "telegram", "Other [button:Yes]"))
+    tasks = []
+    original = WebTurns.submit
+
+    def submit(self, tid, text, **kwargs):
+        turn_id = original(self, tid, text, **kwargs)
+        tasks.append(self._tasks[tid])
+        return turn_id
+
+    monkeypatch.setattr(WebTurns, "submit", submit)
+    lock = h.pool.get(h.key.lock_key)
+    await lock.acquire()
+    try:
+        response = await h.client.post(
+            f"{_PREFIX}/topics/-123.7/buttons",
+            json={"entry_id": first.id, "label": "Yes"},
+            headers=headers(),
+        )
+        assert response.status == 202
+        assert not h.calls
+        busy = await h.client.post(
+            f"{_PREFIX}/topics/-123.7/buttons",
+            json={"entry_id": second.id, "label": "Yes"},
+            headers=headers(),
+        )
+        assert busy.status == 409
+        assert not await h.runtime.history.is_answered("-123.7", second.id)
+    finally:
+        lock.release()
+        await asyncio.wait_for(asyncio.gather(*tasks), 5)
+    assert h.calls[0][1] == "Yes"
+
+
+async def test_response_button_stop_bypasses_slow_command_gate(conversation, monkeypatch):
+    from ductor_bot.webchat.commands import WebCommandDispatcher
+
+    h = conversation
+    h.bot.bot_instance = SimpleNamespace(
+        edit_message_text=AsyncMock(), edit_message_reply_markup=AsyncMock()
+    )
+    entry = await h.runtime.history.append(h.key, Entry("bot", "telegram", "[button:/stop]"))
+    entered, release = asyncio.Event(), asyncio.Event()
+    original = WebCommandDispatcher.dispatch
+
+    async def dispatch(self, tid, text, **kwargs):
+        if text == "/help":
+            entered.set()
+            await release.wait()
+            return {"text": "help", "buttons": None}
+        return await original(self, tid, text, **kwargs)
+
+    monkeypatch.setattr(WebCommandDispatcher, "dispatch", dispatch)
+    command = asyncio.create_task(post_message(h, text="/help"))
+    try:
+        await asyncio.wait_for(entered.wait(), 3)
+        response = await asyncio.wait_for(
+            h.client.post(
+                f"{_PREFIX}/topics/-123.7/buttons",
+                json={"entry_id": entry.id, "label": "/stop"},
+                headers=headers(),
+            ),
+            3,
+        )
+        assert response.status == 202
+        assert await h.runtime.history.is_answered("-123.7", entry.id)
+    finally:
+        release.set()
+        await command
+
+
+async def test_response_button_edit_failure_keeps_dispatch_and_answer(conversation, monkeypatch):
+    from aiogram.exceptions import TelegramNetworkError
+
+    h = conversation
+    failure = TelegramNetworkError(MagicMock(), "unavailable")
+    h.bot.bot_instance = SimpleNamespace(
+        edit_message_text=AsyncMock(side_effect=failure),
+        edit_message_reply_markup=AsyncMock(side_effect=failure),
+    )
+    submit = MagicMock(return_value="accepted")
+    monkeypatch.setattr(WebTurns, "submit", submit)
+    entry = await h.runtime.history.append(h.key, Entry("bot", "telegram", "[button:Yes]"))
+    await h.runtime.history.bind_telegram_message("-123.7", entry.id, 42, html_text="Actual")
+    response = await h.client.post(
+        f"{_PREFIX}/topics/-123.7/buttons",
+        json={"entry_id": entry.id, "label": "Yes"},
+        headers=headers(),
+    )
+    assert response.status == 202
+    assert await h.runtime.history.is_answered("-123.7", entry.id)
+    submit.assert_called_once_with("-123.7", "Yes")
+
+
+async def test_response_button_competing_transports_dispatch_once(conversation, monkeypatch):
+    from tests.messenger.telegram.test_app import _make_callback_query
+    from tests.messenger.telegram.test_callback_queue import setup_bot
+
+    h = conversation
+    tg, _, _ = setup_bot()
+    tg._chat_log_runtime = SimpleNamespace(history=h.runtime.history)
+    h.bot.bot_instance = SimpleNamespace(
+        edit_message_text=AsyncMock(), edit_message_reply_markup=AsyncMock()
+    )
+    submit = MagicMock(return_value="web-turn")
+    monkeypatch.setattr(WebTurns, "submit", submit)
+    entry = await h.runtime.history.append(h.key, Entry("bot", "telegram", "[button:Yes]"))
+    await h.runtime.history.bind_telegram_message("-123.7", entry.id, 42, html_text="Actual")
+    response, _ = await asyncio.gather(
+        h.client.post(
+            f"{_PREFIX}/topics/-123.7/buttons",
+            json={"entry_id": entry.id, "label": "Yes"},
+            headers=headers(),
+        ),
+        tg._on_callback_query(
+            _make_callback_query(data="Yes", chat_id=-123, message_id=42, topic_thread_id=7)
+        ),
+    )
+    assert response.status in {202, 409}
+    assert submit.call_count + tg._handle_streaming.await_count == 1
+    assert await h.runtime.history.is_answered("-123.7", entry.id)
+
+
+@pytest.mark.parametrize(
+    ("delivery", "answered"),
+    [("mirror", True), ("mirror", False), ("transport", True), ("transport", False)],
+)
+async def test_late_button_delivery_reconciles_answered_once(
+    conversation, monkeypatch, delivery, answered
+):
+    from ductor_bot.chat_log.link import OutboxDrainer, TelegramLinkMonitor
+    from ductor_bot.messenger.telegram.webchat_ops import TelegramWebchatOps
+
+    h = conversation
+    message = SimpleNamespace(message_id=42, text="Actual", html_text="<b>Final actual</b>")
+    h.bot.bot_instance = SimpleNamespace(
+        send_message=AsyncMock(return_value=message),
+        edit_message_text=AsyncMock(),
+        edit_message_reply_markup=AsyncMock(return_value=message),
+    )
+    h.bot.file_roots = lambda _paths: None
+    entry = await h.runtime.history.append(h.key, Entry("bot", "telegram", "Pick [button:Yes]"))
+    text = "Pick [button:Yes]"
+    if delivery == "mirror":
+        await h.runtime.outbox.enqueue(
+            kind="reply_mirror", chat_id=-123, topic_id=7, text=text, history_id=entry.id
+        )
+    if answered:
+        monkeypatch.setattr(WebTurns, "submit", MagicMock(return_value="accepted"))
+        response = await h.client.post(
+            f"{_PREFIX}/topics/-123.7/buttons",
+            json={"entry_id": entry.id, "label": "Yes"},
+            headers=headers(),
+        )
+        assert response.status == 202
+    h.bot.bot_instance.edit_message_text.assert_not_awaited()
+    if delivery == "mirror":
+        ops = TelegramWebchatOps(h.bot)
+        link = TelegramLinkMonitor(ops, h.runtime.events)
+        link.record(up=True)
+        await OutboxDrainer(h.runtime.outbox, ops, link, history=h.runtime.history).drain()
+        assert not await h.runtime.outbox.pending()
+    else:
+        transport = TelegramTransport(h.bot)
+        transport.set_outbox(h.runtime.outbox, history=h.runtime.history)
+        await transport.deliver(
+            Envelope(
+                Origin.WEBHOOK_WAKE,
+                -123,
+                topic_id=7,
+                result_text=text,
+                metadata={"chat_log_entry_id": entry.id},
+            )
+        )
+    assert h.bot.bot_instance.edit_message_text.await_count == int(answered)
+    if answered:
+        edit = h.bot.bot_instance.edit_message_text.await_args.kwargs
+        assert edit["message_id"] == 42
+        assert edit["reply_markup"] is None
+        assert edit["text"].startswith("<b>Final actual</b>\n\n")
+        assert await h.runtime.history.is_answered("-123.7", entry.id)
+
+
+@pytest.mark.parametrize("answered", [True, False])
+async def test_web_choice_before_telegram_binding_is_reconciled_once(
+    conversation, monkeypatch, answered
+):
+    from ductor_bot.messenger.telegram.message_dispatch import (
+        NonStreamingDispatch,
+        run_non_streaming_message,
+    )
+
+    h = conversation
+    entered, release = asyncio.Event(), asyncio.Event()
+    message = SimpleNamespace(message_id=42, text="Actual", html_text="<b>Final actual</b>")
+
+    async def send(**_kwargs):
+        entered.set()
+        await release.wait()
+        return message
+
+    h.bot.bot_instance = SimpleNamespace(
+        send_message=AsyncMock(side_effect=send),
+        send_chat_action=AsyncMock(),
+        edit_message_text=AsyncMock(),
+        edit_message_reply_markup=AsyncMock(return_value=message),
+    )
+    h.bot._orch._history_recorder = h.runtime.recorder
+
+    async def handle(key, text):
+        dispatch = SimpleNamespace(
+            key=key, text=text, transport_override=None, counts_as_activity=True
+        )
+        await h.runtime.recorder.begin(dispatch)
+        result = OrchestratorResult(text="Pick [button:Yes]")
+        await h.runtime.recorder.finish(dispatch, result)
+        return result
+
+    h.bot._orch.handle_message = handle
+    task = asyncio.create_task(
+        run_non_streaming_message(
+            NonStreamingDispatch(
+                h.bot.bot_instance, h.bot._orch, h.key, "original", None, thread_id=7
+            )
+        )
+    )
+    monkeypatch.setattr(WebTurns, "submit", MagicMock(return_value="accepted"))
+    try:
+        await asyncio.wait_for(entered.wait(), 3)
+        entry = (await h.runtime.history.read("-123.7"))[-1]
+        if answered:
+            response = await h.client.post(
+                f"{_PREFIX}/topics/-123.7/buttons",
+                json={"entry_id": entry.id, "label": "Yes"},
+                headers=headers(),
+            )
+            assert response.status == 202
+        h.bot.bot_instance.edit_message_text.assert_not_awaited()
+    finally:
+        release.set()
+        await asyncio.wait_for(task, 5)
+    assert h.bot.bot_instance.edit_message_text.await_count == int(answered)
+    if answered:
+        edit = h.bot.bot_instance.edit_message_text.await_args.kwargs
+        assert edit["message_id"] == 42
+        assert edit["reply_markup"] is None
+        assert edit["text"].startswith("<b>Final actual</b>\n\n")
+
+
+async def test_selector_sync_transition_stale_invalid_end_and_restore(conversation, monkeypatch):
+    from ductor_bot.orchestrator.selectors.models import Button, ButtonGrid, SelectorResponse
+
+    h = conversation
+    h.bot._sequential = SimpleNamespace(get_lock=h.bot._orch._lock_pool.get)
+    h.bot.bot_instance = SimpleNamespace(edit_message_text=AsyncMock())
+    rows = [[{"text": "Claude", "callback_data": "ms:p:claude"}]]
+    entry = await h.runtime.history.append(h.key, Entry("bot", "web", "Provider"), buttons=rows)
+    await h.runtime.history.bind_telegram_message("-123.7", entry.id, 44)
+    lower = AsyncMock(
+        side_effect=[
+            SelectorResponse("Pick model", ButtonGrid([[Button("Opus", "ms:m:opus")]])),
+            SelectorResponse("Selected Opus"),
+        ]
+    )
+    monkeypatch.setattr(
+        "ductor_bot.orchestrator.selectors.model_selector.handle_model_callback", lower
+    )
+    url = f"{_PREFIX}/topics/-123.7/callbacks"
+
+    async def click(data, revision):
+        return await h.client.post(
+            url, json={"entry_id": entry.id, "data": data, "revision": revision}, headers=headers()
+        )
+
+    first = await click("ms:p:claude", 0)
+    assert first.status == 200
+    body = await first.json()
+    assert body["text"] == "Pick model"
+    assert body["selector_revision"] == 1
+    assert body["button_kinds"] == [["selector"]]
+    edited = h.bot.bot_instance.edit_message_text.call_args.kwargs
+    assert edited["chat_id"] == -123
+    assert edited["message_id"] == 44
+    assert edited["reply_markup"].inline_keyboard[0][0].callback_data == "ms:m:opus"
+    assert (await click("ms:p:claude", 0)).status == 409
+    assert (await click("unsupported:data", 0)).status == 409
+    assert (await click("ms:unknown", 1)).status == 400
+    assert lower.await_count == 1
+    final = await click("ms:m:opus", 1)
+    assert final.status == 200
+    assert (await final.json())["buttons"] == []
+    assert (await click("ms:m:opus", 1)).status == 409
+    restored = HistoryStore(h.paths.chat_log_dir / "history")
+    assert (await restored.metadata("-123.7"))[entry.id]["text"] == "Selected Opus"
+    assert (await restored.get_entry("-123.7", entry.id)).text == "Provider"
+    messages = await (
+        await h.client.get(f"{_PREFIX}/topics/-123.7/messages", headers=headers())
+    ).json()
+    found = next(item for item in messages["entries"] if item["id"] == entry.id)
+    assert found["text"] == "Selected Opus"
+    assert found["selector_revision"] == 2
+
+
+async def test_selector_sync_missing_message_and_failed_edit_keep_revision(
+    conversation, monkeypatch
+):
+    from ductor_bot.orchestrator.selectors.models import SelectorResponse
+
+    h = conversation
+    h.bot._sequential = SimpleNamespace(get_lock=h.bot._orch._lock_pool.get)
+    h.bot.bot_instance = SimpleNamespace(
+        edit_message_text=AsyncMock(side_effect=RuntimeError("offline"))
+    )
+    monkeypatch.setattr(
+        "ductor_bot.orchestrator.selectors.model_selector.handle_model_callback",
+        AsyncMock(return_value=SelectorResponse("Done")),
+    )
+    for mid in (None, 44):
+        entry = await h.runtime.history.append(
+            h.key,
+            Entry("bot", "web", "Choose"),
+            buttons=[[{"text": "Claude", "callback_data": "ms:p:claude"}]],
+        )
+        if mid:
+            await h.runtime.history.bind_telegram_message("-123.7", entry.id, mid)
+        response = await h.client.post(
+            f"{_PREFIX}/topics/-123.7/callbacks",
+            json={"entry_id": entry.id, "data": "ms:p:claude", "revision": 0},
+            headers=headers(),
+        )
+        assert response.status == 200
+        assert (await h.runtime.history.metadata("-123.7"))[entry.id]["selector_revision"] == 1
+    assert h.bot.bot_instance.edit_message_text.await_count == 1
+
+
+async def test_selector_sync_welcome_prompt_answered_and_callback_auth(conversation):
+    from ductor_bot.messenger.telegram.welcome import resolve_welcome_callback
+
+    h = conversation
+    h.bot.bot_instance = SimpleNamespace(
+        edit_message_text=AsyncMock(), edit_message_reply_markup=AsyncMock()
+    )
+    entry = await h.runtime.history.append(
+        h.key, Entry("bot", "web", "Welcome"), buttons=[[{"text": "Know", "callback_data": "w:1"}]]
+    )
+    url = f"{_PREFIX}/topics/-123.7/callbacks"
+    payload = {"entry_id": entry.id, "data": "w:1", "revision": 0}
+    forbidden = await h.client.post(url, json=payload)
+    assert forbidden.status == 403
+    assert "WWW-Authenticate" not in forbidden.headers
+    response = await h.client.post(url, json=payload, headers=headers())
+    assert response.status == 202
+    assert (await response.json())["answered"] == "Know"
+    await asyncio.sleep(0)
+    assert await h.runtime.history.is_answered("-123.7", entry.id)
+    again = await h.client.post(url, json=payload, headers=headers())
+    assert again.status == 409
+    assert resolve_welcome_callback("w:1")
+
+
+@pytest.mark.parametrize(
+    ("namespace", "module", "function"),
+    [
+        ("crn:r:0", "cron_selector", "handle_cron_callback"),
+        ("nsc:r", "session_selector", "handle_session_callback"),
+        ("tsc:r", "task_selector", "handle_task_callback"),
+        ("acs:r", "account_selector", "handle_account_callback"),
+    ],
+)
+async def test_selector_sync_uses_existing_functions(
+    conversation, monkeypatch, namespace, module, function
+):
+    from ductor_bot.orchestrator.selectors.models import SelectorResponse
+
+    h = conversation
+    h.bot._sequential = SimpleNamespace(get_lock=h.pool.get)
+    h.bot.bot_instance = SimpleNamespace(edit_message_text=AsyncMock())
+    h.bot._config = h.bot.config
+    h.bot._agent_name = "main"
+    h.bot._orch.task_hub = object()
+    lower = AsyncMock(return_value=SelectorResponse("Unmodified lower response"))
+    monkeypatch.setattr(f"ductor_bot.orchestrator.selectors.{module}.{function}", lower)
+    entry = await h.runtime.history.append(
+        h.key,
+        Entry("bot", "web", "Choose"),
+        buttons=[[{"text": "Next", "callback_data": namespace}]],
+    )
+    response = await h.client.post(
+        f"{_PREFIX}/topics/-123.7/callbacks",
+        json={"entry_id": entry.id, "data": namespace, "revision": 0},
+        headers=headers(),
+    )
+    assert response.status == 200
+    assert (await response.json())["text"] == "Unmodified lower response"
+    assert lower.await_count == 1
+    assert lower.call_args.args[-1] == namespace
+
+
+async def test_selector_sync_real_task_delete_confirmation_cannot_be_skipped(conversation):
+    h = conversation
+    registry = SimpleNamespace(
+        count_finished=MagicMock(return_value=1),
+        list_all=MagicMock(return_value=[]),
+        cleanup_finished=MagicMock(return_value=1),
+    )
+    h.bot._orch.task_hub = SimpleNamespace(registry=registry)
+    h.bot.bot_instance = SimpleNamespace(edit_message_text=AsyncMock())
+    entry = await h.runtime.history.append(
+        h.key,
+        Entry("bot", "web", "Tasks"),
+        buttons=[[{"text": "Clean", "callback_data": "tsc:cleanup"}]],
+    )
+
+    async def click(data, revision):
+        return await h.client.post(
+            f"{_PREFIX}/topics/-123.7/callbacks",
+            json={"entry_id": entry.id, "data": data, "revision": revision},
+            headers=headers(),
+        )
+
+    assert (await click("tsc:cleanup_yes", 0)).status == 400
+    registry.cleanup_finished.assert_not_called()
+    confirmed = await click("tsc:cleanup", 0)
+    assert confirmed.status == 200
+    body = await confirmed.json()
+    assert any(
+        button["callback_data"] == "tsc:cleanup_yes" for row in body["buttons"] for button in row
+    )
+    registry.cleanup_finished.assert_not_called()
+    assert (await click("tsc:cleanup_yes", 1)).status == 200
+    registry.cleanup_finished.assert_called_once_with(-123)
+    assert (await click("tsc:cleanup_yes", 1)).status == 409
+
+
+async def test_selector_sync_usage_file_navigation_and_input(conversation, monkeypatch):
+    from ductor_bot.orchestrator.selectors.models import Button, ButtonGrid, SelectorResponse
+
+    h = conversation
+    h.bot.bot_instance = SimpleNamespace(
+        edit_message_text=AsyncMock(), edit_message_reply_markup=AsyncMock()
+    )
+    h.bot._usage_response = AsyncMock(
+        return_value=SelectorResponse("Usage", ButtonGrid([[Button("Refresh", "usg:refresh")]]))
+    )
+    monkeypatch.setattr(
+        "ductor_bot.cli.codex_usage.query_codex_usage", AsyncMock(return_value=None)
+    )
+    (h.paths.ductor_home / "folder").mkdir()
+    for data in ("usg:refresh", "sf:", "sf!folder"):
+        entry = await h.runtime.history.append(
+            h.key,
+            Entry("bot", "web", "Original"),
+            buttons=[[{"text": "Go", "callback_data": data}]],
+        )
+        response = await h.client.post(
+            f"{_PREFIX}/topics/-123.7/callbacks",
+            json={"entry_id": entry.id, "data": data, "revision": 0},
+            headers=headers(),
+        )
+        assert response.status == (202 if data.startswith("sf!") else 200)
+        body = await response.json()
+        if data.startswith("sf!"):
+            assert body["answered"] == "Go"
+            assert await h.runtime.history.is_answered("-123.7", entry.id)
+        else:
+            assert body["selector_revision"] == 1
+            assert body["text"] != "Original"
+    h.bot._usage_response.assert_awaited_once_with(None)
+
+
+async def test_selector_sync_competing_web_and_telegram_observe_revision(conversation, monkeypatch):
+    from ductor_bot.orchestrator.selectors.models import SelectorResponse
+    from tests.messenger.telegram.test_app import _make_callback_query
+    from tests.messenger.telegram.test_callback_queue import setup_bot
+
+    h = conversation
+    telegram, api, _ = setup_bot()
+    telegram._orchestrator = h.bot._orch
+    telegram._chat_log_runtime = h.runtime
+    h.bot._sequential = telegram._sequential
+    h.bot.bot_instance = api
+    entry = await h.runtime.history.append(
+        h.key,
+        Entry("bot", "web", "Provider"),
+        buttons=[[{"text": "Claude", "callback_data": "ms:p:claude"}]],
+    )
+    await h.runtime.history.bind_telegram_message("-123.7", entry.id, 42)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def action(*_args):
+        entered.set()
+        await release.wait()
+        return SelectorResponse("Done")
+
+    lower = AsyncMock(side_effect=action)
+    monkeypatch.setattr(
+        "ductor_bot.orchestrator.selectors.model_selector.handle_model_callback", lower
+    )
+    first = asyncio.create_task(
+        telegram._on_callback_query(
+            _make_callback_query(data="ms:p:claude", chat_id=-123, message_id=42, topic_thread_id=7)
+        )
+    )
+    await asyncio.wait_for(entered.wait(), 2)
+    second = asyncio.create_task(
+        h.client.post(
+            f"{_PREFIX}/topics/-123.7/callbacks",
+            json={"entry_id": entry.id, "data": "ms:p:claude", "revision": 0},
+            headers=headers(),
+        )
+    )
+    try:
+        release.set()
+        await asyncio.wait_for(first, 2)
+        assert (await asyncio.wait_for(second, 2)).status == 409
+        assert lower.await_count == 1
+    finally:
+        release.set()
+        await asyncio.gather(first, second, return_exceptions=True)
+
+
+async def test_selector_sync_web_events_project_kinds_without_storing_them(conversation):
+    h = conversation
+    socket = await h.client.ws_connect(f"{_PREFIX}/events", headers=headers())
+    try:
+        rows = [
+            [
+                {"text": "Yes", "callback_data": "Yes"},
+                {"text": "Model", "callback_data": "ms:p:claude"},
+                {"text": "Site", "url": "https://example.com"},
+                {"text": "Unsupported", "callback_data": "private:data"},
+            ]
+        ]
+        entry = await h.runtime.history.append(h.key, Entry("bot", "web", "Choose"), buttons=rows)
+        created = await receive_until(socket, lambda frame: frame.get("type") == "entry")
+        assert created[-1]["entry"]["button_kinds"] == [["reply", "selector", "link", "disabled"]]
+        await h.runtime.history.record_selector_response("-123.7", entry.id, "Done", [])
+        updated = await receive_until(socket, lambda frame: frame.get("type") == "entry_meta")
+        assert updated[-1]["meta"]["selector_revision"] == 1
+        assert updated[-1]["meta"]["text"] == "Done"
+        assert updated[-1]["meta"]["button_kinds"] == []
+        assert "button_kinds" not in (await h.runtime.history.metadata("-123.7"))[entry.id]
+    finally:
+        await socket.close()
+
+
+def test_selector_sync_button_kinds_cover_input_callbacks_without_mutation():
+    from ductor_bot.messenger.telegram.callbacks import button_kinds
+
+    rows = [
+        [
+            {"text": "Yes", "callback_data": "Yes"},
+            {"text": "Again", "callback_data": "ns:worker:Again"},
+            {"text": "Welcome", "callback_data": "w:1"},
+            {"text": "Files", "callback_data": "sf!folder"},
+            {"text": "Site", "url": "https://example.com"},
+            {"text": "Unknown", "callback_data": "sec:private"},
+        ]
+    ]
+    before = json.dumps(rows)
+    assert button_kinds(rows) == [["reply", "reply", "selector", "selector", "link", "disabled"]]
+    assert json.dumps(rows) == before
+
+
+@pytest.mark.parametrize("route", ["buttons", "callbacks"])
+async def test_web_choice_binding_between_context_and_claim_is_annotated(
+    conversation, monkeypatch, route
+):
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    from ductor_bot.messenger.telegram.callbacks import recorded_keyboard_observer
+    from ductor_bot.messenger.telegram.welcome import resolve_welcome_callback
+
+    h = conversation
+    h.bot.bot_instance = SimpleNamespace(
+        edit_message_text=AsyncMock(), edit_message_reply_markup=AsyncMock()
+    )
+    submit = MagicMock(return_value="accepted")
+    monkeypatch.setattr(WebTurns, "submit", submit)
+    callback_data = "Yes" if route == "buttons" else "w:1"
+    entry = await h.runtime.history.append(
+        h.key,
+        Entry("bot", "web", "Pick"),
+        buttons=[[{"text": "Yes", "callback_data": callback_data}]],
+    )
+    observe = recorded_keyboard_observer(h.runtime.history, h.bot.bot_instance, h.key, entry.id)
+    mark_answered = h.runtime.history.mark_answered
+
+    async def bind_before_claim(tid, entry_id, label):
+        # The web handler has read its unbound context; mirror delivery now finishes.
+        await observe(
+            42,
+            InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="Yes", callback_data=callback_data)]]
+            ),
+            "<b>Delivered snapshot</b>",
+        )
+        h.bot.bot_instance.edit_message_text.assert_not_awaited()
+        h.bot.bot_instance.edit_message_reply_markup.assert_not_awaited()
+        return await mark_answered(tid, entry_id, label)
+
+    monkeypatch.setattr(h.runtime.history, "mark_answered", bind_before_claim)
+    payload = {"entry_id": entry.id}
+    payload.update(
+        {"label": "Yes"} if route == "buttons" else {"data": callback_data, "revision": 0}
+    )
+    response = await h.client.post(
+        f"{_PREFIX}/topics/-123.7/{route}", json=payload, headers=headers()
+    )
+    assert response.status == 202
+    assert (await response.json())["answered"] == "Yes"
+    submit.assert_called_once_with(
+        "-123.7", "Yes" if route == "buttons" else resolve_welcome_callback(callback_data)
+    )
+    meta = (await h.runtime.history.metadata("-123.7"))[entry.id]
+    assert meta["telegram_message_id"] == 42
+    assert meta["answered"] == "Yes"
+    h.bot.bot_instance.edit_message_text.assert_awaited_once()
+    edit = h.bot.bot_instance.edit_message_text.await_args.kwargs
+    assert edit["message_id"] == 42
+    assert edit["chat_id"] == -123
+    assert edit["reply_markup"] is None
+    assert edit["text"].startswith("<b>Delivered snapshot</b>\n\n")
+    h.bot.bot_instance.edit_message_reply_markup.assert_not_awaited()
+
+
+async def test_failed_web_selector_edit_is_repaired_by_old_telegram_button(
+    conversation, monkeypatch
+):
+    from aiogram.exceptions import TelegramRetryAfter
+
+    from ductor_bot.orchestrator.selectors.models import Button, ButtonGrid, SelectorResponse
+    from tests.messenger.telegram.test_app import _make_callback_query
+    from tests.messenger.telegram.test_callback_queue import setup_bot
+
+    h = conversation
+    telegram, api, _ = setup_bot()
+    telegram._orchestrator = h.bot._orch
+    telegram._chat_log_runtime = h.runtime
+    h.bot._sequential = telegram._sequential
+    h.bot.bot_instance = api
+    entry = await h.runtime.history.append(
+        h.key,
+        Entry("bot", "web", "Providers"),
+        buttons=[[{"text": "Codex", "callback_data": "ms:p:codex"}]],
+    )
+    await h.runtime.history.bind_telegram_message("-123.7", entry.id, 42)
+    lower = AsyncMock(
+        return_value=SelectorResponse(
+            "**Latest models**", ButtonGrid([[Button("Latest", "ms:m:latest")]])
+        )
+    )
+    monkeypatch.setattr(
+        "ductor_bot.orchestrator.selectors.model_selector.handle_model_callback", lower
+    )
+    api.edit_message_text.side_effect = TelegramRetryAfter(
+        MagicMock(), "rate limited", retry_after=1
+    )
+    response = await h.client.post(
+        f"{_PREFIX}/topics/-123.7/callbacks",
+        json={"entry_id": entry.id, "data": "ms:p:codex", "revision": 0},
+        headers=headers(),
+    )
+    assert response.status == 200
+    assert (await response.json())["selector_revision"] == 1
+    api.edit_message_text.assert_awaited_once()
+    api.edit_message_text.reset_mock(side_effect=True)
+    cb = _make_callback_query(data="ms:p:codex", chat_id=-123, message_id=42, topic_thread_id=7)
+    await telegram._on_callback_query(cb)
+    cb.answer.assert_awaited_once_with()
+    lower.assert_awaited_once()
+    api.edit_message_text.assert_awaited_once()
+    edit = api.edit_message_text.await_args.kwargs
+    assert edit["chat_id"] == -123
+    assert edit["message_id"] == 42
+    assert edit["text"] == "<b>Latest models</b>"
+    assert edit["reply_markup"].inline_keyboard[0][0].callback_data == "ms:m:latest"
+    assert (await h.runtime.history.metadata("-123.7"))[entry.id]["selector_revision"] == 1
+
+
+async def test_usage_200_refreshes_bound_metadata_size(conversation, monkeypatch):
+    from ductor_bot.orchestrator.selectors.models import Button, ButtonGrid, SelectorResponse
+
+    h = conversation
+    h.bot.bot_instance = SimpleNamespace(edit_message_text=AsyncMock())
+    text = "Usage row: 01234567890123456789\n" * 100
+    response = SelectorResponse(text, ButtonGrid([[Button("Refresh", "usg:refresh")]]))
+    h.bot._usage_response = AsyncMock(return_value=response)
+    monkeypatch.setattr(
+        "ductor_bot.cli.codex_usage.query_codex_usage", AsyncMock(return_value=None)
+    )
+    entry = await h.runtime.history.append(
+        h.key,
+        Entry("bot", "web", "Usage"),
+        buttons=[[{"text": "Refresh", "callback_data": "usg:refresh"}]],
+    )
+    await h.runtime.history.bind_telegram_message("-123.7", entry.id, 42)
+    path = h.runtime.history._metadata_path("-123.7")
+    max_size = 0
+    for revision in range(200):
+        result = await h.client.post(
+            f"{_PREFIX}/topics/-123.7/callbacks",
+            json={"entry_id": entry.id, "data": "usg:refresh", "revision": revision},
+            headers=headers(),
+        )
+        assert result.status == 200
+        assert (await result.json())["selector_revision"] == revision + 1
+        max_size = max(max_size, path.stat().st_size)
+    print(f"200 usage refreshes: max_bytes={max_size}, final_bytes={path.stat().st_size}")
+    h.bot._usage_response.assert_awaited()
+    assert h.bot._usage_response.await_count == 200
+    assert h.bot.bot_instance.edit_message_text.await_count == 200
+    latest = (await HistoryStore(h.paths.chat_log_dir / "history").metadata("-123.7"))[entry.id]
+    assert latest["text"] == text
+    assert latest["selector_revision"] == 200
+    assert max_size <= 256 * 1024
+
+
+@pytest.mark.parametrize("route", ["buttons", "callbacks"])
+@pytest.mark.parametrize("persistent", [False, True])
+async def test_post_claim_metadata_error_still_submits_once(
+    conversation, monkeypatch, caplog, route, persistent
+):
+    h = conversation
+    h.bot.bot_instance = SimpleNamespace(
+        edit_message_text=AsyncMock(), edit_message_reply_markup=AsyncMock()
+    )
+    submit = MagicMock(return_value="accepted")
+    monkeypatch.setattr(WebTurns, "submit", submit)
+    data = "Yes" if route == "buttons" else "w:1"
+    entry = await h.runtime.history.append(
+        h.key, Entry("bot", "web", "Choose"), buttons=[[{"text": "Yes", "callback_data": data}]]
+    )
+    await h.runtime.history.bind_telegram_message(
+        "-123.7", entry.id, 42, html_text="<b>Snapshot</b>"
+    )
+    mark = h.runtime.history.mark_answered
+    metadata = h.runtime.history.metadata
+    claimed, failures = False, 0
+
+    async def claim(*args, **kwargs):
+        nonlocal claimed
+        claimed = await mark(*args, **kwargs)
+        return claimed
+
+    async def read(*args, **kwargs):
+        nonlocal failures
+        if claimed and (persistent or not failures):
+            failures += 1
+            raise PermissionError("private-post-claim-details")
+        return await metadata(*args, **kwargs)
+
+    monkeypatch.setattr(h.runtime.history, "mark_answered", claim)
+    monkeypatch.setattr(h.runtime.history, "metadata", read)
+    body = {
+        "entry_id": entry.id,
+        **({"label": "Yes"} if route == "buttons" else {"data": data, "revision": 0}),
+    }
+    response = await h.client.post(f"{_PREFIX}/topics/-123.7/{route}", json=body, headers=headers())
+    assert response.status == 202
+    result = await response.json()
+    assert result["answered"] == "Yes"
+    assert result["entry_id"] == entry.id
+    assert result["turn_id"] == "accepted"
+    submit.assert_called_once()
+    assert failures == 1
+    h.bot.bot_instance.edit_message_text.assert_awaited_once()
+    assert h.bot.bot_instance.edit_message_text.await_args.kwargs["text"].startswith(
+        "<b>Snapshot</b>\n\n"
+    )
+    if route == "callbacks":
+        assert result["text"] == "Choose"
+        assert result["buttons"] == [[{"text": "Yes", "callback_data": "w:1"}]]
+        assert result["button_kinds"] == [["selector"]]
+        assert result["selector_revision"] == 0
+    monkeypatch.setattr(h.runtime.history, "metadata", metadata)
+    assert (await metadata("-123.7"))[entry.id]["answered"] == "Yes"
+    retry = await h.client.post(f"{_PREFIX}/topics/-123.7/{route}", json=body, headers=headers())
+    assert retry.status == 409
+    assert submit.call_count == 1
+    assert "PermissionError" in caplog.text
+    assert "private-post-claim-details" not in caplog.text
+
+
+@pytest.mark.parametrize("session_busy", [False, True])
+async def test_stale_restore_and_web_transition_share_entry_gate(
+    conversation, monkeypatch, session_busy
+):
+    from ductor_bot.orchestrator.selectors.models import Button, ButtonGrid, SelectorResponse
+    from tests.messenger.telegram.test_app import _make_callback_query
+    from tests.messenger.telegram.test_callback_queue import setup_bot
+
+    h = conversation
+    telegram, api, _ = setup_bot()
+    telegram._orchestrator = h.bot._orch
+    telegram._chat_log_runtime = h.runtime
+    h.bot._sequential = telegram._sequential
+    h.bot.bot_instance = api
+    entry = await h.runtime.history.append(
+        h.key,
+        Entry("bot", "web", "Original"),
+        buttons=[[{"text": "Old", "callback_data": "ms:p:codex"}]],
+    )
+    await h.runtime.history.bind_telegram_message("-123.7", entry.id, 42)
+    await h.runtime.history.record_selector_response(
+        "-123.7", entry.id, "Latest screen 1", [[{"text": "Next", "callback_data": "ms:m:opus"}]]
+    )
+    entered, release = asyncio.Event(), asyncio.Event()
+    phone, restore_gates = {}, []
+    session_lock = telegram._sequential.get_lock(h.key.lock_key)
+    if session_busy:
+        await session_lock.acquire()
+
+    async def edit(**kwargs):
+        if kwargs["text"] == "Latest screen 1":
+            restore_gates.append(h.runtime.history.selector_gate("-123.7", entry.id).locked())
+            entered.set()
+            await release.wait()
+        phone["text"] = kwargs["text"]
+
+    api.edit_message_text = AsyncMock(side_effect=edit)
+    lower = AsyncMock(
+        return_value=SelectorResponse(
+            "Latest screen 2", ButtonGrid([[Button("Refresh", "ms:b:root")]])
+        )
+    )
+    monkeypatch.setattr(
+        "ductor_bot.orchestrator.selectors.model_selector.handle_model_callback", lower
+    )
+    cb = _make_callback_query(data="ms:p:codex", chat_id=-123, message_id=42, topic_thread_id=7)
+    restoring = asyncio.create_task(telegram._on_callback_query(cb))
+    web = None
+    try:
+        await asyncio.wait_for(entered.wait(), 3)
+        if session_busy:
+            assert session_lock.locked()
+            session_lock.release()
+        web = asyncio.create_task(
+            h.client.post(
+                f"{_PREFIX}/topics/-123.7/callbacks",
+                json={"entry_id": entry.id, "data": "ms:m:opus", "revision": 1},
+                headers=headers(),
+            )
+        )
+        await asyncio.sleep(0.1)
+    finally:
+        if session_busy and session_lock.locked():
+            session_lock.release()
+        release.set()
+        await asyncio.wait_for(restoring, 3)
+        if web is not None:
+            response = await asyncio.wait_for(web, 3)
+    assert response.status == 200
+    meta = (await h.runtime.history.metadata("-123.7"))[entry.id]
+    assert meta["selector_revision"] == 2
+    assert phone["text"] == meta["text"] == "Latest screen 2"
+    assert restore_gates == [True]
+    cb.answer.assert_awaited_once_with()
+    lower.assert_awaited_once()
+
+
+@pytest.mark.parametrize("source", ["telegram", "web"])
+@pytest.mark.parametrize(
+    ("data", "module", "handler", "lock_kind"),
+    [
+        ("ms:p:claude", "model_selector", "handle_model_callback", "topic"),
+        ("crn:r:0", "cron_selector", "handle_cron_callback", "chat"),
+        ("nsc:r", "session_selector", "handle_session_callback", "chat"),
+    ],
+)
+async def test_busy_selector_returns_prompt_conflict_without_blocking_topic(
+    conversation, monkeypatch, *, source, data, module, handler, lock_kind
+):
+    from ductor_bot.orchestrator.selectors.models import SelectorResponse
+
+    h = conversation
+    h.bot._sequential = SimpleNamespace(get_lock=h.pool.get)
+    h.bot.bot_instance = SimpleNamespace(edit_message_text=AsyncMock())
+    entry = await h.runtime.history.append(
+        h.key,
+        Entry("bot", "web", "Provider"),
+        buttons=[[{"text": "Go", "callback_data": data}]],
+    )
+    await h.runtime.history.bind_telegram_message("-123.7", entry.id, 42)
+    lower = AsyncMock(return_value=SelectorResponse("Selected"))
+    monkeypatch.setattr(f"ductor_bot.orchestrator.selectors.{module}.{handler}", lower)
+    lock_key = h.key.chat_id if source == "telegram" and lock_kind == "chat" else h.key.lock_key
+    lock = h.pool.get(lock_key)
+    entered, finish = asyncio.Event(), asyncio.Event()
+    tasks = []
+    original_submit = WebTurns.submit
+    original_handle = h.bot._orch.handle_message_streaming.side_effect
+
+    def submit(self, *args, **kwargs):
+        turn_id = original_submit(self, *args, **kwargs)
+        tasks.append(self._tasks["-123.7"])
+        return turn_id
+
+    async def handle(*args, **kwargs):
+        entered.set()
+        await finish.wait()
+        return await original_handle(*args, **kwargs)
+
+    monkeypatch.setattr(WebTurns, "submit", submit)
+    if source == "telegram":
+        await lock.acquire()
+    else:
+        h.bot._orch.handle_message_streaming.side_effect = handle
+        assert (await post_message(h, text="Running turn")).status == 202
+        await asyncio.wait_for(entered.wait(), 3)
+    payload = {"entry_id": entry.id, "data": data, "revision": 0}
+    url = f"{_PREFIX}/topics/-123.7/callbacks"
+    before = await h.runtime.history.metadata("-123.7")
+    original_bytes = h.runtime.history._metadata_path("-123.7").read_bytes()
+    try:
+        started = asyncio.get_running_loop().time()
+        response = await asyncio.wait_for(h.client.post(url, json=payload, headers=headers()), 1)
+        elapsed = asyncio.get_running_loop().time() - started
+        assert response.status == 409
+        assert await response.json() == {"error": "web_turn_running"}
+        assert elapsed < 1
+        assert lock.locked()
+        lower.assert_not_awaited()
+        h.bot.bot_instance.edit_message_text.assert_not_awaited()
+        assert await h.runtime.history.metadata("-123.7") == before
+        assert h.runtime.history._metadata_path("-123.7").read_bytes() == original_bytes
+        followup = await asyncio.wait_for(post_message(h, text="Follow-up"), 1)
+        assert followup.status == (202 if source == "telegram" else 409)
+        if source == "web":
+            assert await followup.json() == {"error": "web_turn_running"}
+        assert lock.locked()
+        print(f"{source} busy selector response: {elapsed:.6f}s; follow-up={followup.status}")
+    finally:
+        if source == "telegram" and lock.locked():
+            lock.release()
+        finish.set()
+        await asyncio.wait_for(asyncio.gather(*tasks), 5)
+    # The original revision and data remain valid after the running turn finishes.
+    response = await asyncio.wait_for(h.client.post(url, json=payload, headers=headers()), 1)
+    assert response.status == 200
+    assert (await response.json())["selector_revision"] == 1
+    lower.assert_awaited_once()
+    h.bot.bot_instance.edit_message_text.assert_awaited_once()
+
+
+@pytest.mark.parametrize("web_busy", [False, True])
+async def test_lock_free_task_selector_runs_during_a_turn(conversation, monkeypatch, web_busy):
+    from ductor_bot.orchestrator.selectors.models import SelectorResponse
+
+    h = conversation
+    if web_busy:
+        monkeypatch.setattr(WebTurns, "busy", lambda _self, _tid: True)
+    h.bot._orch.task_hub = MagicMock()
+    h.bot.bot_instance = SimpleNamespace(edit_message_text=AsyncMock())
+    lower = AsyncMock(return_value=SelectorResponse("Tasks refreshed"))
+    monkeypatch.setattr(
+        "ductor_bot.orchestrator.selectors.task_selector.handle_task_callback", lower
+    )
+    entry = await h.runtime.history.append(
+        h.key,
+        Entry("bot", "web", "Tasks"),
+        buttons=[[{"text": "Refresh", "callback_data": "tsc:r"}]],
+    )
+    await h.runtime.history.bind_telegram_message("-123.7", entry.id, 42)
+    async with h.pool.get(h.key.lock_key):
+        response = await asyncio.wait_for(
+            h.client.post(
+                f"{_PREFIX}/topics/-123.7/callbacks",
+                json={"entry_id": entry.id, "data": "tsc:r", "revision": 0},
+                headers=headers(),
+            ),
+            1,
+        )
+        assert response.status == 200
+        result = await response.json()
+        assert result["text"] == "Tasks refreshed"
+        assert result["selector_revision"] == 1
+        lower.assert_awaited_once_with(h.bot._orch.task_hub, h.key.chat_id, "tsc:r")
+        h.bot.bot_instance.edit_message_text.assert_awaited_once()

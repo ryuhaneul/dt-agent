@@ -4,18 +4,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ductor_bot.chat_log.history import Entry
-from ductor_bot.chat_log.ids import from_tid, history_filename, new_id
+from ductor_bot.chat_log.ids import from_tid, history_filename, new_id, to_tid
 from ductor_bot.chat_log.recorder import ChatLogTurn, chat_log_source, chat_log_turn
 from ductor_bot.i18n.loader import TranslationStore
 from ductor_bot.infra.input_context import received_at
 
 if TYPE_CHECKING:
+    from ductor_bot.chat_log.recorder import TurnStatus
     from ductor_bot.chat_log.runtime import ChatLogRuntime
     from ductor_bot.cli.stream_events import ToolUseEvent
     from ductor_bot.messenger.telegram.app import TelegramBot
+    from ductor_bot.orchestrator.flows import StreamingCallbacks
+    from ductor_bot.orchestrator.registry import OrchestratorResult
     from ductor_bot.session.key import SessionKey
 
 logger = logging.getLogger(__name__)
@@ -45,13 +48,18 @@ class WebTurns:
                 {"type": "turn", "tid": tid, "turn_id": turn_id, "phase": phase}
             )
 
-    def submit(self, tid: str, text: str) -> str:
+    def submit(self, tid: str, text: str, *, session_name: str | None = None) -> str:
         turn: ChatLogTurn = {
             "turn_id": new_id(),
             "user_entry_id": new_id(),
             "reply_entry_id": new_id(),
         }
-        task = asyncio.create_task(self._run(tid, text, turn), name="webchat-turn")
+        work = (
+            self._run(tid, text, turn)
+            if session_name is None
+            else self._run(tid, text, turn, session_name=session_name)
+        )
+        task = asyncio.create_task(work, name="webchat-turn")
         self._started.discard(tid)
         self._settled.discard(tid)
         self._tasks[tid] = task
@@ -97,8 +105,15 @@ class WebTurns:
             )
         return None
 
-    async def _reply(
-        self, key: SessionKey, tid: str, text: str, turn: ChatLogTurn, status: str
+    async def _reply(  # noqa: PLR0913 -- turn identity, status and named destination
+        self,
+        key: SessionKey,
+        tid: str,
+        text: str,
+        turn: ChatLogTurn,
+        status: str,
+        *,
+        session_name: str | None = None,
     ) -> None:
         if tid in self.blocked or status == "error":
             return
@@ -119,6 +134,9 @@ class WebTurns:
                 text += "\n\n" + self._strings.chat("chat_log.mirror_aborted")
         if not text:
             return
+        routing: dict[str, Any] = (
+            {"buttons_session": session_name} if session_name is not None else {}
+        )
         async with self.runtime.outbox.delivery_lock:
             if tid in self.blocked:
                 return
@@ -128,10 +146,50 @@ class WebTurns:
                 topic_id=key.topic_id,
                 text=text,
                 history_id=turn["reply_entry_id"],
+                **routing,
             )
         self.runtime.drainer.wake()
 
-    async def _run(self, tid: str, text: str, turn: ChatLogTurn) -> None:  # noqa: C901, PLR0915
+    async def _named_response(
+        self,
+        key: SessionKey,
+        text: str,
+        session_name: str,
+        callbacks: StreamingCallbacks,
+    ) -> OrchestratorResult:
+        """Keep a named callback in its foreground session and record its web turn."""
+        from ductor_bot.messenger.telegram.buttons import extract_button_rows
+        from ductor_bot.orchestrator.core import _MessageDispatch
+        from ductor_bot.orchestrator.flows import named_session_streaming
+
+        dispatch = _MessageDispatch(
+            key=key, text=text, cmd=text.strip().lower(), transport_override="api"
+        )
+        result = None
+        status: TurnStatus = "error"
+        await self.runtime.recorder.begin(dispatch)
+        try:
+            result = await named_session_streaming(
+                self.bot._orch, key, session_name, text, cbs=callbacks, transport_override="api"
+            )
+            status = "ok"
+        except asyncio.CancelledError:
+            status = "aborted"
+            raise
+        else:
+            return result
+        finally:
+            await self.runtime.recorder.finish(dispatch, result, status=status)
+            if result is not None and result._chat_log_entry_id is not None:
+                _, rows = extract_button_rows(result.text, session_name=session_name)
+                if rows is not None:
+                    await self.runtime.history.record_buttons(
+                        to_tid(key), result._chat_log_entry_id, rows
+                    )
+
+    async def _run(  # noqa: C901, PLR0915 -- existing turn lifecycle and named target
+        self, tid: str, text: str, turn: ChatLogTurn, *, session_name: str | None = None
+    ) -> None:
         key = from_tid(tid)
         partial = ""
         status = "ok"
@@ -185,14 +243,29 @@ class WebTurns:
                 turn_token = chat_log_turn.set(turn)
                 try:
                     with received_at():
-                        result = await self.bot._orch.handle_message_streaming(
-                            key,
-                            text,
-                            include_partial_messages=True,
-                            on_text_delta=delta,
-                            on_tool_activity=tool,
-                            on_system_status=system_status,
-                        )
+                        if session_name is None:
+                            result = await self.bot._orch.handle_message_streaming(
+                                key,
+                                text,
+                                include_partial_messages=True,
+                                on_text_delta=delta,
+                                on_tool_activity=tool,
+                                on_system_status=system_status,
+                            )
+                        else:
+                            from ductor_bot.orchestrator.flows import StreamingCallbacks
+
+                            result = await self._named_response(
+                                key,
+                                text,
+                                session_name,
+                                StreamingCallbacks(
+                                    include_partial_messages=True,
+                                    on_text_delta=delta,
+                                    on_tool_activity=tool,
+                                    on_system_status=system_status,
+                                ),
+                            )
                     self._settled.add(tid)
                     registry = self.bot._orch._process_registry
                     aborted = registry.was_aborted(key.chat_id) or registry.was_aborted_topic(
@@ -207,10 +280,10 @@ class WebTurns:
                 finally:
                     chat_log_turn.reset(turn_token)
                     chat_log_source.reset(source_token)
-                await self._reply(key, tid, partial, turn, status)
+                await self._reply(key, tid, partial, turn, status, session_name=session_name)
         except asyncio.CancelledError:
             status = "aborted"
-            await self._reply(key, tid, partial, turn, status)
+            await self._reply(key, tid, partial, turn, status, session_name=session_name)
             raise
         except Exception as exc:
             status = "error"

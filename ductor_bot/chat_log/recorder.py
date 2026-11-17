@@ -11,6 +11,7 @@ from ductor_bot.bus.envelope import DeliveryMode, Envelope, Origin
 from ductor_bot.chat_log.events import EventHub
 from ductor_bot.chat_log.history import Entry, HistoryStore
 from ductor_bot.chat_log.ids import new_id, to_tid
+from ductor_bot.messenger.telegram.buttons import extract_button_rows
 from ductor_bot.session.key import SessionKey
 
 if TYPE_CHECKING:
@@ -103,7 +104,7 @@ class HistoryRecorder:
             if result is not None and result.text:
                 source = self._source(dispatch)
                 turn = chat_log_turn.get() if source == "web" else None
-                await self._history.append(
+                saved = await self._history.append(
                     dispatch.key,
                     Entry(
                         role="bot",
@@ -113,9 +114,32 @@ class HistoryRecorder:
                         turn_id=turn["turn_id"] if turn else None,
                         status=status if source == "web" else None,
                     ),
+                    buttons=(
+                        [
+                            [
+                                {"text": button.text, "callback_data": button.callback_data}
+                                for button in row
+                            ]
+                            for row in result.buttons.rows
+                        ]
+                        if result.buttons is not None
+                        else None
+                    ),
                 )
+                result._chat_log_entry_id = saved.id
         finally:
             self._busy(dispatch, busy=False)
+
+    async def direct_result(
+        self,
+        key: SessionKey,
+        text: str,
+        buttons: Sequence[Sequence[Mapping[str, object]]] | None = None,
+    ) -> Entry:
+        """Record a native command reply without duplicating an orchestrator result."""
+        return await self._history.append(
+            key, Entry(role="bot", source="telegram", text=text), buttons=buttons
+        )
 
     async def command_input(self, key: SessionKey, text: str) -> Entry:
         """Record a web command using the existing backward-compatible kind field."""
@@ -158,6 +182,12 @@ class HistoryRecorder:
             text = sanitize_cron_result_text(text)
         if to_tid(key) in self.blocked:
             return
+        _, buttons = extract_button_rows(
+            text,
+            session_name=(envelope.session_name or None)
+            if envelope.origin == Origin.BACKGROUND
+            else None,
+        )
         await self._history.append(
             key,
             Entry(
@@ -169,6 +199,7 @@ class HistoryRecorder:
                 title=title,
                 id=entry_id,
             ),
+            buttons=buttons,
         )
         if (
             envelope.origin == Origin.TASK_QUESTION

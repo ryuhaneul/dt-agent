@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel
+from pydantic import BaseModel, PrivateAttr
 
 from ductor_bot.orchestrator.selectors.models import ButtonGrid
 
@@ -24,6 +24,8 @@ CommandHandler = Callable[
 
 class OrchestratorResult(BaseModel):
     """Structured return from handle_message."""
+
+    _chat_log_entry_id: str | None = PrivateAttr(default=None)
 
     text: str
     stream_fallback: bool = False

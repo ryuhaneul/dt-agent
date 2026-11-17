@@ -62,6 +62,7 @@ class ChatLogRuntime:
         bot._bus.set_delivery_observer(runtime.recorder.on_delivered)
         bot._telegram_transport.set_outbox(
             runtime.outbox,
+            history=runtime.history,
             on_failure=runtime.link.report_failure,
             on_retry_after=runtime.drainer.defer_retry,
             is_blocked=runtime.recorder.blocked.__contains__,

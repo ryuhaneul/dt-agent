@@ -21,6 +21,7 @@ from ductor_bot.bus.envelope import IA_CHUNK_SCHEMES, Envelope, Origin
 from ductor_bot.bus.failure_reason import display_reason
 from ductor_bot.chat_log.ids import new_id, to_tid
 from ductor_bot.i18n import t
+from ductor_bot.messenger.telegram.callbacks import recorded_keyboard_observer
 from ductor_bot.messenger.telegram.sender import (
     SendRichOpts,
     send_rich,
@@ -39,6 +40,9 @@ from ductor_bot.text.response_format import (
 )
 
 if TYPE_CHECKING:
+    from aiogram.types import InlineKeyboardMarkup
+
+    from ductor_bot.chat_log.history import HistoryStore
     from ductor_bot.chat_log.outbox import Outbox
     from ductor_bot.messenger.telegram.app import TelegramBot
 
@@ -68,6 +72,7 @@ class TelegramTransport:
     def __init__(self, bot: TelegramBot) -> None:
         self._bot = bot
         self._outbox: Outbox | None = None
+        self._history: HistoryStore | None = None
         self._on_failure: Callable[[], None] | None = None
         self._on_retry_after: Callable[[float], None] | None = None
         self._is_blocked: Callable[[str], bool] | None = None
@@ -76,11 +81,13 @@ class TelegramTransport:
         self,
         outbox: Outbox | None,
         *,
+        history: HistoryStore | None = None,
         on_failure: Callable[[], None] | None = None,
         on_retry_after: Callable[[float], None] | None = None,
         is_blocked: Callable[[str], bool] | None = None,
     ) -> None:
         self._outbox = outbox
+        self._history = history if outbox is not None else None
         self._on_failure = on_failure if outbox is not None else None
         self._on_retry_after = on_retry_after if outbox is not None else None
         self._is_blocked = is_blocked if outbox is not None else None
@@ -125,9 +132,37 @@ class TelegramTransport:
             reply_to_message_id=envelope.reply_to_message_id,
             allowed_roots=self._roots(),
             thread_id=envelope.topic_id or envelope.thread_id,
+            on_keyboard=self._keyboard_observer(
+                envelope, envelope.chat_id, envelope.topic_id or envelope.thread_id
+            ),
         )
 
+    def _keyboard_observer(
+        self,
+        envelope: Envelope,
+        chat_id: int,
+        topic_id: int | None,
+    ) -> Callable[[int, InlineKeyboardMarkup, str | None], Awaitable[None]] | None:
+        if self._history is None:
+            return None
+        history = self._history
+        entry_id = envelope.metadata.setdefault("chat_log_entry_id", new_id())
+        tid = to_tid(SessionKey.telegram(chat_id, topic_id))
+
+        observer = recorded_keyboard_observer(
+            history, self._bot.bot_instance, SessionKey.telegram(chat_id, topic_id), entry_id
+        )
+
+        async def record(
+            message_id: int, markup: InlineKeyboardMarkup, html_text: str | None = None
+        ) -> None:
+            if self._is_blocked is None or not self._is_blocked(tid):
+                await observer(message_id, markup, html_text)
+
+        return record
+
     async def _send_part(self, env: Envelope, chat_id: int, text: str, opts: SendRichOpts) -> None:
+        opts = replace(opts, on_keyboard=self._keyboard_observer(env, chat_id, opts.thread_id))
         if self._outbox is None:
             await send_rich(self._bot.bot_instance, chat_id, text, opts)
             return
@@ -504,7 +539,7 @@ class TelegramTransport:
                     self._bot.bot_instance,
                     chat_id,
                     env.result_text,
-                    opts,
+                    replace(opts, on_keyboard=self._keyboard_observer(env, chat_id, None)),
                     start_chunk=0,
                 )
             except Exception as exc:

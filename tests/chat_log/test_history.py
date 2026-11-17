@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -112,6 +113,9 @@ async def test_validation_and_no_constructor_side_effects(tmp_path: Path) -> Non
 
 @pytest.mark.parametrize("read_only", [False, True])
 async def test_missing_history_reads_do_not_create_locks(tmp_path: Path, read_only: bool) -> None:
+    if read_only and os.geteuid() == 0:
+        # Root bypasses directory mode bits, so chmod cannot verify denied writes.
+        pytest.skip("Root bypasses the read-only directory permission check")
     store = HistoryStore(tmp_path)
     if read_only:
         await asyncio.to_thread(tmp_path.chmod, 0o500)
@@ -427,3 +431,430 @@ async def test_button_metadata_keeps_old_entry_reader_and_events_compatible(tmp_
     assert await HistoryStore(tmp_path).metadata("1.7") == {saved.id: {"buttons": buttons}}
     await store.delete("1.7")
     assert not (tmp_path / "1.7.meta.jsonl").exists()
+
+
+@pytest.mark.parametrize("role", ["bot", "event"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Choose\n[button: Yes ] [button:No]\n[button:Next]",
+        "```text\n[button:preserve]\n```\n`[button:inline]`\n[button:Run]",
+        "[button:" + "界" * 30 + "]\n[button:  ]",
+        "[button: ]\nplain\n[button:unterminated",
+    ],
+)
+async def test_response_markers_use_telegram_parser_and_sidecar(tmp_path, role, text):
+    from ductor_bot.messenger.telegram.buttons import extract_buttons
+
+    hub = EventHub()
+    queue = hub.subscribe()
+    store = HistoryStore(tmp_path, hub)
+    cleaned, markup = extract_buttons(text)
+    expected = (
+        None
+        if markup is None
+        else [
+            [{"text": button.text, "callback_data": button.callback_data} for button in row]
+            for row in markup.inline_keyboard
+        ]
+    )
+    saved = await store.append("1", Entry(role=role, source="telegram", text=text))
+    assert saved.text == cleaned
+    metadata = await HistoryStore(tmp_path).metadata("1")
+    assert metadata == ({saved.id: {"buttons": expected}} if expected else {})
+    assert (await store.read("1"))[0] == saved
+    # Sidecar fields never enter the legacy Entry JSONL schema.
+    assert Entry(**json.loads((tmp_path / history_filename("1")).read_text())) == saved
+    event = queue.get_nowait()["entry"]
+    assert event["text"] == cleaned
+    assert event.get("buttons") == expected
+
+
+async def test_user_markers_imports_and_explicit_selector_rows_are_preserved(tmp_path):
+    store = HistoryStore(tmp_path)
+    text = "Text\n[button:Label]"
+    user = await store.append("1", entry(text))
+    imported = Entry(role="bot", source="import", imported=True, seq=-1, text=text)
+    assert await store.append("1", imported) == imported
+    assert user.text == text
+    buttons = [[{"text": "Model", "callback_data": "ms:claude"}]]
+    saved = await store.append("1", Entry(role="bot", source="web", text=text), buttons=buttons)
+    assert saved.text == "Text"
+    assert await store.metadata("1") == {saved.id: {"buttons": buttons}}
+
+
+async def test_keyboard_binding_answered_restart_events_and_legacy_reader(tmp_path):
+    hub = EventHub()
+    queue = hub.subscribe()
+    store = HistoryStore(tmp_path, hub)
+    saved = await store.append("1.7", Entry("bot", "telegram", "Pick [button:Yes]"))
+    original = store._path("1.7").read_bytes()
+    await store.bind_telegram_message("1.7", saved.id, 42)
+    assert await store.entry_for_telegram_message("1.7", 42) == saved.id
+    assert await store.entry_for_telegram_message("1.7", 43) is None
+    assert not await store.is_answered("1.7", saved.id)
+    assert await store.mark_answered("1.7", saved.id, "Yes")
+    reopened = HistoryStore(tmp_path)
+    assert await reopened.is_answered("1.7", saved.id)
+    assert not await reopened.mark_answered("1.7", saved.id, "No")
+    meta = (await reopened.metadata("1.7"))[saved.id]
+    assert meta["telegram_message_id"] == 42
+    assert meta["answered"] == "Yes"
+    assert meta["buttons"] == [[{"text": "Yes", "callback_data": "Yes"}]]
+    assert store._path("1.7").read_bytes() == original
+    assert Entry(**json.loads(original)) == saved
+    # The old sidecar reader only inspects id/buttons and can ignore new keys.
+    for line in store._metadata_path("1.7").read_text().splitlines():
+        item = json.loads(line)
+        assert item["id"] == saved.id
+        assert isinstance(item["buttons"], list)
+    published = [queue.get_nowait() for _ in range(queue.qsize())]
+    assert published[-1] == {"type": "entry_meta", "tid": "1.7", "entry_id": saved.id, "meta": meta}
+
+
+async def test_answered_claim_is_atomic_across_stores_and_preserves_binding(tmp_path):
+    first, second = HistoryStore(tmp_path), HistoryStore(tmp_path)
+    entry = await first.append("1", Entry("bot", "web", "[button:Yes]"))
+    results = await asyncio.gather(
+        first.mark_answered("1", entry.id, "Yes"), second.mark_answered("1", entry.id, "Yes")
+    )
+    assert sorted(results) == [False, True]
+    await second.bind_telegram_message("1", entry.id, 12)
+    assert (await first.metadata("1"))[entry.id]["answered"] == "Yes"
+    assert not await first.mark_answered("1", "unknown", "Yes")
+
+
+async def test_keyboard_html_snapshot_survives_restart_and_clears_on_rebinding(tmp_path):
+    store = HistoryStore(tmp_path)
+    entry = await store.append("1", Entry("bot", "telegram", "**Full answer** [button:Yes]"))
+    original = store._path("1").read_bytes()
+    await store.bind_telegram_message("1", entry.id, 42, html_text="<b>Last chunk</b>")
+    assert await store.mark_answered("1", entry.id, "Yes")
+    metadata = (await HistoryStore(tmp_path).metadata("1"))[entry.id]
+    assert metadata["telegram_html_text"] == "<b>Last chunk</b>"
+    assert metadata["answered"] == "Yes"
+    await store.bind_telegram_message("1", entry.id, 43)
+    metadata = (await store.metadata("1"))[entry.id]
+    assert metadata["telegram_html_text"] is None
+    assert metadata["answered"] == "Yes"
+    assert store._path("1").read_bytes() == original
+
+
+async def test_annotation_error_keeps_answered_claim_and_caller_continues(tmp_path):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from aiogram.exceptions import TelegramNetworkError
+
+    from ductor_bot.messenger.telegram.callbacks import edit_button_choice
+
+    store = HistoryStore(tmp_path)
+    entry = await store.append("1", Entry("bot", "telegram", "Pick [button:Yes]"))
+    assert await store.mark_answered("1", entry.id, "Yes")
+    bot = MagicMock()
+    bot.edit_message_text = AsyncMock(side_effect=TelegramNetworkError(MagicMock(), "unavailable"))
+    bot.edit_message_reply_markup = AsyncMock(
+        side_effect=TelegramNetworkError(MagicMock(), "unavailable")
+    )
+    process = AsyncMock()
+    await edit_button_choice(bot, 1, 42, "Yes", html_text="Original")
+    await process("Yes")
+    process.assert_awaited_once_with("Yes")
+    assert await HistoryStore(tmp_path).is_answered("1", entry.id)
+
+
+async def test_selector_sync_metadata_survives_restart_without_entry_changes(tmp_path):
+    from ductor_bot.chat_log.events import EventHub
+
+    hub = EventHub()
+    store = HistoryStore(tmp_path, hub)
+    rows = [[{"text": "Next", "callback_data": "ms:p:claude"}]]
+    entry = await store.append("1", Entry("bot", "web", "Original"), buttons=rows)
+    before = (tmp_path / history_filename("1")).read_bytes()
+    queue = hub.subscribe()
+    result = await store.record_selector_response("1", entry.id, "Final <text>", [])
+    assert result["selector_revision"] == 1
+    assert result["text"] == "Final <text>"
+    assert result["buttons"] == []
+    assert (await queue.get())["meta"] == result
+    assert (await HistoryStore(tmp_path).metadata("1"))[entry.id] == result
+    assert (tmp_path / history_filename("1")).read_bytes() == before
+    assert (await store.read("1"))[0].text == "Original"
+
+
+def _large_metadata_sidecar(tmp_path):
+    store = HistoryStore(tmp_path)
+    path = store._metadata_path("1")
+    records = [
+        {
+            "id": f"entry-{index % 3}",
+            "buttons": [[{"text": "Refresh", "callback_data": "usg:refresh"}]],
+            "telegram_message_id": 42 + index % 3,
+            "telegram_html_text": "<pre>" + "x" * 3072 + "</pre>",
+            "text": "x" * 3072,
+            "answered": "Yes" if index % 3 == 0 else None,
+            "selector_revision": index,
+            "mirror_revision": index,
+        }
+        for index in range(64)
+    ]
+    path.write_text("".join(json.dumps(record) + "\n" for record in records))
+    assert path.stat().st_size > 256 * 1024
+    return store, path
+
+
+async def test_metadata_compaction_preserves_latest_records_and_read_results(tmp_path):
+    store, path = _large_metadata_sidecar(tmp_path)
+    before = await store.metadata("1")
+    await store.record_mirror_revision("1", "entry-0", before["entry-0"]["mirror_revision"])
+    assert await HistoryStore(tmp_path).metadata("1") == before
+    records = [json.loads(line) for line in path.read_bytes().splitlines()]
+    assert len(records) == len(before)
+    assert {
+        record["id"]: {key: value for key, value in record.items() if key != "id"}
+        for record in records
+    } == before
+    assert path.stat().st_size < 256 * 1024
+
+
+@pytest.mark.parametrize("failure", ["temp_creation", "replace"])
+async def test_metadata_compaction_failure_preserves_appended_original(
+    tmp_path, monkeypatch, caplog, failure
+):
+    import ductor_bot.chat_log.history as history_module
+
+    store, path = _large_metadata_sidecar(tmp_path)
+    before = path.read_bytes()
+    snapshots = []
+    save = store._save_compacted_metadata
+
+    def capture_save(target, content):
+        assert target == path
+        snapshots.append(path.read_bytes())
+        return save(target, content)
+
+    monkeypatch.setattr(store, "_save_compacted_metadata", capture_save)
+    if failure == "temp_creation":
+
+        def fail_creation(*_args, **_kwargs):
+            raise OSError("private-compaction-details")
+
+        monkeypatch.setattr(history_module.tempfile, "NamedTemporaryFile", fail_creation)
+    else:
+        replace = Path.replace
+
+        def fail_replace(source, target):
+            if target == path:
+                raise OSError("private-compaction-details")
+            return replace(source, target)
+
+        monkeypatch.setattr(Path, "replace", fail_replace)
+    await store.record_mirror_revision("1", "entry-0", 999)
+    assert len(snapshots) == 1
+    assert path.read_bytes() == snapshots[0]
+    assert path.read_bytes().startswith(before)
+    assert len(path.read_bytes().splitlines()) == 65
+    assert (await store.metadata("1"))["entry-0"]["mirror_revision"] == 999
+    assert not list(tmp_path.glob("*.tmp"))
+    assert "OSError" in caplog.text
+    assert "private-compaction-details" not in caplog.text
+
+
+async def test_metadata_compaction_keeps_readers_and_process_writer_safe(tmp_path, monkeypatch):
+    import threading
+
+    store, path = _large_metadata_sidecar(tmp_path)
+    before = await store.metadata("1")
+    replacing, release = threading.Event(), threading.Event()
+    replace = Path.replace
+
+    def pause_replace(source, target):
+        if target == path:
+            replacing.set()
+            assert release.wait(10)
+        return replace(source, target)
+
+    monkeypatch.setattr(Path, "replace", pause_replace)
+    write = None
+    old_reader = None
+    script = """
+import sys
+from pathlib import Path
+from ductor_bot.chat_log.history import HistoryStore
+from ductor_bot.infra.file_lock import exclusive_file_lock, LockTimeoutError
+store = HistoryStore(Path(sys.argv[1]))
+print("ready", flush=True)
+sys.stdin.buffer.read()
+try:
+    with exclusive_file_lock(store._metadata_path("1"), timeout=0):
+        print("unlocked", flush=True)
+except LockTimeoutError:
+    print("locked", flush=True)
+store._update_metadata("1", "other-process", {"buttons": [], "text": "Other writer"})
+"""
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        script,
+        str(tmp_path),
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        assert await asyncio.wait_for(process.stdout.readline(), 15) == b"ready\n"
+        write = asyncio.create_task(store.record_mirror_revision("1", "entry-0", 999))
+        assert await asyncio.to_thread(replacing.wait, 3)
+        expected = {**before, "entry-0": {**before["entry-0"], "mirror_revision": 999}}
+        # Readers use another store's lock and see the intact pre-replacement snapshot.
+        assert await HistoryStore(tmp_path).metadata("1") == expected
+        old_bytes = path.read_bytes()
+        old_reader = path.open("rb")
+        process.stdin.close()
+        assert await asyncio.wait_for(process.stdout.readline(), 3) == b"locked\n"
+    finally:
+        release.set()
+        if write is not None:
+            await write
+        process.stdin.close()
+        _, stderr = await process.communicate()
+        assert process.returncode == 0, stderr.decode()
+        if old_reader is not None:
+            with old_reader:
+                assert old_reader.read() == old_bytes
+    latest = await HistoryStore(tmp_path).metadata("1")
+    assert {key: value for key, value in latest.items() if key != "other-process"} == expected
+    assert latest["other-process"]["text"] == "Other writer"
+    assert len(path.read_bytes().splitlines()) == 4
+
+
+async def test_compaction_syncs_published_inode_then_directory(tmp_path, monkeypatch):
+    import os
+    import stat
+
+    store, path = _large_metadata_sidecar(tmp_path)
+    original_inode = path.stat().st_ino
+    events = []
+    fsync, replace = os.fsync, Path.replace
+
+    def sync(fd):
+        info = os.fstat(fd)
+        kind = "directory" if stat.S_ISDIR(info.st_mode) else "file"
+        events.append(("fsync", kind, info.st_ino))
+        if kind == "file" and info.st_ino != original_inode:
+            # Bytes must have reached the descriptor before its fsync.
+            content = Path(f"/proc/self/fd/{fd}").read_bytes()
+            assert content.endswith(b"\n")
+            assert len(content.splitlines()) == 3
+        return fsync(fd)
+
+    def renamed(source, target):
+        if target == path:
+            events.append(("replace", "file", source.stat().st_ino))
+        return replace(source, target)
+
+    monkeypatch.setattr(os, "fsync", sync)
+    monkeypatch.setattr(Path, "replace", renamed)
+    await store.record_mirror_revision("1", "entry-0", 999)
+    published_inode = path.stat().st_ino
+    assert published_inode != original_inode
+    assert events == [
+        ("fsync", "file", original_inode),
+        ("fsync", "file", published_inode),
+        ("replace", "file", published_inode),
+        ("fsync", "directory", path.parent.stat().st_ino),
+    ]
+
+
+@pytest.mark.parametrize("failure", ["temp_fsync", "directory_fsync"])
+async def test_compaction_sync_failure_preserves_latest_state(
+    tmp_path, monkeypatch, caplog, failure
+):
+    import os
+    import stat
+
+    store, path = _large_metadata_sidecar(tmp_path)
+    original_inode = path.stat().st_ino
+    expected = await store.metadata("1")
+    expected["entry-0"]["mirror_revision"] = 999
+    fsync = os.fsync
+    synced, failures, snapshots = [], [], []
+
+    def sync(fd):
+        info = os.fstat(fd)
+        directory = stat.S_ISDIR(info.st_mode)
+        if info.st_ino == original_inode:
+            snapshots.append(path.read_bytes())
+        if (failure == "directory_fsync" and directory) or (
+            failure == "temp_fsync" and not directory and info.st_ino != original_inode
+        ):
+            failures.append(info.st_ino)
+            raise OSError("private-sync-details")
+        result = fsync(fd)
+        synced.append(info.st_ino)
+        return result
+
+    monkeypatch.setattr(os, "fsync", sync)
+    await store.record_mirror_revision("1", "entry-0", 999)
+    assert len(failures) == 1
+    assert await store.metadata("1") == expected
+    if failure == "temp_fsync":
+        assert path.read_bytes() == snapshots[0]
+    else:
+        assert path.stat().st_ino in synced
+    assert not list(tmp_path.glob("*.tmp"))
+    assert "OSError" in caplog.text
+    assert "private-sync-details" not in caplog.text
+
+
+@pytest.mark.parametrize("active", [False, True])
+async def test_topic_delete_removes_only_its_idle_selector_locks(tmp_path, active):
+    store = HistoryStore(tmp_path)
+    for index in range(50):
+        saved = await store.append(
+            "1.7",
+            Entry("bot", "web", str(index)),
+            buttons=[[{"text": "Next", "callback_data": "ms:p:claude"}]],
+        )
+        async with store.selector_step("1.7", saved.id, "ms:p:claude", 0):
+            pass
+    other = store.selector_gate("1.8", "other")
+    busy = store.selector_gate("1.7", "active") if active else None
+    if busy is not None:
+        await busy.acquire()
+    try:
+        assert await store.delete("1.7") == 50
+        assert {key for key in store._selector_locks if key[0] == "1.7"} == (
+            {("1.7", "active")} if active else set()
+        )
+        assert store.selector_gate("1.8", "other") is other
+        if busy is not None:
+            assert store.selector_gate("1.7", "active") is busy
+    finally:
+        if busy is not None:
+            busy.release()
+    await store.delete("1.7")
+    assert not any(key[0] == "1.7" for key in store._selector_locks)
+
+
+async def test_topic_delete_keeps_selector_lock_during_waiter_handoff(tmp_path, monkeypatch):
+    import ductor_bot.chat_log.history as history_module
+
+    store = HistoryStore(tmp_path)
+    lock = store.selector_gate("1.7", "waiting")
+    await lock.acquire()
+    waiter = asyncio.create_task(lock.acquire())
+    await asyncio.sleep(0)
+    complete = history_module.complete_write
+
+    async def release_after_delete(*args, **kwargs):
+        result = await complete(*args, **kwargs)
+        lock.release()
+        return result
+
+    monkeypatch.setattr(history_module, "complete_write", release_after_delete)
+    try:
+        await store.delete("1.7")
+        assert store.selector_gate("1.7", "waiting") is lock
+    finally:
+        await asyncio.wait_for(waiter, 1)
+        lock.release()

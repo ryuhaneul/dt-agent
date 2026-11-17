@@ -37,7 +37,8 @@ class BridgeClient:
         )
         abort = (
             method == "POST"
-            and re.fullmatch(r"/topics/[^/]+/(?:abort|messages)", resource) is not None
+            and re.fullmatch(r"/topics/[^/]+/(?:abort|messages|buttons|callbacks)", resource)
+            is not None
         )
         history_read = method == "GET" and (
             resource == "/topics" or re.fullmatch(r"/topics/[^/]+/messages", resource) is not None

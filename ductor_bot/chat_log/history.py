@@ -7,8 +7,9 @@ import contextlib
 import json
 import logging
 import os
+import tempfile
 from bisect import bisect_left, bisect_right
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, BinaryIO, Literal
@@ -17,9 +18,11 @@ from ductor_bot.chat_log.events import EventHub
 from ductor_bot.chat_log.ids import filename_tid, history_filename, new_id, timestamp, to_tid
 from ductor_bot.infra.atomic_io import atomic_text_save, complete_write
 from ductor_bot.infra.file_lock import exclusive_file_lock
+from ductor_bot.messenger.telegram.buttons import extract_button_rows
 from ductor_bot.session.key import SessionKey
 
 logger = logging.getLogger(__name__)
+_METADATA_COMPACT_BYTES = 256 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +70,14 @@ def _parse_entry(line: bytes, path: Path, line_no: int) -> Entry | None:
         return None
 
 
+class SelectorConflictError(Exception):
+    """A callback belongs to a superseded or completed selector screen."""
+
+
+class InvalidSelectorButtonError(Exception):
+    """Callback data is absent from the current screen."""
+
+
 class HistoryStore:
     def __init__(self, directory: Path, events: EventHub | None = None) -> None:
         self.directory = directory
@@ -74,6 +85,7 @@ class HistoryStore:
         self._locks: dict[str, asyncio.Lock] = {}
         self._sequences: dict[str, tuple[int, int]] = {}
         self._indexes: dict[str, _HistoryIndex] = {}
+        self._selector_locks: dict[tuple[str, str], asyncio.Lock] = {}
 
     def _lock(self, tid: str) -> asyncio.Lock:
         return self._locks.setdefault(tid, asyncio.Lock())
@@ -102,16 +114,34 @@ class HistoryStore:
             ):
                 logger.warning("Skipping corrupt history metadata %s:%d", path.name, line_no)
                 continue
-            result[item["id"]] = {"buttons": item["buttons"]}
+            result[item["id"]] = {
+                key: item[key]
+                for key in (
+                    "buttons",
+                    "telegram_message_id",
+                    "telegram_html_text",
+                    "answered",
+                    "text",
+                    "selector_revision",
+                    "mirror_revision",
+                )
+                if key in item
+            }
         return result
 
     def _append_metadata(
         self, tid: str, entry_id: str, buttons: Sequence[Sequence[Mapping[str, object]]]
     ) -> None:
-        path = self._metadata_path(tid)
-        item = {"id": entry_id, "buttons": [[dict(button) for button in row] for row in buttons]}
-        content = (json.dumps(item, ensure_ascii=False) + "\n").encode("utf-8")
-        with exclusive_file_lock(path), path.open("ab+") as stream:
+        self._update_metadata(
+            tid, entry_id, {"buttons": [[dict(button) for button in row] for row in buttons]}
+        )
+
+    @staticmethod
+    def _write_metadata(path: Path, entry_id: str, metadata: Mapping[str, object]) -> None:
+        content = (json.dumps({"id": entry_id, **metadata}, ensure_ascii=False) + "\n").encode(
+            "utf-8"
+        )
+        with path.open("ab+") as stream:
             stream.seek(0, os.SEEK_END)
             if stream.tell():
                 stream.seek(-1, os.SEEK_END)
@@ -120,6 +150,203 @@ class HistoryStore:
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
+
+    @staticmethod
+    def _save_compacted_metadata(path: Path, content: str) -> None:
+        """Publish a durable replacement without weakening the appended record's fsync."""
+        with contextlib.ExitStack() as cleanup:
+            stream = tempfile.NamedTemporaryFile(  # noqa: SIM115 -- register unlink before closing and replacing
+                mode="w", encoding="utf-8", dir=path.parent, suffix=".tmp", delete=False
+            )
+            temporary = Path(stream.name)
+            cleanup.callback(temporary.unlink, missing_ok=True)
+            with stream:
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
+            temporary.replace(path)
+            directory_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+
+    def _update_metadata(  # noqa: PLR0913 -- atomic claims and keyboard revision check
+        self,
+        tid: str,
+        entry_id: str,
+        updates: Mapping[str, object],
+        *,
+        claim: bool = False,
+        only_if_missing: bool = False,
+        binding_revision: int | None = None,
+    ) -> dict[str, Any] | None:
+        path = self._metadata_path(tid)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with exclusive_file_lock(path):
+            records = self._read_metadata(path)
+            current = records.get(entry_id)
+            if only_if_missing and current is not None:
+                return current
+            if claim and (current is None or current.get("answered") is not None):
+                return None
+            if (
+                binding_revision is not None
+                and (current or {}).get("selector_revision", 0) != binding_revision
+            ):
+                updates = {
+                    key: value
+                    for key, value in updates.items()
+                    if key not in {"buttons", "telegram_html_text"}
+                }
+            metadata = {"buttons": [], **(current or {}), **updates}
+            if "text" in updates:
+                metadata["selector_revision"] = (current or {}).get("selector_revision", 0) + 1
+            self._write_metadata(path, entry_id, metadata)
+            try:
+                if path.stat().st_size >= _METADATA_COMPACT_BYTES:
+                    records[entry_id] = metadata
+                    self._save_compacted_metadata(
+                        path,
+                        "".join(
+                            json.dumps({"id": ident, **record}, ensure_ascii=False) + "\n"
+                            for ident, record in records.items()
+                        ),
+                    )
+            except OSError as exc:
+                logger.warning("History metadata compaction failed: %s", type(exc).__name__)
+            return metadata
+
+    def _publish_metadata(self, tid: str, entry_id: str, metadata: dict[str, Any]) -> None:
+        if self._events is not None:
+            self._events.publish(
+                {"type": "entry_meta", "tid": tid, "entry_id": entry_id, "meta": metadata}
+            )
+
+    async def bind_telegram_message(  # noqa: PLR0913 -- keyboard identity, snapshot and observed revision
+        self,
+        tid: str,
+        entry_id: str,
+        message_id: int,
+        *,
+        buttons: Sequence[Sequence[Mapping[str, object]]] | None = None,
+        html_text: str | None = None,
+        keyboard_revision: int = 0,
+    ) -> dict[str, Any]:
+        """Bind the actual keyboard message, preserving its callback destinations."""
+        if type(message_id) is not int or message_id <= 0:
+            raise ValueError("A positive Telegram message id is required")
+        updates: dict[str, object] = {
+            "telegram_message_id": message_id,
+            "telegram_html_text": html_text,
+        }
+        if buttons is not None:
+            updates["buttons"] = [[dict(button) for button in row] for row in buttons]
+        async with self._lock(tid):
+            metadata = await complete_write(
+                self._update_metadata, tid, entry_id, updates, binding_revision=keyboard_revision
+            )
+        assert metadata is not None
+        self._publish_metadata(tid, entry_id, metadata)
+        return metadata
+
+    async def record_buttons(
+        self,
+        tid: str,
+        entry_id: str,
+        buttons: Sequence[Sequence[Mapping[str, object]]],
+        *,
+        only_if_missing: bool = False,
+    ) -> dict[str, Any]:
+        """Register validated legacy rows or preserve a named response destination."""
+        async with self._lock(tid):
+            metadata = await complete_write(
+                self._update_metadata,
+                tid,
+                entry_id,
+                {"buttons": [[dict(button) for button in row] for row in buttons]},
+                only_if_missing=only_if_missing,
+            )
+        assert metadata is not None
+        self._publish_metadata(tid, entry_id, metadata)
+        return metadata
+
+    def selector_gate(self, tid: str, entry_id: str) -> asyncio.Lock:
+        return self._selector_locks.setdefault((tid, entry_id), asyncio.Lock())
+
+    async def record_mirror_revision(self, tid: str, entry_id: str, revision: int) -> None:
+        async with self._lock(tid):
+            await complete_write(
+                self._update_metadata, tid, entry_id, {"mirror_revision": revision}
+            )
+
+    @contextlib.asynccontextmanager
+    async def selector_step(
+        self, tid: str, entry_id: str, data: str, revision: int
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Serialize both transports before validating a screen and applying its action."""
+        async with self.selector_gate(tid, entry_id):
+            meta = (await self.metadata(tid)).get(entry_id, {})
+            if meta.get("selector_revision", 0) != revision or meta.get("answered") is not None:
+                raise SelectorConflictError
+            if not any(
+                button.get("callback_data") == data
+                for row in meta.get("buttons", [])
+                for button in row
+            ):
+                raise InvalidSelectorButtonError
+            yield meta
+
+    async def record_selector_response(
+        self, tid: str, entry_id: str, text: str, buttons: Sequence[Sequence[Mapping[str, object]]]
+    ) -> dict[str, Any]:
+        """Persist the latest screen without changing the original Entry or outbox."""
+        from ductor_bot.messenger.telegram.formatting import markdown_to_telegram_html
+
+        async with self._lock(tid):
+            metadata = await complete_write(
+                self._update_metadata,
+                tid,
+                entry_id,
+                {
+                    "text": text,
+                    "buttons": [[dict(button) for button in row] for row in buttons],
+                    "telegram_html_text": markdown_to_telegram_html(text),
+                },
+            )
+        assert metadata is not None
+        self._publish_metadata(tid, entry_id, metadata)
+        return metadata
+
+    async def get_entry(self, tid: str, entry_id: str) -> Entry | None:
+        """Find a response on any history page without rewriting it."""
+        async with self._lock(tid):
+            entries = await asyncio.to_thread(self._read, self._path(tid))
+        return next((entry for entry in entries if entry.id == entry_id), None)
+
+    async def mark_answered(self, tid: str, entry_id: str, label: str) -> bool:
+        """Atomically claim an existing button response once across processes."""
+        if not label:
+            raise ValueError("An answered label is required")
+        async with self._lock(tid):
+            metadata = await complete_write(
+                self._update_metadata, tid, entry_id, {"answered": label}, claim=True
+            )
+        if metadata is None:
+            return False
+        self._publish_metadata(tid, entry_id, metadata)
+        return True
+
+    async def is_answered(self, tid: str, entry_id: str) -> bool:
+        """Return the durable answer state, including after a restart."""
+        return (await self.metadata(tid)).get(entry_id, {}).get("answered") is not None
+
+    async def entry_for_telegram_message(self, tid: str, message_id: int) -> str | None:
+        """Find a recorded keyboard's entry in the same chat/topic."""
+        for entry_id, metadata in (await self.metadata(tid)).items():
+            if metadata.get("telegram_message_id") == message_id:
+                return entry_id
+        return None
 
     async def metadata(self, tid: str) -> dict[str, dict[str, Any]]:
         async with self._lock(tid):
@@ -268,6 +495,11 @@ class HistoryStore:
         buttons: Sequence[Sequence[Mapping[str, object]]] | None = None,
     ) -> Entry:
         tid = to_tid(key) if isinstance(key, SessionKey) else key
+        if entry.role != "user" and not entry.imported:
+            text, extracted = extract_button_rows(entry.text)
+            entry = replace(entry, text=text)
+            if buttons is None:
+                buttons = extracted
         async with self._lock(tid):
             if buttons is None:
                 saved = await complete_write(self._append, tid, entry)
@@ -328,7 +560,12 @@ class HistoryStore:
 
     async def delete(self, tid: str) -> int:
         async with self._lock(tid):
-            return await complete_write(self._delete, tid)
+            removed = await complete_write(self._delete, tid)
+            # Queued waiters still use the gate during release/acquire handoff.
+            for key, lock in list(self._selector_locks.items()):
+                if key[0] == tid and not lock.locked() and not getattr(lock, "_waiters", None):
+                    del self._selector_locks[key]
+            return removed
 
     async def search(self, q: str, limit: int = 50) -> list[dict[str, Any]]:
         hits = []

@@ -8,17 +8,30 @@ from typing import TYPE_CHECKING, Any
 
 from aiogram.types import InlineKeyboardMarkup
 
-from ductor_bot.messenger.telegram.buttons import extract_buttons_for_session
+from ductor_bot.messenger.telegram.buttons import (
+    _truncate_callback_data,
+    extract_buttons_for_session,
+)
+from ductor_bot.messenger.telegram.callbacks import edit_button_choice, recorded_keyboard_observer
 from ductor_bot.messenger.telegram.sender import SendRichOpts, send_rich_progress_detailed
 
 if TYPE_CHECKING:
+    from ductor_bot.chat_log.history import HistoryStore
     from ductor_bot.messenger.telegram.app import TelegramBot
     from ductor_bot.messenger.telegram.sender import SendProgress
+    from ductor_bot.session.key import SessionKey
 
 
 class TelegramWebchatOps:
     def __init__(self, bot: TelegramBot) -> None:
         self._bot = bot
+
+    def keyboard_observer(
+        self, history: HistoryStore, key: SessionKey, entry_id: str, revision: int = 0
+    ) -> Callable[[int, InlineKeyboardMarkup, str | None], Awaitable[None]]:
+        return recorded_keyboard_observer(
+            history, self._bot.bot_instance, key, entry_id, revision=revision
+        )
 
     async def probe(self) -> bool:
         async with asyncio.timeout(10):
@@ -35,14 +48,25 @@ class TelegramWebchatOps:
         *,
         on_chunk: Callable[[int], Awaitable[None]] | None = None,
         buttons: list[list[dict[str, Any]]] | None = None,
+        on_keyboard: Callable[[int, InlineKeyboardMarkup, str | None], Awaitable[None]]
+        | None = None,
     ) -> SendProgress:
         markup = (
             InlineKeyboardMarkup.model_validate({"inline_keyboard": buttons})
             if buttons is not None
             else None
         )
-        if buttons_session is not None and buttons is None:
-            text, markup = extract_buttons_for_session(text, buttons_session)
+        if buttons_session is not None:
+            if buttons is None:
+                text, markup = extract_buttons_for_session(text, buttons_session)
+            elif markup is not None:
+                for row in markup.inline_keyboard:
+                    for button in row:
+                        data = button.callback_data
+                        if data is not None and not data.startswith("ns:"):
+                            button.callback_data = _truncate_callback_data(
+                                f"ns:{buttons_session}:{data}"
+                            )
         return await send_rich_progress_detailed(
             self._bot.bot_instance,
             chat_id,
@@ -52,9 +76,23 @@ class TelegramWebchatOps:
                 allowed_roots=self._bot.file_roots(self._bot._orch.paths),
                 reply_markup=markup,
                 skip_unavailable_files=True,
+                on_keyboard=on_keyboard,
             ),
             start_chunk=start_chunk,
             on_chunk=on_chunk,
+        )
+
+    async def annotate_button_choice(
+        self,
+        chat_id: int,
+        message_id: int,
+        label: str,
+        *,
+        html_text: str | None = None,
+    ) -> None:
+        """Reconcile a reply accepted before its Telegram mirror was delivered."""
+        await edit_button_choice(
+            self._bot.bot_instance, chat_id, message_id, label, html_text=html_text
         )
 
     async def create_topic(self, chat_id: int, name: str) -> int:

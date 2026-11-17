@@ -192,3 +192,11 @@ list = "Daftar perintah"
 help = "↑↓ Pindah · Enter / Tab Pilih · Esc Tutup"
 empty = "Tidak ada perintah yang cocok."
 run = "Perintah dijalankan"
+
+[buttons]
+sending = "Mengirim…"
+answered = "Jawaban: {label}"
+already_answered = "Pesan ini sudah dijawab."
+invalid = "Tombol ini tidak lagi tersedia. Muat ulang obrolan dan coba lagi."
+
+stale_selector = "Layar pilihan ini telah berubah. Opsi terbaru telah dimuat."

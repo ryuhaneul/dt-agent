@@ -192,3 +192,11 @@ list = "Opdrachtenlijst"
 help = "↑↓ Verplaatsen · Enter / Tab Kiezen · Esc Sluiten"
 empty = "Geen passende opdrachten."
 run = "Opdracht uitgevoerd"
+
+[buttons]
+sending = "Verzenden…"
+answered = "Antwoord: {label}"
+already_answered = "Dit bericht is al beantwoord."
+invalid = "Deze knop is niet meer beschikbaar. Vernieuw de chat en probeer het opnieuw."
+
+stale_selector = "Dit keuzescherm is gewijzigd. De nieuwste opties zijn geladen."

@@ -50,6 +50,7 @@ class TestTelegram:
         i18n.init(language)
         hub, ids = _hub_with_finished(tmp_path)
         bot = object.__new__(TelegramBot)
+        bot._chat_log_runtime = None
         bot._orchestrator = SimpleNamespace(task_hub=hub)
         bot._bot = MagicMock()
         with patch(

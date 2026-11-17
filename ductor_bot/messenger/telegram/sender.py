@@ -9,7 +9,7 @@ import re
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, TypedDict
+from typing import TYPE_CHECKING, Literal, TypedDict, cast
 
 from aiogram.enums import ParseMode
 from aiogram.exceptions import (
@@ -48,6 +48,7 @@ class SendRichOpts(BaseSendOpts):
     thread_id: int | None = None
     ia_task_id: str = ""
     skip_unavailable_files: bool = False
+    on_keyboard: Callable[[int, InlineKeyboardMarkup, str | None], Awaitable[None]] | None = None
 
 
 SendFailure = Literal["transient", "permanent"]
@@ -60,11 +61,15 @@ class SendProgress:
     failure: SendFailure | None
     error: str
     exception: BaseException | None
+    telegram_message_id: int | None = None
+    telegram_html_text: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class _ChunkOutcome:
     ok: bool
+    message_id: int | None = None
+    html_text: str | None = None
     failure: SendFailure | None = None
     error: str = ""
     exception: BaseException | None = None
@@ -96,9 +101,22 @@ def _exception_outcome(exc: Exception) -> _ChunkOutcome:
     )
 
 
+def message_html_text(message: object) -> str | None:
+    """Read the text message's actual rendered HTML; captions keep keyboard-only fallback."""
+    text = getattr(message, "text", None)
+    if not isinstance(text, str):
+        return None
+    rendered = getattr(message, "html_text", None)
+    return rendered if isinstance(rendered, str) else html_mod.escape(text)
+
+
 def _response_outcome(response: object) -> _ChunkOutcome:
     return (
-        _ChunkOutcome(ok=True)
+        _ChunkOutcome(
+            ok=True,
+            message_id=cast("Message", response).message_id,
+            html_text=message_html_text(response),
+        )
         if _has_message_id(response)
         else _ChunkOutcome(ok=False, failure="transient", error="no_message_id")
     )
@@ -302,6 +320,20 @@ async def _send_text_chunks(
     return last_msg, True
 
 
+async def report_keyboard(
+    observer: Callable[[int, InlineKeyboardMarkup, str | None], Awaitable[None]] | None,
+    message_id: int,
+    markup: InlineKeyboardMarkup,
+    html_text: str | None = None,
+) -> None:
+    """Observe a successful attachment without changing Telegram delivery behavior."""
+    if observer is not None:
+        try:
+            await observer(message_id, markup, html_text)
+        except Exception:
+            logger.exception("Failed to record Telegram keyboard metadata")
+
+
 async def send_rich(
     bot: Bot,
     chat_id: int,
@@ -337,7 +369,7 @@ async def send_rich(
 
     if button_markup is not None and last_msg is not None:
         try:
-            await bot.edit_message_reply_markup(
+            attached = await bot.edit_message_reply_markup(
                 chat_id=chat_id,
                 message_id=last_msg.message_id,
                 reply_markup=button_markup,
@@ -346,6 +378,13 @@ async def send_rich(
             logger.debug("Network error attaching keyboard (likely shutdown)")
         except TelegramBadRequest:
             logger.warning("Failed to attach button keyboard in send_rich")
+        else:
+            await report_keyboard(
+                o.on_keyboard,
+                last_msg.message_id,
+                button_markup,
+                message_html_text(attached) or message_html_text(last_msg),
+            )
 
     for fp in file_paths:
         await send_file(
@@ -602,6 +641,8 @@ async def send_rich_progress_detailed(  # noqa: PLR0913 -- resumable send and pr
             exception=None,
         )
 
+    keyboard_message_id = None
+    keyboard_html_text = None
     for index in range(start_chunk, total):
         last_markup = markup if index == total - 1 else None
         if index < len(chunks):
@@ -629,9 +670,23 @@ async def send_rich_progress_detailed(  # noqa: PLR0913 -- resumable send and pr
                 error=outcome.error,
                 exception=outcome.exception,
             )
+        if last_markup is not None and outcome.message_id is not None:
+            keyboard_message_id = outcome.message_id
+            keyboard_html_text = outcome.html_text
+            await report_keyboard(
+                o.on_keyboard, keyboard_message_id, last_markup, keyboard_html_text
+            )
         if on_chunk is not None:
             await on_chunk(index + 1)
-    return SendProgress(delivered=True, sent_chunks=total, failure=None, error="", exception=None)
+    return SendProgress(
+        delivered=True,
+        sent_chunks=total,
+        failure=None,
+        error="",
+        exception=None,
+        telegram_message_id=keyboard_message_id,
+        telegram_html_text=keyboard_html_text,
+    )
 
 
 async def send_rich_checked_progress(

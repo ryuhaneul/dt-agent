@@ -7,7 +7,7 @@ import contextlib
 import logging
 import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
@@ -16,8 +16,11 @@ from aiogram.exceptions import TelegramRetryAfter
 
 from ductor_bot.chat_log.events import EventHub
 from ductor_bot.chat_log.outbox import Outbox
+from ductor_bot.session.key import SessionKey
 
 if TYPE_CHECKING:
+    from aiogram.types import InlineKeyboardMarkup
+
     from ductor_bot.chat_log.history import HistoryStore
     from ductor_bot.chat_log.outbox import OutboxItem, OutboxState
     from ductor_bot.messenger.telegram.webchat_ops import TelegramWebchatOps
@@ -149,6 +152,7 @@ class OutboxDrainer:
         self._up_failures = 0
         self._probe_generation = link.probe_failure_generation
         self._active: OutboxItem | None = None
+        self._active_revision: int | None = None
         self._dirty = False
         self._retry_at = 0.0
 
@@ -171,6 +175,35 @@ class OutboxDrainer:
         except Exception as exc:
             raise _StorageError from exc
         self._dirty = False
+
+    def _keyboard_observer(
+        self,
+        item: OutboxItem,
+        revision: int = 0,
+    ) -> Callable[[int, InlineKeyboardMarkup, str | None], Awaitable[None]]:
+        assert self._history is not None
+        assert item.history_id is not None
+        return self._ops.keyboard_observer(
+            self._history,
+            SessionKey.telegram(item.chat_id, item.topic_id),
+            item.history_id,
+            revision,
+        )
+
+    async def _mirror_content(self, item: OutboxItem) -> tuple[str, dict[str, Any], bool]:
+        if self._history is None or item.history_id is None:
+            self._active_revision = None
+            return item.text, {}, False
+        try:
+            meta = (await self._history.metadata(item.tid)).get(item.history_id, {})
+        except Exception as exc:
+            raise _StorageError from exc
+        revision = meta.get("selector_revision", 0)
+        self._active_revision = revision if meta else None
+        keyboard: dict[str, Any] = {"on_keyboard": self._keyboard_observer(item, revision)}
+        if "buttons" in meta:
+            keyboard["buttons"] = meta["buttons"]
+        return meta.get("text", item.text), keyboard, revision != meta.get("mirror_revision", 0)
 
     async def _send_active(self) -> tuple[bool, bool]:  # noqa: C901 -- chunk and terminal saves
         """Return (terminal, rate limited), retaining acknowledgments before disk I/O."""
@@ -195,21 +228,14 @@ class OutboxDrainer:
                         saving.exception()
                     raise
 
-            keyboard: dict[str, Any] = {}
-            if self._history is not None and item.history_id is not None:
-                try:
-                    metadata = await self._history.metadata(item.tid)
-                except Exception as exc:
-                    raise _StorageError from exc
-                if "buttons" in metadata.get(item.history_id, {}):
-                    keyboard["buttons"] = metadata[item.history_id]["buttons"]
+            text, keyboard, restart_screen = await self._mirror_content(item)
             progress = await self._ops.send_text(
                 item.chat_id,
                 item.topic_id,
-                item.text,
-                item.sent_chunks,
+                text,
+                0 if restart_screen else item.sent_chunks,
                 item.buttons_session,
-                on_chunk=on_chunk,
+                on_chunk=None if restart_screen else on_chunk,
                 **keyboard,
             )
             limited = isinstance(progress.exception, TelegramRetryAfter)
@@ -222,7 +248,9 @@ class OutboxDrainer:
             )
             self._active = replace(
                 item,
-                sent_chunks=progress.sent_chunks,
+                sent_chunks=max(item.sent_chunks, progress.sent_chunks)
+                if restart_screen
+                else progress.sent_chunks,
                 attempts=item.attempts + (not progress.delivered and not limited),
                 state=state,
                 last_error=progress.error or None,
@@ -235,6 +263,19 @@ class OutboxDrainer:
         try:
             if item.state == "sent":
                 await self._outbox.mark_sent(item.id)
+                if (
+                    self._history is not None
+                    and item.history_id is not None
+                    and self._active_revision is not None
+                ):
+                    try:
+                        await self._history.record_mirror_revision(
+                            item.tid, item.history_id, self._active_revision
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Completed mirror revision save failed: %s", type(exc).__name__
+                        )
                 self._link.record(up=True)
                 return True, False
             if item.state == "failed":
@@ -267,6 +308,7 @@ class OutboxDrainer:
                         item = items[0]
                         if self._active is None or self._active.id != item.id:
                             self._active = item
+                            self._active_revision = None
                             self._dirty = False
                         if self._failure_id != item.id:
                             self._failure_id = item.id

@@ -138,3 +138,24 @@ def strip_button_syntax(text: str) -> str:
     stripped = _BUTTON_RE.sub("", masked)
     restored = _restore_code(stripped, saved)
     return _collapse_blank_lines(restored).strip()
+
+
+def serialize_keyboard(markup: InlineKeyboardMarkup) -> list[list[dict[str, object]]]:
+    """Preserve callback destinations and URL fields from the attached keyboard."""
+    return [
+        [button.model_dump(exclude_none=True) for button in row] for row in markup.inline_keyboard
+    ]
+
+
+def extract_button_rows(
+    text: str, *, session_name: str | None = None
+) -> tuple[str, list[list[dict[str, object]]] | None]:
+    """Expose the Telegram marker parser's rows for history and web rendering."""
+    cleaned, markup = (
+        extract_buttons_for_session(text, session_name)
+        if session_name is not None
+        else extract_buttons(text)
+    )
+    if markup is None:
+        return cleaned, None
+    return cleaned, serialize_keyboard(markup)

@@ -13,6 +13,7 @@ from ductor_bot.background import BackgroundResult
 from ductor_bot.cli.types import AgentResponse
 from ductor_bot.config import AgentConfig
 from ductor_bot.i18n import t
+from ductor_bot.messenger.telegram.sender import SendRichOpts
 from ductor_bot.messenger.telegram.transport import TelegramTransport
 from ductor_bot.multiagent.session_gate import GateCancelled, SessionGateRegistry
 from ductor_bot.orchestrator.core import Orchestrator
@@ -401,7 +402,7 @@ async def test_telegram_transport_leaves_storing_inter_agent_responses_to_the_ob
     with (
         patch("ductor_bot.messenger.telegram.transport.send_rich", AsyncMock()),
         patch.object(TelegramTransport, "_format_named_session", return_value="text"),
-        patch.object(TelegramTransport, "_opts", return_value=SimpleNamespace(reply_markup=None)),
+        patch.object(TelegramTransport, "_opts", return_value=SendRichOpts(reply_markup=None)),
     ):
         await transport._deliver_background(ia_env)  # type: ignore[arg-type]
         named.update_after_response.assert_not_called()
