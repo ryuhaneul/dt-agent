@@ -162,7 +162,7 @@ read_only = "Este grupo de historial es de solo lectura. Selecciona un tema de T
 bot_unreachable = "Bot inaccesible"
 telegram_unavailable = "Telegram no disponible"
 generic = "Algo salió mal"
-web_turn_running = "Ya se está generando una respuesta web en este tema"
+web_turn_running = "Se está generando una respuesta web. Vuelve a ejecutar este comando cuando termine."
 
 [starflow]
 title = "Fondo decorativo de estrellas"
@@ -184,3 +184,11 @@ code_reused = "Este código ya se ha usado. Espera uno nuevo."
 locked = "Demasiados intentos. Vuelve a intentarlo en {seconds} segundos."
 totp_required = "Configura la autenticación en dos pasos antes de cambiar la contraseña."
 success = "Contraseña cambiada. Se ha cerrado la sesión en los demás dispositivos."
+
+[commands]
+secret_telegram = "Usa /secret en un chat privado con el bot de Telegram."
+title = "Comandos"
+list = "Lista de comandos"
+help = "↑↓ Mover · Enter / Tab Elegir · Esc Cerrar"
+empty = "No hay comandos coincidentes."
+run = "Comando ejecutado"

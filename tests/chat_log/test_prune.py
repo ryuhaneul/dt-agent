@@ -393,3 +393,66 @@ async def test_queue_retention_skips_each_io_failure_and_continues(
     assert not done[1].exists()
     assert not old.exists()
     assert "PermissionError" in caplog.text
+
+
+@time_machine.travel(NOW, tick=False)
+async def test_metadata_retention_counts_bytes_and_keeps_pending_keyboards(paths):
+    history = HistoryStore(paths.chat_log_dir / "history")
+    outbox = Outbox(paths.chat_log_dir / "outbox")
+    buttons = [[{"text": "Choose", "callback_data": "ms:claude"}]]
+    old = await history.append(
+        "1", Entry("bot", "web", "old", ts="2020-01-01T00:00:00Z"), buttons=buttons
+    )
+    pending = await history.append(
+        "1", Entry("bot", "web", "pending", ts="2020-01-01T00:00:00Z"), buttons=buttons
+    )
+    current = await history.append("1", Entry("bot", "web", "current"), buttons=buttons)
+    item = await outbox.enqueue(
+        kind="reply_mirror", chat_id=1, text="pending", history_id=pending.id
+    )
+    before = {
+        str(path): path.read_bytes() for path in paths.ductor_home.rglob("*") if path.is_file()
+    }
+    preview = await pruner(paths, history, outbox).prune(history_days=7, dry_run=True)
+    assert before == {
+        str(path): path.read_bytes() for path in paths.ductor_home.rglob("*") if path.is_file()
+    }
+    actual = await pruner(paths, history, outbox).prune(history_days=7)
+    assert actual == preview
+    assert actual.entries == 2
+    removed_history_bytes = sum(
+        len(line)
+        for line in before[str(history._path("1"))].splitlines(keepends=True)
+        if json.loads(line)["id"] in {old.id, pending.id}
+    )
+    removed_meta_bytes = sum(
+        len(line)
+        for line in before[str(history.directory / "1.meta.jsonl")].splitlines(keepends=True)
+        if json.loads(line)["id"] == old.id
+    )
+    assert actual.bytes == removed_history_bytes + removed_meta_bytes
+    assert set(await history.metadata("1")) == {pending.id, current.id}
+    await outbox.mark_sent(item.id)
+    await pruner(paths, history, outbox).prune(history_days=7)
+    assert set(await history.metadata("1")) == {current.id}
+
+
+@time_machine.travel(NOW, tick=False)
+async def test_metadata_after_last_history_entry_is_pruned_when_delivery_finishes(paths):
+    history = HistoryStore(paths.chat_log_dir / "history")
+    outbox = Outbox(paths.chat_log_dir / "outbox")
+    saved = await history.append(
+        "1",
+        Entry("bot", "web", "old", ts="2020-01-01T00:00:00Z"),
+        buttons=[[{"text": "Choose", "callback_data": "ms:c"}]],
+    )
+    item = await outbox.enqueue(kind="reply_mirror", chat_id=1, text="old", history_id=saved.id)
+    await pruner(paths, history, outbox).prune(history_days=7)
+    assert history.tids() == []
+    assert saved.id in await history.metadata("1")
+    await outbox.mark_sent(item.id)
+    preview = await pruner(paths, history, outbox).prune(history_days=7, dry_run=True)
+    assert preview.entries == 0
+    assert preview.bytes > 0
+    assert await pruner(paths, history, outbox).prune(history_days=7) == preview
+    assert await history.metadata("1") == {}

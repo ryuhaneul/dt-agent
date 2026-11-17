@@ -461,3 +461,118 @@ class TestStopReportsDiscardedMessages:
             )
 
         assert order == ["discard", "kill"]  # the kill frees the lock the next message waits for
+
+
+@pytest.mark.parametrize("count", [0, 2])
+async def test_interrupt_response_matches_handler(count: int) -> None:
+    from ductor_bot.i18n import t
+    from ductor_bot.messenger.telegram.handlers import handle_interrupt, interrupt_response
+
+    orch = MagicMock()
+    orch.interrupt.return_value = count
+    expected = t("interrupt.done", count=count) if count else t("interrupt.nothing")
+    assert interrupt_response(orch, 42) == expected
+    orch.interrupt.assert_called_once_with(42)
+    orch.interrupt.reset_mock()
+    msg = _make_message(chat_id=42, topic_thread_id=7)
+    with patch("ductor_bot.messenger.telegram.handlers.send_rich", new_callable=AsyncMock) as send:
+        assert await handle_interrupt(orch, MagicMock(), chat_id=42, message=msg)
+    assert send.call_args.args[2] == expected
+    assert send.call_args.args[3].thread_id == 7
+    orch.interrupt.assert_called_once_with(42)
+
+
+@pytest.mark.parametrize(("local", "remote"), [(0, None), (2, None), (0, 0), (2, 3)])
+async def test_abort_all_response_matches_handler(local: int, remote: int | None) -> None:
+    from ductor_bot.i18n import t
+    from ductor_bot.messenger.telegram.handlers import abort_all_response, handle_abort_all
+
+    events = []
+
+    async def abort_local() -> int:
+        events.append("local")
+        return local
+
+    async def abort_remote() -> int:
+        events.append("remote")
+        return remote or 0
+
+    orch = MagicMock()
+    orch.abort_all = abort_local
+    callback = abort_remote if remote is not None else None
+    count = local + (remote or 0)
+    expected = t("abort_all.done", count=count) if count else t("abort_all.nothing")
+    assert await abort_all_response(orch, callback) == expected
+    assert events == (["local", "remote"] if callback else ["local"])
+    events.clear()
+    msg = _make_message(chat_id=42, topic_thread_id=7)
+    with patch("ductor_bot.messenger.telegram.handlers.send_rich", new_callable=AsyncMock) as send:
+        assert await handle_abort_all(
+            orch, MagicMock(), chat_id=42, message=msg, abort_all_callback=callback
+        )
+    assert send.call_args.args[2] == expected
+    assert send.call_args.args[3].thread_id == 7
+    assert events == (["local", "remote"] if callback else ["local"])
+
+
+@pytest.mark.parametrize(
+    ("text", "use_cache"),
+    [("/new", True), ("/new @Work", True), ("/new @missing", True), ("/new @Work", False)],
+)
+async def test_new_response_matches_handler_and_typing_order(text: str, use_cache: bool) -> None:
+    from ductor_bot.i18n import t
+    from ductor_bot.messenger.telegram.handlers import handle_new_session, new_session_response
+    from ductor_bot.messenger.telegram.topic import TopicNameCache
+    from ductor_bot.session.key import SessionKey
+    from ductor_bot.text.response_format import new_session_text
+
+    cache = TopicNameCache() if use_cache else None
+    if cache is not None:
+        cache.set(42, 8, "Work")
+    key = SessionKey(chat_id=42, topic_id=7)
+    reset = AsyncMock(return_value="codex")
+    expected_key = SessionKey(chat_id=42, topic_id=8) if text == "/new @Work" and use_cache else key
+    if text == "/new @missing":
+        expected = t("new.topic_not_found", name="missing")
+    elif expected_key.topic_id == 8:
+        expected = t("new.topic_reset", name="Work", provider="codex")
+    else:
+        expected = new_session_text("codex")
+    assert await new_session_response(reset, key, text, cache) == expected
+    if text == "/new @missing":
+        reset.assert_not_awaited()
+    else:
+        reset.assert_awaited_once_with(expected_key)
+
+    events = []
+
+    class Typing:
+        async def __aenter__(self):
+            events.append("typing")
+
+        async def __aexit__(self, *_):
+            events.append("typing_done")
+
+    async def reset_provider(target):
+        events.append(("reset", target))
+        return "codex"
+
+    async def record_send(*_args):
+        events.append("send")
+
+    orch = MagicMock()
+    orch.reset_active_provider_session = AsyncMock(side_effect=reset_provider)
+    msg = _make_message(chat_id=42, text=text, topic_thread_id=7)
+    with (
+        patch("ductor_bot.messenger.telegram.handlers.TypingContext", return_value=Typing()),
+        patch("ductor_bot.messenger.telegram.handlers.send_rich", side_effect=record_send) as send,
+    ):
+        await handle_new_session(orch, MagicMock(), msg, topic_names=cache)
+    assert send.call_args.args[2] == expected
+    assert send.call_args.args[3].thread_id == 7
+    assert send.call_args.args[3].reply_to_message_id == msg.message_id
+    assert events == (
+        ["send"]
+        if text == "/new @missing"
+        else ["typing", ("reset", expected_key), "typing_done", "send"]
+    )

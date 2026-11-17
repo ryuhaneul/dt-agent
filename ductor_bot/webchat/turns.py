@@ -221,6 +221,17 @@ class WebTurns:
             self._started.discard(tid)
             self._publish(tid, turn["turn_id"], "done" if status == "ok" else status)
 
+    async def cancel_pending(self, chat_id: int) -> None:
+        """Cancel this chat's web turns still waiting for their session lock."""
+        pending = [
+            task
+            for tid, task in self._tasks.items()
+            if from_tid(tid).chat_id == chat_id and tid not in self._started and not task.done()
+        ]
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+
     async def abort(self, tid: str, *, deleting: bool = False) -> int:
         task = self._tasks.get(tid)
         if task is not None and tid not in self._started:

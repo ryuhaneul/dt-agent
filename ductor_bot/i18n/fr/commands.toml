@@ -1,6 +1,10 @@
 # Descriptions des commandes bot en français (≤22 caractères pour Telegram).
 
 [bot]
+start = "Bienvenue"
+where = "Conversations suivies"
+leave = "Quitter un groupe"
+sessions = "Gérer les sessions"
 new = "Nouveau chat"
 reset = "Réinitialiser chat"
 stop = "Stopper actuel + file"

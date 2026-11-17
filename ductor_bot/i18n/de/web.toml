@@ -162,7 +162,7 @@ read_only = "Diese Verlaufsgruppe ist schreibgeschützt. Wähle ein Telegram-The
 bot_unreachable = "Bot nicht erreichbar"
 telegram_unavailable = "Telegram nicht verfügbar"
 generic = "Da ist etwas schiefgelaufen"
-web_turn_running = "In diesem Thema wird bereits eine Webantwort erstellt"
+web_turn_running = "Eine Webantwort wird erstellt. Führe diesen Befehl nach Abschluss erneut aus."
 
 [starflow]
 title = "Dekorativer Sternenhintergrund"
@@ -184,3 +184,11 @@ code_reused = "Dieser Code wurde bereits verwendet. Warte auf einen neuen Code."
 locked = "Zu viele Versuche. Versuche es in {seconds} Sekunden erneut."
 totp_required = "Richte vor dem Ändern des Passworts die Zwei-Faktor-Authentifizierung ein."
 success = "Passwort geändert. Andere Geräte wurden abgemeldet."
+
+[commands]
+secret_telegram = "Verwende /secret in einem privaten Chat mit dem Telegram-Bot."
+title = "Befehle"
+list = "Befehlsliste"
+help = "↑↓ Bewegen · Enter / Tab Auswählen · Esc Schließen"
+empty = "Keine passenden Befehle."
+run = "Befehl ausgeführt"

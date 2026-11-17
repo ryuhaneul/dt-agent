@@ -18,6 +18,7 @@ from ductor_bot.chat_log.events import EventHub
 from ductor_bot.chat_log.outbox import Outbox
 
 if TYPE_CHECKING:
+    from ductor_bot.chat_log.history import HistoryStore
     from ductor_bot.chat_log.outbox import OutboxItem, OutboxState
     from ductor_bot.messenger.telegram.webchat_ops import TelegramWebchatOps
 
@@ -129,7 +130,15 @@ class _StorageError(Exception):
 
 
 class OutboxDrainer:
-    def __init__(self, outbox: Outbox, ops: TelegramWebchatOps, link: TelegramLinkMonitor) -> None:
+    def __init__(
+        self,
+        outbox: Outbox,
+        ops: TelegramWebchatOps,
+        link: TelegramLinkMonitor,
+        *,
+        history: HistoryStore | None = None,
+    ) -> None:
+        self._history = history
         self._outbox = outbox
         self._ops = ops
         self._link = link
@@ -186,6 +195,14 @@ class OutboxDrainer:
                         saving.exception()
                     raise
 
+            keyboard: dict[str, Any] = {}
+            if self._history is not None and item.history_id is not None:
+                try:
+                    metadata = await self._history.metadata(item.tid)
+                except Exception as exc:
+                    raise _StorageError from exc
+                if "buttons" in metadata.get(item.history_id, {}):
+                    keyboard["buttons"] = metadata[item.history_id]["buttons"]
             progress = await self._ops.send_text(
                 item.chat_id,
                 item.topic_id,
@@ -193,6 +210,7 @@ class OutboxDrainer:
                 item.sent_chunks,
                 item.buttons_session,
                 on_chunk=on_chunk,
+                **keyboard,
             )
             limited = isinstance(progress.exception, TelegramRetryAfter)
             if isinstance(progress.exception, TelegramRetryAfter):

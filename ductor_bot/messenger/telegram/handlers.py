@@ -27,6 +27,57 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def interrupt_response(orchestrator: Orchestrator, chat_id: int) -> str:
+    """Interrupt active processes and return feedback without sending it."""
+    interrupted = orchestrator.interrupt(chat_id)
+    logger.info("Interrupt requested interrupted=%d", interrupted)
+    return t("interrupt.done", count=interrupted) if interrupted else t("interrupt.nothing")
+
+
+async def abort_all_response(
+    orchestrator: Orchestrator,
+    abort_all_callback: Callable[[], Awaitable[int]] | None = None,
+) -> str:
+    """Stop this agent and its peers, returning feedback without sending it."""
+    # Kill all local processes (across all chats/transports)
+    killed = await orchestrator.abort_all()
+
+    # Kill processes on all other agents via the supervisor callback
+    if abort_all_callback is not None:
+        killed += await abort_all_callback()
+
+    logger.info("Abort ALL requested killed=%d", killed)
+    return t("abort_all.done", count=killed) if killed else t("abort_all.nothing")
+
+
+async def new_session_response(
+    reset_provider: Callable[[SessionKey], Awaitable[str]],
+    key: SessionKey,
+    text: str,
+    topic_names: TopicNameCache | None = None,
+) -> str:
+    """Resolve /new's optional topic, reset it, and return feedback without sending it.
+
+    The caller supplies the reset operation so Telegram can retain its typing
+    indicator around the reset alone. Unknown topics never start that operation.
+    """
+    parts = text.split(None, 1)
+    topic_arg = parts[1].strip() if len(parts) > 1 else ""
+    if topic_arg.startswith("@") and topic_names is not None:
+        topic_name = topic_arg[1:]
+        topic_id = topic_names.find_by_name(key.chat_id, topic_name)
+        if topic_id is None:
+            return t("new.topic_not_found", name=topic_name)
+        target = SessionKey(chat_id=key.chat_id, topic_id=topic_id)
+        resolved_name = topic_names.get(key.chat_id, topic_id) or t(
+            "sessions.topic_fallback", id=topic_id
+        )
+        provider = await reset_provider(target)
+        return t("new.topic_reset", name=resolved_name, provider=provider)
+    provider = await reset_provider(key)
+    return new_session_text(provider)
+
+
 async def handle_interrupt(
     orchestrator: Orchestrator | None,
     bot: Bot,
@@ -41,9 +92,7 @@ async def handle_interrupt(
     if orchestrator is None:
         return False
 
-    interrupted = orchestrator.interrupt(chat_id)
-    logger.info("Interrupt requested interrupted=%d", interrupted)
-    msg = t("interrupt.done", count=interrupted) if interrupted else t("interrupt.nothing")
+    msg = interrupt_response(orchestrator, chat_id)
     await send_rich(
         bot,
         chat_id,
@@ -107,15 +156,7 @@ async def handle_abort_all(
     if orchestrator is None:
         return False
 
-    # Kill all local processes (across all chats/transports)
-    killed = await orchestrator.abort_all()
-
-    # Kill processes on all other agents via the supervisor callback
-    if abort_all_callback is not None:
-        killed += await abort_all_callback()
-
-    logger.info("Abort ALL requested killed=%d", killed)
-    text = t("abort_all.done", count=killed) if killed else t("abort_all.nothing")
+    text = await abort_all_response(orchestrator, abort_all_callback)
     await send_rich(
         bot,
         chat_id,
@@ -167,42 +208,17 @@ async def handle_new_session(
     thread_id = get_thread_id(message)
     text = (message.text or "").strip()
 
-    # Parse optional @topicname argument.
-    parts = text.split(None, 1)
-    topic_arg = parts[1].strip() if len(parts) > 1 else ""
-
-    if topic_arg.startswith("@") and topic_names is not None:
-        topic_name = topic_arg[1:]
-        topic_id = topic_names.find_by_name(chat_id, topic_name)
-        if topic_id is None:
-            await send_rich(
-                bot,
-                chat_id,
-                t("new.topic_not_found", name=topic_name),
-                SendRichOpts(reply_to_message_id=message.message_id, thread_id=thread_id),
-            )
-            return
-        key = SessionKey(chat_id=chat_id, topic_id=topic_id)
-        resolved_name = topic_names.get(chat_id, topic_id) or t(
-            "sessions.topic_fallback", id=topic_id
-        )
+    async def reset_provider(key: SessionKey) -> str:
         async with TypingContext(bot, chat_id, thread_id=thread_id):
-            provider = await orchestrator.reset_active_provider_session(key)
-        await send_rich(
-            bot,
-            chat_id,
-            t("new.topic_reset", name=resolved_name, provider=provider),
-            SendRichOpts(reply_to_message_id=message.message_id, thread_id=thread_id),
-        )
-        return
+            return await orchestrator.reset_active_provider_session(key)
 
-    key = get_session_key(message)
-    async with TypingContext(bot, chat_id, thread_id=thread_id):
-        provider = await orchestrator.reset_active_provider_session(key)
+    response = await new_session_response(
+        reset_provider, get_session_key(message), text, topic_names
+    )
     await send_rich(
         bot,
         chat_id,
-        new_session_text(provider),
+        response,
         SendRichOpts(reply_to_message_id=message.message_id, thread_id=thread_id),
     )
 

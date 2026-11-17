@@ -162,7 +162,7 @@ read_only = "Deze geschiedenisgroep is alleen-lezen. Kies een Telegram-onderwerp
 bot_unreachable = "Bot niet bereikbaar"
 telegram_unavailable = "Telegram niet beschikbaar"
 generic = "Er ging iets mis"
-web_turn_running = "Er wordt al een webantwoord gemaakt in dit onderwerp"
+web_turn_running = "Er wordt een webantwoord gemaakt. Probeer deze opdracht opnieuw zodra het klaar is."
 
 [starflow]
 title = "Decoratieve sterrenachtergrond"
@@ -184,3 +184,11 @@ code_reused = "Deze code is al gebruikt. Wacht op een nieuwe code."
 locked = "Te veel pogingen. Probeer het over {seconds} seconden opnieuw."
 totp_required = "Stel tweestapsverificatie in voordat je je wachtwoord wijzigt."
 success = "Wachtwoord gewijzigd. Andere apparaten zijn afgemeld."
+
+[commands]
+secret_telegram = "Gebruik /secret in een één-op-éénchat met de Telegram-bot."
+title = "Opdrachten"
+list = "Opdrachtenlijst"
+help = "↑↓ Verplaatsen · Enter / Tab Kiezen · Esc Sluiten"
+empty = "Geen passende opdrachten."
+run = "Opdracht uitgevoerd"

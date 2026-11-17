@@ -8,6 +8,7 @@ import json
 import logging
 import os
 from bisect import bisect_left, bisect_right
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, BinaryIO, Literal
@@ -79,6 +80,62 @@ class HistoryStore:
 
     def _path(self, tid: str) -> Path:
         return self.directory / history_filename(tid)
+
+    def _metadata_path(self, tid: str) -> Path:
+        self._path(tid)  # Validate the same topic identifiers as the history file.
+        return self.directory / f"{tid}.meta.jsonl"
+
+    @staticmethod
+    def _read_metadata(path: Path) -> dict[str, dict[str, Any]]:
+        if not path.exists():
+            return {}
+        result = {}
+        for line_no, line in enumerate(path.read_bytes().splitlines(), 1):
+            try:
+                item = json.loads(line)
+            except (ValueError, TypeError):
+                item = None
+            if (
+                not isinstance(item, dict)
+                or not isinstance(item.get("id"), str)
+                or not isinstance(item.get("buttons"), list)
+            ):
+                logger.warning("Skipping corrupt history metadata %s:%d", path.name, line_no)
+                continue
+            result[item["id"]] = {"buttons": item["buttons"]}
+        return result
+
+    def _append_metadata(
+        self, tid: str, entry_id: str, buttons: Sequence[Sequence[Mapping[str, object]]]
+    ) -> None:
+        path = self._metadata_path(tid)
+        item = {"id": entry_id, "buttons": [[dict(button) for button in row] for row in buttons]}
+        content = (json.dumps(item, ensure_ascii=False) + "\n").encode("utf-8")
+        with exclusive_file_lock(path), path.open("ab+") as stream:
+            stream.seek(0, os.SEEK_END)
+            if stream.tell():
+                stream.seek(-1, os.SEEK_END)
+                if stream.read(1) != b"\n":
+                    stream.write(b"\n")
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+
+    async def metadata(self, tid: str) -> dict[str, dict[str, Any]]:
+        async with self._lock(tid):
+            return await asyncio.to_thread(self._read_metadata, self._metadata_path(tid))
+
+    def metadata_tids(self) -> list[str]:
+        tids = []
+        for path in sorted(self.directory.glob("*.meta.jsonl")):
+            tid = path.name.removesuffix(".meta.jsonl")
+            try:
+                self._path(tid)
+            except ValueError:
+                logger.warning("Skipping unrecognized metadata filename: %s", path.name)
+            else:
+                tids.append(tid)
+        return tids
 
     def _sequence_path(self, tid: str) -> Path:
         return self._path(tid).with_suffix(".seq")
@@ -158,9 +215,16 @@ class HistoryStore:
                 more = bool(selected and index.rows[0][0] < selected[0][0])
                 return entries, more, summary
 
-    def _append(self, tid: str, entry: Entry) -> Entry:
+    def _append(
+        self,
+        tid: str,
+        entry: Entry,
+        buttons: Sequence[Sequence[Mapping[str, object]]] | None = None,
+    ) -> Entry:
         path = self._path(tid)
         with exclusive_file_lock(path):
+            if buttons is not None:
+                self._append_metadata(tid, entry.id, buttons)
             size = path.stat().st_size if path.exists() else 0
             cached = self._sequences.get(tid)
             if cached is None or cached[1] != size:
@@ -196,12 +260,24 @@ class HistoryStore:
             self._sequences[tid] = (max(maximum, saved.seq), path.stat().st_size)
             return saved
 
-    async def append(self, key: SessionKey | str, entry: Entry) -> Entry:
+    async def append(
+        self,
+        key: SessionKey | str,
+        entry: Entry,
+        *,
+        buttons: Sequence[Sequence[Mapping[str, object]]] | None = None,
+    ) -> Entry:
         tid = to_tid(key) if isinstance(key, SessionKey) else key
         async with self._lock(tid):
-            saved = await complete_write(self._append, tid, entry)
+            if buttons is None:
+                saved = await complete_write(self._append, tid, entry)
+            else:
+                saved = await complete_write(self._append, tid, entry, buttons)
         if self._events is not None:
-            self._events.publish({"type": "entry", "tid": tid, "entry": asdict(saved)})
+            rendered = asdict(saved)
+            if buttons is not None:
+                rendered["buttons"] = buttons
+            self._events.publish({"type": "entry", "tid": tid, "entry": rendered})
         return saved
 
     async def read_page(
@@ -231,6 +307,8 @@ class HistoryStore:
     def tids(self) -> list[str]:
         tids = []
         for path in sorted(self.directory.glob("*.jsonl")):
+            if path.name.endswith(".meta.jsonl"):
+                continue
             try:
                 tids.append(filename_tid(path.name))
             except ValueError:
@@ -243,6 +321,7 @@ class HistoryStore:
             count = len(self._read(path))
             path.unlink(missing_ok=True)
             self._sequence_path(tid).unlink(missing_ok=True)
+            self._metadata_path(tid).unlink(missing_ok=True)
             self._sequences.pop(tid, None)
             self._indexes.pop(tid, None)
             return count

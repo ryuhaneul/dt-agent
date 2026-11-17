@@ -16,6 +16,13 @@ numbers. Topics use the same Telegram session identity as normal chat.
 Deleting a topic removes its history; the empty companion lock file remains
 to preserve safe concurrent access.
 
+Web command inputs use the existing `kind="command"` field; command results use
+normal bot entries. The `Entry` schema is unchanged. Optional keyboards live in
+`history/<tid>.meta.jsonl`, keyed by entry ID and containing only `buttons`.
+History responses and entry events include these rows when available. Old
+readers can still construct `Entry(**json)` from every history line and ignore
+the companion files. Deleting a topic also deletes its keyboard metadata.
+
 `outbox.py` persists pending items and completed/failed delivery state under
 `$DUCTOR_HOME/chat_log/outbox/`. `link.py` probes Telegram every 30 seconds,
 keeps a 30-minute status strip and drains pending deliveries in creation order.
@@ -30,7 +37,13 @@ with public `origin`, `title` and a preview of up to 80 characters.
 Failed bus deliveries during a Telegram outage are retained: task result notices,
 task questions and replies, heartbeat alerts, cron, webhook and background results.
 New deliveries join an existing pending queue so recovery preserves order.
-Web messages and replies use the same queue for their Telegram mirrors.
+Web messages, commands and replies use the same queue for their Telegram mirrors.
+Command input mirrors use the localized "Command executed" prefix; normal web
+messages retain their existing prefix. Before sending a queued result, the
+worker loads its keyboard using the existing `history_id`. Callback data and URL
+buttons remain outside the outbox item schema, so older queue readers do not
+quarantine newly queued commands after rollback. `/secret` inputs and guidance
+responses are excluded from this command recording and mirror path.
 Public task questions are recorded from their question text; other bus events
 use public result content; a task result without injection records status/title
 without the raw worker result. Heartbeat recording follows the alert path.
@@ -110,6 +123,11 @@ a topic also deletes its sequence checkpoint. A topic cleanup failure is counted
 and logged while cleanup of other topics and backups continues.
 Cleanup shares history writers' locks and replaces retained content atomically.
 Pending queue items, including partial transmission progress, are never removed.
+Keyboard metadata is pruned with removed history entries, except while a pending
+outbox item still references it. A later cleanup removes the metadata after that
+reference completes, even if the topic's history file is already empty. Preview
+and actual byte totals include removed metadata; history entry counts do not
+count companion rows again.
 Backups use the creation time encoded by `YYYY-MM-DD/<name>.HHMMSS[.N]` in KST,
 so an old source modification time cannot expire a fresh backup. Unrecognized
 backup paths are preserved with one warning per pass. Empty date folders are

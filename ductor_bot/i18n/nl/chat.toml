@@ -716,5 +716,6 @@ loading = "Bezig met opvragen…"
 error = "Gebruik weergeven mislukt"
 
 [chat_log]
+mirror_command = "Opdracht uitgevoerd: {text}"
 mirror_user = "🌐 Verzonden via het web\n{text}"
 mirror_aborted = "Antwoord gestopt"

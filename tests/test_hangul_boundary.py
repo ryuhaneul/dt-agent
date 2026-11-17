@@ -103,6 +103,7 @@ TEST_ALLOWED = {
     "tests/messenger/telegram/test_memory_lint_report.py": "Korean topic name",
     "tests/messenger/telegram/test_sender.py": "Korean selector prompt (locale output)",
     "tests/messenger/telegram/test_topic_naming*.py": "Korean topic-title input samples and verdicts",
+    "tests/webchat/test_commands.py": "Korean command mirror expectations",
     "scripts/tests/test_home.py": "non-ASCII home path sample",
     "scripts/tests/test_login.py": "non-ASCII config value sample",
     "scripts/tests/test_onboard_preflight.py": "Korean preflight output",

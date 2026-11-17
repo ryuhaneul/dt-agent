@@ -408,3 +408,22 @@ async def test_index_accepts_rows_that_the_full_reader_accepts(tmp_path):
     assert [entry.text for entry in await history.read("1", limit=1)] == expected == ["latest"]
     assert await history.count("1") == 2
     assert (await history.read("1", before=2, limit=1))[0].text == "old"
+
+
+async def test_button_metadata_keeps_old_entry_reader_and_events_compatible(tmp_path):
+    from ductor_bot.chat_log.events import EventHub
+
+    hub = EventHub()
+    queue = hub.subscribe()
+    store = HistoryStore(tmp_path, hub)
+    buttons = [[{"text": "Model", "callback_data": "ms:claude"}]]
+    saved = await store.append("1.7", Entry("bot", "web", "Choose"), buttons=buttons)
+    raw = json.loads(store._path("1.7").read_text())
+    assert Entry(**raw) == saved
+    assert "buttons" not in raw
+    assert await store.metadata("1.7") == {saved.id: {"buttons": buttons}}
+    assert (await queue.get())["entry"]["buttons"] == buttons
+    assert store.tids() == ["1.7"]
+    assert await HistoryStore(tmp_path).metadata("1.7") == {saved.id: {"buttons": buttons}}
+    await store.delete("1.7")
+    assert not (tmp_path / "1.7.meta.jsonl").exists()

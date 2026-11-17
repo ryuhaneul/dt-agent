@@ -1,6 +1,10 @@
 # Deutsche Bot-Command-Beschreibungen (≤22 Zeichen für Telegram).
 
 [bot]
+start = "Willkommen"
+where = "Erfasste Chats"
+leave = "Gruppe verlassen"
+sessions = "Sitzungen verwalten"
 new = "Neuer Chat"
 reset = "Chat zurücksetzen"
 stop = "Aktuelles + Wartende stoppen"

@@ -1,6 +1,10 @@
 # Descripciones de comandos del bot (≤22 caracteres para Telegram móvil).
 
 [bot]
+start = "Bienvenida"
+where = "Chats registrados"
+leave = "Salir de un grupo"
+sessions = "Gestionar sesiones"
 new = "Nuevo chat"
 reset = "Reiniciar chat"
 stop = "Detener actual + cola"

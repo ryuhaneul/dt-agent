@@ -33,7 +33,7 @@ class ChatLogRuntime:
         self.recorder = HistoryRecorder(self.history, self.events, bot.config.allowed_user_ids)
         self.ops = TelegramWebchatOps(bot)
         self.link = TelegramLinkMonitor(self.ops, self.events)
-        self.drainer = OutboxDrainer(self.outbox, self.ops, self.link)
+        self.drainer = OutboxDrainer(self.outbox, self.ops, self.link, history=self.history)
         self.link.on_up = self.drainer.wake
         self._stopped = False
         self._retention_task: asyncio.Task[None] | None = None

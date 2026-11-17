@@ -96,6 +96,41 @@ bus deliveries, including public origin/title metadata. See
 [recording and recovery](chat_log.md) for ordering, chunk splitting and the
 possible duplicate chunk after an interrupted Telegram response.
 
+## Web commands
+
+The web bridge supports the same 29 command names as the main Telegram bot.
+Names ignore leading whitespace, case and an `@bot` suffix; arguments retain
+their original case. Unknown slash commands remain normal messages.
+`GET /commands?lang=ko` returns `{ "commands": [{ "name": "new", "description": "..." }] }`.
+The language must be one of the nine supported locales; omitting it uses the bot
+language without changing Telegram's language.
+
+Known commands execute outside the normal streaming turn. Inputs are recorded
+with source `web`, role `user` and `kind="command"`; results use role `bot`.
+Their Telegram mirrors use the existing durable outbox. Input mirrors say
+"Command executed: /command" instead of the normal web-message prefix. Selector
+callback data, URL buttons and keyboard rows survive queuing and restart.
+The JSON response contains `text` and `buttons`; callback and URL buttons use
+`{text, callback_data}` and `{text, url}`, respectively.
+
+Read-only quick commands and interrupt/stop controls can run while a turn is
+active. State-changing commands such as `/new`, `/reset`, `/session` and
+`/agent_start` return `409 web_turn_running` when their session is busy; Telegram
+queues those commands instead. `/new @topic` also checks and locks its target
+topic. `/stop_all` discards Telegram's pending messages and this chat's waiting
+web turns before using the existing process-kill path.
+
+`/session` uses the existing named background-session submission path. A normal
+`@session-name` follow-up remains a web turn in the current topic. File-browser
+file requests likewise continue through that topic's normal turn path.
+`/restart` saves notification state, records and queues the result, then writes
+the restart marker; any pending mirror resumes after restart.
+
+`/secret`, including bot suffixes and additional arguments, is intercepted before
+turn submission, recording or mirroring. This version only directs the user to
+a one-to-one chat with the Telegram bot; secret command text and values are not
+stored by the web command path.
+
 ## Bridge contracts
 
 The browser app relays bridge JSON statuses and error codes. Bridge routes use
@@ -105,6 +140,8 @@ The browser app relays bridge JSON statuses and error codes. Bridge routes use
 |---|---|
 | Delete topic while its session lock remains held beyond 30 seconds | 409 `topic_busy`; retry after the topic finishes stopping |
 | Send to or abort Unknown topic | 409 `read_only`; select a real topic |
+| List commands (`GET /commands`, optional allowed `lang`) | 200 `{ "commands": [...] }`; invalid language: 400 `bad_request` |
+| Execute a supported command | 200 `{ "text": "...", "buttons": [...] }` (`buttons` may be null) |
 | Send a normal message | 202 `{ "turn_id": "..." }` |
 | Send `/stop` (trimmed, case-insensitive) | 202 `{ "killed": 0 }` (integer process count) |
 | Abort endpoint | 200 `{ "killed": 0 }` (integer process count) |

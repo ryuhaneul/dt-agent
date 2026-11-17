@@ -162,7 +162,7 @@ read_only = "This history group is read-only. Select a Telegram topic to send or
 bot_unreachable = "Bot unreachable"
 telegram_unavailable = "Telegram unavailable"
 generic = "Something went wrong"
-web_turn_running = "A web answer is already running in this topic"
+web_turn_running = "A web answer is running. Try this command again after it finishes."
 
 [starflow]
 title = "Decorative star background"
@@ -184,3 +184,11 @@ code_reused = "This code has already been used. Wait for a new code."
 locked = "Too many attempts. Try again in {seconds} seconds."
 totp_required = "Set up two-step authentication before changing your password."
 success = "Password changed. Other devices have been logged out."
+
+[commands]
+secret_telegram = "Use /secret in a one-to-one chat with the Telegram bot."
+title = "Commands"
+list = "Command list"
+help = "↑↓ Move · Enter / Tab Select · Esc Close"
+empty = "No matching commands."
+run = "Command executed"

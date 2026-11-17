@@ -1,6 +1,10 @@
 # Bot command descriptions (≤22 chars for Telegram mobile clients).
 
 [bot]
+start = "시작 안내"
+where = "참여 채팅 목록"
+leave = "그룹 나가기"
+sessions = "세션 관리"
 new = "새 대화 시작"
 reset = "현재 대화 재설정"
 stop = "현재+대기 메시지 중지"

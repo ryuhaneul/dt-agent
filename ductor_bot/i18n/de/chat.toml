@@ -716,5 +716,6 @@ loading = "Abfrage läuft…"
 error = "Nutzungsanzeige fehlgeschlagen"
 
 [chat_log]
+mirror_command = "Befehl ausgeführt: {text}"
 mirror_user = "🌐 Aus dem Web gesendet\n{text}"
 mirror_aborted = "Antwort gestoppt"

@@ -662,7 +662,7 @@ class WebSocket extends Element{
   close(){this.closed=true;this.emit('close')}
 }
 const storage=new Map(), calls=[], notices=[], routes=[];
-let topicsHold=null, failGet=null;
+let topicsHold=null, failGet=null, slowCommandHold=null;
 let blockedStorage=false, session=true, coarse=false, failSend=null, turnNumber=0;
 const localStorage={getItem:key=>{if(blockedStorage)throw Error('blocked');return storage.get(key)??null},setItem:(key,value)=>{if(blockedStorage)throw Error('blocked');storage.set(key,value)}};
 const makeEntry=(seq,extras={})=>({id:`e${seq}`,seq,ts:'2025-01-01T01:01:00Z',role:'bot',source:'telegram',kind:'message',text:`Entry ${seq}`,imported:seq<0,mirror:null,...extras});
@@ -689,6 +689,8 @@ async function fetch(url,options={}){
     assert.equal(options.headers['X-Dtw-Client'],'web');assert.equal(options.headers['X-Dtw-Csrf'],'fake-csrf');
     if(parsed.pathname.endsWith('/abort'))return response(200,{killed:1});
     if(parsed.pathname.endsWith('/messages')){
+      if(body.text==='/usage'){await slowCommandHold;return response(200,{text:'Usage',buttons:null});}
+      if(/^\/(stop|interrupt|stop_all)(@|\s|$)/i.test(body.text.trim()))return response(200,{text:'Stopped',buttons:null});
       if(failSend)return response(409,{error:failSend});
       assert.ok(body.text.trim());assert.ok(body.client_id);
       return response(202,{turn_id:`turn${++turnNumber}`});
@@ -772,6 +774,24 @@ await chat.namespace.handleEvent({type:'turn',tid:'1.2',turn_id:'turn1',phase:'s
 await chat.namespace.handleEvent({type:'delta',tid:'1.2',turn_id:'turn1',text:'**Hello** <img>'});
 await chat.namespace.handleEvent({type:'tool',tid:'1.2',turn_id:'turn1',name:'Read <script>'});
 assert.ok(thread.innerHTML.includes('<b>Hello</b> &lt;img&gt;'));assert.ok(thread.innerHTML.includes('Read &lt;script&gt;'));
+// A held command must not block control submissions or release the ordinary send guard.
+let releaseCommand;slowCommandHold=new Promise(resolve=>{releaseCommand=resolve});
+input.value='/usage';input.emit('input');input.emit('keydown',{key:'Enter',shiftKey:false,isComposing:false});await flush();
+const posts=()=>calls.filter(call=>call.options.method==='POST');
+for(const method of ['click','enter']){
+  for(const command of ['/stop','/interrupt','/stop_all',' /StOp@TestBot']){
+    input.value=command;input.emit('input');assert.equal(send.disabled,false,`${command} enabled while usage pending`);
+    const before=posts().length;
+    if(method==='click')send.emit('click');else input.emit('keydown',{key:'Enter',shiftKey:false,isComposing:false});
+    await flush();assert.equal(posts().length,before+1,`${command} via ${method}`);assert.equal(posts().at(-1).body.text,command);
+    input.value='/help';input.emit('input');const guarded=posts().length;
+    send.emit('click');input.emit('keydown',{key:'Enter',shiftKey:false,isComposing:false});await flush();
+    assert.equal(posts().length,guarded,'ordinary duplicate remains blocked after control completes');
+  }
+}
+input.value='';input.emit('input');assert.equal(send.className,'btn btn-danger');assert.equal(send.disabled,false);
+const beforeAbort=posts().length;send.emit('click');await flush();assert.equal(posts().length,beforeAbort+1);assert.ok(posts().at(-1).url.endsWith('/abort'));
+releaseCommand();slowCommandHold=null;await flush();
 send.emit('click');await flush();assert.ok(calls.some(call=>call.url==='/api/topics/1.2/abort'));assert.ok(!calls.some(call=>call.url==='/api/topics/1.3/abort'));
 await chat.namespace.handleEvent({type:'turn',tid:'1.2',turn_id:'turn1',phase:'aborted'});assert.equal(send.className,'btn btn-primary');assert.ok(thread.innerHTML.includes(strings['chat.stopped']));assert.ok(!thread.innerHTML.includes('class="caret"'));
 const final=makeEntry(206,{source:'web',turn_id:'turn1',status:'aborted',text:'Final',mirror:{state:'pending'}});historyA.push(final);
@@ -790,6 +810,16 @@ for(const path of ['/api/topics','/api/topics/1.2/messages']){
 }
 failSend='web_turn_running';input.value='retry me';send.emit('click');await flush();assert.equal(input.value,'retry me');assert.equal(notices.at(-1),'error.web_turn_running');failSend=null;
 const bus=makeEntry(207,{role:'event',source:'system',kind:'task_result',status:'failed',title:'Task <img>',text:'failure',mirror:{state:'pending'}});historyA.push(bus);await chat.namespace.handleEvent({type:'entry',tid:'1.2',entry:bus});assert.ok(thread.innerHTML.includes('badge-down'));assert.ok(thread.innerHTML.includes('Task &lt;img&gt;'));
+// Command inputs use the approved tag; results preserve rows and safe URL chips.
+await chat.namespace.handleEvent({type:'entry',tid:'1.2',entry:makeEntry(209,{role:'user',source:'web',kind:'command',text:'/model <img>'})});
+await chat.namespace.handleEvent({type:'entry',tid:'1.2',entry:makeEntry(210,{source:'web',text:'Choose a model',buttons:[[{text:'<img onerror="x">',callback_data:'ms:claude'}],[{text:'Project "site"',url:'https://example.com/?x="&y=<'},{text:'Unsafe',url:'javascript:alert(1)'}]]})});
+assert.ok(thread.innerHTML.includes('command-message'));assert.ok(thread.innerHTML.includes(strings['commands.run']));assert.ok(thread.innerHTML.includes('/model &lt;img&gt;'));
+const rendered=thread.innerHTML.split('data-entry-seq="210"')[1];
+assert.equal((rendered.match(/response-button-row/g)||[]).length,2);
+assert.ok(rendered.includes('aria-disabled="true"'));assert.ok(rendered.includes('&lt;img onerror=&quot;x&quot;&gt;'));
+assert.ok(rendered.includes('target="_blank" rel="noopener"'));assert.ok(!rendered.includes('href="javascript:'));
+assert.ok(rendered.includes('Project &quot;site&quot;'));
+
 // Hidden views keep unseen entries unread. Local storage denial never breaks selection.
 q.value='';q.emit('input');
 context.location.hash='#files';document.emit('route-change',{detail:{route:'files',view:'files'}});
@@ -1327,6 +1357,74 @@ def test_classic_script_reveals_auth_after_four_seconds_unless_startup_already_r
     result = subprocess.run(
         ["node", "--input-type=module", "-e", STARTUP_FALLBACK_TESTS],
         input=json.dumps({"source": (STATIC / "js/theme-init.js").read_text()}),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+COMMAND_CLIENT_TESTS = r"""
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import vm from 'node:vm';
+const {staticDir,strings,commands}=JSON.parse(fs.readFileSync(0,'utf8'));
+class Element {
+  constructor(){this.listeners={};this.attributes={};this.dataset={};this.hidden=true;this.value='';this.innerHTML='';this.textContent='';}
+  addEventListener(type,callback){(this.listeners[type] ||= []).push(callback)}
+  emit(type,props={}){const event={type,target:this,preventDefault(){this.prevented=true},...props};for(const callback of this.listeners[type] || [])callback(event);return event}
+  setAttribute(key,value){this.attributes[key]=String(value)}
+  removeAttribute(key){delete this.attributes[key]}
+  focus(){document.activeElement=this}
+  setSelectionRange(start,end){this.selection=[start,end]}
+  querySelector(){return {scrollIntoView(){}}}
+  closest(selector){return selector==='.composer'?this:null}
+}
+const nodes=new Map();
+const document=new Element();document.documentElement={lang:'en'};
+document.querySelector=selector=>{if(!nodes.has(selector))nodes.set(selector,new Element());return nodes.get(selector)};
+const input=document.querySelector('#msgIn');input.focus();
+const calls=[],selected=[];let release=null;
+const context=vm.createContext({document,console,encodeURIComponent});
+const api=new vm.SyntheticModule(['api'],function(){this.setExport('api',async route=>{calls.push(route);if(release)await release;return {commands}})},{context});
+const i18n=new vm.SyntheticModule(['t'],function(){this.setExport('t',key=>strings[key] || '')},{context});
+const md=new vm.SyntheticModule(['esc'],function(){this.setExport('esc',value=>String(value).replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[ch]))},{context});
+for(const module of [api,i18n,md]){await module.link(()=>{});await module.evaluate()}
+const module=new vm.SourceTextModule(fs.readFileSync(path.join(staticDir,'js/commands.js'),'utf8'),{context});
+await module.link(name=>name==='./api.js'?api:name==='./i18n.js'?i18n:md);await module.evaluate();
+const controller=module.namespace.initCommands(input,value=>selected.push(value));
+async function flush(){for(let i=0;i<5;i++)await new Promise(setImmediate)}
+document.emit('auth-change',{detail:{authenticated:true}});await flush();
+assert.deepEqual(calls,['/commands?lang=en']);
+const menu=document.querySelector('#commandMenu'),list=document.querySelector('#commandList');
+input.value='/';input.emit('input');assert.equal(menu.hidden,false);assert.equal(input.attributes['aria-expanded'],'true');
+assert.equal((list.innerHTML.match(/role="option"/g)||[]).length,29);
+assert.equal(document.querySelector('#commandCount').textContent,'29 / 29');
+input.value='/Mo';input.emit('input');assert.equal((list.innerHTML.match(/role="option"/g)||[]).length,1);assert.ok(list.innerHTML.includes('/model'));
+assert.equal(controller.keydown({key:'Tab',preventDefault(){}}),true);assert.equal(input.value,'/model ');assert.equal(selected.at(-1),'/model ');assert.equal(menu.hidden,true);
+input.value='/';input.emit('input');controller.keydown({key:'ArrowDown',preventDefault(){}});controller.keydown({key:'Enter',preventDefault(){}});assert.equal(input.value,'/reset ');
+input.value='/';input.emit('input');controller.keydown({key:'ArrowUp',preventDefault(){}});controller.keydown({key:'Tab',preventDefault(){}});assert.equal(input.value,'/leave ');
+input.value='/';input.emit('input');controller.keydown({key:'Escape',preventDefault(){}});assert.equal(menu.hidden,true);assert.equal(input.value,'/');assert.ok(!('aria-activedescendant' in input.attributes));
+assert.equal(controller.keydown({key:'Enter',preventDefault(){}}),false);
+input.value='/no_such_command';input.emit('input');assert.ok(list.innerHTML.includes(strings['commands.empty']));controller.keydown({key:'Escape',preventDefault(){}});
+input.value='/new argument';input.emit('input');assert.equal(menu.hidden,true);
+input.value='/mo';input.emit('input');assert.equal(controller.keydown({key:'Enter',isComposing:true,preventDefault(){}}),false);assert.equal(input.value,'/mo');
+list.emit('pointerdown',{target:{closest(){return {dataset:{index:'0'}}}}});assert.equal(input.value,'/model ');assert.equal(menu.hidden,true);
+input.value='/';input.emit('input');document.emit('click',{target:{closest(){return null}}});assert.equal(menu.hidden,true);
+input.emit('input');document.emit('topic-selected');assert.equal(menu.hidden,true);
+let done;release=new Promise(resolve=>done=resolve);document.emit('auth-change',{detail:{authenticated:true}});document.emit('auth-change',{detail:{authenticated:false}});done();await flush();input.value='/';input.emit('input');assert.equal(menu.hidden,true);
+"""
+
+
+def test_command_autocomplete_client_contract():
+    from ductor_bot.webchat.commands import command_list
+
+    result = subprocess.run(
+        ["node", "--experimental-vm-modules", "--input-type=module", "-e", COMMAND_CLIENT_TESTS],
+        input=json.dumps(
+            {"staticDir": str(STATIC), "strings": STRINGS, "commands": command_list("en")}
+        ),
         capture_output=True,
         text=True,
         check=False,

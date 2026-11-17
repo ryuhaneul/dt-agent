@@ -7,7 +7,7 @@ import time
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
@@ -581,6 +581,8 @@ class TestReplies:
         orch.resolve_session_directive.return_value = None
         orch.config.provider = "claude"
         stub = SimpleNamespace(_orch=orch, _bot=MagicMock(), _build_session_help=lambda: "help")
+        stub._parse_session_prompt = MethodType(TelegramBot._parse_session_prompt, stub)
+        stub._submit_session_response = MethodType(TelegramBot._submit_session_response, stub)
         message = MagicMock()
         message.chat.id = 1
         message.message_id = 5

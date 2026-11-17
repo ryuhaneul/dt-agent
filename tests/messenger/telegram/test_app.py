@@ -1403,32 +1403,51 @@ class TestStopWiring:
         tg_bot._sequential.drain_topic.assert_awaited_with(42, 5)
 
 
-@pytest.mark.parametrize("text", [
-    "/status", "/memory", "/cron", "/diagnose", "/model", "/model sonnet",
-    "/effort", "/sessions", "/tasks",
-])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "/status",
+        "/memory",
+        "/cron",
+        "/diagnose",
+        "/model",
+        "/model sonnet",
+        "/effort",
+        "/sessions",
+        "/tasks",
+    ],
+)
 async def test_existing_quick_commands_keep_orchestrator_route(text):
     tg_bot, fake = _make_tg_bot()
     orchestrator = _make_orchestrator()
     tg_bot._orchestrator = orchestrator
     message = _make_message(text=text)
-    with patch("ductor_bot.messenger.telegram.app.handle_command", new_callable=AsyncMock) as command:
+    with patch(
+        "ductor_bot.messenger.telegram.app.handle_command", new_callable=AsyncMock
+    ) as command:
         assert await tg_bot._on_quick_command(message.chat.id, message)
     command.assert_awaited_once_with(orchestrator, fake, message)
 
 
-@pytest.mark.parametrize(("text", "handler_name"), [
-    ("/where", "_handle_where"), ("/leave", "_handle_leave"),
-    ("/showfiles", "_on_showfiles"),
-])
+@pytest.mark.parametrize(
+    ("text", "handler_name"),
+    [
+        ("/where", "_handle_where"),
+        ("/leave", "_handle_leave"),
+        ("/showfiles", "_on_showfiles"),
+    ],
+)
 async def test_existing_direct_quick_commands_keep_telegram_route(text, handler_name):
     tg_bot, _fake = _make_tg_bot()
     tg_bot._orchestrator = _make_orchestrator()
     handler = AsyncMock()
     message = _make_message(text=text)
-    with patch.object(tg_bot, handler_name, handler), patch(
-        "ductor_bot.messenger.telegram.app.handle_command", new_callable=AsyncMock
-    ) as command:
+    with (
+        patch.object(tg_bot, handler_name, handler),
+        patch(
+            "ductor_bot.messenger.telegram.app.handle_command", new_callable=AsyncMock
+        ) as command,
+    ):
         assert await tg_bot._on_quick_command(message.chat.id, message)
     if text == "/showfiles":
         handler.assert_awaited_once_with(message)
@@ -1440,6 +1459,7 @@ async def test_existing_direct_quick_commands_keep_telegram_route(text, handler_
 @pytest.fixture
 async def connected_quick_path(tmp_path, monkeypatch):
     from types import SimpleNamespace
+
     from ductor_bot.messenger.telegram import app, handlers
     from ductor_bot.orchestrator import commands, core
     from ductor_bot.orchestrator.registry import CommandRegistry, OrchestratorResult
@@ -1455,20 +1475,21 @@ async def connected_quick_path(tmp_path, monkeypatch):
     orchestrator = core.Orchestrator.__new__(core.Orchestrator)
     orchestrator._command_registry = CommandRegistry()
     orchestrator._providers = SimpleNamespace(_known_model_ids=frozenset(), _codex_cache_fn=None)
-    orchestrator._named_sessions = SimpleNamespace(get=lambda *args: None)
+    orchestrator._named_sessions = SimpleNamespace(get=lambda *_args: None)
     orchestrator._paths = SimpleNamespace(ductor_home=tmp_path)
     orchestrator._register_commands()
 
     async def route(key, text):
-        return await orchestrator._route_message(core._MessageDispatch(
-            key=key, text=text, cmd=text.strip().lower()))
+        return await orchestrator._route_message(
+            core._MessageDispatch(key=key, text=text, cmd=text.strip().lower())
+        )
 
     orchestrator.handle_message = route
     bot._orchestrator = orchestrator
     lock = bot._sequential.get_lock(1)
     normal_calls = []
 
-    async def normal(_orchestrator, _key, text, **kwargs):
+    async def normal(_orchestrator, _key, text, **_kwargs):
         normal_calls.append((text, lock.locked()))
         return OrchestratorResult(text="synthetic conversation")
 
@@ -1503,22 +1524,39 @@ async def connected_quick_path(tmp_path, monkeypatch):
         return await bot._sequential(queued_handler, message, data)
 
     async def dispatch(text):
-        message = Message.model_validate({
-            "message_id": 200, "date": 1000,
-            "chat": {"id": 1, "type": "private"},
-            "from": {"id": 1, "first_name": "Fixture", "is_bot": False}, "text": text,
-        })
+        message = Message.model_validate(
+            {
+                "message_id": 200,
+                "date": 1000,
+                "chat": {"id": 1, "type": "private"},
+                "from": {"id": 1, "first_name": "Fixture", "is_bot": False},
+                "text": text,
+            }
+        )
         return await bot._auth(sequential, message, {})
 
-    yield SimpleNamespace(bot=bot, lock=lock, normal_calls=normal_calls, sent=sent,
-                          quick_results=quick_results, quick_returned=quick_returned,
-                          queued_handler=queued_handler, dispatch=dispatch)
+    yield SimpleNamespace(
+        bot=bot,
+        lock=lock,
+        normal_calls=normal_calls,
+        sent=sent,
+        quick_results=quick_results,
+        quick_returned=quick_returned,
+        queued_handler=queued_handler,
+        dispatch=dispatch,
+    )
     await bot._secret_input.close()
 
 
-@pytest.mark.parametrize("text", [
-    "/effort high", "/status foo", "/EFFORT@fixture_bot high", "/status@fixture_bot foo",
-])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "/effort high",
+        "/status foo",
+        "/EFFORT@fixture_bot high",
+        "/status@fixture_bot foo",
+    ],
+)
 async def test_unregistered_quick_input_waits_for_existing_turn(connected_quick_path, text):
     path = connected_quick_path
     await path.lock.acquire()
@@ -1543,10 +1581,20 @@ async def test_unregistered_quick_input_waits_for_existing_turn(connected_quick_
         await asyncio.gather(task, return_exceptions=True)
 
 
-@pytest.mark.parametrize("text", [
-    "/effort", "/model", "/model sonnet", "/MODEL@fixture_bot sonnet", "/status",
-    "/accounts", "/showfiles", "/where", "/leave",
-])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "/effort",
+        "/model",
+        "/model sonnet",
+        "/MODEL@fixture_bot sonnet",
+        "/status",
+        "/accounts",
+        "/showfiles",
+        "/where",
+        "/leave",
+    ],
+)
 async def test_registered_quick_input_still_bypasses_existing_turn(connected_quick_path, text):
     path = connected_quick_path
     await path.lock.acquire()
@@ -1559,3 +1607,267 @@ async def test_registered_quick_input_still_bypasses_existing_turn(connected_qui
             path.sent.assert_awaited_once()
     finally:
         path.lock.release()
+
+
+@pytest.mark.parametrize("command", ["/leave", "/leave nope", "/leave -100123"])
+@pytest.mark.parametrize("fail", [False, True])
+async def test_leave_response_matches_handler(command, fail):
+    from aiogram.exceptions import TelegramAPIError
+
+    from ductor_bot.i18n import t
+    from ductor_bot.messenger.telegram.app import leave_chat_response
+    from ductor_bot.text.response_format import SEP, fmt
+
+    tg, bot = _make_tg_bot()
+    tracker = MagicMock()
+    tg._chat_tracker = tracker
+    bot.leave_chat = AsyncMock(return_value=True)
+    if fail:
+        error = TelegramAPIError(method=MagicMock(), message="forbidden")
+        bot.leave_chat.side_effect = error
+    expected = (
+        fmt(t("telegram.leave_usage_header"), SEP, t("telegram.leave_usage"))
+        if command == "/leave"
+        else t("telegram.leave_invalid_id")
+        if command == "/leave nope"
+        else t("telegram.leave_failed", error=error)
+        if fail
+        else t("telegram.left_group", group_id=-100123)
+    )
+    assert await leave_chat_response(command, bot.leave_chat, tracker) == expected
+    if command == "/leave -100123":
+        bot.leave_chat.assert_awaited_once_with(-100123)
+        if fail:
+            tracker.record_leave.assert_not_called()
+        else:
+            tracker.record_leave.assert_called_once_with(-100123, "left")
+    else:
+        bot.leave_chat.assert_not_awaited()
+        tracker.record_leave.assert_not_called()
+    bot.leave_chat.reset_mock()
+    tracker.reset_mock()
+    message = _make_message(text=command, topic_thread_id=7)
+    with patch("ductor_bot.messenger.telegram.app.send_rich", new_callable=AsyncMock) as send:
+        await tg._handle_leave(message.chat.id, message)
+    assert send.call_args.args[2] == expected
+    assert send.call_args.args[3].thread_id == 7
+    assert send.call_args.args[3].reply_to_message_id == message.message_id
+
+
+async def test_restart_preparation_matches_handler_and_preserves_order():
+    from ductor_bot.i18n import t
+    from ductor_bot.infra.restart import EXIT_RESTART
+    from ductor_bot.messenger.telegram.app import prepare_restart_response
+    from ductor_bot.text.response_format import SEP, fmt
+
+    tg, _ = _make_tg_bot()
+    orch = _make_orchestrator()
+    tg._orchestrator = orch
+    expected = fmt(t("startup.restart_header"), SEP, t("startup.restart_body"))
+    with patch("ductor_bot.infra.restart.write_restart_sentinel") as sentinel:
+        assert await prepare_restart_response(77, orch.paths) == expected
+    sentinel.assert_called_once_with(
+        77,
+        t("startup.restart_default"),
+        sentinel_path=orch.paths.ductor_home / "restart-sentinel.json",
+    )
+    events = []
+
+    def write_sentinel(*_args, **_kwargs):
+        events.append("sentinel")
+
+    async def send(*args):
+        assert tg._exit_code != EXIT_RESTART
+        events.append("send")
+        assert args[2] == expected
+
+    async def stop():
+        assert tg._exit_code == EXIT_RESTART
+        assert tg._stop_requested
+        events.append("stop")
+
+    tg._dp.stop_polling = AsyncMock(side_effect=stop)
+    with (
+        patch("ductor_bot.infra.restart.write_restart_sentinel", side_effect=write_sentinel),
+        patch("ductor_bot.messenger.telegram.app.send_rich", side_effect=send),
+    ):
+        await tg._on_restart(_make_message(chat_id=77))
+    assert events == ["sentinel", "send", "stop"]
+
+
+async def test_agent_commands_builder_matches_handler():
+    from ductor_bot.i18n import t
+    from ductor_bot.messenger.telegram.app import build_agent_commands_text
+    from ductor_bot.text.response_format import SEP, fmt
+
+    expected = fmt(
+        t("agents.system_header"),
+        SEP,
+        "\n".join(
+            [
+                t("agents.telegram_explanation"),
+                "",
+                t("agents.commands_header"),
+                t("agents.cmd_list", prefix="/"),
+                t("agents.cmd_start", prefix="/"),
+                t("agents.cmd_stop", prefix="/"),
+                t("agents.cmd_restart", prefix="/"),
+                "",
+                t("agents.setup_header"),
+                t("agents.setup_instruction"),
+            ]
+        ),
+    )
+    assert build_agent_commands_text() == expected
+    tg, _ = _make_tg_bot()
+    with patch("ductor_bot.messenger.telegram.app.send_rich", new_callable=AsyncMock) as send:
+        await tg._on_agent_commands(_make_message(topic_thread_id=7))
+    assert send.call_args.args[2] == expected
+    assert send.call_args.args[3].thread_id == 7
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    ["hello", "@codex hello", "@claude opus hello", "@opus hello", "@old hello", "@unknown hello"],
+)
+async def test_session_submission_response_matches_handler(prompt):
+    from types import SimpleNamespace
+
+    from ductor_bot.i18n import t
+    from ductor_bot.text.response_format import SEP, fmt
+
+    tg, _ = _make_tg_bot()
+    orch = _make_orchestrator()
+    tg._orchestrator = orch
+    orch.resolve_session_directive.side_effect = {
+        "codex": ("codex", ""),
+        "claude": ("claude", ""),
+        "opus": ("claude", "opus"),
+    }.get
+    orch.is_known_model.side_effect = "opus".__eq__
+    named = SimpleNamespace(provider="codex", model="gpt-test")
+    orch.get_named_session.side_effect = lambda _chat_id, name: (
+        named if name in {"old", "new"} else None
+    )
+    orch.submit_named_session.return_value = ("task1", "new")
+    orch.submit_named_followup_bg.return_value = "task2"
+    expected = (
+        fmt(
+            t("session_notice.followup_sent", name="old"),
+            SEP,
+            t("session_notice.task_queued", task_id="task2"),
+        )
+        if prompt == "@old hello"
+        else fmt(
+            t("session_notice.started_title", name="new"),
+            SEP,
+            t(
+                "session_notice.started_body",
+                provider="Codex",
+                model_info=" (gpt-test)",
+                name="new",
+            ),
+        )
+    )
+    parsed = tg._parse_session_prompt(42, prompt)
+    assert tg._submit_session_response(42, parsed, 10, 7) == expected
+    if prompt == "@old hello":
+        orch.submit_named_followup_bg.assert_called_once_with(42, "old", "hello", 10, 7)
+        orch.submit_named_session.assert_not_called()
+    else:
+        call = orch.submit_named_session.call_args
+        assert call.args[0] == 42
+        assert call.args[1] == (prompt if prompt == "@unknown hello" else "hello")
+        assert call.args[2].message_id == 10
+        assert call.args[2].thread_id == 7
+        assert call.args[2].provider_override == (
+            "codex"
+            if prompt == "@codex hello"
+            else "claude"
+            if prompt in {"@claude opus hello", "@opus hello"}
+            else None
+        )
+        assert call.args[2].model_override == (
+            "opus" if prompt in {"@claude opus hello", "@opus hello"} else None
+        )
+    orch.submit_named_session.reset_mock()
+    orch.submit_named_followup_bg.reset_mock()
+    with patch("ductor_bot.messenger.telegram.app.send_rich", new_callable=AsyncMock) as send:
+        await tg._on_session(
+            _make_message(chat_id=42, text=f"/session {prompt}", topic_thread_id=7)
+        )
+    assert send.call_args.args[2] == expected
+    assert send.call_args.args[3].thread_id == 7
+
+
+@pytest.mark.parametrize(
+    ("prompt", "expected_text", "expected_model"),
+    [
+        ("opus hello", "hello", "opus"),
+        ("OpUs\t\n hello", "hello", "opus"),
+        ("opus\u00a0hello", "hello", "opus"),
+        ("op.us-1_2 hello", "hello", "op.us-1_2"),
+        ("opus ", "", "opus"),
+        ("opus", "opus", None),
+        ("opus! hello", "opus! hello", None),
+        ("unknown hello", "unknown hello", None),
+        ("-opus hello", "-opus hello", None),
+        ("1opus hello", "1opus hello", None),
+        ("a" * 100_000 + "!", "a" * 100_000 + "!", None),
+    ],
+    ids=[
+        "model",
+        "mixed-case",
+        "unicode-space",
+        "punctuation",
+        "empty-rest",
+        "no-space",
+        "invalid-suffix",
+        "unknown",
+        "invalid-start",
+        "numeric-start",
+        "long-no-space",
+    ],
+)
+def test_session_model_pattern_is_explicitly_anchored_and_preserves_parsing(
+    prompt, expected_text, expected_model
+):
+    import re
+
+    tg, _ = _make_tg_bot()
+    orch = _make_orchestrator()
+    tg._orchestrator = orch
+    orch.resolve_session_directive.return_value = ("claude", "")
+    orch.is_known_model.side_effect = {"opus", "op.us-1_2"}.__contains__
+    with patch("re.match", wraps=re.match) as match:
+        parsed = tg._parse_session_prompt(42, f"@claude {prompt}")
+    assert parsed == (expected_text, "claude", expected_model, None)
+    # Keep the start constraint explicit for static ReDoS analysis as well as re.match.
+    assert match.call_args_list[1].args[0].startswith(r"\A")
+
+
+@pytest.mark.parametrize("stage", ["parse", "submit", "send"])
+async def test_session_extraction_preserves_value_error_boundary(stage):
+    tg, _ = _make_tg_bot()
+    orch = _make_orchestrator()
+    tg._orchestrator = orch
+    orch.resolve_session_directive.return_value = ("codex", "")
+    orch.is_known_model.return_value = False
+    orch.submit_named_session.return_value = ("task1", "new")
+    orch.get_named_session.return_value = None
+    error = ValueError("session error")
+    if stage == "parse":
+        orch.resolve_session_directive.side_effect = error
+    elif stage == "submit":
+        orch.submit_named_session.side_effect = error
+    with patch("ductor_bot.messenger.telegram.app.send_rich", new_callable=AsyncMock) as send:
+        if stage == "send":
+            send.side_effect = [error, None]
+        if stage == "parse":
+            with pytest.raises(ValueError, match="session error"):
+                await tg._on_session(_make_message(text="/session @codex hello"))
+            send.assert_not_awaited()
+        else:
+            await tg._on_session(_make_message(text="/session @codex hello"))
+            assert send.call_args.args[2] == "session error"
+            assert send.await_count == (2 if stage == "send" else 1)

@@ -99,6 +99,51 @@ class RetentionPruner:
                     self.history._sequences.pop(tid, None)
         return result
 
+    def _metadata_file(self, tid: str, cutoff: datetime, dry_run: bool) -> int:
+        path = self.history._metadata_path(tid)
+        if not path.exists():
+            return 0
+        history_guard = (
+            contextlib.nullcontext() if dry_run else exclusive_file_lock(self.history._path(tid))
+        )
+        with history_guard:
+            keep = {
+                entry.id
+                for entry in self.history._read(self.history._path(tid))
+                if not _older(entry.ts, cutoff)
+            }
+            # Read queue references without quarantine or writes during a dry run.
+            for pending in self.outbox._pending_dir.glob("*.json"):
+                try:
+                    item = self.outbox._load(pending)
+                except (ValueError, TypeError):
+                    continue
+                if item.state == "pending" and item.tid == tid and item.history_id is not None:
+                    keep.add(item.history_id)
+            guard = contextlib.nullcontext() if dry_run else exclusive_file_lock(path)
+            with guard:
+                remaining = []
+                removed = 0
+                for line in path.read_bytes().splitlines(keepends=True):
+                    try:
+                        data = json.loads(line)
+                    except (ValueError, UnicodeError):
+                        data = None
+                    if (
+                        isinstance(data, dict)
+                        and isinstance(data.get("id"), str)
+                        and data["id"] not in keep
+                    ):
+                        removed += len(line)
+                    else:
+                        remaining.append(line)
+                if removed and not dry_run:
+                    if remaining:
+                        atomic_bytes_save(path, b"".join(remaining))
+                    else:
+                        path.unlink()
+                return removed
+
     def _done(self, cutoff: datetime, dry_run: bool) -> PruneResult:
         result = PruneResult()
         for name in ("done", "corrupt"):
@@ -178,13 +223,17 @@ class RetentionPruner:
         result = PruneResult()
         if history_days:
             cutoff = now - timedelta(days=history_days)
-            for tid in self.history.tids():
+            for tid in sorted(set(self.history.tids()) | set(self.history.metadata_tids())):
                 try:
-                    async with self.history._lock(tid):
+                    # Match delivery's lock order before consulting pending keyboard references.
+                    async with self.outbox.delivery_lock, self.history._lock(tid):
                         removed = await complete_write(self._history_file, tid, cutoff, dry_run)
                         result.entries += removed.entries
                         result.history_files += removed.history_files
                         result.bytes += removed.bytes
+                        result.bytes += await complete_write(
+                            self._metadata_file, tid, cutoff, dry_run
+                        )
                 except OSError as exc:
                     logger.warning("History retention failed for %s: %s", tid, type(exc).__name__)
                     result.failures += 1

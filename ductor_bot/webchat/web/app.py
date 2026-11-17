@@ -414,6 +414,7 @@ def create_app(
     app.router.add_get("/api/ws", websocket)
     app.router.add_get("/api/state", relay)
     for path, methods in (
+        ("/commands", ("GET",)),
         ("/topics", ("GET", "POST")),
         ("/topics/{tid}", ("PATCH", "DELETE")),
         ("/topics/{tid}/messages", ("GET", "POST")),

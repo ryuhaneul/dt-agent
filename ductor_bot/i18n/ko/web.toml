@@ -162,7 +162,7 @@ read_only = "이 기록 그룹은 읽기 전용입니다. 메시지를 보내거
 bot_unreachable = "봇 응답 없음"
 telegram_unavailable = "텔레그램을 사용할 수 없음"
 generic = "오류가 발생했습니다"
-web_turn_running = "이 토픽에서 웹 답변이 이미 진행 중입니다"
+web_turn_running = "웹 답변이 진행 중입니다. 답변이 끝난 뒤 이 명령을 다시 실행하세요."
 
 [starflow]
 title = "장식용 별 배경"
@@ -184,3 +184,11 @@ code_reused = "이미 사용한 코드예요. 새 코드가 나올 때까지 기
 locked = "시도가 너무 많아요. {seconds}초 후 다시 시도해 주세요."
 totp_required = "비밀번호를 변경하려면 먼저 2단계 인증을 설정해 주세요."
 success = "비밀번호를 바꿨어요. 다른 기기의 로그인은 끊겼어요."
+
+[commands]
+secret_telegram = "텔레그램 봇과의 1:1 채팅에서 /secret을 사용하세요."
+title = "명령어"
+list = "명령어 목록"
+help = "↑↓ 이동 · Enter / Tab 선택 · Esc 닫기"
+empty = "일치하는 명령어가 없어요."
+run = "명령어 실행"

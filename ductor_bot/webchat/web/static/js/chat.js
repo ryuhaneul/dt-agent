@@ -1,4 +1,5 @@
 import { api } from './api.js';
+import { initCommands } from './commands.js';
 import { t } from './i18n.js';
 import { notify } from './auth.js';
 import { connectEvents } from './ws.js';
@@ -8,7 +9,7 @@ import { getTopic, getTopics, selectTopic, refreshTopics, noteEntry, markSeen, f
 const histories = new Map(), turns = new Map(), busy = new Map(), drafts = new Map(), topicVersions = new Map(), busyVersions = new Map();
 let active = false, epoch = 0, stopEvents = null, telegram = { state: 'unknown' };
 let botUp = false, webSessions = null, pending = 0, outbox = [], sending = false;
-let view = 'chat', loading = false, selection = 0;
+let view = 'chat', loading = false, selection = 0, commandMenu = null;
 function history(tid) {
   if (!histories.has(tid)) histories.set(tid, { entries: new Map(), hasMore: false, loaded: false });
   return histories.get(tid);
@@ -36,9 +37,22 @@ function mirror(entry) {
   return `<div class="${state === 'sent' ? 'deliv' : state === 'pending' ? 'dirty' : 'stopped'}">${esc(t(`chat.${key}`))}</div>`;
 }
 function sourceTag(entry) {
+  if (entry.kind === 'command') return `<span class="tag">${esc(t('commands.run'))}</span>`;
   const source = entry.imported || entry.source === 'import' ? 'imported' : entry.source;
   return ['telegram', 'web', 'api', 'imported'].includes(source)
     ? `<span class="tag">${esc(t(`tag.${source}`))}</span>` : '';
+}
+function responseButtons(buttons) {
+  if (!Array.isArray(buttons) || !buttons.length) return '';
+  return '<div class="response-buttons">' + buttons.map(row => '<div class="response-button-row">' + row.map(button => {
+    let url = null;
+    if (button.url) {
+      try { const parsed = new URL(button.url); if (['http:', 'https:'].includes(parsed.protocol)) url = parsed.href; }
+      catch { /* Invalid URLs remain non-interactive labels. */ }
+    }
+    return url ? `<a class="btn" href="${esc(url)}" target="_blank" rel="noopener">${esc(button.text)}</a>`
+      : `<button class="btn" type="button" disabled aria-disabled="true">${esc(button.text)}</button>`;
+  }).join('') + '</div>').join('') + '</div>';
 }
 function entryMarkup(entry) {
   const time = esc(formatTime(entry.ts));
@@ -50,12 +64,16 @@ function entryMarkup(entry) {
   }
   const turn = turns.get(entry.turn_id);
   const stopped = entry.status === 'aborted' || (entry.role === 'bot' && turn?.phase === 'aborted');
-  return `<div class="msg ${entry.role === 'user' ? 'me' : 'bot'}${entry.imported ? ' old' : ''}" data-entry-seq="${entry.seq}"><div class="meta">${sourceTag(entry)}<span class="tm">${time}</span></div><div class="bubble md">${md(entry.text || '')}</div>${stopped ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : ''}${mirror(entry)}</div>`;
+  return `<div class="msg ${entry.role === 'user' ? 'me' : 'bot'}${entry.imported ? ' old' : ''}${entry.kind === 'command' ? ' command-message' : ''}" data-entry-seq="${entry.seq}"><div class="meta">${sourceTag(entry)}<span class="tm">${time}</span></div><div class="bubble md">${entry.kind === 'command' ? esc(entry.text || '') : md(entry.text || '')}${responseButtons(entry.buttons)}</div>${stopped ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : ''}${mirror(entry)}</div>`;
 }
 function streamMarkup(turn) {
   const live = ['queued', 'started'].includes(turn.phase);
   const dots = live ? '<span class="typing" aria-hidden="true"><i></i><i></i><i></i></span>' : '';
   return `<div class="msg bot" ${live ? 'id="streamMsg"' : ''} data-turn="${esc(turn.id)}"><div class="meta"><span class="tag">${esc(t('tag.web'))}</span><span>${esc(live ? t('chat.answering') : formatTime(turn.finished))}</span>${dots}${live && turn.tool ? `<span>${esc(turn.tool)}</span>` : ''}</div><div class="bubble md">${md(turn.text)}${live ? '<span class="caret" aria-hidden="true"></span>' : ''}</div>${turn.phase === 'aborted' ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : turn.phase === 'error' ? `<div class="stopped">${esc(t('error.generic'))}</div>` : ''}</div>`;
+}
+function isControlCommand(text) {
+  const name = text.trim().split(/\s/, 1)[0].split('@', 1)[0].toLowerCase();
+  return ['/stop', '/interrupt', '/stop_all'].includes(name);
 }
 function renderHeader() {
   const topic = getTopic();
@@ -71,13 +89,13 @@ function renderHeader() {
   document.querySelector('#topicRename').hidden = !topic?.renamable;
   document.querySelector('#topicDelete').hidden = !topic?.deletable;
   document.querySelector('.composer').hidden = !topic || topic.read_only || topic.tid === 'unknown';
-  const turn = topic && running(topic.tid);
+  const turn = topic && running(topic.tid) && !document.querySelector('#msgIn').value.trimStart().startsWith('/');
   const button = document.querySelector('#stopBtn');
   button.className = `btn ${turn ? 'btn-danger' : 'btn-primary'}`;
   button.querySelector('span').textContent = t(turn ? 'chat.stop' : 'chat.send');
   button.querySelector('span').dataset.i18n = turn ? 'chat.stop' : 'chat.send';
   button.querySelector('path').setAttribute('d', turn ? 'M7 7h10v10H7z' : 'M5 12h14M13 6l6 6-6 6');
-  button.disabled = sending || !topic;
+  button.disabled = !topic || (sending && !turn && !isControlCommand(document.querySelector('#msgIn').value));
 }
 export function renderThread({ bottom = false, seq = null } = {}) {
   const topic = getTopic(); renderHeader();
@@ -258,11 +276,15 @@ export async function handleEvent(event) {
   if (active) renderThread();
 }
 async function sendOrStop() {
+  commandMenu?.close();
   const topic = getTopic(), input = document.querySelector('#msgIn');
-  if (!topic || topic.read_only || sending) return;
-  const turn = running(topic.tid), text = input.value;
+  if (!topic || topic.read_only) return;
+  const text = input.value, turn = running(topic.tid) && !text.trimStart().startsWith('/');
+  const control = turn || isControlCommand(text);
+  if (sending && !control) return;
   if (!turn && (!text.trim() || text.length > 32000)) return;
-  sending = true; renderHeader();
+  if (!control) sending = true;
+  renderHeader();
   const generation = epoch;
   try {
     if (turn) await api(`/topics/${encodeURIComponent(topic.tid)}/abort`, { method: 'POST' });
@@ -272,19 +294,22 @@ async function sendOrStop() {
       });
       if (!active || generation !== epoch) return;
       if (result.turn_id && !turns.has(result.turn_id)) turns.set(result.turn_id, { id: result.turn_id, tid: topic.tid, phase: 'queued', text: '' });
+      if (text.trim().split(/\s/, 1)[0].split('@', 1)[0].toLowerCase() === '/secret' && result.text) notify('commands.secret_telegram');
       drafts.delete(topic.tid);
       if (getTopic()?.tid === topic.tid && input.value === text) input.value = '';
     }
   } catch (error) { if (active && generation === epoch) errorNotice(error); }
-  finally { sending = false; if (active) { renderHeader(); renderThread({ bottom: true }); } }
+  finally { if (!control) sending = false; if (active) { renderHeader(); renderThread({ bottom: true }); } }
 }
 export function initChat() {
   const thread = document.querySelector('#thread'), input = document.querySelector('#msgIn');
   input.maxLength = 32000;
-  input.addEventListener('input', () => { if (getTopic()) drafts.set(getTopic().tid, input.value); });
+  commandMenu = initCommands(input, value => { if (getTopic()) drafts.set(getTopic().tid, value); });
+  input.addEventListener('input', () => { if (getTopic()) drafts.set(getTopic().tid, input.value); renderHeader(); });
   input.addEventListener('keydown', event => {
+    if (commandMenu.keydown(event)) return;
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && matchMedia('(pointer: fine)').matches) {
-      event.preventDefault(); if (!running(getTopic()?.tid)) void sendOrStop();
+      event.preventDefault(); if (!running(getTopic()?.tid) || input.value.trimStart().startsWith('/')) void sendOrStop();
     }
   });
   document.querySelector('#stopBtn').addEventListener('click', sendOrStop);

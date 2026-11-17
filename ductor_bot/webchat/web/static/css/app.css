@@ -338,3 +338,25 @@ dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(2px)}
 #pwDialog .pw-actions .btn{min-width:0;white-space:normal}
 #pwDialog .lb{overflow-wrap:anywhere}
 @media(max-width:240px){.bar-acts{flex-wrap:wrap;max-width:100%}}
+
+/* Approved command popover and response chips (variant A). */
+.command-message .bubble{font-family:var(--mono);white-space:pre-wrap}
+.composer{position:relative;background:var(--bg);flex:none}
+.composer textarea{min-width:0}
+.command-menu{position:absolute;bottom:calc(100% + 8px);left:20px;right:20px;display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--field-rule);border-radius:10px;z-index:20;overflow:hidden;min-width:0;box-shadow:0 10px 28px rgba(0,0,0,.18)}
+[data-theme="dark"] .command-menu{border-color:#646A70}
+.command-menu-head{display:flex;justify-content:space-between;gap:6px;padding:8px 12px;font-size:.77rem;color:var(--muted);border-bottom:1px solid var(--rule);flex:none}
+.command-list{max-height:min(260px,30dvh);min-height:0;overflow-y:auto;overscroll-behavior:contain}
+.command-option{display:grid;grid-template-columns:145px minmax(0,1fr);gap:8px;align-items:center;width:100%;border:0;border-bottom:1px solid var(--rule);background:transparent;text-align:left;padding:10px 12px;min-height:44px;font-size:.84rem;cursor:pointer}
+.command-option code{font:.85rem var(--mono);overflow-wrap:anywhere}
+.command-option span{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.command-option[aria-selected="true"],.command-option:hover{background:var(--hover)}
+.command-option[aria-selected="true"]{box-shadow:inset 3px 0 var(--accent)}
+.command-help{padding:7px 12px;border-top:1px solid var(--rule);font-size:.72rem;color:var(--muted);flex:none}
+.command-empty{padding:14px;font-size:.85rem;color:var(--muted)}
+.response-buttons{display:flex;flex-direction:column;gap:8px;margin-top:12px}
+.response-button-row{display:flex;gap:8px;flex-wrap:wrap}
+.response-buttons .btn{border-radius:999px;white-space:normal;text-align:center;overflow-wrap:anywhere;min-width:0;max-width:100%;text-decoration:none}
+@media(max-width:760px){.command-menu{left:12px;right:12px}.command-option{grid-template-columns:130px minmax(0,1fr);font-size:.78rem;padding:9px 10px;gap:5px}.command-option code{font-size:.78rem}.command-menu-head{padding:7px 10px}.command-help{font-size:.68rem;padding:7px 10px}.response-buttons .btn{font-size:.84rem;padding:0 12px}}
+@media(max-width:340px){.command-option{grid-template-columns:minmax(0,1fr);gap:3px}.command-menu-head{flex-wrap:wrap}.command-help{overflow-wrap:anywhere}}
+@media(max-height:600px){.app{height:auto;min-height:100dvh}.main{min-height:560px}.center{min-height:560px}.thread{max-height:420px}}

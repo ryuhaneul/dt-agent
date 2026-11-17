@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Literal, TypedDict
 
@@ -116,6 +116,20 @@ class HistoryRecorder:
                 )
         finally:
             self._busy(dispatch, busy=False)
+
+    async def command_input(self, key: SessionKey, text: str) -> Entry:
+        """Record a web command using the existing backward-compatible kind field."""
+        return await self._history.append(
+            key, Entry(role="user", source="web", text=text, kind="command")
+        )
+
+    async def command_result(
+        self, key: SessionKey, text: str, buttons: Sequence[Sequence[Mapping[str, object]]] | None
+    ) -> Entry:
+        """Record a command result, keeping its keyboard outside the Entry schema."""
+        return await self._history.append(
+            key, Entry(role="bot", source="web", text=text), buttons=buttons
+        )
 
     async def on_delivered(self, envelope: Envelope) -> None:
         kind = _BUS_KINDS.get(envelope.origin)

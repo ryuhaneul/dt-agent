@@ -1,6 +1,10 @@
 # Nederlandse botcommandobeschrijvingen (≤22 tekens voor Telegram).
 
 [bot]
+start = "Welkom"
+where = "Gevolgde chats"
+leave = "Groep verlaten"
+sessions = "Sessies beheren"
 new = "Nieuw gesprek"
 reset = "Chat resetten"
 stop = "Huidig + wachtrij stoppen"

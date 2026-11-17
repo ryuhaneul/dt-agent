@@ -15,11 +15,22 @@ from typing import TYPE_CHECKING, Any
 from aiogram.exceptions import TelegramAPIError
 from aiohttp import ClientError, web
 
+from ductor_bot.chat_log.ids import from_tid
 from ductor_bot.config import resolve_user_timezone
+from ductor_bot.i18n import LANGUAGES
+from ductor_bot.i18n.loader import TranslationStore
 from ductor_bot.infra.atomic_io import atomic_text_save
 from ductor_bot.infra.file_lock import LockTimeoutError
 from ductor_bot.infra.secret_store import store_path
+from ductor_bot.text.response_format import stop_text
 from ductor_bot.webchat.auth import AuthError, BridgeAuth
+from ductor_bot.webchat.commands import (
+    CommandResponse,
+    WebCommandBusyError,
+    WebCommandDispatcher,
+    command_list,
+    parse_command,
+)
 from ductor_bot.webchat.files import WebFileError, WebFiles
 from ductor_bot.webchat.settings import resolve_default_chat_id
 from ductor_bot.webchat.topics import TopicBusyError, TopicDeleteError, WebTopics
@@ -136,7 +147,20 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
 ) -> None:
     turns = WebTurns(bot, runtime)
     topics = WebTopics(bot, runtime, turns)
+    dispatcher = WebCommandDispatcher(bot, turns)
+    strings = TranslationStore(bot.config.language)
     sockets: set[web.WebSocketResponse] = set()
+    control_gates: dict[str, asyncio.Lock] = {}
+
+    def control_gate(tid: str) -> asyncio.Lock:
+        return control_gates.setdefault(tid, asyncio.Lock())
+
+    async def commands(request: web.Request) -> web.Response:
+        requested_language = request.query.get("lang", bot.config.language)
+        for language in LANGUAGES:
+            if language == requested_language:
+                return web.json_response({"commands": command_list(language)})
+        return _error("bad_request", 400)
 
     async def list_topics(_request: web.Request) -> web.Response:
         try:
@@ -160,7 +184,7 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
         if tid == "unknown":
             return _error("not_a_topic", 409)
         data = await _body(request)
-        async with topics.gate(tid):
+        async with topics.gate(tid), control_gate(tid):
             topic = await topics.lookup(tid)
             if topic is None:
                 return _error("unknown_topic", 404)
@@ -194,33 +218,90 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
             return _error("history_busy", 503)
         mirrors = await runtime.outbox.mirror_states([entry.id for entry in entries])
         rendered = []
+        metadata = await runtime.history.metadata(tid)
         for entry in entries:
             mirror = mirrors[entry.id]
-            rendered.append({**asdict(entry), "mirror": {"state": mirror} if mirror else None})
+            rendered.append(
+                {
+                    **asdict(entry),
+                    **metadata.get(entry.id, {}),
+                    "mirror": {"state": mirror} if mirror else None,
+                }
+            )
         return web.json_response({"entries": rendered, "has_more": more})
 
-    async def send_or_abort(request: web.Request) -> web.Response:  # noqa: PLR0911
+    async def send_or_abort(request: web.Request) -> web.Response:  # noqa: C901, PLR0911
         tid = request.match_info["tid"]
         if tid == "unknown":
             return _error("read_only", 409)
-        async with topics.gate(tid):
+        abort = request.path.endswith("/abort")
+        data = {} if abort else await _body(request)
+        text = data.get("text")
+        client_id = data.get("client_id")
+        if not abort and (
+            not isinstance(text, str)
+            or not text.strip()
+            or len(text) > 32000
+            or not isinstance(client_id, str)
+            or not client_id
+        ):
+            return _error("bad_request", 400)
+        parsed = parse_command(text) if isinstance(text, str) else None
+        control = abort or (parsed is not None and parsed[0] in {"stop", "interrupt", "stop_all"})
+        # Control requests bypass slow commands. Management acquires the normal
+        # gate first, then this control gate, so deletion remains exclusive.
+        async with control_gate(tid) if control else topics.gate(tid):
             if tid in turns.blocked or await topics.lookup(tid) is None:
                 return _error("unknown_topic", 404)
-            if request.path.endswith("/abort"):
+            if abort:
                 return web.json_response({"killed": await turns.abort(tid)})
-            data = await _body(request)
-            text = data.get("text")
-            client_id = data.get("client_id")
-            if (
-                not isinstance(text, str)
-                or not text.strip()
-                or len(text) > 32000
-                or not isinstance(client_id, str)
-                or not client_id
-            ):
-                return _error("bad_request", 400)
+            assert isinstance(text, str)
+            key = from_tid(tid)
+
+            async def record_input() -> None:
+                entry = await runtime.recorder.command_input(key, text)
+                await runtime.outbox.enqueue(
+                    kind="user_mirror",
+                    chat_id=key.chat_id,
+                    topic_id=key.topic_id,
+                    text=strings.chat("chat_log.mirror_command", text=text),
+                    history_id=entry.id,
+                )
+                runtime.drainer.wake()
+
+            async def record_result(result: CommandResponse) -> None:
+                entry = await runtime.recorder.command_result(
+                    key, result["text"], result["buttons"]
+                )
+                await runtime.outbox.enqueue(
+                    kind="reply_mirror",
+                    chat_id=key.chat_id,
+                    topic_id=key.topic_id,
+                    text=result["text"],
+                    history_id=entry.id,
+                )
+                runtime.drainer.wake()
+
             if text.strip().lower() == "/stop":
-                return web.json_response({"killed": await turns.abort(tid)}, status=202)
+                await record_input()
+                killed = await turns.abort(tid)
+                await record_result(
+                    {
+                        "text": stop_text(
+                            bool(killed), bot._orch.active_provider_name if killed else ""
+                        ),
+                        "buttons": None,
+                    }
+                )
+                return web.json_response({"killed": killed}, status=202)
+            try:
+                command = await dispatcher.dispatch(
+                    tid, text, on_start=record_input, on_finish=record_result
+                )
+            except WebCommandBusyError:
+                return _error("web_turn_running", 409)
+            if command is not None:
+                return web.json_response(command)
             if turns.busy(tid):
                 return _error("web_turn_running", 409)
             return web.json_response({"turn_id": turns.submit(tid, text)}, status=202)
@@ -276,6 +357,7 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
         await turns.stop()
 
     app.on_shutdown.append(shutdown)
+    app.router.add_get(f"{_PREFIX}/commands", commands)
     app.router.add_get(f"{_PREFIX}/topics", list_topics)
     app.router.add_post(f"{_PREFIX}/topics", create_topic)
     app.router.add_patch(f"{_PREFIX}/topics/{{tid}}", manage_topic)

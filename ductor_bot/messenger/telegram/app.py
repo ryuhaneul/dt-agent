@@ -112,7 +112,7 @@ from ductor_bot.webchat.settings import validate_webchat, webchat_active
 from ductor_bot.workspace.paths import DuctorPaths, resolve_paths
 
 if TYPE_CHECKING:
-    from aiogram.types import CallbackQuery, ForumTopicCreated, Message
+    from aiogram.types import CallbackQuery, ForumTopicCreated, InlineKeyboardMarkup, Message
 
     from ductor_bot.bus.envelope import DeliveryOutcome
     from ductor_bot.chat_log.runtime import ChatLogRuntime
@@ -177,6 +177,84 @@ def _build_help_text() -> str:
         SEP,
         t("help.footer"),
     )
+
+
+def build_agent_commands_text() -> str:
+    """Build the multi-agent command reference without sending it."""
+    lines = [
+        t("agents.telegram_explanation"),
+        "",
+        t("agents.commands_header"),
+        t("agents.cmd_list", prefix="/"),
+        t("agents.cmd_start", prefix="/"),
+        t("agents.cmd_stop", prefix="/"),
+        t("agents.cmd_restart", prefix="/"),
+        "",
+        t("agents.setup_header"),
+        t("agents.setup_instruction"),
+    ]
+    return fmt(t("agents.system_header"), SEP, "\n".join(lines))
+
+
+def build_info_response() -> tuple[str, InlineKeyboardMarkup]:
+    """Build the project information and its URL buttons without sending it."""
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    version = get_current_version()
+    text = fmt(
+        t("info.header"),
+        t("info.version", version=version),
+        SEP,
+        t("info.telegram_description"),
+    )
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="GitHub", url="https://github.com/ryuhaneul/dt-agent"),
+                InlineKeyboardButton(
+                    text="Changelog",
+                    url="https://github.com/ryuhaneul/dt-agent/releases",
+                ),
+            ],
+        ],
+    )
+    return text, keyboard
+
+
+async def leave_chat_response(
+    text: str,
+    leave_chat: Callable[[int], Awaitable[bool]],
+    tracker: ChatTracker | None,
+) -> str:
+    """Leave the requested group and return feedback without sending a message."""
+    parts = text.strip().split(None, 1)
+    if len(parts) < 2:
+        return fmt(t("telegram.leave_usage_header"), SEP, t("telegram.leave_usage"))
+    try:
+        group_id = int(parts[1].strip())
+    except ValueError:
+        return t("telegram.leave_invalid_id")
+    try:
+        await leave_chat(group_id)
+    except TelegramAPIError as exc:
+        return t("telegram.leave_failed", error=exc)
+    if tracker:
+        tracker.record_leave(group_id, "left")
+    return t("telegram.left_group", group_id=group_id)
+
+
+async def prepare_restart_response(chat_id: int, paths: DuctorPaths) -> str:
+    """Write restart notification state and return the pre-restart acknowledgement."""
+    from ductor_bot.infra.restart import write_restart_sentinel
+
+    sentinel = paths.ductor_home / "restart-sentinel.json"
+    await asyncio.to_thread(
+        write_restart_sentinel,
+        chat_id,
+        t("startup.restart_default"),
+        sentinel_path=sentinel,
+    )
+    return fmt(t("startup.restart_header"), SEP, t("startup.restart_body"))
 
 
 _POLLING_STOP_SECONDS = 5.0
@@ -721,45 +799,13 @@ class TelegramBot:
     async def _handle_leave(self, chat_id: int, message: Message) -> None:
         """Handle /leave <group_id>: manually leave a group."""
         thread_id = get_thread_id(message)
-        parts = (message.text or "").strip().split(None, 1)
-        if len(parts) < 2:
-            await send_rich(
-                self._bot,
-                chat_id,
-                fmt(t("telegram.leave_usage_header"), SEP, t("telegram.leave_usage")),
-                SendRichOpts(reply_to_message_id=message.message_id, thread_id=thread_id),
-            )
-            return
-
-        try:
-            group_id = int(parts[1].strip())
-        except ValueError:
-            await send_rich(
-                self._bot,
-                chat_id,
-                t("telegram.leave_invalid_id"),
-                SendRichOpts(reply_to_message_id=message.message_id, thread_id=thread_id),
-            )
-            return
-
-        try:
-            await self._bot.leave_chat(group_id)
-        except TelegramAPIError as exc:
-            await send_rich(
-                self._bot,
-                chat_id,
-                t("telegram.leave_failed", error=exc),
-                SendRichOpts(reply_to_message_id=message.message_id, thread_id=thread_id),
-            )
-            return
-
-        if self._chat_tracker:
-            self._chat_tracker.record_leave(group_id, "left")
-
+        text = await leave_chat_response(
+            message.text or "", self._bot.leave_chat, self._chat_tracker
+        )
         await send_rich(
             self._bot,
             chat_id,
-            t("telegram.left_group", group_id=group_id),
+            text,
             SendRichOpts(reply_to_message_id=message.message_id, thread_id=thread_id),
         )
 
@@ -819,19 +865,7 @@ class TelegramBot:
         chat_id = message.chat.id
         thread_id = get_thread_id(message)
 
-        lines = [
-            t("agents.telegram_explanation"),
-            "",
-            t("agents.commands_header"),
-            t("agents.cmd_list", prefix="/"),
-            t("agents.cmd_start", prefix="/"),
-            t("agents.cmd_stop", prefix="/"),
-            t("agents.cmd_restart", prefix="/"),
-            "",
-            t("agents.setup_header"),
-            t("agents.setup_instruction"),
-        ]
-        text = fmt(t("agents.system_header"), SEP, "\n".join(lines))
+        text = build_agent_commands_text()
         await send_rich(
             self._bot,
             chat_id,
@@ -845,28 +879,7 @@ class TelegramBot:
             return
         if self._config.group_mention_only and not self._is_addressed(message):
             return
-        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-
-        version = get_current_version()
-        text = fmt(
-            t("info.header"),
-            t("info.version", version=version),
-            SEP,
-            t("info.telegram_description"),
-        )
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="GitHub", url="https://github.com/ryuhaneul/dt-agent"
-                    ),
-                    InlineKeyboardButton(
-                        text="Changelog",
-                        url="https://github.com/ryuhaneul/dt-agent/releases",
-                    ),
-                ],
-            ],
-        )
+        text, keyboard = build_info_response()
         await send_rich(
             self._bot,
             message.chat.id,
@@ -1113,25 +1126,11 @@ class TelegramBot:
 
         return fmt(t("session_help.header"), SEP, "\n".join(lines))
 
-    async def _on_session(self, message: Message) -> None:
-        """Handle /session: submit a named background session."""
+    def _parse_session_prompt(
+        self, chat_id: int, prompt: str
+    ) -> tuple[str, str | None, str | None, str | None]:
+        """Resolve a prompt to (text, provider, model, follow-up session name)."""
         import re
-
-        text = (message.text or "").strip()
-        parts = text.split(None, 1)
-        chat_id = message.chat.id
-        thread_id = get_thread_id(message)
-
-        if len(parts) < 2 or not parts[1].strip():
-            await send_rich(
-                self._bot,
-                chat_id,
-                self._build_session_help(),
-                SendRichOpts(reply_to_message_id=message.message_id, thread_id=thread_id),
-            )
-            return
-
-        prompt = parts[1].strip()
 
         # Parse optional @directive prefix:
         #   @provider [model] <prompt>    — e.g. @codex, @claude opus
@@ -1151,7 +1150,7 @@ class TelegramBot:
                 prompt = rest
                 # If key was a provider name, check for optional model after it
                 if key in ("claude", "codex", "gemini", "grok"):
-                    model_match = re.match(r"([a-zA-Z][a-zA-Z0-9_.-]*)\s+", prompt)
+                    model_match = re.match(r"\A([a-zA-Z][a-zA-Z0-9_.-]*)\s+", prompt)
                     if model_match:
                         candidate = model_match.group(1).lower()
                         if self._orch.is_known_model(candidate):
@@ -1161,60 +1160,84 @@ class TelegramBot:
                 session_followup = key
                 prompt = rest
 
-        try:
-            if session_followup:
-                task_id = self._orch.submit_named_followup_bg(
-                    chat_id, session_followup, prompt, message.message_id, thread_id
-                )
-                await send_rich(
-                    self._bot,
-                    chat_id,
-                    fmt(
-                        t("session_notice.followup_sent", name=session_followup),
-                        SEP,
-                        t("session_notice.task_queued", task_id=task_id),
-                    ),
-                    SendRichOpts(reply_to_message_id=message.message_id, thread_id=thread_id),
-                )
-            else:
-                from ductor_bot.orchestrator.core import NamedSessionRequest
+        return prompt, provider_override, model_override, session_followup
 
-                ns_request = NamedSessionRequest(
-                    message_id=message.message_id,
-                    thread_id=thread_id,
-                    provider_override=provider_override,
-                    model_override=model_override,
-                )
-                task_id, session_name = self._orch.submit_named_session(
-                    chat_id,
-                    prompt,
-                    ns_request,
-                )
-                ns = self._orch.get_named_session(chat_id, session_name)
-                provider = ns.provider if ns else (provider_override or self._orch.config.provider)
-                model = ns.model if ns else ""
-                provider_label = {
-                    "claude": "Claude",
-                    "codex": "Codex",
-                    "gemini": "Gemini",
-                    "grok": "Grok Build",
-                }.get(provider, provider)
-                model_info = f" ({model})" if model else ""
-                await send_rich(
-                    self._bot,
-                    chat_id,
-                    fmt(
-                        t("session_notice.started_title", name=session_name),
-                        SEP,
-                        t(
-                            "session_notice.started_body",
-                            provider=provider_label,
-                            model_info=model_info,
-                            name=session_name,
-                        ),
-                    ),
-                    SendRichOpts(reply_to_message_id=message.message_id, thread_id=thread_id),
-                )
+    def _submit_session_response(
+        self,
+        chat_id: int,
+        parsed_prompt: tuple[str, str | None, str | None, str | None],
+        message_id: int,
+        thread_id: int | None,
+    ) -> str:
+        """Submit a parsed named-session prompt and return its acknowledgement."""
+        prompt, provider_override, model_override, session_followup = parsed_prompt
+        if session_followup:
+            task_id = self._orch.submit_named_followup_bg(
+                chat_id, session_followup, prompt, message_id, thread_id
+            )
+            return fmt(
+                t("session_notice.followup_sent", name=session_followup),
+                SEP,
+                t("session_notice.task_queued", task_id=task_id),
+            )
+
+        from ductor_bot.orchestrator.core import NamedSessionRequest
+
+        ns_request = NamedSessionRequest(
+            message_id=message_id,
+            thread_id=thread_id,
+            provider_override=provider_override,
+            model_override=model_override,
+        )
+        task_id, session_name = self._orch.submit_named_session(chat_id, prompt, ns_request)
+        ns = self._orch.get_named_session(chat_id, session_name)
+        provider = ns.provider if ns else (provider_override or self._orch.config.provider)
+        model = ns.model if ns else ""
+        provider_label = {
+            "claude": "Claude",
+            "codex": "Codex",
+            "gemini": "Gemini",
+            "grok": "Grok Build",
+        }.get(provider, provider)
+        model_info = f" ({model})" if model else ""
+        return fmt(
+            t("session_notice.started_title", name=session_name),
+            SEP,
+            t(
+                "session_notice.started_body",
+                provider=provider_label,
+                model_info=model_info,
+                name=session_name,
+            ),
+        )
+
+    async def _on_session(self, message: Message) -> None:
+        """Handle /session: submit a named background session."""
+        text = (message.text or "").strip()
+        parts = text.split(None, 1)
+        chat_id = message.chat.id
+        thread_id = get_thread_id(message)
+
+        if len(parts) < 2 or not parts[1].strip():
+            await send_rich(
+                self._bot,
+                chat_id,
+                self._build_session_help(),
+                SendRichOpts(reply_to_message_id=message.message_id, thread_id=thread_id),
+            )
+            return
+
+        parsed_prompt = self._parse_session_prompt(chat_id, parts[1].strip())
+        try:
+            response = self._submit_session_response(
+                chat_id, parsed_prompt, message.message_id, thread_id
+            )
+            await send_rich(
+                self._bot,
+                chat_id,
+                response,
+                SendRichOpts(reply_to_message_id=message.message_id, thread_id=thread_id),
+            )
         except ValueError as exc:
             await send_rich(
                 self._bot,
@@ -1321,18 +1344,7 @@ class TelegramBot:
     async def _on_restart(self, message: Message) -> None:
         if self._config.group_mention_only and not self._is_addressed(message):
             return
-        from ductor_bot.infra.restart import write_restart_sentinel
-
-        chat_id = message.chat.id
-        paths = self._orch.paths
-        sentinel = paths.ductor_home / "restart-sentinel.json"
-        await asyncio.to_thread(
-            write_restart_sentinel,
-            chat_id,
-            t("startup.restart_default"),
-            sentinel_path=sentinel,
-        )
-        text = fmt(t("startup.restart_header"), SEP, t("startup.restart_body"))
+        text = await prepare_restart_response(message.chat.id, self._orch.paths)
         await send_rich(
             self._bot,
             message.chat.id,

@@ -1,6 +1,10 @@
 # Bot command descriptions (≤22 chars for Telegram mobile clients).
 
 [bot]
+start = "Welcome & quick start"
+where = "Tracked chats"
+leave = "Leave a group"
+sessions = "Manage sessions"
 new = "Start new chat"
 reset = "Reset current chat"
 stop = "Stop current + queued msgs"

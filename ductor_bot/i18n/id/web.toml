@@ -162,7 +162,7 @@ read_only = "Grup riwayat ini hanya dapat dibaca. Pilih topik Telegram untuk men
 bot_unreachable = "Bot tidak dapat diakses"
 telegram_unavailable = "Telegram tidak tersedia"
 generic = "Terjadi kesalahan"
-web_turn_running = "Jawaban web sedang diproses di topik ini"
+web_turn_running = "Jawaban web sedang diproses. Jalankan kembali perintah ini setelah selesai."
 
 [starflow]
 title = "Latar bintang dekoratif"
@@ -184,3 +184,11 @@ code_reused = "Kode ini sudah digunakan. Tunggu kode baru."
 locked = "Terlalu banyak percobaan. Coba lagi dalam {seconds} detik."
 totp_required = "Siapkan autentikasi dua langkah sebelum mengubah kata sandi."
 success = "Kata sandi diubah. Perangkat lain telah dikeluarkan."
+
+[commands]
+secret_telegram = "Gunakan /secret dalam obrolan pribadi dengan bot Telegram."
+title = "Perintah"
+list = "Daftar perintah"
+help = "↑↓ Pindah · Enter / Tab Pilih · Esc Tutup"
+empty = "Tidak ada perintah yang cocok."
+run = "Perintah dijalankan"

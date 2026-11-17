@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+from aiogram.types import InlineKeyboardMarkup
 
 from ductor_bot.messenger.telegram.buttons import extract_buttons_for_session
 from ductor_bot.messenger.telegram.sender import SendRichOpts, send_rich_progress_detailed
@@ -32,9 +34,14 @@ class TelegramWebchatOps:
         buttons_session: str | None = None,
         *,
         on_chunk: Callable[[int], Awaitable[None]] | None = None,
+        buttons: list[list[dict[str, Any]]] | None = None,
     ) -> SendProgress:
-        markup = None
-        if buttons_session is not None:
+        markup = (
+            InlineKeyboardMarkup.model_validate({"inline_keyboard": buttons})
+            if buttons is not None
+            else None
+        )
+        if buttons_session is not None and buttons is None:
             text, markup = extract_buttons_for_session(text, buttons_session)
         return await send_rich_progress_detailed(
             self._bot.bot_instance,

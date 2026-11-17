@@ -718,5 +718,6 @@ loading = "Consultando…"
 error = "Falha ao exibir o uso"
 
 [chat_log]
+mirror_command = "Comando executado: {text}"
 mirror_user = "🌐 Enviado pela web\n{text}"
 mirror_aborted = "Resposta interrompida"
