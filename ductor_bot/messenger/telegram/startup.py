@@ -146,6 +146,10 @@ async def _run_primary_startup(bot: TelegramBot, *, local: bool = False) -> None
     seeded = bot._topic_names.seed_from_sessions(all_sessions)
     if seeded:
         logger.info("Topic name cache seeded with %d name(s)", seeded)
+    if bot.config.chat_log.enabled and bot._agent_name == "main":
+        from ductor_bot.webchat.topics import WebTopics
+
+        await WebTopics.restore_names(bot)
     bot._orch._sessions.set_topic_name_resolver(bot._topic_names.resolve)
 
     sentinel = None if local else await _handle_restart_sentinel(bot)

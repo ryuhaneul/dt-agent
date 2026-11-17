@@ -1059,11 +1059,17 @@ class TelegramBot:
             )
         return self._topic_namer
 
-    async def _record_topic_name(self, key: SessionKey, name: str) -> None:
+    async def _record_topic_name(
+        self, key: SessionKey, name: str, *, existing_only: bool = False
+    ) -> None:
         from ductor_bot.webchat.topics import WebTopics
 
         if self._chat_log_runtime is not None:
-            await WebTopics.record_name(self, self._chat_log_runtime, key, name)
+            await WebTopics.record_name(
+                self, self._chat_log_runtime, key, name, existing_only=existing_only
+            )
+        elif key.topic_id is not None:
+            self._topic_names.set(key.chat_id, key.topic_id, name)
 
     async def _on_forum_topic_created(self, message: Message) -> None:
         """Cache the name when a forum topic is created."""
@@ -1083,7 +1089,6 @@ class TelegramBot:
             and message.message_thread_id is not None
             and self._topic_names.get(message.chat.id, message.message_thread_id) is None
         ):
-            self._topic_names.set(message.chat.id, message.message_thread_id, name)
             await self._record_topic_name(
                 SessionKey.telegram(message.chat.id, message.message_thread_id), name
             )
@@ -1102,9 +1107,10 @@ class TelegramBot:
             self._get_topic_namer().edited(message.chat.id, cast("int", get_thread_id(message)))
         name = get_topic_name_from_message(message)
         if name and message.message_thread_id is not None:
-            self._topic_names.set(message.chat.id, message.message_thread_id, name)
             await self._record_topic_name(
-                SessionKey.telegram(message.chat.id, message.message_thread_id), name
+                SessionKey.telegram(message.chat.id, message.message_thread_id),
+                name,
+                existing_only=True,
             )
             logger.debug(
                 "Topic name updated: %d/%d = %s",

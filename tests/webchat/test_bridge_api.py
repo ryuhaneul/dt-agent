@@ -564,6 +564,7 @@ async def test_api_failures_preserve_local_topic_and_unblock(conversation):
         f"{_PREFIX}/topics/-123.7", json={"confirm_name": "Topic #7"}, headers=headers()
     )
     assert response.status == 503
+    assert not (h.paths.webchat_dir / "deleted_topics.json").exists()
     assert path.read_bytes() == before
     assert await h.bot._orch._sessions.get_active(h.key) is not None
     assert len(await h.runtime.outbox.pending()) == 1
@@ -913,6 +914,7 @@ async def test_false_delete_confirmation_preserves_local_data(conversation):
         f"{_PREFIX}/topics/-123.7", json={"confirm_name": "Topic #7"}, headers=headers()
     )
     assert response.status == 503
+    assert not (h.paths.webchat_dir / "deleted_topics.json").exists()
     assert await h.bot._orch._sessions.get_active(h.key) is not None
     assert (await post_message(h)).status == 202
 
@@ -4113,3 +4115,223 @@ async def test_telegram_edit_updates_stale_session_registry_and_live_event(conve
     )
     registry = json.loads((h.paths.webchat_dir / "topics.json").read_text())
     assert next(row for row in registry if row["topic_id"] == 7)["name"] == "User title"
+
+
+async def _restart_topic_bot(h, monkeypatch):
+    from ductor_bot.chat_log.runtime import ChatLogRuntime
+    from ductor_bot.messenger.telegram.startup import _run_primary_startup
+    from tests.messenger.telegram.test_app import _make_tg_bot
+
+    h.bot.config.telegram_token = "123456:TEST_TOKEN"
+    h.bot.config.allowed_user_ids = [100]
+    h.bot.config.chat_log.enabled = True
+    h.bot.config.streaming.enabled = False
+    h.bot.config.telegram_dm_topic_auto_name = False
+    tg, _ = _make_tg_bot(h.bot.config)
+    orch = h.bot._orch
+    orch._sessions = SessionManager(h.paths.ductor_home / "sessions.json", h.bot.config)
+    orch.wire_observers_to_bus = MagicMock()
+    orch.set_memory_lint_report_handler = MagicMock()
+    orch.set_config_hot_reload_handler = MagicMock()
+    orch._observers = SimpleNamespace(heartbeat=SimpleNamespace(set_chat_validator=MagicMock()))
+    monkeypatch.setattr(
+        "ductor_bot.orchestrator.core.Orchestrator.create", AsyncMock(return_value=orch)
+    )
+    await _run_primary_startup(tg, local=True)
+    tg._chat_log_runtime = ChatLogRuntime(tg)
+    h.bot._topic_names = tg._topic_names
+
+    async def first_dialogue(_message, key, _text, **_kwargs):
+        await orch._sessions.resolve_session_target(key, provider="codex", model="gpt-5.5")
+
+    tg._handle_non_streaming = AsyncMock(side_effect=first_dialogue)
+    return tg
+
+
+async def _deliver_topic_update(tg, journal, update):
+    from ductor_bot.messenger.telegram.middleware import JournalMiddleware
+
+    async def dispatch(event, data):
+        if event.forum_topic_created:
+            await tg._on_forum_topic_created(event)
+        elif event.forum_topic_edited:
+            await tg._on_forum_topic_edited(event)
+        else:
+            await tg._on_message(
+                event, topic_naming_started=data.get("topic_naming_started", False)
+            )
+
+    async def sequential(event, data):
+        return await tg._sequential(dispatch, event, data)
+
+    async def authenticated(event, data):
+        return await tg._auth(sequential, event, data)
+
+    await JournalMiddleware(journal.mark_started)(
+        authenticated, update.message, {"event_update": update}
+    )
+    assert journal.is_handled(update.update_id)
+
+
+@pytest.mark.parametrize("implicit", [False, True])
+async def test_restart_then_first_dialogue_preserves_registry_title(
+    conversation, monkeypatch, implicit
+):
+    from aiogram.types import ForumTopicCreated, Update
+
+    from ductor_bot.messenger.telegram.update_journal import UpdateJournal
+    from tests.messenger.telegram.test_topic_naming import message
+
+    h = conversation
+    tg = await _restart_topic_bot(h, monkeypatch)
+    path = h.paths.ductor_home / "topic-updates.json"
+    journal = UpdateJournal(path)
+    event = Update(
+        update_id=45001,
+        message=message(
+            text=None,
+            created=ForumTopicCreated(
+                name="Saved Telegram title",
+                icon_color=0,
+                is_name_implicit=implicit,
+            ),
+        ),
+    )
+    journal.record_pending(event.update_id, event.model_dump(mode="json"), 100, 42)
+    await _deliver_topic_update(tg, journal, event)
+    assert await tg._orch._sessions.get_active(SessionKey.telegram(100, 42)) is None
+    tg = await _restart_topic_bot(h, monkeypatch)
+    journal = UpdateJournal(path)
+    event = Update(update_id=45002, message=message().model_copy(update={"message_id": 8}))
+    journal.record_pending(event.update_id, event.model_dump(mode="json"), 100, 42)
+    await _deliver_topic_update(tg, journal, event)
+    session = await tg._orch._sessions.get_active(SessionKey.telegram(100, 42))
+    assert session.topic_name == "Saved Telegram title"
+    response = await h.client.get(f"{_PREFIX}/topics", headers=headers())
+    assert (
+        next(row for row in (await response.json())["topics"] if row["tid"] == "100.42")["name"]
+        == session.topic_name
+    )
+    saved = json.loads((h.paths.webchat_dir / "topics.json").read_text())
+    assert next(row for row in saved if row["topic_id"] == 42)["name"] == session.topic_name
+
+
+@pytest.mark.parametrize("kind", ["created", "edited"])
+async def test_deleted_topic_stays_deleted_after_journal_replay(conversation, monkeypatch, kind):
+    from aiogram.types import ForumTopicCreated, ForumTopicEdited, Update
+
+    from ductor_bot.messenger.telegram.update_journal import UpdateJournal
+    from tests.messenger.telegram.test_topic_naming import message
+
+    h = conversation
+    tg = await _restart_topic_bot(h, monkeypatch)
+    key = SessionKey.telegram(100, 42)
+    await tg._orch._sessions.resolve_session(key)
+    await WebTopics.record_name(tg, tg._chat_log_runtime, key, "Delete me")
+    event = Update(
+        update_id=45003,
+        message=message(
+            text=None,
+            created=ForumTopicCreated(name="Old creation", icon_color=0)
+            if kind == "created"
+            else None,
+            edited=ForumTopicEdited(name="Old edit") if kind == "edited" else None,
+        ),
+    )
+    path = h.paths.ductor_home / "topic-updates.json"
+    journal = UpdateJournal(path)
+    journal.record_pending(event.update_id, event.model_dump(mode="json"), 100, 42)
+    response = await h.client.delete(
+        f"{_PREFIX}/topics/100.42", json={"confirm_name": "Delete me"}, headers=headers()
+    )
+    assert response.status == 200
+    tg = await _restart_topic_bot(h, monkeypatch)
+    journal = UpdateJournal(path)
+    pending = journal.pending()
+    assert len(pending) == 1
+    await _deliver_topic_update(tg, journal, Update.model_validate(pending[0].update))
+    await tg._record_topic_name(key, "Late automatic name")
+    response = await h.client.get(f"{_PREFIX}/topics", headers=headers())
+    assert all(row["tid"] != "100.42" for row in (await response.json())["topics"])
+    assert await tg._orch._sessions.get_active(key) is None
+    assert all(
+        row["topic_id"] != 42
+        for row in json.loads((h.paths.webchat_dir / "topics.json").read_text())
+    )
+    assert json.loads((h.paths.webchat_dir / "deleted_topics.json").read_text()) == [[100, 42]]
+    assert (h.paths.webchat_dir / "deleted_topics.json").stat().st_mode & 0o777 == (
+        h.paths.webchat_dir / "topics.json"
+    ).stat().st_mode & 0o777
+    fresh = Update(
+        update_id=45004,
+        message=message(
+            topic=43, text=None, created=ForumTopicCreated(name="New topic", icon_color=0)
+        ).model_copy(update={"message_id": 9}),
+    )
+    journal.record_pending(fresh.update_id, fresh.model_dump(mode="json"), 100, 43)
+    await _deliver_topic_update(tg, journal, fresh)
+    response = await h.client.get(f"{_PREFIX}/topics", headers=headers())
+    assert any(row["tid"] == "100.43" for row in (await response.json())["topics"])
+
+
+async def test_unknown_telegram_edit_cannot_register_topic(conversation, monkeypatch):
+    from aiogram.types import ForumTopicEdited, Update
+
+    from ductor_bot.messenger.telegram.update_journal import UpdateJournal
+    from tests.messenger.telegram.test_topic_naming import message
+
+    h = conversation
+    tg = await _restart_topic_bot(h, monkeypatch)
+    journal = UpdateJournal(h.paths.ductor_home / "topic-updates.json")
+    event = Update(
+        update_id=45005, message=message(text=None, edited=ForumTopicEdited(name="Unknown edit"))
+    )
+    journal.record_pending(event.update_id, event.model_dump(mode="json"), 100, 42)
+    await _deliver_topic_update(tg, journal, event)
+    assert not (h.paths.webchat_dir / "topics.json").exists()
+    assert await tg._orch._sessions.get_active(SessionKey.telegram(100, 42)) is None
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "broken synthetic-sensitive",
+        "{}",
+        '[[100, "synthetic-sensitive"]]',
+        "[[true, 42]]",
+        "[[100, 42], [1]]",
+        "[]",
+        "[[100, 42]]",
+    ],
+)
+async def test_deleted_topic_registry_validation(conversation, caplog, content):
+    h = conversation
+    path = h.paths.webchat_dir / "deleted_topics.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+    result = WebTopics._read_deleted(path)
+    if content == "[[100, 42]]":
+        assert result == {(100, 42)}
+        assert not caplog.records
+    elif content == "[]":
+        assert result == set()
+        assert not caplog.records
+    else:
+        assert result == set()
+        assert "corrupt or unreadable" in caplog.text
+        assert "synthetic-sensitive" not in caplog.text
+
+
+async def test_startup_preserves_real_session_title_over_registry(conversation, monkeypatch):
+    h = conversation
+    await WebTopics.record_name(h.bot, h.runtime, h.key, "Registry title")
+    await h.bot._orch._sessions.set_topic_name(h.key, "Actual session title")
+    tg = await _restart_topic_bot(h, monkeypatch)
+    assert tg._topic_names.get(-123, 7) == "Actual session title"
+
+
+async def test_unreadable_deleted_registry_is_empty_without_contents(conversation, caplog):
+    path = conversation.paths.webchat_dir / "deleted_topics.json"
+    path.mkdir(parents=True)
+    assert WebTopics._read_deleted(path) == set()
+    assert "corrupt or unreadable" in caplog.text

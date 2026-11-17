@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -22,6 +23,9 @@ if TYPE_CHECKING:
     from ductor_bot.chat_log.runtime import ChatLogRuntime
     from ductor_bot.messenger.telegram.app import TelegramBot
     from ductor_bot.webchat.turns import WebTurns
+
+
+logger = logging.getLogger(__name__)
 
 
 class TopicBusyError(Exception):
@@ -66,6 +70,39 @@ class WebTopics:
         if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
             raise ValueError("topics_registry_invalid")
         return data
+
+    @staticmethod
+    def _read_deleted(path: Path) -> set[tuple[int, int]]:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return set()
+        except (OSError, ValueError, TypeError):
+            data = None
+        if not isinstance(data, list) or any(
+            not isinstance(row, list)
+            or len(row) != 2
+            or any(type(value) is not int for value in row)
+            for row in data
+        ):
+            logger.warning("Deleted topic registry is corrupt or unreadable; treating as empty")
+            return set()
+        return {(row[0], row[1]) for row in data}
+
+    @staticmethod
+    async def restore_names(bot: TelegramBot) -> None:
+        """Restore registry-only topics before their first foreground session."""
+        directory = bot._orch.paths.webchat_dir
+        entries = await asyncio.to_thread(WebTopics._read_registry, directory / "topics.json")
+        deleted = await asyncio.to_thread(
+            WebTopics._read_deleted, directory / "deleted_topics.json"
+        )
+        for item in entries:
+            chat_id, topic_id = item["chat_id"], item["topic_id"]
+            if (chat_id, topic_id) not in deleted and bot._topic_names.get(
+                chat_id, topic_id
+            ) is None:
+                bot._topic_names.set(chat_id, topic_id, item["name"])
 
     async def list(self) -> list[dict[str, Any]]:
         sessions = {
@@ -207,26 +244,37 @@ class WebTopics:
         return next((topic for topic in await self.list() if topic["tid"] == tid), None)
 
     @staticmethod
-    async def record_name(
+    async def record_name(  # noqa: PLR0913 -- shared persistence fields and ingress guard
         bot: TelegramBot,
         runtime: ChatLogRuntime,
         key: SessionKey,
         name: str,
         *,
         topic: dict[str, Any] | None = None,
+        existing_only: bool = False,
     ) -> None:
         """Persist an observed Telegram title using the web topic registry."""
         assert key.topic_id is not None
         tid = to_tid(key)
         path = bot._orch.paths.webchat_dir / "topics.json"
         async with runtime.topic_registry_lock:
-            if tid in runtime.recorder.blocked:
+            deleted = await asyncio.to_thread(
+                WebTopics._read_deleted, path.with_name("deleted_topics.json")
+            )
+            if tid in runtime.recorder.blocked or key.lock_key in deleted:
                 return
             entries = await asyncio.to_thread(WebTopics._read_registry, path)
             saved = next(
                 (item for item in entries if (item["chat_id"], item["topic_id"]) == key.lock_key),
                 None,
             )
+            if (
+                existing_only
+                and saved is None
+                and await bot._orch._sessions.get_active(key) is None
+                and tid not in runtime.history.tids()
+            ):
+                return
             entries = [
                 item for item in entries if (item["chat_id"], item["topic_id"]) != key.lock_key
             ]
@@ -292,6 +340,15 @@ class WebTopics:
                     raise TopicDeleteError
                 removed = await self.bot._orch._sessions.delete_session(key)
                 async with self._registry_lock:
+                    deleted_path = self._path.with_name("deleted_topics.json")
+                    deleted_topics = await asyncio.to_thread(self._read_deleted, deleted_path)
+                    # Keep confirmed web deletions across restarts without automatic expiry.
+                    deleted_topics.add((key.chat_id, key.topic_id))
+                    await complete_write(
+                        atomic_json_save,
+                        deleted_path,
+                        [list(pair) for pair in sorted(deleted_topics)],
+                    )
                     entries = [
                         item
                         for item in await asyncio.to_thread(self._read)
