@@ -748,11 +748,16 @@ def _register_cli_login_routes(app: web.Application, bot: TelegramBot) -> None: 
                         and entry.name not in names
                     ):
                         names.append(entry.name)
-        snapshot = SlotRegistry(state_file_path(paths.ductor_home)).load()
+        expired_slots: set[str] = set()
+        # Expiration metadata must not prevent listing existing login slots.
+        with contextlib.suppress(Exception):
+            expired_slots = set(
+                SlotRegistry(state_file_path(paths.ductor_home)).load().auth_failures
+            )
         return [
             {
                 "name": name,
-                "auth_expired": name in snapshot.auth_failures,
+                "auth_expired": name in expired_slots,
                 "priority": priority.index(name) + 1 if name in priority else None,
                 "authenticated": slot_is_authenticated(
                     host_slot_config_dir(paths.ductor_home, name)

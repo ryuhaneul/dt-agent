@@ -3511,6 +3511,39 @@ async def test_cli_status_returns_ordered_slots_and_cache_without_auth_wait(cli_
     assert set(result["providers"].values()) == {"authenticated"}
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [b"\xff\xfe\x80", json.dumps({"cooldowns": {"claude": 10**400}}).encode()],
+    ids=["non-utf8", "overflowing-cooldown"],
+)
+async def test_cli_status_preserves_slots_when_expiration_metadata_cannot_load(cli_bridge, payload):
+    from ductor_bot.cli.claude_accounts import state_file_path
+
+    client, bot, _, paths, _ = cli_bridge
+    bot.config.claude_accounts = ["claude", "claude-empty"]
+    root = paths.ductor_home / ".cli-auth"
+    (root / "claude/.credentials.json").write_text("fake")
+    (root / "claude-unused").mkdir()
+    (root / "claude-unused/credentials.json").write_text("fake")
+    state = state_file_path(paths.ductor_home)
+    state.write_bytes(payload)
+    state_mtime = state.stat().st_mtime_ns
+    config_before = paths.config_path.read_bytes()
+
+    response = await client.get(f"{_PREFIX}/cli-login/status", headers=cli_headers())
+
+    assert response.status == 200
+    assert (await response.json())["claude_slots"] == [
+        {"name": "claude", "priority": 1, "authenticated": True, "auth_expired": False},
+        {"name": "claude-empty", "priority": 2, "authenticated": False, "auth_expired": False},
+        {"name": "claude-unused", "priority": None, "authenticated": True, "auth_expired": False},
+    ]
+    assert state.read_bytes() == payload
+    assert state.stat().st_mtime_ns == state_mtime
+    assert paths.config_path.read_bytes() == config_before
+    assert bot.config.claude_accounts == ["claude", "claude-empty"]
+
+
 async def test_cli_slot_expiration_tracks_rotation_fingerprint(cli_bridge):
     from ductor_bot.cli.claude_accounts import SlotRegistry, SlotSnapshot, state_file_path
     from ductor_bot.cli.claude_slots import overview
