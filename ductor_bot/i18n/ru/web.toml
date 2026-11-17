@@ -53,6 +53,7 @@ tag_reply = "Ответ"
 tag_result = "Результат"
 
 [topic]
+mark_all_read = "Отметить всё как прочитанное"
 title = "Список тем"
 manage = "Список тем"
 search = "Поиск тем и сообщений"

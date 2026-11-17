@@ -53,6 +53,7 @@ tag_reply = "응답"
 tag_result = "결과"
 
 [topic]
+mark_all_read = "모두 읽음"
 title = "토픽 목록"
 manage = "토픽 목록"
 search = "토픽·메시지 검색"

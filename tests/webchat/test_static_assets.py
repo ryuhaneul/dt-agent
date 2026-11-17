@@ -304,6 +304,7 @@ const buttons = [...modeButtons, ids.regenerate];
 ids.botBadge.label = new Element();
 const document = new Element(); document.documentElement = new Element(); document.body = new Element();
 document.querySelector = selector => {
+  if (selector === '#otp input') return ids.otp.children[0];
   if (selector.startsWith('#')) return ids[selector.slice(1)];
   if (selector === '.seed') return seed;
   if (selector.startsWith('[data-setup-mode=')) return modeButtons.find(button => selector.includes(button.dataset.setupMode));
@@ -505,6 +506,7 @@ try {
   const topic={tid:'1.2',chat_id:1,topic_id:2,name:'Example topic',group:'telegram',last_ts:null,preview:'',count:205,imported_count:0,created_at:null,busy:false,renamable:true,deletable:true,read_only:false};
   const archive={...topic,tid:'1.3',topic_id:3,name:'Archive',group:'imported',count:1,imported_count:1};
   let archiveDeleted=false;
+  let cliNeedsInput=false, cliState='running';
   const fileData=Object.fromEntries(['PERSONA.md','BEHAVIOR.md','MAINMEMORY.md','SHAREDMEMORY.md'].map(name=>[name,{name,content:`# ${name}\n\nOriginal`,sha256:`base-${name}`,shared_block:name==='MAINMEMORY.md'}]));
   const entries=Array.from({length:205},(_,index)=>({id:`e${index+1}`,seq:index+1,ts:null,role:'bot',source:'telegram',kind:'message',text:`Message ${index+1}`,imported:false,mirror:null}));
   await page.routeWebSocket('**/api/ws',socket=>{wsPeer=socket;socket.send(JSON.stringify({type:'bridge',up:true}));});
@@ -517,6 +519,10 @@ try {
     if (request.method()==='POST') assert.equal(request.headers()['x-dtw-client'],'web');
     if (url.pathname==='/api/i18n') result={lang:'en',strings};
     else if (url.pathname==='/api/commands') result={commands};
+    else if (url.pathname==='/api/cli-login/status') result={providers:{claude:'installed',codex:'installed',grok:'installed'},claude_slots:[{name:'claude',authenticated:false,priority:1}],running:false};
+    else if (url.pathname==='/api/cli-login/jobs'&&request.method()==='POST') result={job_id:'browser-login'};
+    else if (url.pathname==='/api/cli-login/jobs/browser-login/cancel') {cliState='cancelled';result={ok:true};}
+    else if (url.pathname==='/api/cli-login/jobs/browser-login') result={job_id:'browser-login',provider:'claude',slot:'claude',state:cliState,seq:1,output:[],urls:['https://login.example.test/auth'],needs_input:cliNeedsInput};
     else if (url.pathname==='/api/auth/state') result={authenticated,totp_configured:configured,csrf:authenticated?'fake-csrf':null,bridge_up:true};
     else if (url.pathname==='/api/auth/password') {
       if (body.password!=='good-password') {status=403;result={error:'invalid'};}
@@ -571,6 +577,7 @@ try {
   await page.getByRole('alert').filter({hasText:strings['auth.invalid']}).waitFor();
   await page.locator('#pw').fill('good-password'); await page.locator('#passwordNext').click();
   await page.locator('#totpForm').waitFor({state:'visible'});
+  assert.equal(await page.locator('#otp input').first().evaluate(element=>element===document.activeElement),true);
   await page.screenshot({path:path.join(artifactDir,`otp-${width}.png`),fullPage:true});
   await page.locator('#otp input').nth(1).focus(); await page.keyboard.press('Backspace');
   assert.equal(await page.locator('#otp input').first().evaluate(element=>element===document.activeElement),true);
@@ -581,7 +588,38 @@ try {
   await page.locator('#app').waitFor({state:'visible'});
   await page.locator('[data-entry-seq="205"]').waitFor();
   await page.screenshot({path:path.join(artifactDir,`shell-${width}.png`),fullPage:true});
+  // CLI stages focus the fixed input, preserve drafts/cursors on polling, and respect raw controls.
+  await page.locator('#accountButton').click();await page.locator('#openCliLogin').click();
+  await page.locator('.cli-slot button').first().click();await page.locator('#cliConfirmYes').click();
+  await page.locator('#cliWaiting').waitFor({state:'visible'});
+  cliNeedsInput=true;await page.waitForFunction(()=>document.activeElement?.id==='cliCodeInput');
+  await page.locator('#cliCodeInput').fill('draft-code');
+  await page.locator('#cliCodeInput').evaluate(input=>input.setSelectionRange(2,6));
+  const fixed=await page.locator('#cliCodeInput').elementHandle();
+  await page.waitForResponse(response=>response.url().includes('/cli-login/jobs/browser-login?'));
+  assert.equal(await fixed.evaluate(input=>input===document.querySelector('#cliCodeInput')),true);
+  assert.deepEqual(await fixed.evaluate(input=>[input.value,input.selectionStart,input.selectionEnd]),['draft-code',2,6]);
+  await context.route('https://login.example.test/**',route=>route.fulfill({contentType:'text/html',body:'Login page'}));
+  const popupPromise=page.waitForEvent('popup');await page.locator('#cliLinkRows a').click();
+  const popup=await popupPromise;await popup.close();await page.bringToFront();
+  await page.evaluate(()=>{window.dispatchEvent(new Event('focus'));document.dispatchEvent(new Event('visibilitychange'));});
+  assert.equal(await page.locator('#cliCodeInput').evaluate(input=>input===document.activeElement),true);
+  assert.deepEqual(await fixed.evaluate(input=>[input.value,input.selectionStart,input.selectionEnd]),['draft-code',2,6]);
+  await page.locator('#cliRaw summary').click();await page.locator('#cliRawInput').fill('raw draft');
+  cliNeedsInput=false;await page.locator('#cliCodeForm').waitFor({state:'hidden'});
+  cliNeedsInput=true;await page.locator('#cliCodeForm').waitFor({state:'visible'});
+  await page.evaluate(()=>{window.dispatchEvent(new Event('focus'));document.dispatchEvent(new Event('visibilitychange'));});
+  assert.equal(await page.locator('#cliRawInput').evaluate(input=>input===document.activeElement),true);
+  assert.equal(await page.locator('#cliRawInput').inputValue(),'raw draft');
+  await page.screenshot({path:path.join(artifactDir,`cli-login-${width}.png`),fullPage:true});
+  await page.locator('#cliCancel').click();await page.locator('#cliConfirmYes').click();
+  await page.locator('#cliResult').waitFor({state:'visible'});await page.locator('#cliClose').click();
+
   if(width<=760)await page.locator('[data-route="list"]').click();
+  await page.locator('#q').fill('Example');await page.locator('#markAllRead').click();
+  await page.waitForFunction(()=>localStorage.getItem('dtw-seen:1.3')==='205');
+  await page.screenshot({path:path.join(artifactDir,`topics-read-${width}.png`),fullPage:true});
+
   await page.locator('#q').fill('Message');await page.locator('#tlist [data-seq="2"]').waitFor();
   await page.locator('#tlist [data-seq="2"]').focus();await page.keyboard.press('Enter');
   await page.locator('[data-entry-seq="2"]').waitFor();
@@ -791,7 +829,7 @@ async function fetch(url,options={}){
   }
   throw Error(`Unexpected API: ${url}`);
 }
-const context=vm.createContext({document,CustomEvent,WebSocket,fetch,URL,TextEncoder,TextDecoder,localStorage,console,
+const context=vm.createContext({document,window:document,CustomEvent,WebSocket,fetch,URL,TextEncoder,TextDecoder,localStorage,console,
   location:{href:'https://chat.example.com/#list',hash:'#list'},
   setTimeout:(callback,delay)=>{const id=++timerId;timers.set(id,{callback,delay});return id},
   clearTimeout:id=>timers.delete(id),
@@ -1880,6 +1918,7 @@ const context=vm.createContext({document,CustomEvent,Node:Element,innerHeight:60
  localStorage:{getItem:key=>{if(blocked)throw Error('blocked');return storage.get(key)||null},setItem:(key,v)=>{if(blocked)throw Error('blocked');storage.set(key,v)}},
  matchMedia:()=>({matches:false,addEventListener(){}}),addEventListener:(key,fn)=>{windowEvents[key]=fn},
  ResizeObserver:class {observe(){}},requestAnimationFrame:fn=>fn(),fetch:async url=>{fetches.push(url);const lang=new URL(url,'https://chat.example').searchParams.get('lang')||'ko';return {ok:true,json:async()=>({lang,strings:translations[lang]})}}});
+context.window=context;
 async function load(name,dependencies={}){
  const module=new vm.SourceTextModule(sources[name],{context});
  await module.link(async spec=>{const exports=dependencies[spec];assert.ok(exports,`Unexpected dependency: ${spec}`);const stub=new vm.SyntheticModule(Object.keys(exports),function(){for(const[k,v]of Object.entries(exports))this.setExport(k,v)},{context});await stub.link(()=>{});return stub});
@@ -1978,6 +2017,45 @@ if(scenario==='rename'||scenario==='rename-stale'){
  assert.equal(requests.filter(r=>r.method==='PATCH').at(-1).url,'/topics/-123.4');
  await get('headerRename').emit('click');assert.equal(input.value,'New name');const before=requests.length;await get('renameCancel').emit('click');assert.equal(requests.length,before);assert.equal(document.activeElement,get('headerRename'));
 }
+if(scenario==='unread'){
+ const rows=Array.from({length:9},(_,i)=>({tid:String(i),name:'Topic '+i,group:'telegram',count:2}));
+ const entries=new Map(rows.map((row,i)=>[row.tid,[{seq:-5},{seq:i===0?100:i===8?-2:2}]]));
+ const requests=[];let inFlight=0,maxFlight=0,release=null;
+ const api=async url=>{
+  if(url==='/topics')return {topics:rows.map(row=>({...row}))};
+  requests.push(url);inFlight++;maxFlight=Math.max(maxFlight,inFlight);
+  if(release)await release;
+  const tid=url.split('/')[2],limit=Number(new URL(url,'https://test').searchParams.get('limit'));
+  inFlight--;return {entries:entries.get(tid).slice(-limit),has_more:false};
+ };
+ const topics=await load('topics.js',{'./api.js':{api},'./i18n.js':{t:(key,args)=>key==='topic.unread'?`${args.n} unread`:key},'./router.js':{go:()=>{}},'./auth.js':{notify:()=>{throw Error('unexpected notice')}},'./md.js':{esc:value=>String(value)}});
+ topics.initTopics();document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));await topics.refreshTopics();
+ assert.ok(get('tlist').innerHTML.includes('2 unread'));
+ // A second tab marks every topic read after this tab has cached null.
+ for(const row of rows)storage.set('dtw-seen:'+row.tid,String(entries.get(row.tid).at(-1).seq));
+ windowEvents.storage({storageArea:context.localStorage,key:'dtw-seen:0',newValue:'100'});
+ await new Promise(setImmediate);assert.ok(!get('tlist').innerHTML.split('data-tid="0"')[1].split('</button>')[0].includes('unread'));
+ await topics.refreshTopics();assert.ok(!get('tlist').innerHTML.includes('unread'));
+ topics.markSeen('0',3);assert.equal(storage.get('dtw-seen:0'),'100','stale tabs cannot overwrite a newer cursor');
+ topics.markSeen('8',-5);assert.equal(storage.get('dtw-seen:8'),'-2','imported cursors stay negative and monotonic');
+ // Imported-only history retains negative sequences; storage denial keeps memory useful.
+ blocked=true;topics.markSeen('unknown',-5);topics.markSeen('unknown',-9);blocked=false;
+ // Mark all uses bounded latest-message requests, including topics outside a search filter.
+ for(const row of rows){entries.get(row.tid).push({seq:101});topics.noteEntry(row.tid,{seq:101,text:'new'});}
+ get('q').value='Topic 0';await get('q').emit('input');
+ let unblock;release=new Promise(resolve=>{unblock=resolve});
+ await get('markAllRead').emit('click');assert.equal(get('markAllRead').disabled,true);assert.equal(inFlight,4);
+ unblock();release=null;
+ for(let i=0;i<10;i++)await new Promise(setImmediate);
+ assert.equal(get('markAllRead').disabled,false);assert.equal(maxFlight,4);
+ for(const row of rows)assert.equal(storage.get('dtw-seen:'+row.tid),'101');
+ assert.equal(requests.filter(url=>url.endsWith('limit=1')).length,9);
+ topics.noteEntry('0',{seq:102,text:'later'});assert.ok(get('tlist').innerHTML.includes('1 unread'));
+ // Sign-out/in and list refresh restore the same persisted cursors.
+ document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:false}}));
+ document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));await topics.refreshTopics();
+ assert.ok(!get('tlist').innerHTML.includes('unread'));
+}
 if(scenario==='topic-labels'){
  let lang='ko';
  const rows=[{tid:'-123',topic_id:null,name:'일반',name_key:'topic.general',group:'telegram',count:0},
@@ -1994,7 +2072,7 @@ console.log(`Header contract passed: ${scenario}`);
 
 
 @pytest.mark.parametrize(
-    "scenario", ["language", "menus", "rename", "rename-stale", "topic-labels"]
+    "scenario", ["language", "menus", "rename", "rename-stale", "topic-labels", "unread"]
 )
 def test_header_client_behavior(scenario):
     payload = {
@@ -2079,14 +2157,15 @@ class Element {
  replaceChildren(...children){this.children=children}
  get childElementCount(){return this.children.length}
  setAttribute(){} removeAttribute(){} getClientRects(){return this.hidden?[]:[{}]}
- focus(){focus=this.id} querySelectorAll(selector){return this.id==='cliLoginDlg'&&selector==='[data-cli-list]'?[listControl]:[]}
+ focus(){focus=this.id;fakeDocument.activeElement=this} contains(element){return this===element||this.children.some(child=>child.contains(element))} querySelectorAll(selector){return this.id==='cliLoginDlg'&&selector==='[data-cli-list]'?[listControl]:[]}
  showModal(){this.open=true} close(){this.open=false;this.emit('close')}
  reset(){for(const id of {'cliSlotForm':['cliSlotName'],'cliCodeForm':['cliCodeInput'],'cliRawForm':['cliRawInput']}[this.id]||[])get(id).value=''}
 }
 const elements=new Map(ids.map(id=>[id,new Element(id)]));const get=id=>elements.get(id);const listControl=new Element('back-to-list');
 const current={job_id:'demo',provider:'grok',slot:null,state:'running',reason:null,seq:1,output:[{seq:1,text:'terminal output'}],urls:['javascript:alert(1)','http://unsafe.invalid','https://safe.invalid/auth'],code:null,needs_input:false,restart_required:false};
 const clone=value=>JSON.parse(JSON.stringify(value));
-const context=vm.createContext({URL,document:{getElementById:get,createElement:()=>new Element(),addEventListener:(name,fn)=>events[name]=fn},
+const windowEvents={};const fakeDocument={getElementById:get,createElement:()=>new Element(),addEventListener:(name,fn)=>events[name]=fn};
+const context=vm.createContext({URL,document:fakeDocument,window:{addEventListener:(name,fn)=>windowEvents[name]=fn},
  navigator:{clipboard:{writeText:async()=>{}}},setTimeout:(fn,delay)=>{assert.equal(delay,1000);timers.set(++timerId,fn);return timerId},clearTimeout:id=>timers.delete(id)});
 const api=new vm.SyntheticModule(['api'],function(){this.setExport('api',async(path,options={})=>{
  calls.push({path,options:clone(options)});
@@ -2122,6 +2201,15 @@ const stableLink=get('cliLinkRows').children[0];
 const repeat=timers.values().next().value;timers.clear();repeat();await flush();
 assert.equal(get('cliLinkRows').children[0],stableLink,'unchanged polling must preserve focused link nodes');
 assert.equal(get('cliLinkRows').children[0].children[1].rel,'noopener noreferrer');
+const tickJob=async()=>{const next=timers.values().next().value;timers.clear();next();await flush()};
+fakeDocument.activeElement=null;current.needs_input=true;await tickJob();assert.equal(focus,'cliCodeInput');
+const stableInput=get('cliCodeInput');stableInput.value='partially entered';stableInput.selectionStart=3;stableInput.selectionEnd=7;
+await tickJob();assert.equal(get('cliCodeInput'),stableInput);assert.equal(stableInput.value,'partially entered');assert.equal(stableInput.selectionStart,3);assert.equal(stableInput.selectionEnd,7);assert.equal(focus,'cliCodeInput');
+const link=stableLink.children[1];link.focus();await link.emit('click');assert.equal(focus,'cliCodeInput');
+link.focus();windowEvents.focus();assert.equal(focus,'cliCodeInput');link.focus();events.visibilitychange();assert.equal(focus,'cliCodeInput');
+get('cliRawInput').focus();current.needs_input=false;await tickJob();current.needs_input=true;await tickJob();assert.equal(focus,'cliRawInput','input stages must not steal focus from raw controls');
+await tickJob();assert.equal(focus,'cliRawInput');
+
 const sent=()=>calls.filter(call=>call.path.endsWith('/input'));
 get('cliCodeInput').value='draft-code';get('cliRawInput').value='7';
 for(const lang of ['en','de']){language=lang;events['language-changed']();assert.equal(get('cliCodeInput').value,'draft-code');assert.equal(get('cliRawInput').value,'7')}

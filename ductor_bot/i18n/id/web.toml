@@ -53,6 +53,7 @@ tag_reply = "Balasan"
 tag_result = "Hasil"
 
 [topic]
+mark_all_read = "Tandai semua telah dibaca"
 title = "Daftar topik"
 manage = "Daftar topik"
 search = "Cari topik dan pesan"

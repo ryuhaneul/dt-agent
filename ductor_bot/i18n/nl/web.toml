@@ -53,6 +53,7 @@ tag_reply = "Antwoord"
 tag_result = "Resultaat"
 
 [topic]
+mark_all_read = "Alles als gelezen markeren"
 title = "Onderwerpenlijst"
 manage = "Onderwerpenlijst"
 search = "Onderwerpen en berichten doorzoeken"

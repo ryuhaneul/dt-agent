@@ -13,6 +13,7 @@ export function initCliLogin() {
   let timer = null, generation = 0, busy = false, loading = false, polling = false, confirmMode = 'start';
   let noticeKey = null, copied = false, cancelRequested = false, refreshingProvider = null;
   let accountsKey = null, linksKey = null;
+  let codeFocusPending = false, returnToCode = false;
   // Probes can take 10s (Claude) + 15s (Grok), plus a queued completion probe.
   // Bound unknown-status polling; two snapshots skip the first cached response.
   let statusChecksLeft = 60, refreshChecksLeft = 0;
@@ -89,6 +90,18 @@ export function initCliLogin() {
     $('cliConfirmYes').classList.toggle('btn-primary', !cancel);
     $('cliConfirmYes').disabled = busy;
   }
+  function focusCodeInput() {
+    const input = $('cliCodeInput'), focused = document.activeElement;
+    if (!codeFocusPending || !active() || !job.needs_input || input.disabled
+      || confirmation.open || document.hidden) return;
+    if (focused === input) { codeFocusPending = false; return; }
+    // Keep explicit interaction with other controls (including raw output) intact.
+    if (focused && focused !== document.body && focused !== dialog && focused !== $('cliClose')
+      && focused.getClientRects().length && !$('cliLinkRows').contains(focused)) {
+      codeFocusPending = false; return;
+    }
+    input.focus(); codeFocusPending = false;
+  }
   function renderProgress() {
     $('cliTarget').textContent = targetName();
     const links = $('cliLinkRows'), nextLinksKey = JSON.stringify(job?.urls || []);
@@ -102,17 +115,22 @@ export function initCliLogin() {
         link.href = url.href; link.target = '_blank'; link.rel = 'noopener noreferrer';
         link.dataset.i18n = 'cli_login.open_link'; link.dataset.i18nAttr = 'aria-label:cli_login.open_link';
         link.setAttribute('aria-label', t('cli_login.open_link'));
+        link.addEventListener('click', () => {
+          returnToCode = true; codeFocusPending = true; focusCodeInput();
+        });
         row.append(node('span', 'cli-url mono', url.host + url.pathname), link); links.append(row);
       });
     }
     $('cliLinks').hidden = !links.childElementCount;
     $('cliDevice').hidden = !job?.code; $('cliDeviceCode').textContent = job?.code || '';
     $('cliCopy').textContent = t(copied ? 'cli_login.copied' : 'cli_login.copy');
+    if ($('cliCodeForm').hidden && job?.needs_input) codeFocusPending = true;
     $('cliCodeForm').hidden = !job?.needs_input;
     $('cliWaiting').hidden = Boolean(job?.needs_input);
     $('cliCancel').disabled = busy || cancelRequested;
     [$('cliCodeInput'), $('cliRawInput'), ...dialog.querySelectorAll('#cliCodeForm button, #cliRawForm button')]
       .forEach(control => { control.disabled = busy || cancelRequested; });
+    focusCodeInput();
   }
   function renderResult() {
     const state = view === 'busy' ? 'busy' : job?.state || 'failed';
@@ -203,6 +221,7 @@ export function initCliLogin() {
       const result = await api('/cli-login/jobs', { method: 'POST', body: target });
       if (version !== generation || !dialog.open) return;
       confirmation.close(); copied = false; cancelRequested = false; seq = 0;
+      codeFocusPending = false; returnToCode = false;
       $('cliRawOutput').textContent = ''; $('cliCodeForm').reset(); $('cliRawForm').reset(); $('cliRaw').open = false;
       job = { job_id: result.job_id, state: 'running' }; view = 'progress'; showNotice(null); render();
       await pollJob();
@@ -264,6 +283,17 @@ export function initCliLogin() {
     copied = false; cancelRequested = false; seq = 0; statusChecksLeft = 60; refreshChecksLeft = 0; refreshingProvider = null; $('cliRaw').open = false;
     dialog.showModal(); render(); $('cliClose').focus(); loadStatus();
   };
+  const focusAfterReturn = () => {
+    if (!returnToCode || document.hidden) return;
+    codeFocusPending = true; focusCodeInput();
+  };
+  window.addEventListener('focus', focusAfterReturn);
+  document.addEventListener('visibilitychange', focusAfterReturn);
+  dialog.addEventListener('pointerdown', event => {
+    if (!event.target.closest('#cliLinkRows, #cliCodeForm')) {
+      codeFocusPending = false; returnToCode = false;
+    }
+  });
   $('cliSlotName').addEventListener('input', () => { $('cliSlotPreview').textContent = t('cli_login.slot_preview', { name: slotName($('cliSlotName').value) }); });
   $('cliSlotForm').addEventListener('submit', event => {
     event.preventDefault();
@@ -298,7 +328,8 @@ export function initCliLogin() {
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
   }));
   dialog.addEventListener('close', () => {
-    ++generation; stopPolling(); confirmation.close(); accountsKey = null; linksKey = null; $('cliSlotForm').reset(); $('cliCodeForm').reset(); $('cliRawForm').reset();
+    ++generation; stopPolling(); confirmation.close(); accountsKey = null; linksKey = null;
+    codeFocusPending = false; returnToCode = false; $('cliSlotForm').reset(); $('cliCodeForm').reset(); $('cliRawForm').reset();
     $('cliRawOutput').textContent = ''; job = null; target = null; status = null; $('accountButton').focus();
   });
   document.addEventListener('language-changed', () => { if (dialog.open) render(); });

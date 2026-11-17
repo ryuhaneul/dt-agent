@@ -53,6 +53,7 @@ tag_reply = "Resposta"
 tag_result = "Resultado"
 
 [topic]
+mark_all_read = "Marcar tudo como lido"
 title = "Lista de tópicos"
 manage = "Lista de tópicos"
 search = "Pesquisar tópicos e mensagens"

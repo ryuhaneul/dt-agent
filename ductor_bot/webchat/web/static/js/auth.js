@@ -198,6 +198,7 @@ export async function initAuth() {
   });
   document.addEventListener('route-change', event => {
     if (event.detail.route === 'pw') { setPreauth(false); clearCodes(); clearSetup(); }
+    if (event.detail.route === 'totp') document.querySelector('#otp input')?.focus();
   });
   document.addEventListener('auth-required', () => {
     setAuthenticated(false); setPreauth(false); clearCodes(); clearSetup(); go('pw');

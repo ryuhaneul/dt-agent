@@ -53,6 +53,7 @@ tag_reply = "Antwort"
 tag_result = "Ergebnis"
 
 [topic]
+mark_all_read = "Alle als gelesen markieren"
 title = "Themenliste"
 manage = "Themenliste"
 search = "Themen und Nachrichten durchsuchen"

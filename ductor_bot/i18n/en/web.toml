@@ -53,6 +53,7 @@ tag_reply = "Reply"
 tag_result = "Result"
 
 [topic]
+mark_all_read = "Mark all as read"
 title = "Topic list"
 manage = "Topic list"
 search = "Search topics and messages"

@@ -5,7 +5,7 @@ import { notify } from './auth.js';
 import { esc } from './md.js';
 
 let topics = [], selected = null, hits = [], query = '', searchTimer, revision = 0;
-let active = false, request = 0;
+let active = false, request = 0, readEpoch = 0, markingAll = false;
 let renaming = null, renameBusy = false, renameEpoch = 0;
 const unread = new Map(), seen = new Map();
 export function getTopics() { return topics; }
@@ -16,11 +16,12 @@ export function formatTime(value, date = false) {
     date ? { dateStyle: 'medium', timeStyle: 'short' } : { hour: '2-digit', minute: '2-digit' });
 }
 function storedSeen(tid) {
-  if (seen.has(tid)) return seen.get(tid);
-  let value = null;
+  let value = seen.get(tid) ?? null;
   try {
     const raw = localStorage.getItem(`dtw-seen:${tid}`);
-    if (raw !== null && Number.isFinite(Number(raw))) value = Number(raw);
+    if (raw !== null && Number.isFinite(Number(raw))) {
+      value = value === null ? Number(raw) : Math.max(value, Number(raw));
+    }
   } catch { /* In-memory seen state still works when storage is blocked. */ }
   seen.set(tid, value);
   return value;
@@ -31,8 +32,32 @@ export function markSeen(tid, seq) {
   const value = previous === null ? seq : Math.max(previous, seq);
   if (previous === value && unread.get(tid) === 0) return;
   seen.set(tid, value); unread.set(tid, 0);
-  try { localStorage.setItem(`dtw-seen:${tid}`, String(value)); } catch { /* Optional storage. */ }
+  if (previous === null || value > previous) {
+    try { localStorage.setItem(`dtw-seen:${tid}`, String(value)); } catch { /* Optional storage. */ }
+  }
   renderTopics();
+}
+async function markAllSeen() {
+  if (!active || markingAll) return;
+  const epoch = readEpoch, pending = topics.map(topic => topic.tid);
+  const button = document.querySelector('#markAllRead');
+  markingAll = true; button.disabled = true;
+  let failed = false;
+  // Latest sequences are not part of /topics. Bound requests for large lists.
+  await Promise.all(Array.from({ length: Math.min(4, pending.length) }, async () => {
+    while (active && epoch === readEpoch && pending.length) {
+      const tid = pending.shift();
+      try {
+        const data = await api(`/topics/${encodeURIComponent(tid)}/messages?limit=1`);
+        if (!active || epoch !== readEpoch) return;
+        if (data.entries.length) markSeen(tid, data.entries.at(-1).seq);
+      } catch (error) { if (error.code !== 'auth_required') failed = true; }
+    }
+  }));
+  if (epoch === readEpoch) {
+    markingAll = false; button.disabled = false;
+    if (failed && active) notify('error.generic');
+  }
 }
 export function selectTopic(tid, seq = null, navigate = true) {
   if (!topics.some(topic => topic.tid === tid)) return;
@@ -151,6 +176,16 @@ async function renameCurrentTopic() {
   }
 }
 export function initTopics() {
+  document.querySelector('#markAllRead').addEventListener('click', () => { void markAllSeen(); });
+  window.addEventListener('storage', event => {
+    if (event.storageArea !== localStorage || !event.key?.startsWith('dtw-seen:')) return;
+    const topic = topics.find(item => item.tid === event.key.slice('dtw-seen:'.length));
+    if (!active || !topic) return;
+    const generation = revision;
+    void countUnread(topic, generation).then(() => {
+      if (active && generation === revision) renderTopics();
+    }).catch(error => { if (active && error.code !== 'auth_required') notify('error.generic'); });
+  });
   const dialog = document.querySelector('#renameDlg'), form = document.querySelector('#renameForm');
   const input = document.querySelector('#renameName'), opener = document.querySelector('#headerRename');
   opener.addEventListener('click', () => {
@@ -176,7 +211,8 @@ export function initTopics() {
     renderTopics();
   });
   document.addEventListener('auth-change', event => {
-    active = event.detail.authenticated;
+    active = event.detail.authenticated; ++readEpoch; markingAll = false;
+    document.querySelector('#markAllRead').disabled = false;
     if (!active) {
       ++renameEpoch; renaming = null; renameBusy = false; dialog.close(); clearRenameError();
       form.setAttribute('aria-busy', 'false');
