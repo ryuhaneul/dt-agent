@@ -405,8 +405,8 @@ class SlotRegistry:
             return SlotSnapshot()
         try:
             raw = json.loads(self._state_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as exc:
-            logger.warning("Failed to read %s: %s", self._state_path, exc)
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+            logger.warning("Failed to read %s: %s", self._state_path, type(exc).__name__)
             return SlotSnapshot()
         if not isinstance(raw, dict):
             return SlotSnapshot()
@@ -415,7 +415,10 @@ class SlotRegistry:
         if isinstance(cooldowns_raw, dict):
             for key, value in cooldowns_raw.items():
                 if isinstance(key, str) and isinstance(value, (int, float)):
-                    cooldowns[key] = float(value)
+                    try:
+                        cooldowns[key] = float(value)
+                    except OverflowError:
+                        continue
         last_used = raw.get("last_used")
         if not isinstance(last_used, str):
             last_used = None

@@ -2100,3 +2100,61 @@ async def test_expired_probe_unrelated_error_does_not_append_relogin_hint(
     assert [Path(row["auth"]).name for row in _read_slot_calls(calls)] == ["claude-a"]
     assert registry.load().auth_failures == before
     assert ("claude-a" in registry.load().cooldowns) is error.startswith("Usage limit")
+
+
+@pytest.mark.parametrize("driver", ["send", "streaming", "task"])
+@pytest.mark.parametrize(
+    "contents",
+    [
+        b"private-state-content\xff",
+        json.dumps({"cooldowns": {"bad": 10**400, "good": 99}}).encode(),
+    ],
+    ids=["non-utf8", "overflow"],
+)
+async def test_corrupt_slot_state_does_not_block_requests(tmp_path, monkeypatch, driver, contents):
+    from ductor_bot.cli.claude_accounts import SlotRegistry
+    from ductor_bot.cli.param_resolver import resolve_cli_config
+    from ductor_bot.config import AgentConfig
+    from ductor_bot.infra.task_runner import TaskRunOptions, run_oneshot_task
+
+    home, _control, calls = _install_slot_cli(tmp_path, monkeypatch)
+    registry = SlotRegistry(home / ".cli-auth" / "_claude-slots.json")
+    registry.state_path.write_bytes(contents)
+    if driver == "task":
+        config = AgentConfig(
+            ductor_home=str(home),
+            provider="claude",
+            model="opus",
+            claude_accounts=["claude-a", "claude-b"],
+            user_timezone="UTC",
+        )
+        response = await run_oneshot_task(
+            resolve_cli_config(config, None),
+            "hello",
+            TaskRunOptions(cwd=tmp_path, timeout_seconds=10, timeout_label="test"),
+        )
+        result = response.result_text
+        assert response.status == "success"
+    else:
+        cli = ClaudeCodeCLI(
+            CLIConfig(
+                provider="claude",
+                model="opus",
+                ductor_home=home,
+                working_dir=str(tmp_path),
+                claude_accounts=["claude-a", "claude-b"],
+                user_timezone="UTC",
+            )
+        )
+        if driver == "streaming":
+            events = [event async for event in cli.send_streaming("hello")]
+            result = next(event.result for event in events if isinstance(event, ResultEvent))
+        else:
+            result = (await cli.send("hello")).result
+    assert result.endswith("\n\nok")
+    assert [Path(row["auth"]).name for row in _read_slot_calls(calls)] == ["claude-a", "claude-b"]
+    snapshot = registry.load()
+    assert snapshot.cooldowns["claude-a"] > 0
+    assert "bad" not in snapshot.cooldowns
+    if b'"good"' in contents:
+        assert snapshot.cooldowns["good"] == 99

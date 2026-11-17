@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -258,6 +259,54 @@ class TestSlotRegistry:
         reg = SlotRegistry(path)
         snap = reg.load()
         assert snap.cooldowns == {}
+
+    def test_load_non_utf8_returns_empty_and_warns(self, tmp_path, caplog):
+        path = tmp_path / "state.json"
+        contents = b"private-state-content\xff"
+        path.write_bytes(contents)
+        with caplog.at_level(logging.WARNING):
+            snapshot = SlotRegistry(path).load()
+        assert snapshot == SlotSnapshot()
+        assert "Failed to read" in caplog.text
+        assert "private-state-content" not in caplog.text
+        assert path.read_bytes() == contents
+
+    @pytest.mark.parametrize("overflow", [10**400, -(10**400)], ids=["positive", "negative"])
+    def test_load_skips_overflow_preserving_valid_state(self, tmp_path, overflow):
+        path = tmp_path / "state.json"
+        mtimes = {"credentials.json": None, ".credentials.json": None}
+        path.write_text(
+            json.dumps(
+                {
+                    "cooldowns": {"before": 123, "bad": overflow, "after": 456.5},
+                    "last_used": "before",
+                    "auth_failures": {"before": mtimes},
+                }
+            )
+        )
+        assert SlotRegistry(path).load() == SlotSnapshot(
+            cooldowns={"before": 123.0, "after": 456.5},
+            last_used="before",
+            auth_failures={"before": mtimes},
+        )
+
+    @pytest.mark.parametrize(
+        "contents",
+        [
+            b"not json",
+            b"private-state-content\xff",
+            json.dumps({"cooldowns": {"bad": 10**400, "good": 99}}).encode(),
+        ],
+        ids=["invalid-json", "non-utf8", "overflow"],
+    )
+    def test_update_recovers_corrupt_state(self, tmp_path, contents):
+        path = tmp_path / "state.json"
+        path.write_bytes(contents)
+        SlotRegistry(path).update(lambda snapshot: snapshot.cooldowns.update({"new": 123}))
+        expected = {"new": 123}
+        if b'"good"' in contents:
+            expected["good"] = 99
+        assert json.loads(path.read_text()) == {"cooldowns": expected}
 
     def test_load_ignores_non_numeric_cooldowns(self, tmp_path: Path) -> None:
         path = tmp_path / "state.json"
