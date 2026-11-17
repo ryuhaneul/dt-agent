@@ -374,3 +374,16 @@ dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(2px)}
 .md pre code{padding:0;background:none;font-size:inherit;white-space:pre}
 
 .md .align-left{text-align:left}.md .align-center{text-align:center}.md .align-right{text-align:right}
+
+/* Secret input: approved variant A modal, without design preview controls. */
+#secretDlg{overflow-y:auto;overscroll-behavior:contain}
+#secretDlg .panel-head h2{flex:1;min-width:0;overflow-wrap:anywhere}
+#secretDlg .panel-head .btn{padding:0;width:36px;min-height:36px;flex:none}
+.secret-content{padding:20px 24px}
+.secret-content p{white-space:pre-line;overflow-wrap:anywhere}
+.secret-content .field{margin-top:14px;min-width:0}
+.secret-content .hint{margin-top:10px}
+.secret-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px}
+.secret-actions .btn{min-width:0;max-width:100%;white-space:normal;overflow-wrap:anywhere}
+.secret-error{color:var(--danger);margin-top:12px;font-size:.87rem}
+@media(max-width:760px){.secret-content{padding:18px}}

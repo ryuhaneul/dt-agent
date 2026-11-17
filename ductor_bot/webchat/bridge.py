@@ -10,7 +10,7 @@ import logging
 import secrets
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from aiogram.exceptions import TelegramAPIError
 from aiohttp import ClientError, web
@@ -45,6 +45,7 @@ from ductor_bot.webchat.commands import (
     parse_command,
 )
 from ductor_bot.webchat.files import WebFileError, WebFiles
+from ductor_bot.webchat.secret import WebSecrets
 from ductor_bot.webchat.settings import resolve_default_chat_id
 from ductor_bot.webchat.topics import TopicBusyError, TopicDeleteError, WebTopics
 from ductor_bot.webchat.turns import WebTurns
@@ -160,7 +161,15 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
 ) -> None:
     turns = WebTurns(bot, runtime)
     topics = WebTopics(bot, runtime, turns)
-    dispatcher = WebCommandDispatcher(bot, turns)
+    dispatcher = WebCommandDispatcher(
+        bot,
+        turns,
+        secret=WebSecrets(
+            bot._orch.paths.ductor_home,
+            store_path(bot._orch.paths.ductor_home),
+            bot.config.language,
+        ),
+    )
     strings = TranslationStore(bot.config.language)
     sockets: set[web.WebSocketResponse] = set()
     control_gates: dict[str, asyncio.Lock] = {}
@@ -290,6 +299,17 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
         accept: Callable[[], Awaitable[None]] | None = None,
     ) -> web.Response:
         key = from_tid(tid)
+        parsed = parse_command(text)
+        if parsed is not None and parsed[0] == "secret":
+            if accept is not None:
+                await accept()
+            safe = dispatcher.secret.safe_command(parsed[1])
+            shown = strings.chat("chat_log.mirror_command", text=safe)
+            entry = await runtime.recorder.command_input(key, safe)
+            await mirror_secret(tid, shown, entry.id, kind="user_mirror")
+            result = await dispatcher.secret.command(tid, parsed[1])
+            await record_secret_result(tid, result)
+            return web.json_response(result)
         if session_name is not None:
             if turns.busy(tid):
                 raise WebCommandBusyError
@@ -347,6 +367,46 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
         if accept is not None:
             await accept()
         return web.json_response({"turn_id": turns.submit(tid, text)}, status=202)
+
+    async def mirror_secret(
+        tid: str, text: str, entry_id: str, *, kind: Literal["user_mirror", "reply_mirror"]
+    ) -> None:
+        key = from_tid(tid)
+        await runtime.outbox.enqueue(
+            kind=kind, chat_id=key.chat_id, topic_id=key.topic_id, text=text, history_id=entry_id
+        )
+        runtime.drainer.wake()
+
+    async def record_secret_result(tid: str, result: dict[str, Any]) -> None:
+        # Capabilities and modal metadata must never enter history or the outbox.
+        if result["text"]:
+            entry = await runtime.recorder.command_result(from_tid(tid), result["text"], None)
+            await mirror_secret(tid, result["text"], entry.id, kind="reply_mirror")
+
+    async def secret_step(request: web.Request) -> web.Response:
+        tid = request.match_info["tid"]
+        if tid == "unknown":
+            return _error("read_only", 409)
+        payload = await _body(request)
+        token = payload.get("token")
+        action = request.match_info["action"]
+        value = payload.get("value" if action == "value" else "confirm")
+        if (
+            not isinstance(token, str)
+            or not token
+            or (not isinstance(value, str) if action == "value" else type(value) is not bool)
+        ):
+            return _error("bad_request", 400)
+        assert isinstance(value, (str, bool))
+        async with topics.gate(tid):
+            if tid in turns.blocked or await topics.lookup(tid) is None:
+                return _error("unknown_topic", 404)
+            status, result = await dispatcher.secret.complete(tid, token, action, value)
+            if status != 403 and "text" in result:
+                await record_secret_result(tid, result)
+            return web.json_response(result, status=status)
+
+    app.router.add_post(f"{_PREFIX}/topics/{{tid}}/secret/{{action:value|confirm}}", secret_step)
 
     async def button_context(
         tid: str,

@@ -421,6 +421,8 @@ def create_app(
         ("/topics/{tid}/abort", ("POST",)),
         ("/topics/{tid}/buttons", ("POST",)),
         ("/topics/{tid}/callbacks", ("POST",)),
+        ("/topics/{tid}/secret/value", ("POST",)),
+        ("/topics/{tid}/secret/confirm", ("POST",)),
         ("/search", ("GET",)),
         ("/outbox", ("GET",)),
         ("/files", ("GET",)),

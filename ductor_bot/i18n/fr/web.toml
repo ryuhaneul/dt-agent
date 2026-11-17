@@ -186,7 +186,6 @@ totp_required = "Configurez l’authentification en deux étapes avant de modifi
 success = "Mot de passe modifié. Les autres appareils ont été déconnectés."
 
 [commands]
-secret_telegram = "Utilisez /secret dans une conversation privée avec le bot Telegram."
 title = "Commandes"
 list = "Liste des commandes"
 help = "↑↓ Déplacer · Entrée / Tab Choisir · Échap Fermer"
@@ -200,3 +199,16 @@ already_answered = "Ce message a déjà reçu une réponse."
 invalid = "Ce bouton n’est plus disponible. Actualisez la discussion et réessayez."
 
 stale_selector = "Cet écran de sélection a changé. Les dernières options ont été chargées."
+
+[secret]
+title = "Saisir un secret"
+prompt = "Saisis ici la valeur de {key} dans les 2 minutes. Choisis Annuler pour arrêter."
+extra_args = "Ne mets pas la valeur dans la commande. Utilise /secret set KEY, puis saisis la valeur dans cette fenêtre."
+value = "Valeur secrète"
+safety = "Les valeurs ne sont pas enregistrées dans l’historique de la conversation."
+remaining = "Il reste {seconds} secondes"
+forbidden = "Cette saisie n’est pas autorisée. Reconnecte-toi et relance /secret."
+wrong_stage = "Cette étape a changé. Relance la commande de secrets."
+busy = "Enregistrement…"
+expired = "Le délai de saisie est écoulé. Recommence avec /secret set KEY."
+btn_overwrite = "Remplacer"

@@ -127,9 +127,12 @@ file requests likewise continue through that topic's normal turn path.
 the restart marker; any pending mirror resumes after restart.
 
 `/secret`, including bot suffixes and additional arguments, is intercepted before
-turn submission, recording or mirroring. This version only directs the user to
-a one-to-one chat with the Telegram bot; secret command text and values are not
-stored by the web command path.
+turn submission or recording of raw command text. Web dialogs support listing,
+setting and deleting secrets, with overwrite/delete confirmation and a two-minute
+input window. Values go directly to `POST /api/topics/{tid}/secret/value`;
+confirmations use `POST /api/topics/{tid}/secret/confirm`. Only sanitized command
+text and result messages are recorded and mirrored. Values and input tokens never
+enter conversation history, the outbox, mirrors, logs or CLI input.
 
 ## Bridge contracts
 

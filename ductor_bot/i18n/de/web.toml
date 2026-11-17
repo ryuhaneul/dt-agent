@@ -186,7 +186,6 @@ totp_required = "Richte vor dem Ändern des Passworts die Zwei-Faktor-Authentifi
 success = "Passwort geändert. Andere Geräte wurden abgemeldet."
 
 [commands]
-secret_telegram = "Verwende /secret in einem privaten Chat mit dem Telegram-Bot."
 title = "Befehle"
 list = "Befehlsliste"
 help = "↑↓ Bewegen · Enter / Tab Auswählen · Esc Schließen"
@@ -200,3 +199,16 @@ already_answered = "Diese Nachricht wurde bereits beantwortet."
 invalid = "Diese Schaltfläche ist nicht mehr verfügbar. Lade den Chat neu und versuche es erneut."
 
 stale_selector = "Diese Auswahlansicht hat sich geändert. Die aktuellen Optionen wurden geladen."
+
+[secret]
+title = "Geheimnis eingeben"
+prompt = "Gib den Wert für {key} innerhalb von 2 Minuten hier ein. Wähle Abbrechen, um aufzuhören."
+extra_args = "Gib keinen Wert im Befehl an. Verwende /secret set KEY und gib den Wert dann in diesem Dialog ein."
+value = "Geheimer Wert"
+safety = "Werte werden nicht im Gesprächsverlauf gespeichert."
+remaining = "Noch {seconds} Sekunden"
+forbidden = "Diese Eingabe ist nicht autorisiert. Melde dich erneut an und starte /secret neu."
+wrong_stage = "Dieser Eingabeschritt hat sich geändert. Starte den Geheimnisbefehl neu."
+busy = "Wird gespeichert…"
+expired = "Die Eingabezeit ist abgelaufen. Starte neu mit /secret set KEY."
+btn_overwrite = "Überschreiben"

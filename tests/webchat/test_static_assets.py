@@ -1582,3 +1582,118 @@ def test_markdown_tables_fences_escaping_and_existing_rules():
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_secret_dialog_password_and_accessible_shell(markup):
+    nodes = {attrs.get("id"): (tag, attrs) for tag, attrs in markup.tags if attrs.get("id")}
+    assert nodes["secretDlg"][0] == "dialog"
+    assert nodes["secretDlg"][1]["aria-labelledby"] == "secretTitle"
+    field = nodes["secretValue"][1]
+    assert field["type"] == "password"
+    assert field["autocomplete"] == "off"
+    assert field["spellcheck"] == "false"
+    assert "secretSafety" in field["aria-describedby"]
+    assert "value" not in field
+    assert nodes["secretMessage"][1]["role"] == "status"
+    assert nodes["secretError"][1]["role"] == "alert"
+    assert "secretState" not in nodes
+
+
+def test_secret_modal_translations_are_complete_and_reuse_common_text():
+    from ductor_bot.i18n import LANGUAGES
+
+    for language in LANGUAGES:
+        root = STATIC.parents[2] / "i18n" / language
+        web = _load_toml(root / "web.toml")
+        chat = _load_toml(root / "chat.toml")
+        for name in [
+            "title",
+            "prompt",
+            "extra_args",
+            "value",
+            "safety",
+            "remaining",
+            "forbidden",
+            "wrong_stage",
+            "busy",
+        ]:
+            assert web[f"secret.{name}"]
+        assert web["secret.prompt"] != chat["secret.prompt"]
+        assert web["secret.extra_args"] != chat["secret.extra_args"]
+        for name in ["expired", "btn_overwrite"]:
+            assert web[f"secret.{name}"] == chat[f"secret.{name}"]
+    source = (STATIC / "js/chat.js").read_text()
+    assert "commands.secret_telegram" not in source
+    assert "result.secret" in source
+
+
+SECRET_CLIENT_TESTS = r"""
+import assert from 'node:assert/strict';import fs from 'node:fs';import vm from 'node:vm';
+const {source,strings}=JSON.parse(fs.readFileSync(0,'utf8'));
+class Element{
+ constructor(id=''){this.id=id;this.value='';this.hidden=false;this.disabled=false;this.open=false;this.dataset={};this.listeners={};this.attributes={};this.textContent='';this.isConnected=true;this.classList={toggle(){}};}
+ addEventListener(type,fn){(this.listeners[type] ||= []).push(fn)}
+ emit(type,props={}){for(const fn of this.listeners[type]||[])fn({preventDefault(){},...props})}
+ focus(){document.activeElement=this}
+ setAttribute(name,value){this.attributes[name]=String(value)}
+ removeAttribute(name){delete this.attributes[name]}
+ showModal(){this.open=true}
+ close(){if(this.open){this.open=false;this.emit('close')}}
+}
+const nodes=new Map();const document=new Element();document.querySelector=selector=>{if(!nodes.has(selector))nodes.set(selector,new Element(selector.slice(1)));return nodes.get(selector)};
+const get=id=>document.querySelector('#'+id);const calls=[],timers=new Map();let timerId=0,now=1000000,monotonic=0,release,error=null;
+const context=vm.createContext({document,performance:{now:()=>monotonic},Date:class{static now(){return now}},encodeURIComponent,crypto:{randomUUID:()=> 'synthetic-id'},setTimeout:(fn,delay)=>{timers.set(++timerId,fn);return timerId},clearTimeout:id=>timers.delete(id)});
+const result=(stage,token='token-1',text='')=>({text,buttons:null,secret:{stage,key:'SAMPLE_KEY',token,expires_at:1120,expires_in:120,message_key:stage==='value'?'secret.prompt':'secret.'+stage,params:{key:'SAMPLE_KEY'}}});
+let next=result('saved',undefined,'Saved synthetic key');
+const api=new vm.SyntheticModule(['api'],function(){this.setExport('api',(path,{body})=>{
+ calls.push({path,body:structuredClone(body),reference:body});return new Promise((resolve,reject)=>{release=()=>error?reject(error):resolve(next)});
+})},{context});
+const i18n=new vm.SyntheticModule(['t'],function(){this.setExport('t',(key,values={})=>(strings[key]||key).replace(/\{(\w+)\}/g,(_,name)=>values[name]??''))},{context});
+for(const stub of [api,i18n]){await stub.link(()=>{});await stub.evaluate()}
+const module=new vm.SourceTextModule(source,{context});await module.link(name=>name==='./api.js'?api:i18n);await module.evaluate();const controller=module.namespace.initSecret();
+const flush=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate)};
+document.emit('auth-change',{detail:{authenticated:true}});
+for(const skew of [300000,-300000]){
+ now=1000000+skew;
+ controller.show(result('value'),'-123.7');
+ assert.equal(get('secretForm').hidden,false);
+ assert.equal(get('secretRemaining').textContent,strings['secret.remaining'].replace('{seconds}','120'));
+ get('secretValue').value='skew-synthetic';get('secretForm').emit('submit');
+ assert.equal(calls.at(-1).body.value,'skew-synthetic');release();await flush();
+ controller.show(result('value'),'-123.7');monotonic+=119000;
+ [...timers.values()].at(-1)();
+ assert.equal(get('secretRemaining').textContent,strings['secret.remaining'].replace('{seconds}','1'));
+ // Submit guards must expire even before the next countdown tick.
+ monotonic+=1000;const count=calls.length;get('secretForm').emit('submit');
+ assert.equal(calls.length,count);assert.equal(get('secretForm').hidden,true);
+}
+now=1000000;calls.length=0;
+controller.show(result('value'),'-123.7');assert.equal(get('secretDlg').open,true);assert.equal(document.activeElement,get('secretValue'));assert.ok(get('secretMessage').textContent.includes('SAMPLE_KEY'));
+get('secretValue').value='synthetic-secret-only';get('secretForm').emit('submit');
+assert.equal(calls.at(-1).path,'/topics/-123.7/secret/value');assert.equal(calls.at(-1).body.value,'synthetic-secret-only');
+assert.equal(get('secretValue').value,'');assert.equal(calls.at(-1).reference.value,'');assert.equal(calls.at(-1).reference.token,'');
+get('secretForm').emit('submit');assert.equal(calls.length,1);
+next=result('value','token-2','Rejected synthetic value');release();await flush();assert.equal(get('secretValue').value,'');assert.equal(get('secretError').textContent,'Rejected synthetic value');
+get('secretValue').value='second-synthetic';get('secretForm').emit('submit');assert.equal(calls.at(-1).body.token,'token-2');next=result('saved',undefined,'Saved synthetic key');release();await flush();assert.equal(get('secretMessage').textContent,'Saved synthetic key');assert.equal(get('secretForm').hidden,true);
+controller.show(result('confirm_overwrite'),'-123.7');get('secretConfirm').emit('click');assert.equal(calls.at(-1).path,'/topics/-123.7/secret/confirm');assert.equal(calls.at(-1).body.confirm,true);next=result('value','token-3');release();await flush();
+get('secretCancel').emit('click');assert.equal(calls.at(-1).body.text,'/secret cancel');next=result('cancelled',undefined,'Cancelled');release();await flush();
+controller.show(result('confirm_delete'),'-123.7');get('secretCancel').emit('click');assert.equal(calls.at(-1).body.confirm,false);next=result('cancelled',undefined,'Cancelled');release();await flush();
+controller.show(result('value'),'-123.7');get('secretValue').value='expires-synthetic';monotonic+=120000;[...timers.values()].at(-1)();assert.equal(get('secretValue').value,'');assert.equal(get('secretForm').hidden,true);assert.equal(get('secretMessage').textContent,strings['secret.expired']);
+for(const [code,status,key]of [['wrong_stage',409,'secret.wrong_stage'],['forbidden',403,'secret.forbidden'],['generic',409,'secret.expired']]){
+ now=1000000;controller.show(result('value'),'-123.7');get('secretValue').value='failure-synthetic';get('secretForm').emit('submit');error={code,status};release();await flush();assert.equal(get('secretValue').value,'');assert.equal(get('secretError').textContent,strings[key]);error=null;
+}
+controller.show(result('value'),'-123.7');get('secretValue').value='logout-synthetic';document.emit('auth-change',{detail:{authenticated:false}});assert.equal(get('secretDlg').open,false);assert.equal(get('secretValue').value,'');
+document.emit('auth-change',{detail:{authenticated:true}});controller.show(result('value'),'-123.7');get('secretValue').value='escape-synthetic';get('secretDlg').emit('cancel');assert.equal(get('secretValue').value,'');assert.equal(get('secretDlg').open,false);assert.equal(calls.at(-1).body.text,'/secret cancel');next=result('cancelled');release();await flush();assert.equal(get('secretDlg').open,false);
+controller.show(result('value'),'-123.7');get('secretValue').value='pending-synthetic';get('secretForm').emit('submit');const oldRelease=release;document.emit('auth-change',{detail:{authenticated:false}});next=result('value','late-token');oldRelease();await flush();assert.equal(get('secretDlg').open,false);assert.equal(get('secretValue').value,'');
+"""
+
+
+def test_secret_client_clears_values_rotates_tokens_and_handles_lifecycle():
+    result = subprocess.run(
+        ["node", "--experimental-vm-modules", "--input-type=module", "-e", SECRET_CLIENT_TESTS],
+        input=json.dumps({"source": (STATIC / "js/secret.js").read_text(), "strings": STRINGS}),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

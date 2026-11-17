@@ -186,7 +186,6 @@ totp_required = "Siapkan autentikasi dua langkah sebelum mengubah kata sandi."
 success = "Kata sandi diubah. Perangkat lain telah dikeluarkan."
 
 [commands]
-secret_telegram = "Gunakan /secret dalam obrolan pribadi dengan bot Telegram."
 title = "Perintah"
 list = "Daftar perintah"
 help = "↑↓ Pindah · Enter / Tab Pilih · Esc Tutup"
@@ -200,3 +199,16 @@ already_answered = "Pesan ini sudah dijawab."
 invalid = "Tombol ini tidak lagi tersedia. Muat ulang obrolan dan coba lagi."
 
 stale_selector = "Layar pilihan ini telah berubah. Opsi terbaru telah dimuat."
+
+[secret]
+title = "Masukkan rahasia"
+prompt = "Masukkan nilai untuk {key} di sini dalam 2 menit. Pilih Batal untuk berhenti."
+extra_args = "Jangan sertakan nilai dalam perintah. Gunakan /secret set KEY, lalu masukkan nilainya di dialog ini."
+value = "Nilai rahasia"
+safety = "Nilai tidak disimpan dalam riwayat percakapan."
+remaining = "Tersisa {seconds} detik"
+forbidden = "Input ini tidak diizinkan. Masuk lagi dan mulai ulang /secret."
+wrong_stage = "Langkah input ini telah berubah. Mulai ulang perintah rahasia."
+busy = "Menyimpan…"
+expired = "Waktu pengisian habis. Mulai lagi dengan /secret set KEY."
+btn_overwrite = "Timpa"

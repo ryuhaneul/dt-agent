@@ -186,7 +186,6 @@ totp_required = "Set up two-step authentication before changing your password."
 success = "Password changed. Other devices have been logged out."
 
 [commands]
-secret_telegram = "Use /secret in a one-to-one chat with the Telegram bot."
 title = "Commands"
 list = "Command list"
 help = "↑↓ Move · Enter / Tab Select · Esc Close"
@@ -200,3 +199,16 @@ already_answered = "This message has already been answered."
 invalid = "This button is no longer available. Refresh the chat and try again."
 
 stale_selector = "This selection screen has changed. The latest options have been loaded."
+
+[secret]
+title = "Secret input"
+prompt = "Enter the value for {key} here within 2 minutes. Select Cancel to stop."
+extra_args = "Do not include a value in the command. Use /secret set KEY, then enter the value in this dialog."
+value = "Secret value"
+safety = "Values are not saved in conversation history."
+remaining = "{seconds} seconds remaining"
+forbidden = "This input is not authorized. Sign in again and restart /secret."
+wrong_stage = "This input step has changed. Restart the secret command."
+busy = "Saving…"
+expired = "The input window has expired. Start again with /secret set KEY."
+btn_overwrite = "Overwrite"

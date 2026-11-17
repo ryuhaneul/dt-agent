@@ -214,6 +214,27 @@
 <div><label class="lb" for="currentTotp" data-i18n="account.code">Current six-digit TOTP</label><input class="field mono" id="currentTotp" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" placeholder="000000" required></div>
 </div><div class="pw-actions"><button class="btn btn-primary" id="pwSubmit" type="submit" data-i18n="account.change">Change password</button></div></form></div></div></dialog>
 
+<dialog id="secretDlg" aria-labelledby="secretTitle" aria-describedby="secretMessage">
+  <div class="panel-head"><h2 id="secretTitle" data-i18n="secret.title">Secret input</h2><button class="btn btn-ghost" id="secretClose" type="button" aria-label="Close" data-i18n-attr="aria-label:common.close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"></path></svg></button></div>
+  <div class="secret-content">
+    <p id="secretMessage" role="status" aria-live="polite" tabindex="-1"></p>
+    <p id="secretRemaining" class="hint mono" hidden></p>
+    <form id="secretForm" hidden>
+      <label class="lb sr-only" for="secretValue" data-i18n="secret.value">Secret value</label>
+      <input class="field" id="secretValue" type="password" autocomplete="off" spellcheck="false" autocapitalize="off" aria-describedby="secretSafety secretError" required>
+      <p class="hint" id="secretSafety" data-i18n="secret.safety">Values are not saved in conversation history.</p>
+    </form>
+    <p class="secret-error" id="secretError" role="alert" tabindex="-1" hidden></p>
+    <div class="secret-actions">
+      <button class="btn btn-primary" id="secretSubmit" type="submit" form="secretForm" data-i18n="chat.send">Send</button>
+      <button class="btn btn-primary" id="secretConfirm" type="button" hidden></button>
+      <button class="btn" id="secretCancel" type="button" data-i18n="common.cancel">Cancel</button>
+      <button class="btn" id="secretRetry" type="button" data-i18n="common.retry" hidden>Retry</button>
+      <button class="btn" id="secretDone" type="button" data-i18n="common.close" hidden>Close</button>
+    </div>
+  </div>
+</dialog>
+
 <div class="toast-stack" id="toasts" aria-live="polite"></div>
 
 <div id="errorMessages" hidden><span data-i18n="error.bot_unreachable">Bot unreachable</span><span data-i18n="error.generic">Something went wrong</span><span data-i18n="auth.invalid">Invalid credentials</span><span data-i18n="auth.locked" data-i18n-args="{&quot;minutes&quot;:1}">Try again in {minutes} minutes</span><span data-i18n="auth.setup_needs_password">Enter your password first to set up authentication.</span><span data-i18n="common.close">Close</span></div>

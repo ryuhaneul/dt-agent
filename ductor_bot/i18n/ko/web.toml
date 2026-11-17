@@ -186,7 +186,6 @@ totp_required = "비밀번호를 변경하려면 먼저 2단계 인증을 설정
 success = "비밀번호를 바꿨어요. 다른 기기의 로그인은 끊겼어요."
 
 [commands]
-secret_telegram = "텔레그램 봇과의 1:1 채팅에서 /secret을 사용하세요."
 title = "명령어"
 list = "명령어 목록"
 help = "↑↓ 이동 · Enter / Tab 선택 · Esc 닫기"
@@ -200,3 +199,16 @@ already_answered = "이미 답변한 메시지입니다."
 invalid = "이 버튼은 더 이상 사용할 수 없습니다. 채팅을 새로고침한 뒤 다시 시도하세요."
 
 stale_selector = "선택 화면이 변경되었습니다. 최신 선택 항목을 불러왔습니다."
+
+[secret]
+title = "비밀 입력"
+prompt = "2분 안에 이 입력란에 {key}의 값을 입력해 주세요. 중단하려면 취소를 누르세요."
+extra_args = "명령에는 값을 쓰지 마세요. /secret set KEY를 사용한 뒤 이 입력창에 값을 입력해 주세요."
+value = "비밀값"
+safety = "값은 대화 기록에 남지 않아요."
+remaining = "남은 시간 {seconds}초"
+forbidden = "이 입력을 진행할 권한이 없어요. 다시 로그인한 뒤 /secret을 시작해 주세요."
+wrong_stage = "입력 단계가 바뀌었어요. 비밀 명령을 다시 시작해 주세요."
+busy = "저장 중…"
+expired = "입력 시간이 지났어요. /secret set KEY로 다시 시작해 주세요."
+btn_overwrite = "덮어쓰기"

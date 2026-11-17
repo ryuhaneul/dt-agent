@@ -6,12 +6,13 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
-from typing import TYPE_CHECKING, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Any, NotRequired, TypedDict
 
 from ductor_bot.chat_log.ids import from_tid, to_tid
 from ductor_bot.errors import ProductError
 from ductor_bot.i18n import t
-from ductor_bot.i18n.loader import TranslationStore, load_web_strings
+from ductor_bot.i18n.loader import TranslationStore
+from ductor_bot.infra.secret_store import store_path
 from ductor_bot.messenger.telegram.app import (
     _build_help_text,
     build_agent_commands_text,
@@ -33,6 +34,7 @@ from ductor_bot.messenger.telegram.welcome import build_welcome_keyboard, build_
 from ductor_bot.orchestrator.selectors.models import ButtonGrid
 from ductor_bot.session.key import SessionKey
 from ductor_bot.text.response_format import stop_text
+from ductor_bot.webchat.secret import WebSecrets
 
 if TYPE_CHECKING:
     from aiogram.types import InlineKeyboardMarkup
@@ -113,6 +115,7 @@ class WebButton(TypedDict):
 class CommandResponse(TypedDict):
     text: str
     buttons: list[list[WebButton]] | None
+    secret: NotRequired[dict[str, Any]]
 
 
 class WebCommandBusyError(Exception):
@@ -171,10 +174,16 @@ def _response(
 
 
 class WebCommandDispatcher:
-    def __init__(self, bot: TelegramBot, turns: WebTurns) -> None:
+    def __init__(
+        self, bot: TelegramBot, turns: WebTurns, *, secret: WebSecrets | None = None
+    ) -> None:
         self.bot = bot
         self.turns = turns
-        self._strings = load_web_strings(bot.config.language)
+        self.secret = secret or WebSecrets(
+            bot._orch.paths.ductor_home,
+            store_path(bot._orch.paths.ductor_home),
+            bot.config.language,
+        )
 
     async def dispatch(
         self,
@@ -190,7 +199,8 @@ class WebCommandDispatcher:
         name, normalized = parsed
         # Never pass secret arguments to a turn, recorder, outbox or orchestrator.
         if name == "secret":
-            return _response(self._strings["commands.secret_telegram"])
+            result = await self.secret.command(tid, normalized)
+            return CommandResponse(text=result["text"], buttons=None, secret=result["secret"])
         if (
             name not in _DIRECT_COMMANDS
             and self.bot._orch._command_registry.resolve(normalized.strip().lower()) is None

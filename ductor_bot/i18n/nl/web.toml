@@ -186,7 +186,6 @@ totp_required = "Stel tweestapsverificatie in voordat je je wachtwoord wijzigt."
 success = "Wachtwoord gewijzigd. Andere apparaten zijn afgemeld."
 
 [commands]
-secret_telegram = "Gebruik /secret in een één-op-éénchat met de Telegram-bot."
 title = "Opdrachten"
 list = "Opdrachtenlijst"
 help = "↑↓ Verplaatsen · Enter / Tab Kiezen · Esc Sluiten"
@@ -200,3 +199,16 @@ already_answered = "Dit bericht is al beantwoord."
 invalid = "Deze knop is niet meer beschikbaar. Vernieuw de chat en probeer het opnieuw."
 
 stale_selector = "Dit keuzescherm is gewijzigd. De nieuwste opties zijn geladen."
+
+[secret]
+title = "Geheim invoeren"
+prompt = "Voer de waarde voor {key} hier binnen 2 minuten in. Kies Annuleren om te stoppen."
+extra_args = "Zet geen waarde in de opdracht. Gebruik /secret set KEY en voer de waarde daarna in dit venster in."
+value = "Geheime waarde"
+safety = "Waarden worden niet opgeslagen in de gespreksgeschiedenis."
+remaining = "Nog {seconds} seconden"
+forbidden = "Deze invoer is niet toegestaan. Log opnieuw in en start /secret opnieuw."
+wrong_stage = "Deze invoerstap is gewijzigd. Start de opdracht voor het geheim opnieuw."
+busy = "Opslaan…"
+expired = "De invoertijd is verstreken. Begin opnieuw met /secret set KEY."
+btn_overwrite = "Overschrijven"

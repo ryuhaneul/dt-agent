@@ -1,5 +1,6 @@
 import { api } from './api.js';
 import { initCommands } from './commands.js';
+import { initSecret } from './secret.js';
 import { t } from './i18n.js';
 import { notify } from './auth.js';
 import { connectEvents } from './ws.js';
@@ -9,7 +10,7 @@ import { getTopic, getTopics, selectTopic, refreshTopics, noteEntry, markSeen, f
 const histories = new Map(), turns = new Map(), busy = new Map(), drafts = new Map(), topicVersions = new Map(), busyVersions = new Map();
 let active = false, epoch = 0, stopEvents = null, telegram = { state: 'unknown' };
 let botUp = false, webSessions = null, pending = 0, outbox = [], sending = false;
-let view = 'chat', loading = false, selection = 0, commandMenu = null;
+let view = 'chat', loading = false, selection = 0, commandMenu = null, secretDialog = null;
 function history(tid) {
   if (!histories.has(tid)) histories.set(tid, { entries: new Map(), meta: new Map(), choices: new Map(), hasMore: false, loaded: false });
   return histories.get(tid);
@@ -101,6 +102,7 @@ async function chooseButton(entryId, value, kind) {
     if (!active || generation !== epoch) return;
     mergeButtonMeta(state, entryId, kind === 'selector' ? result : { answered: result.answered });
     mergeHistory(state, [state.entries.get(entryId)]);
+    if (result.secret && getTopic()?.tid === topic.tid) secretDialog.show(result, topic.tid);
     if (result.turn_id && !turns.has(result.turn_id)) turns.set(result.turn_id, { id: result.turn_id, tid: topic.tid, phase: 'queued', text: '' });
   } catch (error) {
     if (!active || generation !== epoch) return;
@@ -362,7 +364,7 @@ async function sendOrStop() {
       });
       if (!active || generation !== epoch) return;
       if (result.turn_id && !turns.has(result.turn_id)) turns.set(result.turn_id, { id: result.turn_id, tid: topic.tid, phase: 'queued', text: '' });
-      if (text.trim().split(/\s/, 1)[0].split('@', 1)[0].toLowerCase() === '/secret' && result.text) notify('commands.secret_telegram');
+      if (result.secret && getTopic()?.tid === topic.tid) secretDialog.show(result, topic.tid);
       drafts.delete(topic.tid);
       if (getTopic()?.tid === topic.tid && input.value === text) input.value = '';
     }
@@ -370,6 +372,7 @@ async function sendOrStop() {
   finally { if (!control) sending = false; if (active) { renderHeader(); renderThread({ bottom: true }); } }
 }
 export function initChat() {
+  secretDialog = initSecret();
   const thread = document.querySelector('#thread'), input = document.querySelector('#msgIn');
   input.maxLength = 32000;
   commandMenu = initCommands(input, value => { if (getTopic()) drafts.set(getTopic().tid, value); });

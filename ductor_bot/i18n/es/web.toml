@@ -186,7 +186,6 @@ totp_required = "Configura la autenticación en dos pasos antes de cambiar la co
 success = "Contraseña cambiada. Se ha cerrado la sesión en los demás dispositivos."
 
 [commands]
-secret_telegram = "Usa /secret en un chat privado con el bot de Telegram."
 title = "Comandos"
 list = "Lista de comandos"
 help = "↑↓ Mover · Enter / Tab Elegir · Esc Cerrar"
@@ -200,3 +199,16 @@ already_answered = "Este mensaje ya tiene respuesta."
 invalid = "Este botón ya no está disponible. Actualiza el chat e inténtalo de nuevo."
 
 stale_selector = "Esta pantalla de selección ha cambiado. Se han cargado las opciones más recientes."
+
+[secret]
+title = "Introducir secreto"
+prompt = "Introduce aquí el valor de {key} en un plazo de 2 minutos. Selecciona Cancelar para detenerte."
+extra_args = "No incluyas el valor en el comando. Usa /secret set KEY e introduce después el valor en este diálogo."
+value = "Valor secreto"
+safety = "Los valores no se guardan en el historial de la conversación."
+remaining = "Quedan {seconds} segundos"
+forbidden = "Esta entrada no está autorizada. Inicia sesión de nuevo y reinicia /secret."
+wrong_stage = "Este paso ha cambiado. Reinicia el comando de secretos."
+busy = "Guardando…"
+expired = "El tiempo de entrada ha caducado. Empieza de nuevo con /secret set KEY."
+btn_overwrite = "Sobrescribir"

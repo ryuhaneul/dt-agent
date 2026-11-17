@@ -20,7 +20,7 @@ from ductor_bot.chat_log.outbox import Outbox
 from ductor_bot.cli.auth import AuthResult, AuthStatus
 from ductor_bot.cli.codex_usage import CodexUsage
 from ductor_bot.i18n import LANGUAGES, t
-from ductor_bot.i18n.loader import TranslationStore, load_web_strings
+from ductor_bot.i18n.loader import TranslationStore
 from ductor_bot.messenger.telegram import abort, middleware
 from ductor_bot.messenger.telegram.secret_input import SecretInput
 from ductor_bot.orchestrator.core import Orchestrator
@@ -214,7 +214,9 @@ def test_keyboard_conversion_preserves_rows_callbacks_and_urls():
 async def test_every_command_returns_text_and_buttons_without_cli_or_recording(commands, name):
     h = commands
     result = await h.dispatcher.dispatch("1.7", f"/{name}")
-    assert set(result) == {"text", "buttons"}
+    assert set(result) == (
+        {"text", "buttons", "secret"} if name == "secret" else {"text", "buttons"}
+    )
     assert isinstance(result["text"], str)
     assert result["text"]
     assert result["buttons"] is None or isinstance(result["buttons"], list)
@@ -437,14 +439,19 @@ async def test_secret_is_intercepted_before_turn_history_outbox_and_cli(conversa
     h = conversation
     response = await post_message(h, text=text)
     assert response.status == 200
-    assert await response.json() == {
-        "text": load_web_strings("en")["commands.secret_telegram"],
-        "buttons": None,
-    }
+    result = await response.json()
+    assert "secret" in result
+    assert result["buttons"] is None
     assert not h.calls
-    assert await h.runtime.history.read("-123.7") == []
-    assert await h.runtime.outbox.pending() == []
-    assert "hidden-value" not in caplog.text
+    entries = await h.runtime.history.read("-123.7")
+    pending = await h.runtime.outbox.pending()
+    assert entries[0].kind == "command"
+    from ductor_bot.webchat.commands import parse_command
+    from ductor_bot.webchat.secret import WebSecrets
+
+    assert entries[0].text == WebSecrets.safe_command(parse_command(text)[1])
+    assert pending[0].text == f"Command executed: {entries[0].text}"
+    assert "hidden-value" not in repr(entries) + repr(pending) + repr(result) + caplog.text
 
 
 @pytest.mark.parametrize("text", ["/unknown some text", "@existing followup"])
