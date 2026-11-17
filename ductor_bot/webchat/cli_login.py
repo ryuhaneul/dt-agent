@@ -18,7 +18,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -93,7 +93,7 @@ class _TerminalText:
         return "".join(result)
 
 
-def parse_output(provider: str, text: str) -> dict[str, object]:
+def parse_output(provider: str, text: str, *, inputs: Collection[str] = ()) -> dict[str, object]:
     """Extract display hints; unknown prompts still permit raw line input."""
     # Terminal-width wraps can split an OAuth URL. Continue only nonblank,
     # unindented URL-looking lines; never join the next prose/prompt line.
@@ -107,6 +107,7 @@ def parse_output(provider: str, text: str) -> dict[str, object]:
                 parsed.hostname == _LOGIN_HOSTS.get(provider)
                 and parsed.username is None
                 and "\\" not in url
+                and not any(url in value for value in inputs)
             ):
                 allowed_urls.append(url)
     code = _CODE.search(text) if provider in {"codex", "grok"} else None
@@ -150,6 +151,7 @@ class _Job:
     seq: int = 0
     # Completion signals must survive ring-buffer eviction.
     success_signal: bool = False
+    submitted_inputs: set[str] = field(default_factory=set, repr=False)
     input_echoes: deque[str] = field(default_factory=deque, repr=False)
     signal_text: str = field(default="", repr=False)
     signal_pending: str = field(default="", repr=False)
@@ -313,7 +315,7 @@ class CliLoginManager:
             "reason": job.reason if job.finished is not None else None,
             "seq": job.seq,
             "output": [{"seq": seq, "text": chunk} for seq, chunk in job.output if seq > after],
-            **parse_output(job.provider, text),
+            **parse_output(job.provider, text, inputs=job.submitted_inputs),
             "restart_required": state == "succeeded"
             and job.provider not in self._startup_providers,
         }
@@ -412,6 +414,7 @@ class CliLoginManager:
 
     def send_input(self, job_id: str, owner: str, kind: str, value: str) -> None:
         job = self._owned(job_id, owner)
+        original = value
         if kind == "line":
             value = _CONTROL.sub("", value)
             if not 1 <= len(value) <= 4096:
@@ -422,6 +425,7 @@ class CliLoginManager:
         if job.state != "running" or job.stop_state is not None or job.master is None:
             raise CliLoginError(409, "input_unavailable")
         try:
+            job.submitted_inputs.update((original, value))
             job.input_echoes.append(value)
             # Nonblocking writes; the PTY is drained on this same event loop.
             if os.write(job.master, payload) != len(payload):

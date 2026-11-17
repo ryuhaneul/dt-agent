@@ -468,7 +468,10 @@ async def test_web_login_rejects_single_key_input(rig):
     assert (error.value.status, error.value.code) == (400, "invalid_input")
 
 
-@pytest.mark.parametrize("value", ["1", "fake-onetime-code", "Successfully logged in"])
+@pytest.mark.parametrize(
+    "value",
+    ["1", "fake-onetime-code", "Successfully logged in", "https://auth.openai.com/echo-only"],
+)
 async def test_readline_echo_stays_in_owner_output_without_logging(
     tmp_path, monkeypatch, caplog, value
 ):
@@ -724,3 +727,38 @@ def test_unechoed_earlier_input_cannot_hide_later_marker_echo(provider, marker):
     assert not job.success_signal
     job.append((marker + "\n").encode())
     assert job.success_signal
+
+
+@pytest.mark.parametrize(
+    ("provider", "host"),
+    [("claude", "claude.ai"), ("codex", "auth.openai.com"), ("grok", "accounts.x.ai")],
+)
+@pytest.mark.parametrize("cli_url", [False, True])
+async def test_input_echo_urls_never_become_login_buttons(rig, tmp_path, provider, host, cli_url):
+    make, _, _ = rig
+    direct = f"https://{host}/oauth/cli"
+    echoed = f"https://{host}/echo-only"
+    fixture = tmp_path / "login-output.txt"
+    fixture.write_text(
+        "\n".join(
+            [
+                *([direct] if cli_url else []),
+                f"https://{host}.evil.example/login",
+                f"https://sub.{host}/login",
+                *[
+                    f"https://{other}/login"
+                    for other in ("claude.ai", "auth.openai.com", "accounts.x.ai")
+                    if other != host
+                ],
+            ]
+        )
+    )
+    manager, _ = make(provider, "echo_marker", echo=True, cli_success=False, fixture=str(fixture))
+    job = start(manager, provider)
+    await until(lambda: manager.get(job, OWNER)["needs_input"])
+    manager.send_input(job, OWNER, "line", f"code {echoed} end")
+    result = await settled(manager, job)
+    assert echoed in "".join(chunk["text"] for chunk in result["output"])
+    assert not manager._jobs[job].input_echoes
+    assert result["urls"] == ([direct] if cli_url else [])
+    assert manager.get(job, OWNER, after=result["seq"])["urls"] == result["urls"]
