@@ -53,8 +53,8 @@ tag_reply = "Resposta"
 tag_result = "Resultado"
 
 [topic]
-title = "Tópicos"
-manage = "Gerenciar tópicos"
+title = "Lista de tópicos"
+manage = "Lista de tópicos"
 search = "Pesquisar tópicos e mensagens"
 new = "Novo tópico"
 new_default = "Novo tópico"
@@ -212,3 +212,32 @@ wrong_stage = "Este passo mudou. Reinicia o comando de segredos."
 busy = "A guardar…"
 expired = "O tempo de entrada expirou. Comece novamente com /secret set KEY."
 btn_overwrite = "Substituir"
+
+# Shared secret outcomes retain the Telegram translations.
+usage = "Use /secret list, /secret set KEY, /secret delete KEY ou /secret cancel. Nunca inclua o valor em um comando."
+saved = "{key} salva (comprimento: {length} caracteres)."
+saved_env_note = "{key} também existe em .env. As chaves de provedor da CLI usam o valor de .env."
+rejected = "Valor rejeitado: {reason}. Para outros formatos, edite o arquivo de segredos diretamente."
+reason_value_empty = "O valor está vazio"
+reason_value_too_long = "O valor ultrapassa {max} caracteres"
+reason_value_nul = "O valor contém um caractere NUL"
+reason_value_multiline = "O valor contém uma quebra de linha"
+reason_value_edge_space = "O valor começa ou termina com espaço em branco"
+reason_value_edge_quote = "O valor começa ou termina com uma aspa"
+reason_value_dollar = "O valor começa com $"
+invalid_key = "Use uma chave de 1–56 letras maiúsculas, dígitos ou sublinhados, começando com uma letra."
+save_failed = "Não foi possível salvar a alteração. Nenhum valor novo foi salvo. Tente novamente."
+list = "Chaves salvas:\n{keys}"
+list_empty = "Não há chaves salvas."
+confirm_overwrite = "Substituir {key}?"
+confirm_delete = "Excluir {key}?"
+deleted = "{key} excluída."
+delete_missing = "{key} não foi encontrada."
+cancelled = "Entrada de segredo cancelada."
+nothing_pending = "Não há entrada de segredo pendente."
+
+[language]
+title = "Idioma da interface web"
+
+[rename]
+empty = "Introduza um nome para o tópico."

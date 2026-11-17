@@ -53,8 +53,8 @@ tag_reply = "Balasan"
 tag_result = "Hasil"
 
 [topic]
-title = "Topik"
-manage = "Kelola topik"
+title = "Daftar topik"
+manage = "Daftar topik"
 search = "Cari topik dan pesan"
 new = "Topik baru"
 new_default = "Topik baru"
@@ -212,3 +212,32 @@ wrong_stage = "Langkah input ini telah berubah. Mulai ulang perintah rahasia."
 busy = "Menyimpan…"
 expired = "Waktu pengisian habis. Mulai lagi dengan /secret set KEY."
 btn_overwrite = "Timpa"
+
+# Shared secret outcomes retain the Telegram translations.
+usage = "Gunakan /secret list, /secret set KEY, /secret delete KEY, atau /secret cancel. Jangan sertakan nilai dalam perintah."
+saved = "{key} disimpan (panjang: {length} karakter)."
+saved_env_note = "{key} juga ada di .env. Kunci penyedia CLI memakai nilai dari .env."
+rejected = "Nilai ditolak: {reason}. Untuk format lain, edit file rahasia secara langsung."
+reason_value_empty = "Nilai kosong"
+reason_value_too_long = "Nilai melebihi {max} karakter"
+reason_value_nul = "Nilai mengandung karakter NUL"
+reason_value_multiline = "Nilai mengandung pergantian baris"
+reason_value_edge_space = "Nilai diawali atau diakhiri spasi"
+reason_value_edge_quote = "Nilai diawali atau diakhiri tanda kutip"
+reason_value_dollar = "Nilai diawali dengan $"
+invalid_key = "Gunakan kunci sepanjang 1–56 huruf besar, angka, atau garis bawah, diawali huruf."
+save_failed = "Perubahan tidak dapat disimpan. Tidak ada nilai baru yang disimpan. Coba lagi."
+list = "Kunci tersimpan:\n{keys}"
+list_empty = "Belum ada kunci tersimpan."
+confirm_overwrite = "Timpa {key}?"
+confirm_delete = "Hapus {key}?"
+deleted = "{key} dihapus."
+delete_missing = "{key} tidak ditemukan."
+cancelled = "Pengisian rahasia dibatalkan."
+nothing_pending = "Tidak ada pengisian rahasia yang tertunda."
+
+[language]
+title = "Bahasa antarmuka web"
+
+[rename]
+empty = "Masukkan nama topik."

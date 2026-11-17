@@ -83,6 +83,10 @@ REGION_ALLOWED = {
 # Single lines: (file, text that must be on the line).
 LINE_ALLOWED = {
     ("README.md", "[\ud55c\uad6d\uc5b4](README.ko.md)"): "language switch link label",
+    (
+        "ductor_bot/webchat/web/static/index.html",
+        "<span>\ud55c\uad6d\uc5b4</span>",
+    ): "web display-language menu: the language's own name",
 }
 # Documents that quote Korean wording as their content.
 DOC_ALLOWED = {
@@ -104,6 +108,8 @@ TEST_ALLOWED = {
     "tests/messenger/telegram/test_sender.py": "Korean selector prompt (locale output)",
     "tests/messenger/telegram/test_topic_naming*.py": "Korean topic-title input samples and verdicts",
     "tests/webchat/test_commands.py": "Korean command mirror expectations",
+    "tests/webchat/test_bridge_api.py": "Korean system topic names from a Korean bot locale",
+    "tests/webchat/test_static_assets.py": "Korean system topic names replaced by the display language",
     "scripts/tests/test_home.py": "non-ASCII home path sample",
     "scripts/tests/test_login.py": "non-ASCII config value sample",
     "scripts/tests/test_onboard_preflight.py": "Korean preflight output",
@@ -186,11 +192,14 @@ def find_violations(root: Path, tracked: list[str]) -> list[str]:  # noqa: C901,
 
 def _tracked() -> list[str]:
     env = {
-        name: value for name, value in os.environ.items()
+        name: value
+        for name, value in os.environ.items()
         if name not in {"GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS"}
         and not name.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
     }
-    result = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, env=env, capture_output=True, check=False)
+    result = subprocess.run(
+        ["git", "ls-files", "-z"], cwd=ROOT, env=env, capture_output=True, check=False
+    )
     if result.returncode != 0:
         pytest.skip("not a git checkout")
     return [name for name in result.stdout.decode().split("\0") if name]

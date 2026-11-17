@@ -53,8 +53,8 @@ tag_reply = "Respuesta"
 tag_result = "Resultado"
 
 [topic]
-title = "Temas"
-manage = "Gestionar temas"
+title = "Lista de temas"
+manage = "Lista de temas"
 search = "Buscar temas y mensajes"
 new = "Nuevo tema"
 new_default = "Nuevo tema"
@@ -212,3 +212,32 @@ wrong_stage = "Este paso ha cambiado. Reinicia el comando de secretos."
 busy = "Guardando…"
 expired = "El tiempo de entrada ha caducado. Empieza de nuevo con /secret set KEY."
 btn_overwrite = "Sobrescribir"
+
+# Shared secret outcomes retain the Telegram translations.
+usage = "Usa /secret list, /secret set KEY, /secret delete KEY o /secret cancel. Nunca incluyas el valor en un comando."
+saved = "{key} guardada (longitud: {length} caracteres)."
+saved_env_note = "{key} también existe en .env. Las claves de proveedor de la CLI usan el valor de .env."
+rejected = "Valor rechazado: {reason}. Para otros formatos, edita directamente el archivo de secretos."
+reason_value_empty = "El valor está vacío"
+reason_value_too_long = "El valor supera los {max} caracteres"
+reason_value_nul = "El valor contiene un carácter NUL"
+reason_value_multiline = "El valor contiene un salto de línea"
+reason_value_edge_space = "El valor empieza o termina con un espacio en blanco"
+reason_value_edge_quote = "El valor empieza o termina con una comilla"
+reason_value_dollar = "El valor empieza con $"
+invalid_key = "Usa una clave de 1–56 letras mayúsculas, dígitos o guiones bajos, que empiece por una letra."
+save_failed = "No se pudo guardar el cambio. No se ha guardado ningún valor nuevo. Inténtalo de nuevo."
+list = "Claves guardadas:\n{keys}"
+list_empty = "No hay claves guardadas."
+confirm_overwrite = "¿Sobrescribir {key}?"
+confirm_delete = "¿Borrar {key}?"
+deleted = "{key} borrada."
+delete_missing = "No se encontró {key}."
+cancelled = "Entrada de secreto cancelada."
+nothing_pending = "No hay ninguna entrada de secreto pendiente."
+
+[language]
+title = "Idioma de la interfaz web"
+
+[rename]
+empty = "Introduce un nombre para el tema."

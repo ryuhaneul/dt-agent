@@ -53,8 +53,8 @@ tag_reply = "Ответ"
 tag_result = "Результат"
 
 [topic]
-title = "Темы"
-manage = "Управление темами"
+title = "Список тем"
+manage = "Список тем"
 search = "Поиск тем и сообщений"
 new = "Новая тема"
 new_default = "Новая тема"
@@ -212,3 +212,32 @@ wrong_stage = "Этот шаг изменился. Запусти команду
 busy = "Сохранение…"
 expired = "Время ввода истекло. Начни снова с /secret set KEY."
 btn_overwrite = "Перезаписать"
+
+# Shared secret outcomes retain the Telegram translations.
+usage = "Используй /secret list, /secret set KEY, /secret delete KEY или /secret cancel. Никогда не указывай значение в команде."
+saved = "{key} сохранён (длина: {length} символов)."
+saved_env_note = "{key} также есть в .env. Ключи провайдеров CLI используют значение из .env."
+rejected = "Значение отклонено: {reason}. Для других форматов отредактируй файл секретов напрямую."
+reason_value_empty = "Значение пустое"
+reason_value_too_long = "Значение длиннее {max} символов"
+reason_value_nul = "Значение содержит символ NUL"
+reason_value_multiline = "Значение содержит разрыв строки"
+reason_value_edge_space = "Значение начинается или заканчивается пробельным символом"
+reason_value_edge_quote = "Значение начинается или заканчивается кавычкой"
+reason_value_dollar = "Значение начинается с $"
+invalid_key = "Используй ключ из 1–56 заглавных латинских букв, цифр или подчёркиваний, начиная с буквы."
+save_failed = "Не удалось сохранить изменение. Новое значение не сохранено. Попробуй снова."
+list = "Сохранённые ключи:\n{keys}"
+list_empty = "Сохранённых ключей нет."
+confirm_overwrite = "Перезаписать {key}?"
+confirm_delete = "Удалить {key}?"
+deleted = "{key} удалён."
+delete_missing = "{key} не найден."
+cancelled = "Ввод секрета отменён."
+nothing_pending = "Нет ожидающего ввода секрета."
+
+[language]
+title = "Язык веб-интерфейса"
+
+[rename]
+empty = "Введите название темы."

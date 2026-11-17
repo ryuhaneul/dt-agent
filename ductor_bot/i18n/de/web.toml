@@ -53,8 +53,8 @@ tag_reply = "Antwort"
 tag_result = "Ergebnis"
 
 [topic]
-title = "Themen"
-manage = "Themen verwalten"
+title = "Themenliste"
+manage = "Themenliste"
 search = "Themen und Nachrichten durchsuchen"
 new = "Neues Thema"
 new_default = "Neues Thema"
@@ -212,3 +212,32 @@ wrong_stage = "Dieser Eingabeschritt hat sich geändert. Starte den Geheimnisbef
 busy = "Wird gespeichert…"
 expired = "Die Eingabezeit ist abgelaufen. Starte neu mit /secret set KEY."
 btn_overwrite = "Überschreiben"
+
+# Shared secret outcomes retain the Telegram translations.
+usage = "Nutze /secret list, /secret set KEY, /secret delete KEY oder /secret cancel. Schreib den Wert nie in den Befehl."
+saved = "{key} gespeichert (Länge: {length} Zeichen)."
+saved_env_note = "{key} steht auch in .env. CLI-Anbieterschlüssel verwenden den Wert aus .env."
+rejected = "Wert abgelehnt: {reason}. Für andere Formate bearbeite die Secrets-Datei direkt."
+reason_value_empty = "Der Wert ist leer"
+reason_value_too_long = "Der Wert hat mehr als {max} Zeichen"
+reason_value_nul = "Der Wert enthält ein NUL-Zeichen"
+reason_value_multiline = "Der Wert enthält einen Zeilenumbruch"
+reason_value_edge_space = "Der Wert beginnt oder endet mit Leerraum"
+reason_value_edge_quote = "Der Wert beginnt oder endet mit einem Anführungszeichen"
+reason_value_dollar = "Der Wert beginnt mit $"
+invalid_key = "Nutze einen Schlüssel mit 1–56 Großbuchstaben, Ziffern oder Unterstrichen, beginnend mit einem Buchstaben."
+save_failed = "Die Änderung konnte nicht gespeichert werden. Kein neuer Wert wurde gespeichert. Versuch es nochmal."
+list = "Gespeicherte Schlüssel:\n{keys}"
+list_empty = "Noch keine Schlüssel gespeichert."
+confirm_overwrite = "{key} überschreiben?"
+confirm_delete = "{key} löschen?"
+deleted = "{key} gelöscht."
+delete_missing = "{key} wurde nicht gefunden."
+cancelled = "Secret-Eingabe abgebrochen."
+nothing_pending = "Keine Secret-Eingabe offen."
+
+[language]
+title = "Sprache der Weboberfläche"
+
+[rename]
+empty = "Gib einen Themennamen ein."

@@ -6,6 +6,7 @@ import { esc } from './md.js';
 
 let topics = [], selected = null, hits = [], query = '', searchTimer, revision = 0;
 let active = false, request = 0;
+let renaming = null, renameBusy = false, renameEpoch = 0;
 const unread = new Map(), seen = new Map();
 export function getTopics() { return topics; }
 export function getTopic() { return topics.find(topic => topic.tid === selected) || null; }
@@ -86,6 +87,7 @@ export async function refreshTopics() {
   if (!active || generation !== revision) return;
   topics = data.topics;
   for (const topic of topics) {
+    if (topic.name_key) topic.name = t(topic.name_key);
     topic.name ||= topic.tid === 'unknown' ? t('topic.unknown_name') : topic.topic_id === null
       ? t('topic.general') : `Topic #${topic.topic_id}`;
     if (topic.group === 'imported') topic.preview = t('topic.imported_preview', { n: topic.count });
@@ -106,10 +108,80 @@ export function noteEntry(tid, entry) {
   topics.sort((a, b) => (b.last_ts || '').localeCompare(a.last_ts || ''));
   renderTopics();
 }
+function clearRenameError() {
+  const error = document.querySelector('#renameError'), input = document.querySelector('#renameName');
+  error.hidden = true; error.textContent = ''; delete error.dataset.i18n;
+  input.removeAttribute('aria-invalid'); input.removeAttribute('aria-describedby');
+}
+function renameError(key) {
+  const error = document.querySelector('#renameError'), input = document.querySelector('#renameName');
+  error.dataset.i18n = key; error.textContent = t(key); error.hidden = false;
+  input.setAttribute('aria-invalid', 'true'); input.setAttribute('aria-describedby', 'renameError'); input.focus();
+}
+async function renameCurrentTopic() {
+  const topic = getTopic(), form = document.querySelector('#renameForm');
+  const input = document.querySelector('#renameName'), name = input.value.trim(), generation = renameEpoch;
+  if (!active || renameBusy) return;
+  if (!topic?.renamable || renaming !== topic.tid) {
+    renameError('error.generic');
+    input.disabled = true; form.querySelector('button[type="submit"]').disabled = true;
+    return;
+  }
+  clearRenameError();
+  if (!name) { renameError('rename.empty'); return; }
+  if (!form.reportValidity()) return;
+  renameBusy = true; form.setAttribute('aria-busy', 'true');
+  form.querySelectorAll('input, button').forEach(element => { element.disabled = true; });
+  document.querySelector('#renameClose').disabled = true;
+  try {
+    await api(`/topics/${encodeURIComponent(topic.tid)}`, { method: 'PATCH', body: { name } });
+    if (!active || generation !== renameEpoch) return;
+    await refreshTopics();
+    if (active && generation === renameEpoch) document.querySelector('#renameDlg').close();
+  } catch (error) {
+    if (active && generation === renameEpoch && error.code !== 'auth_required') renameError(
+      ['telegram_unavailable', 'bot_unreachable', 'read_only'].includes(error.code) ? `error.${error.code}` : 'error.generic');
+  } finally {
+    if (generation === renameEpoch) {
+      renameBusy = false; form.setAttribute('aria-busy', 'false');
+      form.querySelectorAll('input, button').forEach(element => { element.disabled = false; });
+      document.querySelector('#renameClose').disabled = false;
+      if (document.querySelector('#renameDlg').open) input.focus();
+    }
+  }
+}
 export function initTopics() {
+  const dialog = document.querySelector('#renameDlg'), form = document.querySelector('#renameForm');
+  const input = document.querySelector('#renameName'), opener = document.querySelector('#headerRename');
+  opener.addEventListener('click', () => {
+    const topic = getTopic();
+    if (!active || !topic?.renamable || renameBusy) return;
+    renaming = topic.tid; input.value = topic.name; clearRenameError();
+    input.disabled = false; form.querySelector('button[type="submit"]').disabled = false;
+    document.dispatchEvent(new CustomEvent('close-header-menus'));
+    dialog.showModal(); input.focus(); input.select();
+  });
+  for (const id of ['renameClose', 'renameCancel']) document.querySelector(`#${id}`).addEventListener('click', () => {
+    if (!renameBusy) dialog.close();
+  });
+  dialog.addEventListener('cancel', event => { if (renameBusy) event.preventDefault(); });
+  dialog.addEventListener('close', () => { renaming = null; clearRenameError(); opener.focus(); });
+  input.addEventListener('input', clearRenameError);
+  form.addEventListener('submit', event => { event.preventDefault(); void renameCurrentTopic(); });
+  document.addEventListener('language-changed', () => {
+    for (const topic of topics) {
+      if (topic.name_key) topic.name = t(topic.name_key);
+      if (topic.group === 'imported') topic.preview = t('topic.imported_preview', { n: topic.count });
+    }
+    renderTopics();
+  });
   document.addEventListener('auth-change', event => {
     active = event.detail.authenticated;
     if (!active) {
+      ++renameEpoch; renaming = null; renameBusy = false; dialog.close(); clearRenameError();
+      form.setAttribute('aria-busy', 'false');
+      form.querySelectorAll('input, button').forEach(element => { element.disabled = false; });
+      document.querySelector('#renameClose').disabled = false;
       ++revision; ++request; clearTimeout(searchTimer); topics = []; selected = null; hits = [];
       query = ''; unread.clear(); seen.clear(); document.querySelector('#q').value = ''; renderTopics();
     }

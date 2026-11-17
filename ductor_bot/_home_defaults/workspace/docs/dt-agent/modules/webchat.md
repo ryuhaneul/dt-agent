@@ -43,6 +43,10 @@ forced-HTTPS ACME exception. This bundled NPMplus instance is dedicated to web c
 the allowlist denial applies to every forced-HTTPS host on the instance. Do not add
 other hosts to it.
 
+The header globe selects one of nine web display languages, applied immediately and saved
+in browser localStorage across reloads; bot and Telegram language settings stay unchanged.
+The header Rename dialog updates the current topic name while keeping the conversation open.
+
 ## Authentication
 
 Set the password with `ductor webchat set-password` (at least 12 characters).

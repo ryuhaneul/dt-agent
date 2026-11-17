@@ -35,11 +35,6 @@ export function initAccount() {
     submit.disabled = value || Date.now() < lockedUntil;
     submit.textContent = t(value ? 'account.busy' : 'account.change');
   }
-  button.addEventListener('click', () => {
-    menu.hidden = !menu.hidden;
-    button.setAttribute('aria-expanded', String(!menu.hidden));
-    if (!menu.hidden) menu.querySelector('button').focus();
-  });
   document.addEventListener('click', event => { if (!event.target.closest('.account-menu')) closeMenu(); });
   menu.addEventListener('keydown', event => {
     if (event.key === 'Escape') { closeMenu(); button.focus(); }

@@ -53,8 +53,8 @@ tag_reply = "Réponse"
 tag_result = "Résultat"
 
 [topic]
-title = "Sujets"
-manage = "Gérer les sujets"
+title = "Liste des sujets"
+manage = "Liste des sujets"
 search = "Rechercher des sujets et des messages"
 new = "Nouveau sujet"
 new_default = "Nouveau sujet"
@@ -212,3 +212,32 @@ wrong_stage = "Cette étape a changé. Relance la commande de secrets."
 busy = "Enregistrement…"
 expired = "Le délai de saisie est écoulé. Recommence avec /secret set KEY."
 btn_overwrite = "Remplacer"
+
+# Shared secret outcomes retain the Telegram translations.
+usage = "Utilise /secret list, /secret set KEY, /secret delete KEY ou /secret cancel. Ne mets jamais la valeur dans une commande."
+saved = "{key} enregistrée (longueur : {length} caractères)."
+saved_env_note = "{key} existe aussi dans .env. Les clés de fournisseur CLI utilisent la valeur de .env."
+rejected = "Valeur refusée : {reason}. Pour les autres formats, modifie directement le fichier des secrets."
+reason_value_empty = "La valeur est vide"
+reason_value_too_long = "La valeur dépasse {max} caractères"
+reason_value_nul = "La valeur contient un caractère NUL"
+reason_value_multiline = "La valeur contient un saut de ligne"
+reason_value_edge_space = "La valeur commence ou finit par un espace"
+reason_value_edge_quote = "La valeur commence ou finit par un guillemet"
+reason_value_dollar = "La valeur commence par $"
+invalid_key = "Utilise une clé de 1–56 lettres majuscules, chiffres ou tirets bas, commençant par une lettre."
+save_failed = "La modification n’a pas pu être enregistrée. Aucune nouvelle valeur n’a été stockée. Réessaie."
+list = "Clés enregistrées :\n{keys}"
+list_empty = "Aucune clé enregistrée."
+confirm_overwrite = "Remplacer {key} ?"
+confirm_delete = "Supprimer {key} ?"
+deleted = "{key} supprimée."
+delete_missing = "{key} introuvable."
+cancelled = "Saisie du secret annulée."
+nothing_pending = "Aucune saisie de secret en attente."
+
+[language]
+title = "Langue de l’interface web"
+
+[rename]
+empty = "Saisissez un nom de sujet."

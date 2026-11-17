@@ -119,7 +119,7 @@ dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(2px)}
 
 /* ── app shell ── */
 .app{height:100dvh;display:grid;grid-template-rows:auto minmax(0,1fr);font-size:15px}
-.bar{display:flex;align-items:center;gap:12px;padding:10px 20px;border-bottom:1px solid var(--rule);background:color-mix(in srgb,var(--bg) 90%,transparent);backdrop-filter:blur(10px);position:relative;z-index:30}
+.bar{display:flex;min-width:0;align-items:center;gap:12px;padding:10px 20px;border-bottom:1px solid var(--rule);background:color-mix(in srgb,var(--bg) 90%,transparent);backdrop-filter:blur(10px);position:relative;z-index:30}
 [data-theme="dark"] .bar{background:var(--veil);backdrop-filter:none}
 .logo{display:flex;align-items:baseline;gap:10px;font-family:var(--mono);font-weight:700;font-size:1.02rem;letter-spacing:-.02em;white-space:nowrap}
 .logo .sub{font-family:var(--sans);font-weight:500;font-size:.8rem;color:var(--muted);letter-spacing:0}
@@ -387,3 +387,15 @@ dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(2px)}
 .secret-actions .btn{min-width:0;max-width:100%;white-space:normal;overflow-wrap:anywhere}
 .secret-error{color:var(--danger);margin-top:12px;font-size:.87rem}
 @media(max-width:760px){.secret-content{padding:18px}}
+
+/* Current-topic actions and web-only language preference. */
+.bar{flex-wrap:wrap}.chat-head{flex-wrap:wrap}.chat-head>.grow{flex:1;min-width:64px}.chat-head-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-left:auto}.chat-head-actions .btn{white-space:normal;line-height:1.3;max-width:100%}
+.lpick{position:relative;flex:none}.lpick .menu{min-width:0;width:min(240px,calc(100vw - 24px));max-width:calc(100vw - 24px);max-height:calc(100dvh - 100px);overflow-y:auto}.lpick [role=menuitemradio]{justify-content:space-between;overflow-wrap:anywhere;min-width:0}.language-check{visibility:hidden;color:var(--accent)}.lpick [aria-checked=true] .language-check{visibility:visible}
+#renameDlg{overflow-y:auto}#renameTitle{min-width:0;overflow-wrap:anywhere}#renameClose{width:36px;min-height:36px;padding:0;flex:none}#renameDlg .dlg-foot .btn{white-space:normal;overflow-wrap:anywhere}#renameDlg .dlg-body{padding-top:18px}#renameDlg .form-field{margin-top:16px}#renameError{color:var(--danger);font-size:.88rem;margin-top:10px}
+@media(max-width:760px){.chat-head{gap:8px}.chat-head-actions{gap:6px}.chat-head-actions .btn{padding:0 10px}.bar-acts{flex-wrap:wrap}.chat-head>.grow h2{overflow-wrap:anywhere}}
+@media(max-width:340px){.composer .row{gap:6px}.composer .row>.btn{padding:0 10px}#renameDlg .dlg-foot .btn{flex-basis:100%}.chat-head-actions{width:100%;justify-content:flex-end}.chat-head-actions .btn{flex:1}}
+
+/* Shared menu positioning uses each live trigger rectangle, including wrapped rows. */
+.account-menu{position:relative;flex:none}.account-menu .menu{min-width:172px}
+.bar .tpick .menu,.bar .lpick .menu,.bar .account-menu .menu{position:absolute;right:auto;min-width:0;max-width:calc(100vw - 16px);overflow-y:auto;overscroll-behavior:contain}
+.bar .menu button{min-width:0;overflow-wrap:anywhere;white-space:normal}.bar .menu button span:not(.language-check){min-width:0}.bar .menu svg{flex:none}

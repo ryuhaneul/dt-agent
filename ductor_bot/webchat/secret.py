@@ -173,11 +173,16 @@ class WebSecrets:
             result["secret"].update(
                 reason=reason,
                 message_key="secret.rejected",
-                params={"reason": self._text(f"reason_{reason}", max=MAX_VALUE_LENGTH)},
+                params={
+                    "reason": self._text(f"reason_{reason}", max=MAX_VALUE_LENGTH),
+                    "reason_code": reason,
+                    "max": MAX_VALUE_LENGTH,
+                },
             )
             return result
         await asyncio.to_thread(set_secret, self._path, pending.key, value)
         result = self._reply("saved", "saved", key=pending.key, length=len(value))
         if pending.key in load_env_secrets(self._home / ".env"):
             result["text"] += "\n" + self._text("saved_env_note", key=pending.key)
+            result["secret"]["params"]["env_note"] = True
         return result

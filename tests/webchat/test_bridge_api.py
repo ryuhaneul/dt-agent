@@ -43,6 +43,7 @@ from ductor_bot.session.manager import SessionData, SessionManager
 from ductor_bot.webchat.auth import PASSWORD_KEY, hash_password, totp_code
 from ductor_bot.webchat.bridge import create_bridge_app, start_bridge
 from ductor_bot.webchat.files import WebFileError, WebFiles
+from ductor_bot.webchat.topics import WebTopics
 from ductor_bot.webchat.turns import WebTurns
 from ductor_bot.workspace.paths import DuctorPaths
 
@@ -404,17 +405,22 @@ async def test_topics_merge_sources_names_groups_and_flags(conversation):
     by_id = {topic["tid"]: topic for topic in topics}
     assert set(by_id) == {"-123", "-123.7", "-123.8", "-123.9", "unknown"}
     assert by_id["-123.7"]["name"] == "Session name"
+    assert by_id["-123.7"]["name_key"] is None
     assert by_id["-123.7"]["group"] == "imported"
     assert by_id["-123.7"]["preview"] == "1 imported messages"
     assert by_id["-123.7"]["renamable"]
     assert by_id["-123.7"]["deletable"]
     assert not by_id["-123.7"]["read_only"]
     assert by_id["-123.8"]["name"] == "Cached name"
+    assert by_id["-123.8"]["name_key"] is None
     assert len(by_id["-123.8"]["preview"]) == 120
     assert by_id["-123.9"]["name"] == "Saved name"
+    assert by_id["-123.9"]["name_key"] is None
     assert by_id["-123.9"]["created_at"] is None
     assert by_id["-123"]["name"] == "General"
+    assert by_id["-123"]["name_key"] == "topic.general"
     unknown = by_id["unknown"]
+    assert unknown["name_key"] == "topic.unknown_name"
     assert (
         unknown["chat_id"],
         unknown["topic_id"],
@@ -423,6 +429,28 @@ async def test_topics_merge_sources_names_groups_and_flags(conversation):
         unknown["deletable"],
     ) == (0, None, True, False, False)
     assert topics[0]["tid"] == "-123.8"
+
+
+async def test_korean_system_name_metadata_does_not_mark_custom_names(conversation):
+    h = conversation
+    h.bot.config.language = "ko"
+    general = SessionData(-123)
+    custom = SessionData(-456, topic_name="일반")
+    await h.bot._orch._sessions._save(
+        {general.session_key.storage_key: general, custom.session_key.storage_key: custom}
+    )
+    await h.runtime.history.append(
+        "unknown", Entry(role="bot", source="import", text="unmapped", imported=True, seq=-1)
+    )
+    turns = SimpleNamespace(active_turn_id=lambda _tid: None, busy=lambda _tid: False)
+    topics = {item["tid"]: item for item in await WebTopics(h.bot, h.runtime, turns).list()}
+    assert topics["-123"]["name"] == "일반"
+    assert topics["-123"]["name_key"] == "topic.general"
+    assert topics["unknown"]["name"] == "토픽 미상"
+    assert topics["unknown"]["name_key"] == "topic.unknown_name"
+    assert topics["-456"]["name"] == "일반"
+    assert topics["-456"]["name_key"] is None
+    assert h.bot.config.language == "ko"
 
 
 async def test_topics_fallback_name_and_live_entry_leaves_imported_group(conversation):

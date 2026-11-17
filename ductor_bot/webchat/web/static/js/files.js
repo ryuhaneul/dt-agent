@@ -123,6 +123,7 @@ async function save() {
   }
 }
 export function initFiles() {
+  document.addEventListener('language-changed', renderFiles);
   document.addEventListener('click', event => {
     const button = event.target.closest('[data-file]');
     if (!button || !names.includes(button.dataset.file)) return;

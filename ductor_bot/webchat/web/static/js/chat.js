@@ -150,6 +150,7 @@ function renderHeader() {
     values[index].textContent = value ?? '—';
   });
   document.querySelector('#topicRename').hidden = !topic?.renamable;
+  document.querySelector('#headerRename').hidden = !topic?.renamable;
   document.querySelector('#topicDelete').hidden = !topic?.deletable;
   document.querySelector('.composer').hidden = !topic || topic.read_only || topic.tid === 'unknown';
   const turn = topic && running(topic.tid) && !document.querySelector('#msgIn').value.trimStart().startsWith('/');
@@ -373,6 +374,7 @@ async function sendOrStop() {
 }
 export function initChat() {
   secretDialog = initSecret();
+  document.addEventListener('language-changed', () => { renderThread(); renderStatus(); });
   const thread = document.querySelector('#thread'), input = document.querySelector('#msgIn');
   input.maxLength = 32000;
   commandMenu = initCommands(input, value => { if (getTopic()) drafts.set(getTopic().tid, value); });

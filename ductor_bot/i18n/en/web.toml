@@ -53,8 +53,8 @@ tag_reply = "Reply"
 tag_result = "Result"
 
 [topic]
-title = "Topics"
-manage = "Manage topics"
+title = "Topic list"
+manage = "Topic list"
 search = "Search topics and messages"
 new = "New topic"
 new_default = "New topic"
@@ -212,3 +212,32 @@ wrong_stage = "This input step has changed. Restart the secret command."
 busy = "Saving…"
 expired = "The input window has expired. Start again with /secret set KEY."
 btn_overwrite = "Overwrite"
+
+# Shared secret outcomes retain the Telegram translations.
+usage = "Use /secret list, /secret set KEY, /secret delete KEY, or /secret cancel. Never include the value in a command."
+saved = "{key} saved (length: {length} characters)."
+saved_env_note = "{key} also exists in .env. CLI provider keys use the .env value."
+rejected = "Value rejected: {reason}. For other formats, edit the secrets file directly."
+reason_value_empty = "The value is empty"
+reason_value_too_long = "The value exceeds {max} characters"
+reason_value_nul = "The value contains a NUL character"
+reason_value_multiline = "The value contains a line break"
+reason_value_edge_space = "The value starts or ends with whitespace"
+reason_value_edge_quote = "The value starts or ends with a quote"
+reason_value_dollar = "The value starts with $"
+invalid_key = "Use a key of 1–56 uppercase letters, digits, or underscores, starting with a letter."
+save_failed = "The operation could not be saved. No new value was stored. Please try again."
+list = "Stored keys:\n{keys}"
+list_empty = "No keys are stored."
+confirm_overwrite = "Overwrite {key}?"
+confirm_delete = "Delete {key}?"
+deleted = "{key} deleted."
+delete_missing = "{key} was not found."
+cancelled = "Secret input cancelled."
+nothing_pending = "There is no pending secret input."
+
+[language]
+title = "Web display language"
+
+[rename]
+empty = "Enter a topic name."

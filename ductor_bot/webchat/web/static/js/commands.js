@@ -71,8 +71,7 @@ export function initCommands(input, onChoose) {
   document.addEventListener('click', event => { if (!event.target.closest?.('.composer')) close(); });
   document.addEventListener('topic-selected', close);
   document.addEventListener('route-change', close);
-  document.addEventListener('auth-change', event => {
-    enabled = event.detail.authenticated;
+  function refreshCatalog() {
     const current = ++generation;
     catalog = []; filtered = []; close();
     if (enabled) {
@@ -82,7 +81,12 @@ export function initCommands(input, onChoose) {
         if (document.activeElement === input) render();
       }).catch(() => { if (current === generation) close(); });
     }
+  }
+  document.addEventListener('auth-change', event => {
+    enabled = event.detail.authenticated;
+    refreshCatalog();
   });
+  document.addEventListener('language-changed', () => { if (enabled) refreshCatalog(); });
   globalThis.addEventListener?.('resize', () => { if (!menu.hidden) fit(); });
   globalThis.visualViewport?.addEventListener('resize', () => { if (!menu.hidden) fit(); });
   return { close, keydown };

@@ -110,6 +110,8 @@ async def test_value_validation_matches_telegram_store(conversation, value):
     assert response.status == 200
     assert rejected["secret"]["stage"] == "value"
     assert rejected["secret"]["reason"] == validate_value(value)
+    assert rejected["secret"]["params"]["reason_code"] == validate_value(value)
+    assert rejected["secret"]["params"]["max"] == 4096
     fresh = rejected["secret"]["token"]
     assert fresh != old
     assert (await step(h, old))[0].status == 409
@@ -373,3 +375,16 @@ async def test_telegram_mirror_sender_receives_only_sanitized_text(conversation,
 async def test_secret_step_rejects_missing_or_read_only_topics(conversation, tid, status):
     response, _ = await step(conversation, "unknown", tid=tid)
     assert response.status == status
+
+
+async def test_env_note_metadata_preserves_original_response_text(conversation):
+    h = conversation
+    (h.paths.ductor_home / ".env").write_text("SAMPLE_KEY=synthetic-existing-value\n")
+    pending = await start(h)
+    response, saved = await step(h, pending["secret"]["token"])
+    assert response.status == 200
+    assert saved["secret"]["params"]["env_note"] is True
+    assert saved["text"] == (
+        f"SAMPLE_KEY saved (length: {len(VALUE)} characters).\n"
+        "SAMPLE_KEY also exists in .env. CLI provider keys use the .env value."
+    )

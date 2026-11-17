@@ -15,12 +15,13 @@ export function initSecret() {
   const done = document.querySelector('#secretDone');
   let current = null, tid = null, operation = 'set', timer = null, opener = null;
   let authenticated = false, busy = false, version = 0;
+  let errorKey = null;
   const pending = () => current && ['value', 'confirm_overwrite', 'confirm_delete'].includes(current.stage);
 
   function clearValue() { field.value = ''; }
   function cleanup() {
     clearValue(); clearTimeout(timer); timer = null;
-    current = null; tid = null; busy = false; ++version;
+    current = null; tid = null; busy = false; errorKey = null; ++version;
   }
   function setBusy(value) {
     busy = value;
@@ -34,28 +35,39 @@ export function initSecret() {
     const seconds = Math.max(0, Math.ceil((current.deadline - performance.now()) / 1000));
     countdown.textContent = t('secret.remaining', { seconds }); countdown.hidden = false;
     if (!seconds && !busy) {
-      apply({ text: t('secret.expired'), secret: { stage: 'expired' } });
+      apply({ text: t('secret.expired'), secret: { stage: 'expired', message_key: 'secret.expired' } });
       return;
     }
     if (seconds) timer = setTimeout(tick, 1000);
   }
+  function renderText() {
+    if (!current) return;
+    const params = { ...current.params };
+    if (params.reason_code) params.reason = t(`secret.reason_${params.reason_code}`, { max: params.max });
+    const translated = current.message_key ? t(current.message_key, params) || current.text : current.text;
+    const valueStage = current.stage === 'value';
+    message.textContent = valueStage ? t('secret.prompt', { key: current.key }) : translated;
+    if (!valueStage && params.env_note) message.textContent += '\n' + t('secret.saved_env_note', params);
+    notice.textContent = errorKey ? t(errorKey) : valueStage && current.text
+      ? current.message_key === 'secret.prompt' ? current.text : translated : '';
+    notice.hidden = !notice.textContent;
+    submit.textContent = t(busy ? 'secret.busy' : 'chat.send');
+    confirm.textContent = t(current.stage === 'confirm_delete' ? 'common.delete' : 'secret.btn_overwrite');
+  }
   function apply(result) {
     clearValue(); clearTimeout(timer);
+    errorKey = null;
     const meta = result.secret;
     current = { stage: meta.stage, key: meta.key || current?.key || meta.params?.key,
-      token: meta.token, deadline: performance.now() + meta.expires_in * 1000 };
+      token: meta.token, deadline: performance.now() + meta.expires_in * 1000, message_key: meta.message_key,
+      params: meta.params || {}, text: result.text || '' };
     const valueStage = current.stage === 'value';
     const confirmation = ['confirm_overwrite', 'confirm_delete'].includes(current.stage);
-    const modal = ['secret.prompt', 'secret.extra_args'].includes(meta.message_key);
-    message.textContent = valueStage ? t('secret.prompt', { key: current.key })
-      : modal ? t(meta.message_key, meta.params) : result.text || '';
-    notice.textContent = valueStage ? result.text || '' : '';
-    notice.hidden = !notice.textContent;
+    renderText();
     field.removeAttribute('aria-invalid');
     if (notice.textContent) field.setAttribute('aria-invalid', 'true');
     form.hidden = !valueStage; submit.hidden = !valueStage;
     confirm.hidden = !confirmation;
-    confirm.textContent = t(current.stage === 'confirm_delete' ? 'common.delete' : 'secret.btn_overwrite');
     confirm.classList.toggle('btn-danger', current.stage === 'confirm_delete');
     cancel.hidden = !(valueStage || confirmation);
     retry.hidden = !(['expired', 'error'].includes(current.stage) && current.key);
@@ -72,7 +84,7 @@ export function initSecret() {
       : error.status === 409 ? 'secret.expired'
       : error.code === 'bot_unreachable' ? 'error.bot_unreachable' : 'error.generic';
     apply({ text: '', secret: { stage: key === 'secret.expired' ? 'expired' : 'error' } });
-    notice.textContent = t(key); notice.hidden = false; notice.focus();
+    errorKey = key; renderText(); notice.focus();
   }
   async function request(path, body) {
     if (busy) return;
@@ -140,6 +152,7 @@ export function initSecret() {
     opener = null;
   });
   document.addEventListener('topic-selected', () => { if (dialog.open) dialog.close(); });
+  document.addEventListener('language-changed', () => { if (dialog.open) { renderText(); tick(); } });
   document.addEventListener('auth-change', event => {
     authenticated = event.detail.authenticated;
     if (!authenticated) { if (dialog.open) dialog.close(); else cleanup(); }

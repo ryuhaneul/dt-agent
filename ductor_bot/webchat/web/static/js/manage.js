@@ -87,6 +87,7 @@ async function remove() {
   finally { if (generation === epoch) { working = false; updateDelete(); } }
 }
 export function initManage() {
+  document.addEventListener('language-changed', () => { if (active) { renderManage(); updateDelete(); } });
   const list = document.querySelector('#mlist');
   list.addEventListener('input', event => {
     if (event.target.id !== 'renameInput') return;

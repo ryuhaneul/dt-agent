@@ -79,6 +79,50 @@ def test_i18n_keys_and_placeholders_exist(markup):
                 assert mapping.split(":", 1)[1] in STRINGS
 
 
+def test_header_rename_language_and_menu_contract(markup):
+    elements = {attrs.get("id"): attrs for _, attrs in markup.tags if attrs.get("id")}
+    for name in ("headerRename", "renameDlg", "renameForm", "renameName", "renameError"):
+        assert name in elements
+    assert "data-route" not in elements["headerRename"]
+    assert elements["renameDlg"]["aria-labelledby"] == "renameTitle"
+    assert elements["renameError"]["role"] == "alert"
+    assert elements["renameName"]["maxlength"] == "128"
+    assert "renameState" not in elements
+    locales = {attrs["data-locale"] for _, attrs in markup.tags if "data-locale" in attrs}
+    assert locales == {"en", "de", "nl", "es", "fr", "id", "pt", "ru", "ko"}
+    topics = (STATIC / "js/topics.js").read_text()
+    rename = topics.split("async function renameCurrentTopic()", 1)[1].split(
+        "export function initTopics()", 1
+    )[0]
+    assert "method: 'PATCH'" in rename
+    assert "refreshTopics()" in rename
+    assert "selectTopic(" not in rename
+    assert "go(" not in rename
+    assert "replaceChildren" not in rename
+    assert "#thread" not in rename
+    i18n = (STATIC / "js/i18n.js").read_text()
+    for fragment in (
+        "dtw-web-language",
+        "localStorage.getItem",
+        "localStorage.setItem",
+        "?lang=",
+        "language-changed",
+    ):
+        assert fragment in i18n
+    theme = (STATIC / "js/theme.js").read_text()
+    for fragment in (
+        "getBoundingClientRect",
+        "viewportWidth",
+        "trigger.right",
+        "closeMenus()",
+        ".lpick",
+        ".account-menu",
+        "ResizeObserver",
+        "positionMenu",
+    ):
+        assert fragment in theme
+
+
 def test_all_local_assets_and_module_imports_resolve(markup):
     for _tag, attrs in markup.tags:
         for name in ("src", "href", "data-src"):
@@ -217,7 +261,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
-const {staticDir, strings} = JSON.parse(fs.readFileSync(0, 'utf8'));
+const {staticDir, strings, locales} = JSON.parse(fs.readFileSync(0, 'utf8'));
 class Element {
   constructor(id = '') {
     this.id = id; this.children = []; this.listeners = {}; this.attributes = {};
@@ -280,7 +324,7 @@ function response(status, data) { return { ok: status < 400, status, json: async
 async function fetch(url, options = {}) {
   const body = options.body ? JSON.parse(options.body) : null;
   calls.push({url, ...options, body});
-  if (url === '/api/i18n') return response(200, {lang:'en', strings});
+  if (url.startsWith('/api/i18n')) { const lang=url.split('?lang=')[1]||'en';return response(200,{lang,strings:locales[lang]}); }
   if (url === '/api/auth/state') return response(200, {
     authenticated, totp_configured: configured, csrf: authenticated ? 'fake-csrf' : null, bridge_up:true
   });
@@ -336,6 +380,20 @@ await auth.namespace.initAuth();
 assert.equal(ids.otp.children.length, 6);
 assert.equal(ids.otp.children[0].autocomplete, 'one-time-code');
 assert.equal(ids.otp.children[0].attributes['aria-label'], strings['auth.digit'].replace('{n}','1'));
+// Changing UI language relabels both mounted OTP groups without replacing or clearing inputs.
+const otpInputs=[...ids.otp.children,...ids.otp2.children];
+otpInputs.forEach((input,index)=>{input.value=String(index%6)});
+for(const lang of Object.keys(locales)){
+ await translations.namespace.loadI18n(lang);
+ for(const group of [ids.otp,ids.otp2])group.children.forEach((input,index)=>{
+  assert.equal(input.attributes['aria-label'],locales[lang]['auth.digit'].replace('{n}',String(index+1)));
+  assert.equal(input.value,String(index));assert.ok(otpInputs.includes(input));
+ });
+ await translations.namespace.loadI18n(lang);
+ assert.equal(ids.otp.children[0].attributes['aria-label'],locales[lang]['auth.digit'].replace('{n}','1'));
+}
+await translations.namespace.loadI18n('en');otpInputs.forEach(input=>{input.value=''});
+
 ids.pw.value = 'wrong'; await ids.pwForm.emit('submit');
 assert.equal(flags.routes.at(-1), 'pw');
 assert.equal(ids.toasts.children.at(-1).children[0].textContent, strings['auth.invalid']);
@@ -416,7 +474,16 @@ console.log('Client contracts passed: authentication, setup, OTP, CSRF, i18n, th
 def test_client_contracts_without_a_browser():
     result = subprocess.run(
         ["node", "--experimental-vm-modules", "--input-type=module", "-e", CLIENT_TESTS],
-        input=json.dumps({"staticDir": str(STATIC), "strings": STRINGS}),
+        input=json.dumps(
+            {
+                "staticDir": str(STATIC),
+                "strings": STRINGS,
+                "locales": {
+                    lang: _load_toml(STATIC.parents[2] / f"i18n/{lang}/web.toml")
+                    for lang in ("en", "de", "nl", "es", "fr", "id", "pt", "ru", "ko")
+                },
+            }
+        ),
         capture_output=True,
         text=True,
         check=False,
@@ -625,7 +692,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
-const {staticDir,strings}=JSON.parse(fs.readFileSync(0,'utf8'));
+const {staticDir,strings,locales}=JSON.parse(fs.readFileSync(0,'utf8'));
 const pending=[];
 class Element {
   constructor(){this.listeners={};this.dataset={};this.children=[];this.textContent='';this.html='';this.value='';this.hidden=false;this.scrollTop=0;this.scrollHeight=500;this.clientHeight=500;this.attributes={};this.disabled=false;}
@@ -637,6 +704,7 @@ class Element {
   append(...children){this.children.push(...children);}
   replaceChildren(){this.children=[];this.html='';}
   remove(){}
+  close(){this.open=false;}
   focus(){document.activeElement=this;}
   closest(selector){return (selector==='[data-tid]'&&this.dataset.tid)||(selector==='[data-response-entry]'&&this.dataset.responseEntry)||(selector==='[data-callback-entry]'&&this.dataset.callbackEntry)?this:null;}
   querySelector(selector){
@@ -683,7 +751,7 @@ function response(status,body){return {status,ok:status<400,json:async()=>struct
 async function fetch(url,options={}){
   const parsed=new URL(url,'https://chat.example.com');const body=options.body?JSON.parse(options.body):null;
   calls.push({url,options,body});
-  if(parsed.pathname==='/api/i18n')return response(200,{lang:'en',strings});
+  if(parsed.pathname==='/api/i18n'){const lang=parsed.searchParams.get('lang')||'en';return response(200,{lang,strings:locales[lang]})}
   if(parsed.pathname==='/api/auth/state')return response(200,{authenticated:session,csrf:'fake-csrf'});
   if(!session)return response(403,{error:'auth_required'});
   if(parsed.pathname===failGet)return response(503,{error:'history_busy'});
@@ -853,6 +921,8 @@ await chat.namespace.handleEvent({type:'entry',tid:'1.2',entry:{...reply,source:
 releaseButtons();buttonsHold=null;await flush();
 assert.ok(markup(211).includes(strings['chat.delivered']));
 assert.ok(markup(211).includes('aria-pressed="true"'));assert.ok(markup(211).includes('aria-disabled="true"'));assert.ok(markup(211).includes(strings['buttons.answered'].replace('{label}','Accept &lt;img&gt;')));
+for(const lang of ['ko','en','de']){await modules.get(path.join(staticDir,'js/i18n.js')).namespace.loadI18n(lang);assert.ok(markup(211).includes(locales[lang]['buttons.answered'].replace('{label}','Accept &lt;img&gt;')));assert.ok(markup(211).includes('Accept &lt;img&gt;'));}
+await modules.get(path.join(staticDir,'js/i18n.js')).namespace.loadI18n('en');
 clickChoice('e211','Revise');await flush();assert.equal(buttonCalls().length,1);
 // Telegram metadata can arrive before an entry and survive stale snapshots.
 await chat.namespace.handleEvent({type:'entry_meta',tid:'1.2',entry_id:'e212',meta:{answered:'Revise',button_kinds:replyKinds,buttons:replyRows}});
@@ -980,7 +1050,16 @@ console.log('Chat contracts passed: groups, search, unread, pagination, safe Mar
 def test_chat_client_against_fake_api_and_event_contract():
     result = subprocess.run(
         ["node", "--experimental-vm-modules", "--input-type=module", "-e", CHAT_CLIENT_TESTS],
-        input=json.dumps({"staticDir": str(STATIC), "strings": STRINGS}),
+        input=json.dumps(
+            {
+                "staticDir": str(STATIC),
+                "strings": STRINGS,
+                "locales": {
+                    lang: _load_toml(STATIC.parents[2] / f"i18n/{lang}/web.toml")
+                    for lang in ("ko", "en", "de")
+                },
+            }
+        ),
         capture_output=True,
         text=True,
         check=False,
@@ -1478,7 +1557,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
-const {staticDir,strings,commands}=JSON.parse(fs.readFileSync(0,'utf8'));
+const {staticDir,strings,commands,catalogs}=JSON.parse(fs.readFileSync(0,'utf8'));
 class Element {
   constructor(){this.listeners={};this.attributes={};this.dataset={};this.hidden=true;this.value='';this.innerHTML='';this.textContent='';}
   addEventListener(type,callback){(this.listeners[type] ||= []).push(callback)}
@@ -1496,7 +1575,7 @@ document.querySelector=selector=>{if(!nodes.has(selector))nodes.set(selector,new
 const input=document.querySelector('#msgIn');input.focus();
 const calls=[],selected=[];let release=null;
 const context=vm.createContext({document,console,encodeURIComponent});
-const api=new vm.SyntheticModule(['api'],function(){this.setExport('api',async route=>{calls.push(route);if(release)await release;return {commands}})},{context});
+const api=new vm.SyntheticModule(['api'],function(){this.setExport('api',async route=>{calls.push(route);if(release)await release;return {commands:catalogs[route.split('lang=')[1]]||commands}})},{context});
 const i18n=new vm.SyntheticModule(['t'],function(){this.setExport('t',key=>strings[key] || '')},{context});
 const md=new vm.SyntheticModule(['esc'],function(){this.setExport('esc',value=>String(value).replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[ch]))},{context});
 for(const module of [api,i18n,md]){await module.link(()=>{});await module.evaluate()}
@@ -1522,6 +1601,7 @@ input.value='/mo';input.emit('input');assert.equal(controller.keydown({key:'Ente
 list.emit('pointerdown',{target:{closest(){return {dataset:{index:'0'}}}}});assert.equal(input.value,'/model ');assert.equal(menu.hidden,true);
 input.value='/';input.emit('input');document.emit('click',{target:{closest(){return null}}});assert.equal(menu.hidden,true);
 input.emit('input');document.emit('topic-selected');assert.equal(menu.hidden,true);
+for(const lang of ['ko','en','de']){document.documentElement.lang=lang;input.value='/';input.focus();document.emit('language-changed');await flush();assert.equal(calls.at(-1),`/commands?lang=${lang}`);assert.ok(list.innerHTML.includes(catalogs[lang][0].description));assert.equal(input.value,'/');}
 let done;release=new Promise(resolve=>done=resolve);document.emit('auth-change',{detail:{authenticated:true}});document.emit('auth-change',{detail:{authenticated:false}});done();await flush();input.value='/';input.emit('input');assert.equal(menu.hidden,true);
 """
 
@@ -1532,7 +1612,12 @@ def test_command_autocomplete_client_contract():
     result = subprocess.run(
         ["node", "--experimental-vm-modules", "--input-type=module", "-e", COMMAND_CLIENT_TESTS],
         input=json.dumps(
-            {"staticDir": str(STATIC), "strings": STRINGS, "commands": command_list("en")}
+            {
+                "staticDir": str(STATIC),
+                "strings": STRINGS,
+                "commands": command_list("en"),
+                "catalogs": {lang: command_list(lang) for lang in ("ko", "en", "de")},
+            }
         ),
         capture_output=True,
         text=True,
@@ -1620,7 +1705,31 @@ def test_secret_modal_translations_are_complete_and_reuse_common_text():
             assert web[f"secret.{name}"]
         assert web["secret.prompt"] != chat["secret.prompt"]
         assert web["secret.extra_args"] != chat["secret.extra_args"]
-        for name in ["expired", "btn_overwrite"]:
+        for name in [
+            "expired",
+            "btn_overwrite",
+            "usage",
+            "saved",
+            "saved_env_note",
+            "rejected",
+            "reason_value_empty",
+            "reason_value_too_long",
+            "reason_value_nul",
+            "reason_value_multiline",
+            "reason_value_edge_space",
+            "reason_value_edge_quote",
+            "reason_value_dollar",
+            "invalid_key",
+            "save_failed",
+            "list",
+            "list_empty",
+            "confirm_overwrite",
+            "confirm_delete",
+            "deleted",
+            "delete_missing",
+            "cancelled",
+            "nothing_pending",
+        ]:
             assert web[f"secret.{name}"] == chat[f"secret.{name}"]
     source = (STATIC / "js/chat.js").read_text()
     assert "commands.secret_telegram" not in source
@@ -1629,7 +1738,8 @@ def test_secret_modal_translations_are_complete_and_reuse_common_text():
 
 SECRET_CLIENT_TESTS = r"""
 import assert from 'node:assert/strict';import fs from 'node:fs';import vm from 'node:vm';
-const {source,strings}=JSON.parse(fs.readFileSync(0,'utf8'));
+const {source,strings,locales}=JSON.parse(fs.readFileSync(0,'utf8'));
+let activeStrings=strings;
 class Element{
  constructor(id=''){this.id=id;this.value='';this.hidden=false;this.disabled=false;this.open=false;this.dataset={};this.listeners={};this.attributes={};this.textContent='';this.isConnected=true;this.classList={toggle(){}};}
  addEventListener(type,fn){(this.listeners[type] ||= []).push(fn)}
@@ -1643,12 +1753,12 @@ class Element{
 const nodes=new Map();const document=new Element();document.querySelector=selector=>{if(!nodes.has(selector))nodes.set(selector,new Element(selector.slice(1)));return nodes.get(selector)};
 const get=id=>document.querySelector('#'+id);const calls=[],timers=new Map();let timerId=0,now=1000000,monotonic=0,release,error=null;
 const context=vm.createContext({document,performance:{now:()=>monotonic},Date:class{static now(){return now}},encodeURIComponent,crypto:{randomUUID:()=> 'synthetic-id'},setTimeout:(fn,delay)=>{timers.set(++timerId,fn);return timerId},clearTimeout:id=>timers.delete(id)});
-const result=(stage,token='token-1',text='')=>({text,buttons:null,secret:{stage,key:'SAMPLE_KEY',token,expires_at:1120,expires_in:120,message_key:stage==='value'?'secret.prompt':'secret.'+stage,params:{key:'SAMPLE_KEY'}}});
+const result=(stage,token='token-1',text='')=>({text,buttons:null,secret:{stage,key:'SAMPLE_KEY',token,expires_at:1120,expires_in:120,message_key:stage==='value'?'secret.prompt':'secret.'+stage,params:{key:'SAMPLE_KEY',...(stage==='saved'?{length:3}:{})}}});
 let next=result('saved',undefined,'Saved synthetic key');
 const api=new vm.SyntheticModule(['api'],function(){this.setExport('api',(path,{body})=>{
  calls.push({path,body:structuredClone(body),reference:body});return new Promise((resolve,reject)=>{release=()=>error?reject(error):resolve(next)});
 })},{context});
-const i18n=new vm.SyntheticModule(['t'],function(){this.setExport('t',(key,values={})=>(strings[key]||key).replace(/\{(\w+)\}/g,(_,name)=>values[name]??''))},{context});
+const i18n=new vm.SyntheticModule(['t'],function(){this.setExport('t',(key,values={})=>(activeStrings[key]||key).replace(/\{(\w+)\}/g,(_,name)=>values[name]??''))},{context});
 for(const stub of [api,i18n]){await stub.link(()=>{});await stub.evaluate()}
 const module=new vm.SourceTextModule(source,{context});await module.link(name=>name==='./api.js'?api:i18n);await module.evaluate();const controller=module.namespace.initSecret();
 const flush=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate)};
@@ -1667,14 +1777,34 @@ for(const skew of [300000,-300000]){
  monotonic+=1000;const count=calls.length;get('secretForm').emit('submit');
  assert.equal(calls.length,count);assert.equal(get('secretForm').hidden,true);
 }
+// Relabeling uses the original monotonic deadline, including expiry on language change.
+controller.show(result('value'),'-123.7');
+for(const [elapsed,lang,remaining] of [[30000,'ko',90],[59000,'de',31],[30000,'en',1]]){
+ monotonic+=elapsed;activeStrings=locales[lang];document.emit('language-changed');
+ assert.equal(get('secretRemaining').textContent,activeStrings['secret.remaining'].replace('{seconds}',String(remaining)));
+ assert.equal(get('secretForm').hidden,false);
+}
+monotonic+=1000;document.emit('language-changed');
+assert.equal(get('secretForm').hidden,true);assert.equal(get('secretMessage').textContent,activeStrings['secret.expired']);
+activeStrings=strings;
 now=1000000;calls.length=0;
 controller.show(result('value'),'-123.7');assert.equal(get('secretDlg').open,true);assert.equal(document.activeElement,get('secretValue'));assert.ok(get('secretMessage').textContent.includes('SAMPLE_KEY'));
-get('secretValue').value='synthetic-secret-only';get('secretForm').emit('submit');
+const field=get('secretValue');let storedValue=field.value,valueWrites=0;
+Object.defineProperty(field,'value',{get:()=>storedValue,set:value=>{storedValue=value;valueWrites++}});
+field.value='synthetic-secret-only';const writesBeforeLanguage=valueWrites;
+for(const lang of Object.keys(locales)){
+ activeStrings=locales[lang];document.emit('language-changed');
+ assert.equal(field.value,'synthetic-secret-only');assert.equal(valueWrites,writesBeforeLanguage);
+ assert.equal(get('secretMessage').textContent,activeStrings['secret.prompt'].replace('{key}','SAMPLE_KEY'));
+}
+activeStrings=strings;document.emit('language-changed');get('secretForm').emit('submit');
+assert.equal(calls.at(-1).body.token,'token-1');
+
 assert.equal(calls.at(-1).path,'/topics/-123.7/secret/value');assert.equal(calls.at(-1).body.value,'synthetic-secret-only');
 assert.equal(get('secretValue').value,'');assert.equal(calls.at(-1).reference.value,'');assert.equal(calls.at(-1).reference.token,'');
 get('secretForm').emit('submit');assert.equal(calls.length,1);
 next=result('value','token-2','Rejected synthetic value');release();await flush();assert.equal(get('secretValue').value,'');assert.equal(get('secretError').textContent,'Rejected synthetic value');
-get('secretValue').value='second-synthetic';get('secretForm').emit('submit');assert.equal(calls.at(-1).body.token,'token-2');next=result('saved',undefined,'Saved synthetic key');release();await flush();assert.equal(get('secretMessage').textContent,'Saved synthetic key');assert.equal(get('secretForm').hidden,true);
+get('secretValue').value='second-synthetic';get('secretForm').emit('submit');assert.equal(calls.at(-1).body.token,'token-2');next=result('saved',undefined,'Saved synthetic key');release();await flush();assert.equal(get('secretMessage').textContent,strings['secret.saved'].replace('{key}','SAMPLE_KEY').replace('{length}','3'));assert.equal(get('secretForm').hidden,true);
 controller.show(result('confirm_overwrite'),'-123.7');get('secretConfirm').emit('click');assert.equal(calls.at(-1).path,'/topics/-123.7/secret/confirm');assert.equal(calls.at(-1).body.confirm,true);next=result('value','token-3');release();await flush();
 get('secretCancel').emit('click');assert.equal(calls.at(-1).body.text,'/secret cancel');next=result('cancelled',undefined,'Cancelled');release();await flush();
 controller.show(result('confirm_delete'),'-123.7');get('secretCancel').emit('click');assert.equal(calls.at(-1).body.confirm,false);next=result('cancelled',undefined,'Cancelled');release();await flush();
@@ -1685,13 +1815,200 @@ for(const [code,status,key]of [['wrong_stage',409,'secret.wrong_stage'],['forbid
 controller.show(result('value'),'-123.7');get('secretValue').value='logout-synthetic';document.emit('auth-change',{detail:{authenticated:false}});assert.equal(get('secretDlg').open,false);assert.equal(get('secretValue').value,'');
 document.emit('auth-change',{detail:{authenticated:true}});controller.show(result('value'),'-123.7');get('secretValue').value='escape-synthetic';get('secretDlg').emit('cancel');assert.equal(get('secretValue').value,'');assert.equal(get('secretDlg').open,false);assert.equal(calls.at(-1).body.text,'/secret cancel');next=result('cancelled');release();await flush();assert.equal(get('secretDlg').open,false);
 controller.show(result('value'),'-123.7');get('secretValue').value='pending-synthetic';get('secretForm').emit('submit');const oldRelease=release;document.emit('auth-change',{detail:{authenticated:false}});next=result('value','late-token');oldRelease();await flush();assert.equal(get('secretDlg').open,false);assert.equal(get('secretValue').value,'');
+document.emit('auth-change',{detail:{authenticated:true}});
+for(const lang of ['ko','en','de']){
+ activeStrings=locales[lang];
+ controller.show(result('confirm_delete'),'-123.7');document.emit('language-changed');assert.equal(get('secretMessage').textContent,activeStrings['secret.confirm_delete'].replace('{key}','SAMPLE_KEY'));assert.equal(get('secretConfirm').textContent,activeStrings['common.delete']);
+ const rejected=result('value','language-token','Bot-side reason');rejected.secret.message_key='secret.rejected';rejected.secret.params={reason:'Bot-side reason',reason_code:'value_too_long',max:4096};controller.show(rejected,'-123.7');field.value='kept while relabeling';const before=valueWrites;document.emit('language-changed');assert.equal(field.value,'kept while relabeling');assert.equal(valueWrites,before);assert.equal(get('secretError').textContent,activeStrings['secret.rejected'].replace('{reason}',activeStrings['secret.reason_value_too_long'].replace('{max}','4096')));
+ const saved=result('saved');saved.secret.params.env_note=true;controller.show(saved,'-123.7');document.emit('language-changed');assert.equal(get('secretMessage').textContent,activeStrings['secret.saved'].replace('{key}','SAMPLE_KEY').replace('{length}','3')+'\n'+activeStrings['secret.saved_env_note'].replace('{key}','SAMPLE_KEY'));
+}
 """
 
 
 def test_secret_client_clears_values_rotates_tokens_and_handles_lifecycle():
     result = subprocess.run(
         ["node", "--experimental-vm-modules", "--input-type=module", "-e", SECRET_CLIENT_TESTS],
-        input=json.dumps({"source": (STATIC / "js/secret.js").read_text(), "strings": STRINGS}),
+        input=json.dumps(
+            {
+                "source": (STATIC / "js/secret.js").read_text(),
+                "strings": STRINGS,
+                "locales": {
+                    lang: _load_toml(STATIC.parents[2] / f"i18n/{lang}/web.toml")
+                    for lang in ("en", "de", "nl", "es", "fr", "id", "pt", "ru", "ko")
+                },
+            }
+        ),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+HEADER_CLIENT_TESTS = r"""
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+const {sources, translations, scenario}=JSON.parse(fs.readFileSync(0,'utf8'));
+class Element {
+ constructor(id=''){this.id=id;this.listeners={};this.dataset={};this.attributes={};this.style={};this.hidden=true;this.value='';this.textContent='';this.disabled=false;this.open=false;this.scrollTop=0;this.children=[];this.classList={contains:()=>false};}
+ addEventListener(name,fn){(this.listeners[name]??=[]).push(fn)}
+ async emit(name,event={}){for(const fn of this.listeners[name]||[])await fn({target:this,preventDefault(){},...event});await new Promise(setImmediate)}
+ setAttribute(k,v){this.attributes[k]=String(v)}
+ removeAttribute(k){delete this.attributes[k]}
+ hasAttribute(k){return Object.hasOwn(this.attributes,k)}
+ focus(){document.activeElement=this}
+ select(){this.selected=true}
+ scrollIntoView(){}
+ showModal(){this.open=true}
+ close(){if(!this.open)return;this.open=false;for(const fn of this.listeners.close||[])fn()}
+ reportValidity(){return true}
+ querySelectorAll(){return this.children}
+ querySelector(){return null}
+ closest(){return null}
+ contains(el){return el===this||this.children.includes(el)}
+}
+const ids=new Map(),get=id=>{if(!ids.has(id))ids.set(id,new Element(id));return ids.get(id)};
+const document=new Element();document.documentElement=new Element();document.documentElement.clientWidth=375;document.documentElement.dataset.themePref='light';document.documentElement.lang='ko';
+document.querySelector=selector=>selector.startsWith('#')?get(selector.slice(1)):selector==='.tfoot button'?get('create'):null;
+document.querySelectorAll=()=>[];
+document.dispatchEvent=event=>{for(const fn of document.listeners[event.type]||[])fn(event)};
+class CustomEvent {constructor(type,options={}){this.type=type;this.detail=options.detail}}
+const storage=new Map(),fetches=[],windowEvents={};let blocked=false;
+const context=vm.createContext({document,CustomEvent,Node:Element,innerHeight:600,console,setTimeout,clearTimeout,
+ localStorage:{getItem:key=>{if(blocked)throw Error('blocked');return storage.get(key)||null},setItem:(key,v)=>{if(blocked)throw Error('blocked');storage.set(key,v)}},
+ matchMedia:()=>({matches:false,addEventListener(){}}),addEventListener:(key,fn)=>{windowEvents[key]=fn},
+ ResizeObserver:class {observe(){}},requestAnimationFrame:fn=>fn(),fetch:async url=>{fetches.push(url);const lang=new URL(url,'https://chat.example').searchParams.get('lang')||'ko';return {ok:true,json:async()=>({lang,strings:translations[lang]})}}});
+async function load(name,dependencies={}){
+ const module=new vm.SourceTextModule(sources[name],{context});
+ await module.link(async spec=>{const exports=dependencies[spec];assert.ok(exports,`Unexpected dependency: ${spec}`);const stub=new vm.SyntheticModule(Object.keys(exports),function(){for(const[k,v]of Object.entries(exports))this.setExport(k,v)},{context});await stub.link(()=>{});return stub});
+ await module.evaluate();return module.namespace;
+}
+if(scenario==='language'){
+ const menu=get('languageMenu'),buttons=['en','de','nl','es','fr','id','pt','ru','ko'].map(lang=>{const b=new Element();b.dataset.locale=lang;b.closest=()=>b;return b});
+ const label=new Element();label.dataset.i18n='language.title';menu.querySelector=()=>label;
+ document.querySelectorAll=selector=>selector==='[data-locale]'?buttons:selector==='[data-i18n]'?[label]:[];
+ const i18n=await load('i18n.js');storage.set('dtw-web-language','de');await i18n.loadI18n();
+ assert.equal(fetches.at(-1),'/api/i18n?lang=de');assert.equal(document.documentElement.lang,'de');assert.equal(label.textContent,translations.de['language.title']);
+ const fr=buttons.find(b=>b.dataset.locale==='fr');await menu.emit('click',{target:fr});
+ assert.equal(storage.get('dtw-web-language'),'fr');assert.equal(document.documentElement.lang,'fr');assert.equal(fr.attributes['aria-checked'],'true');
+ await i18n.loadI18n();assert.equal(fetches.at(-1),'/api/i18n?lang=fr');
+ await i18n.loadI18n('ja');assert.equal(fetches.at(-1),'/api/i18n');assert.equal(document.documentElement.lang,'ko');
+ storage.set('dtw-web-language','../en');await i18n.loadI18n();assert.equal(fetches.at(-1),'/api/i18n');assert.equal(document.documentElement.lang,'ko');
+ blocked=true;await menu.emit('click',{target:buttons[0]});assert.equal(document.documentElement.lang,'en');
+ assert.ok(document.listeners['language-changed']===undefined); // No application-language mutation API.
+ assert.ok(fetches.every(url=>url.startsWith('/api/i18n')));
+}
+if(scenario==='menus'){
+ let parentLeft=305;const frames=[];context.requestAnimationFrame=fn=>frames.push(fn);
+ const flushFrames=()=>{while(frames.length)frames.shift()()};
+ let trigger={right:365,top:90,bottom:130};const bar={getBoundingClientRect:()=>({top:0,bottom:150})};
+ const pickers=['tpick','lpick','account-menu'].map(kind=>{
+  const p=new Element(),button=new Element(),menu=new Element(),item=new Element();
+  p.classList={contains:name=>name===kind};p.querySelector=selector=>selector==='.menu'?menu:button;p.closest=()=>bar;
+  button.getBoundingClientRect=()=>trigger;menu.children=[item];menu.querySelector=()=>item;
+  menu.scrollHeight=450;menu.offsetParent={getBoundingClientRect:()=>({left:parentLeft,top:90})};
+  menu.getBoundingClientRect=()=>({width:parseFloat(menu.style.width),height:Math.min(452,parseFloat(menu.style.maxHeight))});
+  return p;
+ });
+ document.querySelectorAll=selector=>selector==='.tpick, .lpick, .account-menu'?pickers:[];
+ const theme=await load('theme.js',{'./i18n.js':{t:key=>key}});theme.initTheme();
+ for(const width of [1280,768,375,187.5]){
+  document.documentElement.clientWidth=width;
+  for(const right of [32,width-5]){
+   trigger={right,top:90,bottom:130};
+   for(const picker of pickers){const menu=picker.querySelector('.menu');menu.hidden=true;await picker.querySelector('.theme-btn').emit('click');
+    const left=parseFloat(menu.style.left)+305,rect=menu.getBoundingClientRect();
+    assert.ok(left>=0&&left+rect.width<=width,`${width}: ${left}..${left+rect.width}`);
+    assert.equal(parseFloat(menu.style.top)+90,156);
+    assert.equal(pickers.filter(p=>!p.querySelector('.menu').hidden).length,1);
+   }
+  }
+ }
+ // A later language listener re-renders the header after theme's listener.
+ document.addEventListener('language-changed',()=>{parentLeft-=28;trigger={...trigger,right:trigger.right-28}});
+ for(const width of [768,375]){
+  document.documentElement.clientWidth=width;
+  for(const picker of pickers){
+   parentLeft=305;trigger={right:32,top:90,bottom:130};
+   theme.closeMenus();await picker.querySelector('.theme-btn').emit('click');flushFrames();
+   for(const lang of ['ko','en','de']){
+    document.documentElement.lang=lang;document.dispatchEvent(new CustomEvent('language-changed',{detail:{lang}}));flushFrames();
+    const menu=picker.querySelector('.menu'),left=parseFloat(menu.style.left)+parentLeft;
+    assert.ok(left>=0&&left+menu.getBoundingClientRect().width<=width,`${width}/${lang}: ${left}`);
+   }
+  }
+ }
+ const picker=pickers[2],menu=picker.querySelector('.menu');await menu.emit('keydown',{key:'Escape'});assert.equal(menu.hidden,true);assert.equal(document.activeElement,picker.querySelector('.theme-btn'));
+ document.dispatchEvent(new CustomEvent('close-header-menus'));assert.ok(pickers.every(p=>p.querySelector('.menu').hidden));
+}
+if(scenario==='rename'||scenario==='rename-stale'){
+ const form=get('renameForm'),input=get('renameName');form.children=[input,get('renameCancel'),get('save')];form.querySelector=()=>get('save');
+ const topic={tid:'-123.4',name:'Original topic',group:'telegram',renamable:true,count:1,preview:'Unchanged conversation',last_ts:null};
+ const requests=[];let failure=false,rows=[topic];
+ const api=async(url,options={})=>{requests.push({url,...options});if(options.method==='PATCH'){if(failure)throw {code:'telegram_unavailable'};topic.name=options.body.name;return {topic:{...topic}}}assert.equal(url,'/topics');return {topics:rows.map(row=>({...row}))}};
+ const topics=await load('topics.js',{'./api.js':{api},'./i18n.js':{t:key=>key},'./router.js':{go:()=>{throw Error('Rename must retain the chat route')}},'./auth.js':{notify:()=>{}},'./md.js':{esc:value=>String(value)}});
+ topics.initTopics();document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));await topics.refreshTopics();
+ if(scenario==='rename-stale'){
+  const other={...topic,tid:'-123.5',name:'Other topic'};
+  for(const state of ['changed','removed','empty']){
+   rows=[topic,other];await topics.refreshTopics();topics.selectTopic(topic.tid,null,false);
+   await get('headerRename').emit('click');input.value='Stale rename';
+   if(state==='changed')topics.selectTopic(other.tid,null,false);
+   else{rows=state==='removed'?[other]:[];await topics.refreshTopics();}
+   const before=requests.length;await form.emit('submit');
+   assert.equal(requests.length,before);assert.equal(get('renameDlg').open,true);
+   assert.equal(get('renameError').hidden,false);assert.equal(get('renameError').dataset.i18n,'error.generic');
+   assert.equal(input.disabled,true);assert.equal(get('save').disabled,true);assert.equal(get('renameCancel').disabled,false);
+   await get('renameCancel').emit('click');assert.equal(get('renameDlg').open,false);
+   rows=[topic];await topics.refreshTopics();await get('headerRename').emit('click');
+   assert.equal(input.disabled,false);assert.equal(get('save').disabled,false);assert.equal(get('renameError').hidden,true);
+   await get('renameCancel').emit('click');
+  }
+ }
+ let selections=0;document.addEventListener('topic-selected',()=>selections++);
+ get('msgIn').value='Unsent draft';get('thread').textContent='Existing messages';get('thread').scrollTop=42;
+ await get('headerRename').emit('click');assert.equal(input.value,'Original topic');assert.equal(get('renameDlg').open,true);
+ input.value='   ';await form.emit('submit');assert.equal(get('renameError').dataset.i18n,'rename.empty');assert.equal(requests.filter(r=>r.method==='PATCH').length,0);
+ input.value='New name';failure=true;await form.emit('submit');assert.equal(get('renameDlg').open,true);assert.equal(get('renameError').dataset.i18n,'error.telegram_unavailable');assert.equal(input.disabled,false);
+ failure=false;await form.emit('submit');assert.equal(get('renameDlg').open,false);assert.equal(topics.getTopic().name,'New name');assert.equal(selections,0);
+ assert.equal(get('msgIn').value,'Unsent draft');assert.equal(get('thread').textContent,'Existing messages');assert.equal(get('thread').scrollTop,42);
+ assert.equal(requests.filter(r=>r.method==='PATCH').at(-1).url,'/topics/-123.4');
+ await get('headerRename').emit('click');assert.equal(input.value,'New name');const before=requests.length;await get('renameCancel').emit('click');assert.equal(requests.length,before);assert.equal(document.activeElement,get('headerRename'));
+}
+if(scenario==='topic-labels'){
+ let lang='ko';
+ const rows=[{tid:'-123',topic_id:null,name:'일반',name_key:'topic.general',group:'telegram',count:0},
+ {tid:'unknown',topic_id:null,name:'토픽 미상',name_key:'topic.unknown_name',group:'unknown',count:0},
+ {tid:'-456',topic_id:null,name:'일반',name_key:null,group:'telegram',count:0},
+ {tid:'-123.7',topic_id:7,name:'User topic 그대로',name_key:null,group:'telegram',count:0}];
+ const topics=await load('topics.js',{'./api.js':{api:async()=>({topics:rows.map(row=>({...row}))})},'./i18n.js':{t:key=>translations[lang][key]},'./router.js':{go:()=>{}},'./auth.js':{notify:()=>{}},'./md.js':{esc:value=>String(value)}});
+ topics.initTopics();document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));await topics.refreshTopics();
+ const verify=()=>{const actual=new Map(topics.getTopics().map(topic=>[topic.tid,topic.name]));assert.equal(actual.get('-123'),translations[lang]['topic.general']);assert.equal(actual.get('unknown'),translations[lang]['topic.unknown_name']);assert.equal(actual.get('-456'),'일반');assert.equal(actual.get('-123.7'),'User topic 그대로')};
+ for(const selected of Object.keys(translations)){lang=selected;document.dispatchEvent(new CustomEvent('language-changed',{detail:{lang}}));verify();await topics.refreshTopics();verify();}
+}
+console.log(`Header contract passed: ${scenario}`);
+"""
+
+
+@pytest.mark.parametrize(
+    "scenario", ["language", "menus", "rename", "rename-stale", "topic-labels"]
+)
+def test_header_client_behavior(scenario):
+    payload = {
+        "scenario": scenario,
+        "sources": {
+            name: (STATIC / "js" / name).read_text()
+            for name in ("i18n.js", "theme.js", "topics.js")
+        },
+        "translations": {
+            lang: _load_toml(STATIC.parents[2] / f"i18n/{lang}/web.toml")
+            for lang in ("en", "de", "nl", "es", "fr", "id", "pt", "ru", "ko")
+        },
+    }
+    result = subprocess.run(
+        ["node", "--experimental-vm-modules", "--input-type=module", "-e", HEADER_CLIENT_TESTS],
+        input=json.dumps(payload),
         capture_output=True,
         text=True,
         check=False,

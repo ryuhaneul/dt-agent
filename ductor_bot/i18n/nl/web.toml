@@ -53,8 +53,8 @@ tag_reply = "Antwoord"
 tag_result = "Resultaat"
 
 [topic]
-title = "Onderwerpen"
-manage = "Onderwerpen beheren"
+title = "Onderwerpenlijst"
+manage = "Onderwerpenlijst"
 search = "Onderwerpen en berichten doorzoeken"
 new = "Nieuw onderwerp"
 new_default = "Nieuw onderwerp"
@@ -212,3 +212,32 @@ wrong_stage = "Deze invoerstap is gewijzigd. Start de opdracht voor het geheim o
 busy = "Opslaan…"
 expired = "De invoertijd is verstreken. Begin opnieuw met /secret set KEY."
 btn_overwrite = "Overschrijven"
+
+# Shared secret outcomes retain the Telegram translations.
+usage = "Gebruik /secret list, /secret set KEY, /secret delete KEY of /secret cancel. Zet de waarde nooit in een commando."
+saved = "{key} opgeslagen (lengte: {length} tekens)."
+saved_env_note = "{key} staat ook in .env. CLI-providersleutels gebruiken de waarde uit .env."
+rejected = "Waarde geweigerd: {reason}. Bewerk voor andere formaten het secrets-bestand rechtstreeks."
+reason_value_empty = "De waarde is leeg"
+reason_value_too_long = "De waarde is langer dan {max} tekens"
+reason_value_nul = "De waarde bevat een NUL-teken"
+reason_value_multiline = "De waarde bevat een regeleinde"
+reason_value_edge_space = "De waarde begint of eindigt met witruimte"
+reason_value_edge_quote = "De waarde begint of eindigt met een aanhalingsteken"
+reason_value_dollar = "De waarde begint met $"
+invalid_key = "Gebruik een sleutel van 1–56 hoofdletters, cijfers of underscores, beginnend met een letter."
+save_failed = "De wijziging kon niet worden opgeslagen. Er is geen nieuwe waarde opgeslagen. Probeer het opnieuw."
+list = "Opgeslagen sleutels:\n{keys}"
+list_empty = "Er zijn geen sleutels opgeslagen."
+confirm_overwrite = "{key} overschrijven?"
+confirm_delete = "{key} verwijderen?"
+deleted = "{key} verwijderd."
+delete_missing = "{key} is niet gevonden."
+cancelled = "Geheime invoer geannuleerd."
+nothing_pending = "Er staat geen geheime invoer open."
+
+[language]
+title = "Taal van de webinterface"
+
+[rename]
+empty = "Voer een onderwerpnaam in."

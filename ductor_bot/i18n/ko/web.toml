@@ -53,8 +53,8 @@ tag_reply = "응답"
 tag_result = "결과"
 
 [topic]
-title = "토픽"
-manage = "토픽 관리"
+title = "토픽 목록"
+manage = "토픽 목록"
 search = "토픽·메시지 검색"
 new = "새 토픽"
 new_default = "새 토픽"
@@ -212,3 +212,32 @@ wrong_stage = "입력 단계가 바뀌었어요. 비밀 명령을 다시 시작�
 busy = "저장 중…"
 expired = "입력 시간이 지났어요. /secret set KEY로 다시 시작해 주세요."
 btn_overwrite = "덮어쓰기"
+
+# Shared secret outcomes retain the Telegram translations.
+usage = "/secret list, /secret set KEY, /secret delete KEY, /secret cancel을 사용하세요. 명령에는 값을 쓰지 마세요."
+saved = "{key} 저장됨(길이 {length}자)."
+saved_env_note = ".env에도 {key}가 있어요. CLI 제공자 키는 .env 값을 사용해요."
+rejected = "값을 받지 않았어요: {reason}. 다른 형식은 시크릿 파일을 직접 편집해 주세요."
+reason_value_empty = "값이 비어 있어요"
+reason_value_too_long = "값이 {max}자를 넘어요"
+reason_value_nul = "값에 NUL 문자가 있어요"
+reason_value_multiline = "값에 줄바꿈이 있어요"
+reason_value_edge_space = "값의 처음이나 끝에 공백이 있어요"
+reason_value_edge_quote = "값의 처음이나 끝에 따옴표가 있어요"
+reason_value_dollar = "값이 $로 시작해요"
+invalid_key = "키는 영문 대문자로 시작하고, 대문자·숫자·밑줄로 이루어진 1~56자여야 해요."
+save_failed = "변경 사항을 저장하지 못했어요. 새 값은 저장되지 않았어요. 다시 시도해 주세요."
+list = "저장된 키:\n{keys}"
+list_empty = "저장된 키가 없어요."
+confirm_overwrite = "{key}를 덮어쓸까요?"
+confirm_delete = "{key}를 삭제할까요?"
+deleted = "{key}를 삭제했어요."
+delete_missing = "{key}를 찾지 못했어요."
+cancelled = "시크릿 입력을 취소했어요."
+nothing_pending = "대기 중인 시크릿 입력이 없어요."
+
+[language]
+title = "웹 화면 언어"
+
+[rename]
+empty = "토픽 이름을 입력해 주세요."

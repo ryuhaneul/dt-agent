@@ -355,6 +355,32 @@ async def test_i18n_language_and_key_parity(site, language):
     assert _compare_domain(load_web_strings("en"), load_web_strings("ko")).clean
 
 
+@pytest.mark.parametrize("language", ["en", "de", "nl", "es", "fr", "id", "pt", "ru", "ko"])
+async def test_i18n_explicit_web_language_is_public_and_does_not_change_bot(site, language):
+    client, fake = site
+    response = await client.get("/api/i18n", params={"lang": language})
+    assert response.status == 200
+    assert "WWW-Authenticate" not in response.headers
+    assert await response.json() == {"lang": language, "strings": load_web_strings(language)}
+    assert fake.language == "ko"
+    assert (await (await client.get("/api/i18n")).json())["lang"] == "ko"
+
+
+@pytest.mark.parametrize("language", ["", "invalid", "EN", "../en", "en-US", "ja"])
+async def test_i18n_invalid_query_falls_back_to_bot_language(site, language):
+    client, fake = site
+    fake.language = "fr"
+    response = await client.get("/api/i18n", params={"lang": language})
+    assert await response.json() == {"lang": "fr", "strings": load_web_strings("fr")}
+
+
+async def test_i18n_explicit_language_works_with_bridge_down(site):
+    client, fake = site
+    fake.unavailable = True
+    response = await client.get("/api/i18n?lang=de")
+    assert await response.json() == {"lang": "de", "strings": load_web_strings("de")}
+
+
 async def test_body_limit_and_malformed_auth_json(site):
     client, fake = site
     headers, _ = await login(client)

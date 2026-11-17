@@ -190,6 +190,9 @@ async def health(_request: web.Request) -> web.Response:
 
 
 async def i18n(request: web.Request) -> web.Response:
+    selected = request.query.get("lang", "")
+    if selected in LANGUAGES:
+        return web.json_response({"lang": selected, "strings": load_web_strings(selected)})
     language = "en"
     try:
         status, meta = await request.app[STATE].bridge.request("GET", "/meta")

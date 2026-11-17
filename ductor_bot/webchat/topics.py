@@ -90,12 +90,18 @@ class WebTopics:
                 if key and key.topic_id is not None
                 else None
             )
+            custom_name = (session.topic_name if session else None) or saved.get("name") or cached
+            name_key = (
+                "topic.unknown_name"
+                if unknown
+                else "topic.general"
+                if not custom_name and key and key.topic_id is None
+                else None
+            )
             name = (
                 self._strings["topic.unknown_name"]
                 if unknown
-                else (session.topic_name if session else None)
-                or saved.get("name")
-                or cached
+                else custom_name
                 or (
                     self._strings["topic.general"]
                     if key and key.topic_id is None
@@ -122,6 +128,7 @@ class WebTopics:
                     "chat_id": key.chat_id if key else 0,
                     "topic_id": key.topic_id if key else None,
                     "name": name,
+                    "name_key": name_key,
                     "group": group,
                     "last_ts": last_ts,
                     "preview": preview,

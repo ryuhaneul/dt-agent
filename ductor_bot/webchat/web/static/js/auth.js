@@ -11,9 +11,11 @@ export function notify(key, values = {}) {
   toast.className = 'toast toast-error';
   toast.setAttribute('role', 'alert');
   const message = document.createElement('span');
+  message.dataset.i18n = key; message.dataset.i18nArgs = JSON.stringify(values);
   message.textContent = t(key, values);
   const close = document.createElement('button');
   close.type = 'button'; close.className = 'toast-close';
+  close.dataset.i18nAttr = 'aria-label:common.close';
   close.setAttribute('aria-label', t('common.close'));
   close.textContent = '×';
   close.addEventListener('click', () => toast.remove());
@@ -156,6 +158,10 @@ function confirmSetup() {
 export async function initAuth() {
   mountOtp(document.querySelector('#otp'), submitTotp);
   mountOtp(document.querySelector('#otp2'), confirmSetup);
+  document.addEventListener('language-changed', () => {
+    document.querySelectorAll('.otp input').forEach((input, index) =>
+      input.setAttribute('aria-label', t('auth.digit', { n: index % 6 + 1 })));
+  });
   document.querySelector('#pwForm').addEventListener('submit', event => {
     event.preventDefault();
     perform(async () => {
