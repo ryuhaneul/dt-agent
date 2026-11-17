@@ -3441,6 +3441,7 @@ async def cli_poll(client, job, *, owner="owner-one", finished=False):
     [
         ("GET", "status"),
         ("POST", "jobs"),
+        ("POST", "cancel-owner"),
         ("GET", "jobs/unknown"),
         ("POST", "jobs/unknown/input"),
         ("POST", "jobs/unknown/cancel"),
@@ -3529,7 +3530,8 @@ async def test_cli_bridge_job_input_sequence_owner_conflict_cancel_and_no_record
     assert created.status == 202
     job = (await created.json())["job_id"]
     snapshot = await cli_poll(client, job)
-    assert snapshot["urls"] == ["https://fake.invalid/login?secret=terminal-output-canary"]
+    assert snapshot["urls"] == []
+    assert "https://fake.invalid/login?secret=terminal-output-canary" in str(snapshot["output"])
     assert snapshot["needs_input"]
     after = await client.get(
         f"{_PREFIX}/cli-login/jobs/{job}?after={snapshot['seq']}", headers=cli_headers()
@@ -3671,3 +3673,45 @@ async def test_cli_unknown_jobs_return_json_404(cli_bridge, method, suffix):
     )
     assert response.status == 404
     assert await response.json() == {"error": "login_not_found"}
+
+
+async def test_cli_bridge_reclaims_orphan_only_with_server_live_owner_list(cli_bridge):
+    client, _, _, _, manager = cli_bridge
+    job = manager.start("codex", "owner-one")
+    response = await client.get(
+        f"{_PREFIX}/cli-login/status",
+        headers={**cli_headers("owner-two"), "X-Dtw-Active-Owners": '["owner-one","owner-two"]'},
+    )
+    assert (await response.json())["job_id"] is None
+    denied = await client.get(f"{_PREFIX}/cli-login/jobs/{job}", headers=cli_headers("owner-two"))
+    assert denied.status == 404
+    response = await client.get(
+        f"{_PREFIX}/cli-login/status",
+        headers={**cli_headers("owner-two"), "X-Dtw-Active-Owners": '["owner-two"]'},
+    )
+    state = await response.json()
+    assert state["running"]
+    assert state["job_id"] == job
+    assert (
+        await client.get(f"{_PREFIX}/cli-login/jobs/{job}", headers=cli_headers("owner-two"))
+    ).status == 200
+    assert (
+        await client.get(f"{_PREFIX}/cli-login/jobs/{job}", headers=cli_headers())
+    ).status == 404
+    assert (
+        await client.post(f"{_PREFIX}/cli-login/cancel-owner", headers=cli_headers())
+    ).status == 202
+    assert manager._jobs[job].stop_state is None
+    assert (
+        await client.post(f"{_PREFIX}/cli-login/cancel-owner", headers=cli_headers("owner-two"))
+    ).status == 202
+    assert (await cli_poll(client, job, owner="owner-two", finished=True))["state"] == "cancelled"
+
+
+@pytest.mark.parametrize("live", ["broken", "{}", "[3]"])
+async def test_cli_bridge_rejects_invalid_live_owner_list(cli_bridge, live):
+    client, *_ = cli_bridge
+    response = await client.get(
+        f"{_PREFIX}/cli-login/status", headers={**cli_headers(), "X-Dtw-Active-Owners": live}
+    )
+    assert response.status == 400

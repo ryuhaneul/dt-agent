@@ -585,3 +585,20 @@ def test_implicit_default_remains_first_after_adding_slot(paths, configured):
         config, claude_accounts=["claude", "claude-web"]
     )
     assert (default / ".credentials.json").read_text() == "fake-default-auth"
+
+
+@pytest.mark.parametrize("slot", ["claude", "claude-unlisted"])
+@pytest.mark.parametrize("accounts", [None, [], ["claude-existing", "claude"]])
+def test_successful_existing_login_does_not_register_or_reorder_slots(paths, slot, accounts):
+    directory = paths.ductor_home / ".cli-auth" / slot
+    directory.mkdir(exist_ok=True)
+    config = {"model": "keep"}
+    if accounts is not None:
+        config["claude_accounts"] = accounts
+    paths.config_path.write_text(json.dumps(config))
+    before = paths.config_path.read_bytes()
+    inode = paths.config_path.stat().st_ino
+    slots = ClaudeLoginSlots(paths)
+    slots.finish(slots.prepare(slot, new_slot=False), succeeded=True)
+    assert paths.config_path.read_bytes() == before
+    assert paths.config_path.stat().st_ino == inode

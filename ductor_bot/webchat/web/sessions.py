@@ -56,6 +56,10 @@ class SessionStore:
     def clear(self) -> None:
         self._sessions.clear()
 
+    def tokens(self) -> tuple[str, ...]:
+        self.count()
+        return tuple(self._sessions)
+
     def count(self) -> int:
         for token in list(self._sessions):
             self.get(token, touch=False)

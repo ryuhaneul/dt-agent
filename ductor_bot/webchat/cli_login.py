@@ -6,10 +6,13 @@ import asyncio
 import codecs
 import contextlib
 import fcntl
+import hashlib
+import json
 import os
 import pty
 import re
 import signal
+import sys
 import termios
 import threading
 import time
@@ -19,8 +22,9 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
-from ductor_bot.cli.auth import AuthResult, check_provider_auth
+from ductor_bot.cli.auth import AuthResult, AuthStatus, check_provider_auth
 from ductor_bot.cli.claude_accounts import container_slot_config_dir
 from ductor_bot.webchat.cli_login_slots import (
     ClaudeLoginSlots,
@@ -41,7 +45,12 @@ _CODE = re.compile(
     r"(?:one-time code[^\n]*|Confirm this code in your browser:)\s*\n\s*([^\s│]+)", re.IGNORECASE
 )
 _URL = re.compile(r"https://[^\s<>\"'│]+")
+_LOGIN_HOSTS = {"claude": "claude.ai", "codex": "auth.openai.com", "grok": "accounts.x.ai"}
 _LIMIT = 64 * 1024
+_PROBE = """import json, sys
+from ductor_bot.cli.auth import check_provider_auth
+print(json.dumps({"status": check_provider_auth(sys.argv[1]).status.value}))
+"""
 
 
 class CliLoginError(Exception):
@@ -90,21 +99,30 @@ def parse_output(provider: str, text: str) -> dict[str, object]:
     # unindented URL-looking lines; never join the next prose/prompt line.
     joined = re.sub(r"(?<=[\w%=&?./~+-])\n(?=[\w%=&?./~+-]+(?:\n|$))", "", text)
     urls = list(dict.fromkeys(url.rstrip(".,)") for url in _URL.findall(joined)))
+    allowed_urls = []
+    for url in urls:
+        with contextlib.suppress(ValueError):
+            parsed = urlsplit(url)
+            if (
+                parsed.hostname == _LOGIN_HOSTS.get(provider)
+                and parsed.username is None
+                and "\\" not in url
+            ):
+                allowed_urls.append(url)
     code = _CODE.search(text) if provider in {"codex", "grok"} else None
     needs_input = re.search(r"Paste code", text, re.IGNORECASE) is not None
     return {
-        "urls": urls,
+        "urls": allowed_urls,
         "code": code.group(1) if code else None,
         "needs_input": needs_input,
     }
 
 
-def _fingerprint(paths: tuple[Path, ...]) -> tuple[tuple[int, int] | None, ...]:
-    result: list[tuple[int, int] | None] = []
+def _fingerprint(paths: tuple[Path, ...]) -> tuple[bytes | None, ...]:
+    result: list[bytes | None] = []
     for path in paths:
         try:
-            stat = path.stat()
-            result.append((stat.st_mtime_ns, stat.st_size))
+            result.append(hashlib.sha256(path.read_bytes()).digest())
         except FileNotFoundError:
             result.append(None)
     return tuple(result)
@@ -132,6 +150,9 @@ class _Job:
     seq: int = 0
     # Completion signals must survive ring-buffer eviction.
     success_signal: bool = False
+    input_echoes: deque[str] = field(default_factory=deque, repr=False)
+    signal_text: str = field(default="", repr=False)
+    signal_pending: str = field(default="", repr=False)
     parser: _TerminalText = field(default_factory=_TerminalText, repr=False)
     process: asyncio.subprocess.Process | None = field(default=None, repr=False)
     master: int | None = None
@@ -158,7 +179,48 @@ class _Job:
             if retained:
                 self.output.appendleft((seq, retained))
                 self.output_bytes += len(retained.encode())
-        combined = "".join(chunk for _, chunk in self.output)
+        # Keep PTY/readline input echoes visible, but out of completion detection.
+        self.signal_pending += text
+        clean = ""
+        while self.input_echoes:
+            match = min(
+                (
+                    (self.signal_pending.find(echo), echo)
+                    for echo in self.input_echoes
+                    if echo in self.signal_pending
+                ),
+                key=lambda item: (item[0], -len(item[1])),
+                default=None,
+            )
+            if match is not None:
+                index, echo = match
+                clean += self.signal_pending[:index]
+                self.signal_pending = self.signal_pending[index + len(echo) :]
+                self.input_echoes.remove(echo)
+                continue
+            # An echo may be split at any byte boundary by the PTY/readline.
+            held = next(
+                (
+                    n
+                    for n in range(
+                        min(max(map(len, self.input_echoes)), len(self.signal_pending)), 0, -1
+                    )
+                    if any(
+                        self.signal_pending.endswith(echo[:n]) and n <= len(echo)
+                        for echo in self.input_echoes
+                    )
+                ),
+                0,
+            )
+            end = len(self.signal_pending) - held
+            clean += self.signal_pending[:end]
+            self.signal_pending = self.signal_pending[end:]
+            break
+        else:
+            clean += self.signal_pending
+            self.signal_pending = ""
+        combined = self.signal_text + clean
+        self.signal_text = combined[-128:]
         marker = {"claude": "Login successful", "codex": "Successfully logged in"}.get(
             self.provider
         )
@@ -195,6 +257,7 @@ class CliLoginManager:
         self._refresh_task: asyncio.Task[None] | None = None
         self._auth_pending: list[str] = []
         self._auth_invalidated: set[str] = set()
+        self._probe_process: asyncio.subprocess.Process | None = None
         self._expiry: dict[str, asyncio.TimerHandle] = {}
 
     def start(
@@ -255,11 +318,15 @@ class CliLoginManager:
             and job.provider not in self._startup_providers,
         }
 
-    def status(self, owner: str) -> dict[str, object]:
+    def status(
+        self, owner: str, *, active_owners: frozenset[str] | None = None
+    ) -> dict[str, object]:
         """Return cached auth and owner-filtered active identity; schedule refresh."""
         self._purge()
         self.refresh_auth()
         active = self._jobs.get(self._active or "")
+        if active and active_owners is not None and active.owner not in active_owners:
+            active.owner = owner
         return {
             "providers": {
                 p: self._auth[p].status.value
@@ -289,13 +356,59 @@ class CliLoginManager:
             self._refresh_task = asyncio.create_task(self._refresh_auth(), name="cli-login-auth")
 
     async def _refresh_auth(self) -> None:
-        while self._auth_pending:
+        while self._auth_pending and not self._closed:
             provider = self._auth_pending.pop(0)
-            # Native probe exceptions can contain credentials; retain the cache.
+            # Probe exceptions can contain credentials; never log their details.
             with contextlib.suppress(Exception):
-                self._auth[provider] = await asyncio.to_thread(self._auth_checker, provider)
+                if self._auth_checker is check_provider_auth:
+                    try:
+                        self._auth[provider] = await self._probe_auth(provider)
+                    except Exception:
+                        self._auth.pop(provider, None)
+                        raise
+                else:
+                    self._auth[provider] = await asyncio.to_thread(self._auth_checker, provider)
             if provider not in self._auth_pending:
                 self._auth_invalidated.discard(provider)
+
+    async def _probe_auth(self, provider: str) -> AuthResult:
+        spawning = asyncio.create_task(
+            asyncio.create_subprocess_exec(
+                sys.executable,
+                "-c",
+                _PROBE,
+                provider,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        )
+        try:
+            process = await asyncio.shield(spawning)
+        except asyncio.CancelledError:
+            process = await spawning
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            await process.wait()
+            raise
+        self._probe_process = process
+        try:
+            output, _ = await process.communicate()
+            if process.returncode != 0:
+                raise ValueError("auth_probe_failed")
+            data = json.loads(output)
+            return AuthResult(provider, AuthStatus(data["status"]))
+        finally:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            await process.wait()
+            self._probe_process = None
+
+    def cancel_owner(self, owner: str) -> None:
+        """Cancel jobs belonging to sessions being revoked."""
+        for job in list(self._jobs.values()):
+            if job.owner == owner and job.finished is None:
+                self.cancel(job.id, owner)
 
     def send_input(self, job_id: str, owner: str, kind: str, value: str) -> None:
         job = self._owned(job_id, owner)
@@ -309,6 +422,7 @@ class CliLoginManager:
         if job.state != "running" or job.stop_state is not None or job.master is None:
             raise CliLoginError(409, "input_unavailable")
         try:
+            job.input_echoes.append(value)
             # Nonblocking writes; the PTY is drained on this same event loop.
             if os.write(job.master, payload) != len(payload):
                 raise CliLoginError(409, "input_unavailable")
@@ -325,6 +439,11 @@ class CliLoginManager:
     async def close(self) -> None:
         """Stop only owned process groups and reap leaders."""
         self._closed = True
+        self._auth_pending.clear()
+        if self._refresh_task:
+            self._refresh_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._refresh_task
         for handle in self._expiry.values():
             handle.cancel()
         for job in self._jobs.values():
@@ -335,8 +454,6 @@ class CliLoginManager:
         await asyncio.gather(
             *(j.task for j in self._jobs.values() if j.task), return_exceptions=True
         )
-        if self._refresh_task:
-            await self._refresh_task
         self._jobs.clear()
         self._expiry.clear()
 
@@ -396,6 +513,9 @@ class CliLoginManager:
             master, slave = pty.openpty()
             job.master = master
             os.set_blocking(master, False)
+            attrs = termios.tcgetattr(slave)
+            attrs[3] &= ~(termios.ECHO | termios.ECHONL)
+            termios.tcsetattr(slave, termios.TCSANOW, attrs)
             job.process = await asyncio.create_subprocess_exec(
                 *_COMMANDS[job.provider],
                 stdin=slave,

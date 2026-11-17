@@ -272,6 +272,20 @@ async def auth(request: web.Request) -> web.Response:
     return response
 
 
+def _login_owner(state: WebState, token: str) -> str:
+    return hmac.digest(state.owner_key, token.encode(), "sha256").hex()
+
+
+async def _cancel_login(state: WebState, token: str) -> None:
+    # Session revocation must still work while the bot bridge is unavailable.
+    with contextlib.suppress(BridgeUnavailableError):
+        await state.bridge.request(
+            "POST",
+            "/cli-login/cancel-owner",
+            headers={"X-Dtw-Owner": _login_owner(state, token)},
+        )
+
+
 async def password_change(request: web.Request) -> web.Response:
     state = request.app[STATE]
     body = await _json_body(request)
@@ -286,6 +300,8 @@ async def password_change(request: web.Request) -> web.Response:
     )
     if status != 200:
         return web.json_response(data, status=status)
+    for old_token in state.sessions.tokens():
+        await _cancel_login(state, old_token)
     state.sessions.clear()
     state.validated.clear()
     for socket in list(state.sockets):
@@ -301,6 +317,7 @@ async def password_change(request: web.Request) -> web.Response:
 async def logout(request: web.Request) -> web.Response:
     state = request.app[STATE]
     token = request.cookies.get(SESSION_COOKIE, "")
+    await _cancel_login(state, token)
     state.sessions.delete(token)
     state.validated.pop(token, None)
     for socket, owner in list(state.sockets.items()):
@@ -320,9 +337,17 @@ async def relay(request: web.Request) -> web.Response:
         path += "?" + request.rel_url.raw_query_string
     if request.path.startswith("/api/cli-login/"):
         token = request.cookies.get(SESSION_COOKIE, "")
-        owner = hmac.digest(state.owner_key, token.encode(), "sha256").hex()
+        owner = _login_owner(state, token)
         status, data = await state.bridge.request(
-            request.method, path, body=body, headers={"X-Dtw-Owner": owner}
+            request.method,
+            path,
+            body=body,
+            headers={
+                "X-Dtw-Owner": owner,
+                "X-Dtw-Active-Owners": json.dumps(
+                    [_login_owner(state, live) for live in state.sessions.tokens()]
+                ),
+            },
         )
     else:
         status, data = await state.bridge.request(request.method, path, body=body)

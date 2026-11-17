@@ -60,6 +60,29 @@ if mode == "success":
         flush=True,
     )
     sys.exit(0)
+if mode in {"touch", "rewrite", "same_stat"}:
+    before = credentials.stat()
+    if mode == "touch":
+        os.utime(credentials, ns=(before.st_atime_ns, before.st_mtime_ns + 1000000))
+    elif mode == "rewrite":
+        credentials.write_bytes(credentials.read_bytes())
+    else:
+        credentials.write_text("new-credential")
+        os.utime(credentials, ns=(before.st_atime_ns, before.st_mtime_ns))
+    print("Login successful Successfully logged in", flush=True)
+    sys.exit(0)
+if mode == "echo_marker":
+    print("Paste code:", flush=True)
+    value = sys.stdin.readline().strip()
+    if scenario["echo"]:
+        for char in value:
+            print(char, end="", flush=True)
+            time.sleep(0.001)
+        print(flush=True)
+    write_credentials()
+    if scenario["cli_success"]:
+        print("Login successful Successfully logged in", flush=True)
+    sys.exit(0)
 if mode == "file_only":
     write_credentials()
     sys.exit(0)

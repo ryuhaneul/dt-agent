@@ -129,7 +129,8 @@ class ClaudeLoginSlots:
 
         try:
             share_slot_from_default(self._paths.ductor_home, prepared.name)
-            transform_config_file(self._paths.config_path, append)
+            if prepared.created:
+                transform_config_file(self._paths.config_path, append)
         except BaseException:
             self.cleanup(prepared)
             raise

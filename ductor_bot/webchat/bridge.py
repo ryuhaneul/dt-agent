@@ -716,7 +716,7 @@ def _register_file_routes(app: web.Application, bot: TelegramBot, runtime: ChatL
     app.router.add_put(f"{_PREFIX}/files/{{name}}", file)
 
 
-def _register_cli_login_routes(app: web.Application, bot: TelegramBot) -> None:  # noqa: C901
+def _register_cli_login_routes(app: web.Application, bot: TelegramBot) -> None:  # noqa: C901, PLR0915
     paths = bot._orch.paths
     manager = CliLoginManager(
         startup_providers=getattr(bot._orch, "available_providers", frozenset()),
@@ -757,14 +757,31 @@ def _register_cli_login_routes(app: web.Application, bot: TelegramBot) -> None: 
             for name in names
         ]
 
-    async def handle(request: web.Request) -> web.Response:  # noqa: PLR0911
+    async def handle(request: web.Request) -> web.Response:  # noqa: C901, PLR0911, PLR0912
         owner = request.headers.get("X-Dtw-Owner", "")
         if not owner:
             return _error("forbidden", 403)
         resource = request.path.removeprefix(f"{_PREFIX}/cli-login")
         try:
+            if resource == "/cancel-owner":
+                manager.cancel_owner(owner)
+                return web.json_response({"ok": True}, status=202)
             if resource == "/status":
-                return web.json_response({**manager.status(owner), "claude_slots": claude_slots()})
+                active_owners = None
+                if "X-Dtw-Active-Owners" in request.headers:
+                    try:
+                        owners = json.loads(request.headers["X-Dtw-Active-Owners"])
+                    except ValueError:
+                        return _error("invalid_login", 400)
+                    if not isinstance(owners, list) or not all(isinstance(o, str) for o in owners):
+                        return _error("invalid_login", 400)
+                    active_owners = frozenset(owners)
+                return web.json_response(
+                    {
+                        **manager.status(owner, active_owners=active_owners),
+                        "claude_slots": claude_slots(),
+                    }
+                )
             if resource == "/jobs":
                 data = await _body(request)
                 provider, slot = data.get("provider"), data.get("slot")
@@ -799,6 +816,7 @@ def _register_cli_login_routes(app: web.Application, bot: TelegramBot) -> None: 
         except CliLoginError as exc:
             return _error(exc.code, exc.status)
 
+    app.router.add_post(f"{_PREFIX}/cli-login/cancel-owner", handle)
     app.router.add_get(f"{_PREFIX}/cli-login/status", handle)
     app.router.add_post(f"{_PREFIX}/cli-login/jobs", handle)
     app.router.add_get(f"{_PREFIX}/cli-login/jobs/{{id}}", handle)

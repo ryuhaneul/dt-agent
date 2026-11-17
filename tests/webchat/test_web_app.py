@@ -80,7 +80,16 @@ class FakeBridge:
                 ),
                 None,
             )
+            if path == "/cli-login/cancel-owner":
+                self.login_cancelled.update(
+                    job for job, account in self.login_jobs.items() if account == owner
+                )
+                return web.json_response({"ok": True}, status=202)
             if path == "/cli-login/status":
+                live = json.loads(request.headers.get("X-Dtw-Active-Owners", "null"))
+                if active and live is not None and active[1] not in live:
+                    self.login_jobs[active[0]] = owner
+                    active = (active[0], owner)
                 return web.json_response(
                     {
                         "providers": dict.fromkeys(("claude", "codex", "grok"), "installed"),
@@ -1081,3 +1090,92 @@ async def test_cli_login_requests_keep_five_second_upstream_timeout(site, path):
         assert response.status == 503
         assert await response.json() == {"error": "bot_unreachable"}
     assert bridge._client.timeout.total == 5
+
+
+async def test_logout_cancels_only_its_own_cli_login(site):
+    client, fake = site
+    first, _ = await login(client)
+    second, _ = await login(client)
+    job = (
+        await (
+            await client.post("/api/cli-login/jobs", headers=first, json={"provider": "codex"})
+        ).json()
+    )["job_id"]
+    assert (await client.post("/api/auth/logout", headers=second)).status == 200
+    assert job not in fake.login_cancelled
+    assert (await client.post("/api/auth/logout", headers=first)).status == 200
+    assert job in fake.login_cancelled
+
+
+async def test_password_change_cancels_jobs_for_all_revoked_sessions(site):
+    client, fake = site
+    first, _ = await login(client)
+    second, _ = await login(client)
+    job = (
+        await (
+            await client.post("/api/cli-login/jobs", headers=first, json={"provider": "codex"})
+        ).json()
+    )["job_id"]
+    payload = {"current_password": "wrong", "new_password": "new-password-long", "code": "123456"}
+    assert (
+        await client.post("/api/auth/password-change", headers=second, json=payload)
+    ).status == 403
+    assert job not in fake.login_cancelled
+    payload["current_password"] = "good-password"
+    response = await client.post("/api/auth/password-change", headers=second, json=payload)
+    assert response.status == 200
+    assert job in fake.login_cancelled
+    assert client.app[STATE].sessions.count() == 1
+
+
+@pytest.mark.parametrize("action", ["logout", "password-change"])
+async def test_session_revocation_survives_cli_cancel_bridge_failure(site, action):
+    from ductor_bot.webchat.web.upstream import BridgeUnavailableError
+
+    client, _ = site
+    supplied, _ = await login(client)
+    bridge = client.app[STATE].bridge
+    original = bridge.request
+
+    async def request(method, path, **kwargs):
+        if path == "/cli-login/cancel-owner":
+            raise BridgeUnavailableError
+        return await original(method, path, **kwargs)
+
+    with patch.object(bridge, "request", side_effect=request):
+        response = await client.post(
+            "/api/auth/" + action,
+            headers=supplied,
+            json={
+                "current_password": "good-password",
+                "new_password": "new-password-long",
+                "code": "123456",
+            },
+        )
+    assert response.status == 200
+    assert (await client.get("/api/state", headers=supplied)).status == 403
+
+
+async def test_expired_cli_owner_is_recoverable_and_browser_cannot_forge_live_owners(site):
+    client, _ = site
+    first, _ = await login(client)
+    second, _ = await login(client)
+    job = (
+        await (
+            await client.post("/api/cli-login/jobs", headers=first, json={"provider": "codex"})
+        ).json()
+    )["job_id"]
+    forged = {**second, "X-Dtw-Owner": "fake", "X-Dtw-Active-Owners": "[]"}
+    state = await (await client.get("/api/cli-login/status", headers=forged)).json()
+    assert state["running"]
+    assert state["job_id"] is None
+    assert (await client.get(f"/api/cli-login/jobs/{job}", headers=second)).status == 404
+    sessions = client.app[STATE].sessions
+    token = first["Cookie"].split("=", 1)[1]
+    sessions.get(token).created -= ABSOLUTE_TTL + 1
+    state = await (await client.get("/api/cli-login/status", headers=second)).json()
+    assert state["running"]
+    assert state["job_id"] == job
+    assert (await client.get(f"/api/cli-login/jobs/{job}", headers=second)).status == 200
+    assert (await client.post(f"/api/cli-login/jobs/{job}/cancel", headers=second)).status == 202
+    assert (await client.get(f"/api/cli-login/jobs/{job}", headers=first)).status == 403

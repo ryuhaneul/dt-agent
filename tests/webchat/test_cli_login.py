@@ -468,7 +468,7 @@ async def test_web_login_rejects_single_key_input(rig):
     assert (error.value.status, error.value.code) == (400, "invalid_input")
 
 
-@pytest.mark.parametrize("value", ["1", "fake-onetime-code"])
+@pytest.mark.parametrize("value", ["1", "fake-onetime-code", "Successfully logged in"])
 async def test_readline_echo_stays_in_owner_output_without_logging(
     tmp_path, monkeypatch, caplog, value
 ):
@@ -497,10 +497,11 @@ async def test_readline_echo_stays_in_owner_output_without_logging(
         manager.send_input(job, OWNER, "line", value)
         await until(lambda: url in str(manager.get(job, OWNER)["output"]))
         result = manager.get(job, OWNER, after=before)
+        assert not manager._jobs[job].success_signal
         text = "".join(chunk["text"] for chunk in result["output"])
         assert text.splitlines()[0] in {value, "Paste code: " + value}
         assert url in text
-        assert result["urls"] == [url]
+        assert result["urls"] == []
         with pytest.raises(CliLoginError) as error:
             manager.get(job, "other-owner")
         assert error.value.status == 404
@@ -508,3 +509,218 @@ async def test_readline_echo_stays_in_owner_output_without_logging(
         assert url not in caplog.text
     finally:
         await manager.close()
+
+
+@pytest.mark.parametrize("provider", ["claude", "codex", "grok"])
+@pytest.mark.parametrize("mode", ["touch", "rewrite", "same_stat"])
+async def test_credential_content_decides_success_even_with_identical_metadata(rig, provider, mode):
+    make, env, slot = rig
+    path = (
+        slot / ".credentials.json"
+        if provider == "claude"
+        else Path(env[f"{provider.upper()}_HOME"]) / "auth.json"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("old-credential")
+    manager, _ = make(provider, mode)
+    job = start(manager, provider)
+    assert (await settled(manager, job))["state"] == (
+        "succeeded" if mode == "same_stat" else "failed"
+    )
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"), [("file_only", "succeeded"), ("fail_after_file", "failed")]
+)
+async def test_grok_requires_zero_exit_and_changed_content(rig, mode, expected):
+    make, _, _ = rig
+    manager, _ = make("grok", mode)
+    assert (await settled(manager, start(manager, "grok")))["state"] == expected
+
+
+@pytest.mark.parametrize(
+    ("provider", "marker"), [("claude", "Login successful"), ("codex", "Successfully logged in")]
+)
+@pytest.mark.parametrize(("echo", "cli_success"), [(False, False), (True, False), (True, True)])
+async def test_input_marker_cannot_supply_success_signal(rig, provider, marker, echo, cli_success):
+    make, _, _ = rig
+    manager, _ = make(provider, "echo_marker", echo=echo, cli_success=cli_success)
+    job = start(manager, provider)
+    await until(lambda: manager.get(job, OWNER)["needs_input"])
+    manager.send_input(job, OWNER, "line", marker + "-input")
+    result = await settled(manager, job)
+    assert result["state"] == ("succeeded" if cli_success else "failed")
+    if echo:
+        assert marker + "-input" in "".join(chunk["text"] for chunk in result["output"])
+
+
+@pytest.mark.parametrize(
+    ("provider", "host"),
+    [("claude", "claude.ai"), ("codex", "auth.openai.com"), ("grok", "accounts.x.ai")],
+)
+def test_login_urls_require_exact_provider_host(provider, host):
+    allowed = f"https://{host}/device?state=test"
+    text = "\n".join(
+        [
+            allowed,
+            f"https://sub.{host}/login",
+            f"https://{host}.example.com/login",
+            f"https://{host}@example.com/login",
+            f"https://example.com\\@{host}/login",
+            f"https://user@{host}/login",
+            "https://example.com/login",
+            "https://[malformed]/login",
+            *[
+                f"https://{other}/login"
+                for other in ("claude.ai", "auth.openai.com", "accounts.x.ai")
+                if other != host
+            ],
+        ]
+    )
+    assert parse_output(provider, text)["urls"] == [allowed]
+    assert parse_output(provider, allowed.replace("/device", "/oauth/long\ncontinuation"))[
+        "urls"
+    ] == [allowed.replace("/device", "/oauth/longcontinuation")]
+
+
+async def test_orphaned_job_is_claimed_only_after_owner_session_disappears(rig):
+    make, _, _ = rig
+    manager, _ = make()
+    job = start(manager, "codex")
+    assert manager.status("next", active_owners=frozenset({OWNER, "next"}))["job_id"] is None
+    with pytest.raises(CliLoginError):
+        manager.cancel(job, "next")
+    state = manager.status("next", active_owners=frozenset({"next"}))
+    assert state["running"]
+    assert state["job_id"] == job
+    assert manager.get(job, "next")["state"] == "running"
+    manager.cancel(job, "next")
+    await until(manager._jobs[job].task.done)
+    assert manager.get(job, "next")["state"] == "cancelled"
+    with pytest.raises(CliLoginError):
+        manager.get(job, OWNER)
+
+
+async def test_close_cancels_pending_probes_without_waiting_for_checker(rig):
+    make, _, _ = rig
+    manager, _ = make()
+    ready, release = threading.Event(), threading.Event()
+    calls = []
+
+    def checker(provider):
+        calls.append(provider)
+        ready.set()
+        release.wait(4)
+        return AuthResult(provider, AuthStatus.INSTALLED)
+
+    manager._auth_checker = checker
+    manager.status(OWNER)
+    await until(ready.is_set)
+    try:
+        await asyncio.wait_for(manager.close(), 0.5)
+        assert manager._refresh_task.cancelled()
+        assert calls == ["claude"]
+        assert manager._auth_pending == []
+    finally:
+        release.set()
+
+
+async def test_close_kills_running_native_probe_group(rig, tmp_path, monkeypatch):
+    from ductor_bot.webchat.cli_login import check_provider_auth
+
+    make, _, _ = rig
+    manager, _ = make()
+    manager._auth_checker = check_provider_auth
+    pid_file = tmp_path / "probe-pids"
+    monkeypatch.setattr(
+        "ductor_bot.webchat.cli_login._PROBE",
+        (
+            "import os,time; from pathlib import Path; "
+            f"child=os.fork(); Path({str(pid_file)!r}+str(child==0)).write_text(str(os.getpid())); "
+            "time.sleep(30)"
+        ),
+    )
+    manager.status(OWNER)
+    await until(lambda: all(Path(str(pid_file) + suffix).exists() for suffix in ("True", "False")))
+    process = manager._probe_process
+    pids = [int(Path(str(pid_file) + suffix).read_text()) for suffix in ("True", "False")]
+    await asyncio.wait_for(manager.close(), 0.5)
+    assert process.returncode is not None
+    for pid in pids:
+        stat = Path(f"/proc/{pid}/stat")
+        assert not stat.exists() or stat.read_text().split()[2] == "Z"
+
+
+@pytest.mark.parametrize(
+    "script", ["print('broken-json')", "raise SystemExit(3)", 'print(\'{"status":"wrong"}\')']
+)
+async def test_failed_native_probe_does_not_preserve_authenticated_cache(rig, monkeypatch, script):
+    from ductor_bot.webchat.cli_login import check_provider_auth
+
+    make, _, _ = rig
+    manager, _ = make()
+    manager._auth_checker = check_provider_auth
+    manager._auth["codex"] = AuthResult("codex", AuthStatus.AUTHENTICATED)
+    monkeypatch.setattr("ductor_bot.webchat.cli_login._PROBE", script)
+    manager.refresh_auth("codex")
+    await manager._refresh_task
+    assert manager.status(OWNER)["providers"]["codex"] is None
+
+
+@pytest.mark.parametrize("status", list(AuthStatus))
+async def test_native_probe_caches_only_reported_status(rig, monkeypatch, status):
+    from ductor_bot.webchat.cli_login import check_provider_auth
+
+    make, _, _ = rig
+    manager, _ = make()
+    manager._auth_checker = check_provider_auth
+    monkeypatch.setattr(
+        "ductor_bot.webchat.cli_login._PROBE",
+        f"print({json.dumps({'status': status.value})!r})",
+    )
+    manager.refresh_auth("codex")
+    await manager._refresh_task
+    assert manager._auth["codex"].status == status
+
+
+async def test_close_reaps_probe_cancelled_during_spawn(rig, monkeypatch):
+    from ductor_bot.webchat.cli_login import check_provider_auth
+
+    make, _, _ = rig
+    manager, _ = make()
+    manager._auth_checker = check_provider_auth
+    monkeypatch.setattr("ductor_bot.webchat.cli_login._PROBE", "import time; time.sleep(30)")
+    original = asyncio.create_subprocess_exec
+    ready, release = asyncio.Event(), asyncio.Event()
+    processes = []
+
+    async def spawn(*args, **kwargs):
+        process = await original(*args, **kwargs)
+        processes.append(process)
+        ready.set()
+        await release.wait()
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    manager.refresh_auth("codex")
+    await asyncio.wait_for(ready.wait(), 4)
+    closing = asyncio.create_task(manager.close())
+    await asyncio.sleep(0)
+    release.set()
+    await asyncio.wait_for(closing, 0.5)
+    assert processes[0].returncode is not None
+    with pytest.raises(ProcessLookupError):
+        os.killpg(processes[0].pid, 0)
+
+
+@pytest.mark.parametrize(
+    ("provider", "marker"), [("claude", "Login successful"), ("codex", "Successfully logged in")]
+)
+def test_unechoed_earlier_input_cannot_hide_later_marker_echo(provider, marker):
+    job = _Job("test", provider, OWNER)
+    job.input_echoes.extend(["raw-choice", marker + "-input"])
+    for byte in (marker + "-input\n").encode():
+        job.append(bytes([byte]))
+    assert not job.success_signal
+    job.append((marker + "\n").encode())
+    assert job.success_signal
