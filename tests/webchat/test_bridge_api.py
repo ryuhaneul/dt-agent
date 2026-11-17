@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import socket
 import stat
 import sys
@@ -3488,9 +3489,19 @@ async def test_cli_status_returns_ordered_slots_and_cache_without_auth_wait(cli_
             "provider": None,
             "job_id": None,
             "claude_slots": [
-                {"name": "claude-work", "priority": 1, "authenticated": True},
-                {"name": "claude", "priority": 2, "authenticated": False},
-                {"name": "claude-orphan", "priority": None, "authenticated": True},
+                {
+                    "name": "claude-work",
+                    "priority": 1,
+                    "authenticated": True,
+                    "auth_expired": False,
+                },
+                {"name": "claude", "priority": 2, "authenticated": False, "auth_expired": False},
+                {
+                    "name": "claude-orphan",
+                    "priority": None,
+                    "authenticated": True,
+                    "auth_expired": False,
+                },
             ],
         }
     finally:
@@ -3498,6 +3509,42 @@ async def test_cli_status_returns_ordered_slots_and_cache_without_auth_wait(cli_
     await manager._refresh_task
     result = await (await client.get(f"{_PREFIX}/cli-login/status", headers=cli_headers())).json()
     assert set(result["providers"].values()) == {"authenticated"}
+
+
+async def test_cli_slot_expiration_tracks_rotation_fingerprint(cli_bridge):
+    from ductor_bot.cli.claude_accounts import SlotRegistry, SlotSnapshot, state_file_path
+    from ductor_bot.cli.claude_slots import overview
+
+    client, bot, _, paths, _ = cli_bridge
+    bot.config.claude_accounts = ["claude-work"]
+    directory = paths.ductor_home / ".cli-auth/claude-work"
+    directory.mkdir()
+    credentials = directory / ".credentials.json"
+    credentials.write_text("fake expired credentials")
+    registry = SlotRegistry(state_file_path(paths.ductor_home))
+    registry.save(
+        SlotSnapshot(auth_failures={"claude-work": registry.credential_mtimes("claude-work")})
+    )
+    state_before = registry.state_path.read_bytes()
+    config_before = list(bot.config.claude_accounts)
+    for changed in (False, True):
+        if changed:
+            stamp = credentials.stat().st_mtime_ns + 1_000_000
+            os.utime(credentials, ns=(stamp, stamp))
+        response = await client.get(f"{_PREFIX}/cli-login/status", headers=cli_headers())
+        slot = (await response.json())["claude_slots"][0]
+        assert slot == {
+            "name": "claude-work",
+            "priority": 1,
+            "authenticated": True,
+            "auth_expired": not changed,
+        }
+        assert (
+            slot["auth_expired"]
+            == overview(paths.ductor_home, bot.config)["slots"][0]["auth_expired"]
+        )
+    assert registry.state_path.read_bytes() == state_before
+    assert bot.config.claude_accounts == config_before
 
 
 @pytest.mark.parametrize(
@@ -3636,8 +3683,26 @@ async def test_cli_status_empty_config_still_lists_default_slot(cli_bridge):
     bot.config.claude_accounts = []
     response = await client.get(f"{_PREFIX}/cli-login/status", headers=cli_headers())
     assert (await response.json())["claude_slots"] == [
-        {"name": "claude", "priority": 1, "authenticated": False}
+        {"name": "claude", "priority": 1, "authenticated": False, "auth_expired": False}
     ]
+
+
+async def test_cli_status_default_slot_excluded_from_nonempty_priority(cli_bridge):
+    client, bot, _, paths, _ = cli_bridge
+    bot.config.claude_accounts = ["claude-work"]
+    default = paths.ductor_home / ".cli-auth/claude"
+    default.mkdir(exist_ok=True)
+    (default / ".credentials.json").write_text("fake")
+    response = await client.get(f"{_PREFIX}/cli-login/status", headers=cli_headers())
+    slots = (await response.json())["claude_slots"]
+    assert slots[0]["name"] == "claude-work"
+    assert slots[0]["priority"] == 1
+    assert slots[1] == {
+        "name": "claude",
+        "priority": None,
+        "authenticated": True,
+        "auth_expired": False,
+    }
 
 
 async def test_cli_cancel_acknowledges_before_five_second_child_cleanup(cli_bridge):

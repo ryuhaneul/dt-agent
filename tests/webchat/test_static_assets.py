@@ -2070,7 +2070,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 const {source,ids}=JSON.parse(fs.readFileSync(0,'utf8'));
-let focus=null,language='ko',timerId=0,resumeJob=false;const fakeSlots=[{name:'claude',authenticated:true}];const timers=new Map(),calls=[],events={},statusReplies=[];const providerStates={claude:'authenticated',codex:'installed',grok:'installed'};
+let focus=null,language='ko',timerId=0,resumeJob=false;const fakeSlots=[{name:'claude',priority:1,authenticated:true},{name:'claude-empty',priority:2,authenticated:false},{name:'claude-expired',priority:3,authenticated:true,auth_expired:true},{name:'claude-unused',priority:null,authenticated:true,auth_expired:true}];const timers=new Map(),calls=[],events={},statusReplies=[];const providerStates={claude:'authenticated',codex:'installed',grok:'installed'};
 class Element {
  constructor(id=''){this.id=id;this.value='';this.hidden=false;this.disabled=false;this.open=false;this.children=[];this.listeners={};this.dataset={};this.textContent='';this.classList={toggle(){}}}
  addEventListener(name,fn){(this.listeners[name]??=[]).push(fn)}
@@ -2102,6 +2102,15 @@ for(const module of [api,i18n]){await module.link(()=>{});await module.evaluate(
 const module=new vm.SourceTextModule(source,{context});await module.link(name=>name==='./api.js'?api:i18n);await module.evaluate();
 const flush=async()=>{for(let i=0;i<8;i++)await new Promise(setImmediate)};
 module.namespace.initCliLogin();module.namespace.openCliLogin();await flush();
+const rows=get('cliProviders').children[0].children[1].children;
+for(const [index,state] of ['authenticated','unauthenticated','expired','unused'].entries()){
+ assert.equal(rows[index].children[1].textContent,'ko:cli_login.'+state);
+ assert.equal(rows[index].children[1].className,'badge '+(index===0?'badge-ok':index===2?'badge-warn':'badge-off'));
+ assert.equal(rows[index].children[2].textContent,'ko:cli_login.'+(index===1?'login':'relogin'));
+}
+await rows[3].children[2].emit('click');await get('cliConfirmYes').emit('click');await flush();
+assert.deepEqual(calls.filter(call=>call.path==='/cli-login/jobs').at(-1).options.body,{provider:'claude',slot:'claude-unused',new_slot:false});
+current.state='cancelled';get('cliLoginDlg').close();fakeSlots.splice(1);module.namespace.openCliLogin();await flush();
 const stableProvider=get('cliProviders').children[0];language='en';events['language-changed']();
 assert.equal(get('cliProviders').children[0],stableProvider,'translation must preserve account control nodes');language='ko';events['language-changed']();
 assert.equal(get('cliProviders').children.length,3);

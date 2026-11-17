@@ -18,9 +18,11 @@ from aiohttp import ClientError, web
 from ductor_bot.chat_log.history import InvalidSelectorButtonError, SelectorConflictError
 from ductor_bot.chat_log.ids import from_tid
 from ductor_bot.cli.claude_accounts import (
+    SlotRegistry,
     host_cli_auth_dir,
     host_slot_config_dir,
     slot_is_authenticated,
+    state_file_path,
 )
 from ductor_bot.config import resolve_user_timezone
 from ductor_bot.i18n import LANGUAGES
@@ -746,9 +748,11 @@ def _register_cli_login_routes(app: web.Application, bot: TelegramBot) -> None: 
                         and entry.name not in names
                     ):
                         names.append(entry.name)
+        snapshot = SlotRegistry(state_file_path(paths.ductor_home)).load()
         return [
             {
                 "name": name,
+                "auth_expired": name in snapshot.auth_failures,
                 "priority": priority.index(name) + 1 if name in priority else None,
                 "authenticated": slot_is_authenticated(
                     host_slot_config_dir(paths.ductor_home, name)

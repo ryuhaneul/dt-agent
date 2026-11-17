@@ -34,9 +34,9 @@ export function initCliLogin() {
     element.type = 'button'; element.disabled = busy || loading || Boolean(status?.running);
     element.addEventListener('click', callback); return element;
   }
-  function badge(authenticated) {
-    const key = authenticated === null ? 'cli_login.checking' : authenticated ? 'cli_login.authenticated' : 'cli_login.unauthenticated';
-    const element = node('span', `badge ${authenticated ? 'badge-ok' : 'badge-off'}`, t(key));
+  function badge(authenticated, state = null) {
+    const key = state ? `cli_login.${state}` : authenticated === null ? 'cli_login.checking' : authenticated ? 'cli_login.authenticated' : 'cli_login.unauthenticated';
+    const element = node('span', `badge ${state === 'expired' ? 'badge-warn' : !state && authenticated ? 'badge-ok' : 'badge-off'}`, t(key));
     element.dataset.i18n = key; return element;
   }
   function renderAccounts() {
@@ -61,7 +61,8 @@ export function initCliLogin() {
           const row = node('div', 'cli-slot');
           const name = node('span', 'cli-slot-name mono', slot.name === 'claude' ? t('cli_login.default_slot') : slot.name);
           if (slot.name === 'claude') name.dataset.i18n = 'cli_login.default_slot';
-          row.append(name, badge(slot.authenticated),
+          const state = slot.priority == null ? 'unused' : slot.auth_expired ? 'expired' : null;
+          row.append(name, badge(slot.authenticated, state),
             button(slot.authenticated ? 'cli_login.relogin' : 'cli_login.login', () => askStart({ provider, slot: slot.name, new_slot: false }), !slot.authenticated));
           slots.append(row);
         });
