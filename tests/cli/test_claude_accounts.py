@@ -528,10 +528,17 @@ _AUTH_EXPIRED = (
     "text",
     [
         _AUTH_EXPIRED,
+        _AUTH_EXPIRED.upper(),
+        _AUTH_EXPIRED + "\r\n",
+        "Warning: configuration notice\r\n" + _AUTH_EXPIRED,
         _AUTH_EXPIRED.replace("claude auth login", "`claude auth login`").replace(
             "claude setup-token", "`claude setup-token`"
         ),
         "Login expired · Please run /login",
+        "\x1b[31mLogin expired · Please run /login\x1b[0m",
+        "Error: Failed to authenticate: OAuth token revoked. Please log in again",
+        "API Error: 401 Failed to authenticate: OAuth token revoked. Please log in again",
+        "   Not logged in · Please run /login",
         "Login reached its time limit · Please run /login",
         "OAuth token revoked · Please run /login",
         "Failed to authenticate: OAuth token revoked. Please log in again or contact your administrator.",

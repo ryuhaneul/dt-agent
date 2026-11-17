@@ -139,8 +139,11 @@ def detect_rate_limit(
 # Claude Code 2.1.326 auth error text (installed CLI's embedded JavaScript).
 # Match only diagnostics that require signing in again, not transient refresh,
 # network, disk, gateway, MCP, or external API-key errors.
+# Allow CLI decorations and error prefixes without backtracking through them.
 _AUTH_FAILURE_TOKENS = re.compile(
-    r"^(?:"
+    r"^(?:[ \t]|\x1b\[[0-9;]*+m)*+"
+    r"(?:(?:Error:|API Error:[ \t]++[0-9]++)(?:[ \t]|\x1b\[[0-9;]*+m)*+)?+"
+    r"(?:"
     r"Failed to authenticate: this login reached its time limit"
     r"(?: and cannot be renewed\.| · Sign in again to continue)|"
     r"Failed to authenticate: OAuth token revoked\. Please log in again|"
