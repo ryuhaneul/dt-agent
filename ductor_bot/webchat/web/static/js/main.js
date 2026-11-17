@@ -1,3 +1,4 @@
+import { initCliLogin } from './cli-login.js';
 import { initAccount } from './account.js';
 import { initManage } from './manage.js';
 import { initFiles } from './files.js';
@@ -17,6 +18,7 @@ async function start() {
     initChat();
     initManage();
     initFiles();
+    initCliLogin();
     initAccount();
     await initAuth();
   } catch { notify('error.bot_unreachable'); }

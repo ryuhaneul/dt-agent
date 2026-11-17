@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -30,6 +30,7 @@ class BridgeClient:
         path: str,
         *,
         body: bytes | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> tuple[int, dict[str, Any]]:
         resource = path.partition("?")[0]
         topic_mutation = (method == "POST" and resource == "/topics") or (
@@ -53,7 +54,7 @@ class BridgeClient:
                 method,
                 self._url + path,
                 data=body,
-                headers={**self._headers, "Content-Type": "application/json"},
+                headers={**self._headers, **(headers or {}), "Content-Type": "application/json"},
                 allow_redirects=False,
                 timeout=timeout,
             ) as response:

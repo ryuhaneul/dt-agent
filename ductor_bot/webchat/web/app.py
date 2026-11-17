@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import hmac
 import json
+import secrets
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
@@ -63,6 +64,7 @@ class WebState:
     sockets: dict[web.WebSocketResponse, str] = field(default_factory=dict)
     bridge: BridgeClient = field(init=False)
     validated: dict[str, float] = field(default_factory=dict)
+    owner_key: bytes = field(default_factory=lambda: secrets.token_bytes(32), repr=False)
 
     def checked_session(self, token: str, data: dict[str, Any]) -> Session | None:
         session = self.sessions.get(token, touch=False)
@@ -316,7 +318,14 @@ async def relay(request: web.Request) -> web.Response:
     path = request.rel_url.raw_path.removeprefix("/api")
     if request.query_string:
         path += "?" + request.rel_url.raw_query_string
-    status, data = await state.bridge.request(request.method, path, body=body)
+    if request.path.startswith("/api/cli-login/"):
+        token = request.cookies.get(SESSION_COOKIE, "")
+        owner = hmac.digest(state.owner_key, token.encode(), "sha256").hex()
+        status, data = await state.bridge.request(
+            request.method, path, body=body, headers={"X-Dtw-Owner": owner}
+        )
+    else:
+        status, data = await state.bridge.request(request.method, path, body=body)
     if request.path == "/api/state" and status == 200:
         data.update({"bot": {"up": True}, "web_sessions": state.sessions.count()})
     return web.json_response(data, status=status)
@@ -417,6 +426,11 @@ def create_app(
     app.router.add_get("/api/ws", websocket)
     app.router.add_get("/api/state", relay)
     for path, methods in (
+        ("/cli-login/status", ("GET",)),
+        ("/cli-login/jobs", ("POST",)),
+        ("/cli-login/jobs/{id}", ("GET",)),
+        ("/cli-login/jobs/{id}/input", ("POST",)),
+        ("/cli-login/jobs/{id}/cancel", ("POST",)),
         ("/commands", ("GET",)),
         ("/topics", ("GET", "POST")),
         ("/topics/{tid}", ("PATCH", "DELETE")),

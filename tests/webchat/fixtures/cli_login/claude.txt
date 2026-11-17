@@ -1,0 +1,3 @@
+Opening browser to sign in…
+If the browser didn't open, visit: https://[MASKED_URL]
+Paste code here if prompted >

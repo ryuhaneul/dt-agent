@@ -1,0 +1,12 @@
+
+To sign in, open this URL in your browser:
+
+  https://[MASKED_URL]
+
+Confirm this code in your browser:
+
+  VE54-[MASKED_CODE]
+
+Only continue with a code you requested. Don't share it with anyone.
+
+Waiting for authorization...

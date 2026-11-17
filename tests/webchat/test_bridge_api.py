@@ -3370,3 +3370,304 @@ async def test_lock_free_task_selector_runs_during_a_turn(conversation, monkeypa
         assert result["selector_revision"] == 1
         lower.assert_awaited_once_with(h.bot._orch.task_hub, h.key.chat_id, "tsc:r")
         h.bot.bot_instance.edit_message_text.assert_awaited_once()
+
+
+async def test_cli_login_status_route_requires_owner(bridge):
+    client, *_ = bridge
+    response = await client.get(f"{_PREFIX}/cli-login/status", headers=headers())
+    assert response.status == 403
+    assert "WWW-Authenticate" not in response.headers
+
+
+@pytest.fixture
+async def cli_bridge(bridge, tmp_path, monkeypatch):
+    from ductor_bot.cli.auth import AuthResult, AuthStatus
+    from ductor_bot.webchat.bridge import CLI_LOGIN
+
+    client, bot, runtime, paths = bridge
+    manager = client.server.app[CLI_LOGIN]
+    binary = tmp_path / "fake-cli-bin"
+    binary.mkdir()
+    for provider in ("claude", "codex", "grok"):
+        executable = binary / provider
+        executable.write_text(
+            "#!" + sys.executable + "\n"
+            "import os,time,tty,signal\n"
+            "from pathlib import Path\n"
+            "tty.setraw(0)\n"
+            "if os.environ.get('FAKE_STUBBORN'): signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
+            "print('https://fake.invalid/login?secret=terminal-output-canary',flush=True)\n"
+            "print('Paste code here if prompted >',flush=True)\n"
+            "data=os.read(0,4096)\n"
+            "Path(os.environ['FAKE_INPUT']).write_bytes(data)\n"
+            "while True: time.sleep(.05)\n"
+        )
+        executable.chmod(0o700)
+    manager._env = {
+        "PATH": str(binary),
+        "HOME": str(tmp_path),
+        "CODEX_HOME": str(tmp_path / "codex"),
+        "GROK_HOME": str(tmp_path / "grok"),
+        "FAKE_INPUT": str(tmp_path / "input.bin"),
+    }
+    manager._auth_checker = lambda provider: AuthResult(provider, AuthStatus.INSTALLED)
+    monkeypatch.setattr(
+        "ductor_bot.webchat.cli_login.container_slot_config_dir",
+        lambda slot: str(paths.ductor_home / ".cli-auth" / slot),
+    )
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    paths.config_path.write_text('{"claude_accounts":["claude"]}')
+    bot.config.claude_accounts = ["claude"]
+    (paths.ductor_home / ".cli-auth/claude").mkdir(parents=True)
+    return client, bot, runtime, paths, manager
+
+
+def cli_headers(owner="owner-one"):
+    return {**headers(), "X-Dtw-Owner": owner}
+
+
+async def cli_poll(client, job, *, owner="owner-one", finished=False):
+    for _ in range(300):
+        response = await client.get(f"{_PREFIX}/cli-login/jobs/{job}", headers=cli_headers(owner))
+        result = await response.json()
+        if result.get("state") != "running" if finished else bool(result.get("output")):
+            return result
+        await asyncio.sleep(0.01)
+    pytest.fail("fake CLI job did not reach expected state")
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("GET", "status"),
+        ("POST", "jobs"),
+        ("GET", "jobs/unknown"),
+        ("POST", "jobs/unknown/input"),
+        ("POST", "jobs/unknown/cancel"),
+    ],
+)
+async def test_cli_bridge_all_routes_require_bridge_token_and_owner(cli_bridge, method, path):
+    client, *_ = cli_bridge
+    for supplied in ({}, headers(), {"X-Dtw-Owner": "owner-one"}):
+        response = await client.request(
+            method, f"{_PREFIX}/cli-login/{path}", headers=supplied, json={}
+        )
+        assert response.status == 403
+        assert "WWW-Authenticate" not in response.headers
+
+
+async def test_cli_status_returns_ordered_slots_and_cache_without_auth_wait(cli_bridge):
+    client, bot, _, paths, manager = cli_bridge
+    ready = threading.Event()
+    release = threading.Event()
+
+    def slow(provider):
+        from ductor_bot.cli.auth import AuthResult, AuthStatus
+
+        ready.set()
+        assert release.wait(4)
+        return AuthResult(provider, AuthStatus.AUTHENTICATED)
+
+    manager._auth_checker = slow
+    bot.config.claude_accounts = ["claude-work", "claude"]
+    root = paths.ductor_home / ".cli-auth"
+    (root / "claude-work").mkdir()
+    (root / "claude-work/credentials.json").write_text("fake")
+    (root / "claude-orphan").mkdir()
+    (root / "claude-orphan/.credentials.json").write_text("fake")
+    (root / "claude-slots").mkdir()
+    try:
+        response = await asyncio.wait_for(
+            client.get(f"{_PREFIX}/cli-login/status", headers=cli_headers()), 0.5
+        )
+        result = await response.json()
+        assert result == {
+            "providers": dict.fromkeys(("claude", "codex", "grok")),
+            "running": False,
+            "provider": None,
+            "job_id": None,
+            "claude_slots": [
+                {"name": "claude-work", "priority": 1, "authenticated": True},
+                {"name": "claude", "priority": 2, "authenticated": False},
+                {"name": "claude-orphan", "priority": None, "authenticated": True},
+            ],
+        }
+    finally:
+        release.set()
+    await manager._refresh_task
+    result = await (await client.get(f"{_PREFIX}/cli-login/status", headers=cli_headers())).json()
+    assert set(result["providers"].values()) == {"authenticated"}
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        [],
+        {},
+        {"provider": "shell"},
+        {"provider": "gemini"},
+        {"provider": 7},
+        {"provider": "codex", "slot": 1},
+        {"provider": "claude", "slot": "../escape"},
+        {"provider": "claude", "slot": "work", "new_slot": "yes"},
+    ],
+)
+async def test_cli_start_rejects_invalid_payloads(cli_bridge, body):
+    client, *_ = cli_bridge
+    response = await client.post(f"{_PREFIX}/cli-login/jobs", headers=cli_headers(), json=body)
+    assert response.status == 400
+
+
+async def test_cli_bridge_job_input_sequence_owner_conflict_cancel_and_no_recording(
+    cli_bridge, caplog
+):
+    client, _, runtime, paths, manager = cli_bridge
+    caplog.set_level(logging.DEBUG)
+    created = await client.post(
+        f"{_PREFIX}/cli-login/jobs", headers=cli_headers(), json={"provider": "codex"}
+    )
+    assert created.status == 202
+    job = (await created.json())["job_id"]
+    snapshot = await cli_poll(client, job)
+    assert snapshot["urls"] == ["https://fake.invalid/login?secret=terminal-output-canary"]
+    assert snapshot["needs_input"]
+    after = await client.get(
+        f"{_PREFIX}/cli-login/jobs/{job}?after={snapshot['seq']}", headers=cli_headers()
+    )
+    assert (await after.json())["output"] == []
+    for query in ("-1", "not-an-integer"):
+        assert (
+            await client.get(f"{_PREFIX}/cli-login/jobs/{job}?after={query}", headers=cli_headers())
+        ).status == 400
+    conflict = await client.post(
+        f"{_PREFIX}/cli-login/jobs", headers=cli_headers("owner-two"), json={"provider": "grok"}
+    )
+    assert conflict.status == 409
+    assert await conflict.json() == {"error": "login_running"}
+    for owner, expected in (("owner-one", job), ("owner-two", None)):
+        response = await client.get(f"{_PREFIX}/cli-login/status", headers=cli_headers(owner))
+        assert (await response.json())["job_id"] == expected
+    for method, suffix, body in (
+        ("GET", "", None),
+        ("POST", "/input", {"kind": "line", "value": "other-owner-input"}),
+        ("POST", "/cancel", None),
+    ):
+        response = await client.request(
+            method,
+            f"{_PREFIX}/cli-login/jobs/{job}{suffix}",
+            headers=cli_headers("owner-two"),
+            json=body,
+        )
+        assert response.status == 404
+    invalid_other = await client.get(
+        f"{_PREFIX}/cli-login/jobs/{job}?after=bad",
+        headers=cli_headers("owner-two"),
+    )
+    assert invalid_other.status == 404
+    sent = await client.post(
+        f"{_PREFIX}/cli-login/jobs/{job}/input",
+        headers=cli_headers(),
+        json={"kind": "line", "value": "input-never-log-canary"},
+    )
+    assert sent.status == 200
+    assert await sent.json() == {"ok": True}
+    for _ in range(100):
+        if (paths.ductor_home / "input.bin").exists():
+            break
+        await asyncio.sleep(0.01)
+    assert (paths.ductor_home / "input.bin").read_bytes() == b"input-never-log-canary\r"
+    canceled = await client.post(f"{_PREFIX}/cli-login/jobs/{job}/cancel", headers=cli_headers())
+    assert canceled.status == 202
+    assert (await cli_poll(client, job, finished=True))["state"] == "cancelled"
+    assert "input-never-log-canary" not in caplog.text
+    assert "terminal-output-canary" not in caplog.text
+    runtime.outbox.pending.assert_not_awaited()
+    assert not paths.chat_log_dir.exists()
+    assert manager._jobs[job].process is None
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"kind": "line", "value": ""},
+        {"kind": "key", "value": "1"},
+        {"kind": "key", "value": "10"},
+        {"kind": [], "value": "x"},
+        {"kind": "key", "value": 1},
+    ],
+)
+async def test_cli_input_invalid_contract(cli_bridge, body):
+    client, *_ = cli_bridge
+    created = await client.post(
+        f"{_PREFIX}/cli-login/jobs", headers=cli_headers(), json={"provider": "codex"}
+    )
+    job = (await created.json())["job_id"]
+    await cli_poll(client, job)
+    response = await client.post(
+        f"{_PREFIX}/cli-login/jobs/{job}/input", headers=cli_headers(), json=body
+    )
+    assert response.status == 400
+
+
+async def test_cli_slot_request_reaches_preparation_and_shutdown_cleans_it(cli_bridge):
+    client, _, _, paths, manager = cli_bridge
+    response = await client.post(
+        f"{_PREFIX}/cli-login/jobs",
+        headers=cli_headers(),
+        json={"provider": "claude", "slot": "web", "new_slot": True},
+    )
+    assert response.status == 202
+    job = (await response.json())["job_id"]
+    await cli_poll(client, job)
+    directory = paths.ductor_home / ".cli-auth/claude-web"
+    assert directory.is_dir()
+    assert manager._slots is not None
+    process = manager._jobs[job].process
+    await client.close()
+    assert process.returncode is not None
+    assert not directory.exists()
+    assert manager._closed
+
+
+async def test_cli_status_empty_config_still_lists_default_slot(cli_bridge):
+    client, bot, _, _, _ = cli_bridge
+    bot.config.claude_accounts = []
+    response = await client.get(f"{_PREFIX}/cli-login/status", headers=cli_headers())
+    assert (await response.json())["claude_slots"] == [
+        {"name": "claude", "priority": 1, "authenticated": False}
+    ]
+
+
+async def test_cli_cancel_acknowledges_before_five_second_child_cleanup(cli_bridge):
+    client, _, _, _, manager = cli_bridge
+    manager._env["FAKE_STUBBORN"] = "1"
+    response = await client.post(
+        f"{_PREFIX}/cli-login/jobs", headers=cli_headers(), json={"provider": "codex"}
+    )
+    job = (await response.json())["job_id"]
+    await cli_poll(client, job)
+    response = await asyncio.wait_for(
+        client.post(f"{_PREFIX}/cli-login/jobs/{job}/cancel", headers=cli_headers()), 0.5
+    )
+    assert response.status == 202
+    assert not manager._jobs[job].task.done()
+    assert (
+        await client.get(f"{_PREFIX}/cli-login/jobs/{job}", headers=cli_headers())
+    ).status == 200
+    await asyncio.wait_for(manager._jobs[job].task, 7)
+    assert manager.get(job, "owner-one")["state"] == "cancelled"
+
+
+@pytest.mark.parametrize(
+    ("method", "suffix"), [("GET", ""), ("POST", "/input"), ("POST", "/cancel")]
+)
+async def test_cli_unknown_jobs_return_json_404(cli_bridge, method, suffix):
+    client, *_ = cli_bridge
+    response = await client.request(
+        method,
+        f"{_PREFIX}/cli-login/jobs/unknown{suffix}",
+        headers=cli_headers(),
+        json={"kind": "line", "value": "1"},
+    )
+    assert response.status == 404
+    assert await response.json() == {"error": "login_not_found"}

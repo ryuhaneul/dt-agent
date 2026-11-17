@@ -17,6 +17,11 @@ from aiohttp import ClientError, web
 
 from ductor_bot.chat_log.history import InvalidSelectorButtonError, SelectorConflictError
 from ductor_bot.chat_log.ids import from_tid
+from ductor_bot.cli.claude_accounts import (
+    host_cli_auth_dir,
+    host_slot_config_dir,
+    slot_is_authenticated,
+)
 from ductor_bot.config import resolve_user_timezone
 from ductor_bot.i18n import LANGUAGES
 from ductor_bot.i18n.loader import TranslationStore
@@ -37,6 +42,8 @@ from ductor_bot.messenger.telegram.callbacks import (
 )
 from ductor_bot.text.response_format import stop_text
 from ductor_bot.webchat.auth import AuthError, BridgeAuth
+from ductor_bot.webchat.cli_login import CliLoginError, CliLoginManager
+from ductor_bot.webchat.cli_login_slots import ClaudeLoginSlots, resolve_slot_name
 from ductor_bot.webchat.commands import (
     CommandResponse,
     WebCommandBusyError,
@@ -57,6 +64,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _PREFIX = "/webchat/v1"
+CLI_LOGIN = web.AppKey("cli_login_manager", CliLoginManager)
 
 
 def create_bridge_app(  # noqa: C901
@@ -132,6 +140,7 @@ def create_bridge_app(  # noqa: C901
     app.router.add_get(f"{_PREFIX}/state", state)
     _register_conversation_routes(app, bot, runtime)
     _register_file_routes(app, bot, runtime)
+    _register_cli_login_routes(app, bot)
     return app
 
 
@@ -705,6 +714,95 @@ def _register_file_routes(app: web.Application, bot: TelegramBot, runtime: ChatL
     app.router.add_get(f"{_PREFIX}/files", listing)
     app.router.add_get(f"{_PREFIX}/files/{{name}}", file)
     app.router.add_put(f"{_PREFIX}/files/{{name}}", file)
+
+
+def _register_cli_login_routes(app: web.Application, bot: TelegramBot) -> None:  # noqa: C901
+    paths = bot._orch.paths
+    manager = CliLoginManager(
+        startup_providers=getattr(bot._orch, "available_providers", frozenset()),
+        slots=ClaudeLoginSlots(paths),
+    )
+    app[CLI_LOGIN] = manager
+
+    async def close(_app: web.Application) -> None:
+        await manager.close()
+
+    app.on_cleanup.append(close)
+
+    def claude_slots() -> list[dict[str, object]]:
+        priority: list[str] = []
+        for name in bot.config.claude_accounts or ["claude"]:
+            with contextlib.suppress(ValueError):
+                if resolve_slot_name(name) == name and name not in priority:
+                    priority.append(name)
+        names = priority.copy()
+        directory = host_cli_auth_dir(paths.ductor_home)
+        if directory.is_dir():
+            for entry in sorted(directory.iterdir()):
+                with contextlib.suppress(ValueError):
+                    if (
+                        entry.is_dir()
+                        and resolve_slot_name(entry.name) == entry.name
+                        and entry.name not in names
+                    ):
+                        names.append(entry.name)
+        return [
+            {
+                "name": name,
+                "priority": priority.index(name) + 1 if name in priority else None,
+                "authenticated": slot_is_authenticated(
+                    host_slot_config_dir(paths.ductor_home, name)
+                ),
+            }
+            for name in names
+        ]
+
+    async def handle(request: web.Request) -> web.Response:  # noqa: PLR0911
+        owner = request.headers.get("X-Dtw-Owner", "")
+        if not owner:
+            return _error("forbidden", 403)
+        resource = request.path.removeprefix(f"{_PREFIX}/cli-login")
+        try:
+            if resource == "/status":
+                return web.json_response({**manager.status(owner), "claude_slots": claude_slots()})
+            if resource == "/jobs":
+                data = await _body(request)
+                provider, slot = data.get("provider"), data.get("slot")
+                new_slot = data.get("new_slot", False)
+                if (
+                    not isinstance(provider, str)
+                    or (slot is not None and not isinstance(slot, str))
+                    or not isinstance(new_slot, bool)
+                ):
+                    return _error("invalid_login", 400)
+                job = manager.start(provider, owner, slot=slot, new_slot=new_slot)
+                return web.json_response({"job_id": job}, status=202)
+            job = request.match_info["id"]
+            if request.method in {"GET", "HEAD"}:
+                try:
+                    after = int(request.query.get("after", "0"))
+                except ValueError:
+                    after = -1
+                # The manager checks ownership before reporting a bad sequence.
+                return web.json_response(manager.get(job, owner, after=after))
+            if request.match_info["action"] == "input":
+                # Establish ownership before parsing or acting on submitted input.
+                manager.get(job, owner)
+                data = await _body(request)
+                kind, value = data.get("kind"), data.get("value")
+                if not isinstance(kind, str) or kind != "line" or not isinstance(value, str):
+                    return _error("invalid_input", 400)
+                manager.send_input(job, owner, kind, value)
+                return web.json_response({"ok": True})
+            manager.cancel(job, owner)
+            return web.json_response({"ok": True}, status=202)
+        except CliLoginError as exc:
+            return _error(exc.code, exc.status)
+
+    app.router.add_get(f"{_PREFIX}/cli-login/status", handle)
+    app.router.add_post(f"{_PREFIX}/cli-login/jobs", handle)
+    app.router.add_get(f"{_PREFIX}/cli-login/jobs/{{id}}", handle)
+    app.router.add_post(f"{_PREFIX}/cli-login/jobs/{{id}}/{{action:input|cancel}}", handle)
 
 
 async def start_bridge(bot: TelegramBot, runtime: ChatLogRuntime) -> Callable[[], Awaitable[None]]:

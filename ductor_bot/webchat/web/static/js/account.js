@@ -1,4 +1,5 @@
 import { api, setCsrf } from './api.js';
+import { openCliLogin } from './cli-login.js';
 import { t } from './i18n.js';
 import { beginCredentialChange, finishCredentialChange } from './ws.js';
 
@@ -39,6 +40,7 @@ export function initAccount() {
   menu.addEventListener('keydown', event => {
     if (event.key === 'Escape') { closeMenu(); button.focus(); }
   });
+  document.querySelector('#openCliLogin').addEventListener('click', () => { closeMenu(); openCliLogin(); });
   document.querySelector('#openPw').addEventListener('click', () => {
     closeMenu();
     if (busy) return;

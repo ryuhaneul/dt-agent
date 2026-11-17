@@ -1369,7 +1369,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 const {source}=JSON.parse(fs.readFileSync(0,'utf8'));
-const ids=['accountButton','accountMenu','pwDialog','changeForm','pwNotice','pwSubmit','currentPw','newPw','confirmPw','currentTotp','pwGuide','openPw','closePw'];
+const ids=['accountButton','accountMenu','pwDialog','changeForm','pwNotice','pwSubmit','currentPw','newPw','confirmPw','currentTotp','pwGuide','openPw','closePw','openCliLogin'];
 const elements=new Map(ids.map(id=>[id,{id,value:'',hidden:false,listeners:{},attributes:{},
  addEventListener(type,fn){this.listeners[type]=fn},setAttribute(k,v){this.attributes[k]=v},removeAttribute(k){delete this.attributes[k]},focus(){focused=id},
  querySelector(){return elements.get('openPw')},querySelectorAll(){return inputs},reportValidity(){return true},
@@ -1384,8 +1384,9 @@ const api=new vm.SyntheticModule(['api','setCsrf'],function(){
 },{context});
 const i18n=new vm.SyntheticModule(['t'],function(){this.setExport('t',(key,values={})=>key+(key==='account.locked'&&values.seconds?`:${values.seconds}`:''))},{context});
 const ws=new vm.SyntheticModule(['beginCredentialChange','finishCredentialChange'],function(){this.setExport('beginCredentialChange',()=>order.push('begin'));this.setExport('finishCredentialChange',success=>order.push(`finish:${success}`))},{context});
-for(const module of [api,i18n,ws]){await module.link(()=>{});await module.evaluate()}
-const module=new vm.SourceTextModule(source,{context});await module.link(name=>name==='./api.js'?api:name==='./i18n.js'?i18n:ws);await module.evaluate();module.namespace.initAccount();
+const cli=new vm.SyntheticModule(['openCliLogin'],function(){this.setExport('openCliLogin',()=>{})},{context});
+for(const module of [api,i18n,ws,cli]){await module.link(()=>{});await module.evaluate()}
+const module=new vm.SourceTextModule(source,{context});await module.link(name=>name==='./api.js'?api:name==='./i18n.js'?i18n:name==='./cli-login.js'?cli:ws);await module.evaluate();module.namespace.initAccount();
 const fill=(next='changed-password',confirmation=next)=>{get('currentPw').value='current-password';get('newPw').value=next;get('confirmPw').value=confirmation;get('currentTotp').value='123456'};
 const submit=()=>get('changeForm').listeners.submit({preventDefault(){}});
 get('openPw').listeners.click();assert.equal(focused,'currentPw');
@@ -1480,7 +1481,7 @@ for (const outcome of ['authenticated', 'anonymous', 'bridge-down', 'network-err
   await module.link(async name=>{
     const exports=name==='./router.js'?['initRouter','renderRoute']
       :name==='./auth.js'?['initAuth','notify']
-      :[{'./account.js':'initAccount','./manage.js':'initManage','./files.js':'initFiles',
+      :[{'./cli-login.js':'initCliLogin','./account.js':'initAccount','./manage.js':'initManage','./files.js':'initFiles',
           './topics.js':'initTopics','./chat.js':'initChat','./i18n.js':'loadI18n','./theme.js':'initTheme'}[name]];
     const stub=new vm.SyntheticModule(exports,function(){
       for(const key of exports)this.setExport(key,key==='initAuth'?async()=>{
@@ -1941,6 +1942,7 @@ if(scenario==='menus'){
  }
  const picker=pickers[2],menu=picker.querySelector('.menu');await menu.emit('keydown',{key:'Escape'});assert.equal(menu.hidden,true);assert.equal(document.activeElement,picker.querySelector('.theme-btn'));
  document.dispatchEvent(new CustomEvent('close-header-menus'));assert.ok(pickers.every(p=>p.querySelector('.menu').hidden));
+
 }
 if(scenario==='rename'||scenario==='rename-stale'){
  const form=get('renameForm'),input=get('renameName');form.children=[input,get('renameCancel'),get('save')];form.querySelector=()=>get('save');
@@ -2009,6 +2011,169 @@ def test_header_client_behavior(scenario):
     result = subprocess.run(
         ["node", "--experimental-vm-modules", "--input-type=module", "-e", HEADER_CLIENT_TESTS],
         input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_cli_login_modal_contract(markup):
+    elements = {attrs.get("id"): attrs for _, attrs in markup.tags if attrs.get("id")}
+    assert "openCliLogin" in elements
+    assert elements["cliLoginDlg"]["aria-labelledby"] == "cliLoginTitle"
+    assert elements["cliConfirmDlg"]["aria-describedby"] == "cliConfirmWarning"
+    assert elements["cliNotice"]["role"] == "status"
+    assert elements["cliCodeInput"]["autocomplete"] == "off"
+    assert elements["cliRawInput"]["autocomplete"] == "off"
+    assert "cliPreviewState" not in elements
+    script = (STATIC / "js/cli-login.js").read_text()
+    for fragment in (
+        "export function openCliLogin",
+        "export function initCliLogin",
+        "language-changed",
+        "setTimeout",
+        "1000",
+        "clearTimeout",
+        "new_slot",
+        "restart_required",
+        "noopener noreferrer",
+        "https:",
+        "navigator.clipboard.writeText",
+        "textContent",
+        "kind: 'line'",
+        "cancel",
+        "Tab",
+    ):
+        assert fragment in script
+    assert "gemini" not in script
+    assert "kind: 'key'" not in script
+    assert "cliRawKind" not in elements
+    assert "cliMenu" not in elements
+    assert "localStorage" not in script
+    assert "console." not in script
+    assert "initCliLogin()" in (STATIC / "js/main.js").read_text()
+    assert "openCliLogin()" in (STATIC / "js/account.js").read_text()
+    css = (STATIC / "css/app.css").read_text()
+    assert "#cliLoginDlg" in css
+    assert ".cli-login .field::placeholder" in css
+    for locale in ("en", "ko", "de", "nl", "es", "fr", "id", "pt", "ru"):
+        strings = _load_toml(STATIC.parents[2] / f"i18n/{locale}/web.toml")
+        assert "cli_login.title" in strings
+        assert "cli_login.confirm_gemini" not in strings
+        assert "cli_login.key_mode" not in strings
+        assert "cli_login.confirm_codex" in strings
+
+
+CLI_LOGIN_CLIENT_TESTS = r"""
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+const {source,ids}=JSON.parse(fs.readFileSync(0,'utf8'));
+let focus=null,language='ko',timerId=0,resumeJob=false;const fakeSlots=[{name:'claude',authenticated:true}];const timers=new Map(),calls=[],events={},statusReplies=[];const providerStates={claude:'authenticated',codex:'installed',grok:'installed'};
+class Element {
+ constructor(id=''){this.id=id;this.value='';this.hidden=false;this.disabled=false;this.open=false;this.children=[];this.listeners={};this.dataset={};this.textContent='';this.classList={toggle(){}}}
+ addEventListener(name,fn){(this.listeners[name]??=[]).push(fn)}
+ emit(name,event={}){return Promise.all((this.listeners[name]||[]).map(fn=>fn({preventDefault(){},...event})))}
+ append(...children){this.children.push(...children)}
+ replaceChildren(...children){this.children=children}
+ get childElementCount(){return this.children.length}
+ setAttribute(){} removeAttribute(){} getClientRects(){return this.hidden?[]:[{}]}
+ focus(){focus=this.id} querySelectorAll(selector){return this.id==='cliLoginDlg'&&selector==='[data-cli-list]'?[listControl]:[]}
+ showModal(){this.open=true} close(){this.open=false;this.emit('close')}
+ reset(){for(const id of {'cliSlotForm':['cliSlotName'],'cliCodeForm':['cliCodeInput'],'cliRawForm':['cliRawInput']}[this.id]||[])get(id).value=''}
+}
+const elements=new Map(ids.map(id=>[id,new Element(id)]));const get=id=>elements.get(id);const listControl=new Element('back-to-list');
+const current={job_id:'demo',provider:'grok',slot:null,state:'running',reason:null,seq:1,output:[{seq:1,text:'terminal output'}],urls:['javascript:alert(1)','http://unsafe.invalid','https://safe.invalid/auth'],code:null,needs_input:false,restart_required:false};
+const clone=value=>JSON.parse(JSON.stringify(value));
+const context=vm.createContext({URL,document:{getElementById:get,createElement:()=>new Element(),addEventListener:(name,fn)=>events[name]=fn},
+ navigator:{clipboard:{writeText:async()=>{}}},setTimeout:(fn,delay)=>{assert.equal(delay,1000);timers.set(++timerId,fn);return timerId},clearTimeout:id=>timers.delete(id)});
+const api=new vm.SyntheticModule(['api'],function(){this.setExport('api',async(path,options={})=>{
+ calls.push({path,options:clone(options)});
+ if(path==='/cli-login/status')return {providers:{...providerStates,...(statusReplies.shift()||{})},claude_slots:clone(fakeSlots),running:resumeJob&&current.state==='running',provider:current.provider,job_id:resumeJob&&current.state==='running'?'demo':null};
+ if(path==='/cli-login/jobs'){current.provider=options.body.provider;current.slot=options.body.slot||null;current.state='running';return {job_id:'demo'}}
+ if(path.endsWith('/input'))return {ok:true};
+ if(path.endsWith('/cancel')){current.state='cancelled';return {ok:true}}
+ if(path.startsWith('/cli-login/jobs/demo?after='))return clone(current);
+ throw Error('unexpected endpoint');
+})},{context});
+const i18n=new vm.SyntheticModule(['t','translate'],function(){this.setExport('t',key=>language+':'+key);this.setExport('translate',()=>{})},{context});
+for(const module of [api,i18n]){await module.link(()=>{});await module.evaluate()}
+const module=new vm.SourceTextModule(source,{context});await module.link(name=>name==='./api.js'?api:i18n);await module.evaluate();
+const flush=async()=>{for(let i=0;i<8;i++)await new Promise(setImmediate)};
+module.namespace.initCliLogin();module.namespace.openCliLogin();await flush();
+const stableProvider=get('cliProviders').children[0];language='en';events['language-changed']();
+assert.equal(get('cliProviders').children[0],stableProvider,'translation must preserve account control nodes');language='ko';events['language-changed']();
+assert.equal(get('cliProviders').children.length,3);
+const grok=get('cliProviders').children[2].children[0];await grok.children.at(-1).emit('click');assert.ok(get('cliConfirmDlg').open);
+assert.equal(get('cliConfirmWarning').textContent,'ko:cli_login.confirm_warning');
+await get('cliConfirmYes').emit('click');await flush();
+assert.equal(get('cliProgress').hidden,false);assert.equal(get('cliLinkRows').childElementCount,1);
+const stableLink=get('cliLinkRows').children[0];
+const repeat=timers.values().next().value;timers.clear();repeat();await flush();
+assert.equal(get('cliLinkRows').children[0],stableLink,'unchanged polling must preserve focused link nodes');
+assert.equal(get('cliLinkRows').children[0].children[1].rel,'noopener noreferrer');
+const sent=()=>calls.filter(call=>call.path.endsWith('/input'));
+get('cliCodeInput').value='draft-code';get('cliRawInput').value='7';
+for(const lang of ['en','de']){language=lang;events['language-changed']();assert.equal(get('cliCodeInput').value,'draft-code');assert.equal(get('cliRawInput').value,'7')}
+await get('cliRawForm').emit('submit');await flush();
+assert.equal(sent().at(-1).options.body.kind,'line');assert.equal(sent().at(-1).options.body.value,'7');
+const count=sent().length;get('cliRawInput').value='';await get('cliRawForm').emit('submit');await flush();assert.equal(sent().length,count);
+get('cliRawInput').value='one line';await get('cliRawForm').emit('submit');await flush();
+assert.equal(sent().at(-1).options.body.kind,'line');assert.equal(sent().at(-1).options.body.value,'one line');assert.equal(get('cliRawInput').value,'');
+get('cliCodeInput').value='';const before=sent().length;await get('cliCodeForm').emit('submit');await flush();assert.equal(sent().length,before);
+assert.equal(timers.size,1);await get('cliLoginDlg').emit('cancel');assert.ok(get('cliConfirmDlg').open);
+await get('cliConfirmYes').emit('click');await flush();assert.equal(get('cliResult').hidden,false);
+for(let i=0;i<3&&timers.size;i++){const next=timers.values().next().value;timers.clear();next();await flush()}assert.equal(timers.size,0);
+get('cliLoginDlg').close();assert.equal(timers.size,0);assert.equal(focus,'accountButton');assert.equal(get('cliRawOutput').textContent,'');
+module.namespace.openCliLogin();await flush();
+await get('cliProviders').children[0].children[0].children.at(-1).emit('click');
+get('cliSlotName').value='work';await get('cliSlotForm').emit('submit');await get('cliConfirmYes').emit('click');await flush();
+assert.equal(calls.filter(call=>call.path==='/cli-login/jobs').at(-1).options.body.new_slot,true);
+fakeSlots.push({name:'claude-work',authenticated:true});current.state='failed';
+const tick=timers.values().next().value;timers.clear();tick();await flush();
+await get('cliRetry').emit('click');await flush();assert.ok(get('cliConfirmDlg').open);
+await get('cliConfirmYes').emit('click');await flush();
+assert.equal(calls.filter(call=>call.path==='/cli-login/jobs').at(-1).options.body.new_slot,false);
+get('cliLoginDlg').close();
+for(const state of ['cancelled','failed','timed_out'])for(const retained of [false,true]){
+ resumeJob=true;fakeSlots.splice(1);if(retained)fakeSlots.push({name:'claude-resumed',authenticated:true});
+ Object.assign(current,{provider:'claude',slot:'claude-resumed',state:'running'});
+ module.namespace.openCliLogin();await flush();assert.equal(get('cliProgress').hidden,false);
+ current.state=state;const tick=timers.values().next().value;timers.clear();tick();await flush();
+ assert.equal(get('cliResult').hidden,false);await get('cliRetry').emit('click');await flush();
+ await get('cliConfirmYes').emit('click');await flush();
+ assert.equal(calls.filter(call=>call.path==='/cli-login/jobs').at(-1).options.body.new_slot,!retained,'resumed slot retry must follow current directory inventory');
+ resumeJob=false;get('cliLoginDlg').close();
+}
+for(const state of ['cancelled','failed','timed_out'])for(const delayed of [false,true]){
+ providerStates.codex='authenticated';module.namespace.openCliLogin();await flush();
+ await get('cliProviders').children[1].children[0].children.at(-1).emit('click');
+ await get('cliConfirmYes').emit('click');await flush();
+ current.state=state;statusReplies.push({codex:'authenticated'},...Array(delayed?16:1).fill({codex:null}),{codex:'installed'});providerStates.codex='installed';
+ const tick=timers.values().next().value;timers.clear();tick();await flush();
+ await listControl.emit('click');await flush();
+ let checks=0;while(timers.size&&checks<20){const next=timers.values().next().value;timers.clear();next();await flush();checks++}
+ assert.equal(get('cliProviders').children[1].children[0].children[1].textContent,language+':cli_login.unauthenticated','terminal status must refresh even after failed/cancelled/timed_out jobs');
+ assert.equal(timers.size,0);assert.ok(delayed||checks<=2);get('cliLoginDlg').close();statusReplies.length=0;
+}
+providerStates.codex=null;const statusBefore=calls.filter(call=>call.path==='/cli-login/status').length;
+module.namespace.openCliLogin();await flush();
+for(let i=0;i<65&&timers.size;i++){const tick=timers.values().next().value;timers.clear();tick();await flush()}
+assert.equal(timers.size,0,'unknown authentication must not poll forever');
+assert.ok(calls.filter(call=>call.path==='/cli-login/status').length-statusBefore<=60);
+get('cliLoginDlg').close();
+console.log('CLI login client contracts passed');
+"""
+
+
+def test_cli_login_client_input_modes_and_language_state(markup):
+    ids = [attrs["id"] for _, attrs in markup.tags if attrs.get("id", "").startswith("cli")]
+    result = subprocess.run(
+        ["node", "--experimental-vm-modules", "--input-type=module", "-e", CLI_LOGIN_CLIENT_TESTS],
+        input=json.dumps(
+            {"source": (STATIC / "js/cli-login.js").read_text(), "ids": [*ids, "accountButton"]}
+        ),
         capture_output=True,
         text=True,
         check=False,

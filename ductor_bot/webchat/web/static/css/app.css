@@ -399,3 +399,23 @@ dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(2px)}
 .account-menu{position:relative;flex:none}.account-menu .menu{min-width:172px}
 .bar .tpick .menu,.bar .lpick .menu,.bar .account-menu .menu{position:absolute;right:auto;min-width:0;max-width:calc(100vw - 16px);overflow-y:auto;overscroll-behavior:contain}
 .bar .menu button{min-width:0;overflow-wrap:anywhere;white-space:normal}.bar .menu button span:not(.language-check){min-width:0}.bar .menu svg{flex:none}
+
+/* CLI login: approved modal B, using the existing application tokens. */
+#cliLoginDlg{width:660px;max-width:calc(100vw - 32px)}
+#cliLoginDlg>.panel-head{padding:18px 24px}#cliLoginTitle{flex:1;font-size:18px}#cliClose{width:36px;min-height:36px;padding:0;font-size:22px}
+.cli-login{font-size:14px}.cli-login .btn{white-space:normal;overflow-wrap:anywhere}.cli-login .field{font-size:14px}
+.cli-login .field::placeholder{color:var(--muted);opacity:1}
+.cli-body{padding:20px 24px 24px;overflow-y:auto;max-height:calc(100dvh - 140px)}
+.cli-accounts{border:1px solid var(--rule);border-radius:10px;overflow:hidden}.cli-panel-title{padding:14px 18px;border-bottom:1px solid var(--rule)}.cli-panel-title h3{font-size:17px}
+.cli-provider{border-bottom:1px solid var(--rule)}.cli-provider:last-child{border-bottom:0}.cli-provider-head{display:flex;align-items:center;gap:10px;padding:12px 16px;min-height:60px}.cli-provider-head h3{flex:1;font-size:15px}.cli-provider-head .badge{font-size:11px}.cli-provider-head .btn{flex:none}
+.cli-slots{padding:0 16px 16px}.cli-slot{display:flex;align-items:center;gap:8px;padding:10px 0;border-top:1px solid var(--rule);font-size:13px}.cli-slot-name{flex:1;min-width:0;overflow-wrap:anywhere}.cli-slot .btn{font-size:12px;padding:0 9px}
+.cli-back{padding-left:0;margin-bottom:14px;font-size:13px}#cliSlot h3{font-size:17px;margin-bottom:22px}.cli-foot{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:8px;margin-top:24px;padding-top:18px;border-top:1px solid var(--rule)}
+.cli-detail-head{display:flex;align-items:center;gap:9px;margin-bottom:16px}.cli-detail-head h3{flex:1;font-size:16px;overflow-wrap:anywhere}
+.cli-step{padding:18px 0;border-top:1px solid var(--rule)}.cli-step h4,.cli-step>.lb{font-size:14px;font-weight:600;color:var(--fg);margin:0 0 10px}.cli-link-row{display:flex;align-items:center;gap:10px;margin-top:8px}.cli-url{flex:1;min-width:0;overflow-wrap:anywhere;font-size:12px;color:var(--muted)}.cli-input-row{display:flex;align-items:stretch;gap:8px}.cli-input-row .field{min-width:0}.cli-input-row .btn{flex:none}
+.cli-codebox{display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid var(--rule);border-radius:8px;background:var(--bg);padding:14px 16px}.cli-codebox code{font-family:var(--mono);font-size:25px;letter-spacing:.12em;overflow-wrap:anywhere;min-width:0}
+.cli-waiting{color:var(--muted);font-size:13px;margin:18px 0}.cli-login details{border-top:1px solid var(--rule);margin-top:20px;padding-top:14px}.cli-login summary{font-size:13px;color:var(--muted);min-height:32px;cursor:pointer}.cli-login pre{font:12px/1.7 var(--mono);padding:14px;background:var(--bg);border:1px solid var(--rule);border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;overflow:auto;margin:8px 0 12px}
+.cli-warning{padding:14px 16px;border:1px solid color-mix(in srgb,var(--warn) 35%,var(--rule));border-radius:9px;color:var(--warn)!important;background:var(--warn-soft);font-size:14px;margin-top:16px}.cli-error,#cliNotice{color:var(--danger);font-size:13px;margin:10px 0}
+.cli-result{padding:28px 0 12px}.cli-result h3{font-size:18px;margin:12px 0 8px}.cli-result p{font-size:14px;color:var(--muted)}#cliResult:not([hidden])+.cli-accounts{margin-top:16px}#cliConfirmDlg{width:460px}#cliConfirmTitle{font-size:18px}#cliConfirmTarget{font-size:14px;overflow-wrap:anywhere}
+@media(max-width:600px){#cliLoginDlg{max-width:calc(100vw - 24px);max-height:calc(100dvh - 24px)}#cliLoginDlg>.panel-head{padding:14px 16px}.cli-body{padding:16px;max-height:calc(100dvh - 110px)}.cli-link-row{flex-direction:column;align-items:stretch}.cli-link-row .btn{width:100%}.cli-codebox{padding:12px}.cli-codebox code{font-size:22px}.cli-provider-head{gap:7px;padding:12px}.cli-slots{padding:0 12px 12px}.cli-slot{flex-wrap:wrap}.cli-provider-head .badge{white-space:normal}.cli-foot .btn{flex:1}.cli-login .badge{white-space:normal;overflow-wrap:anywhere}}
+
+.cli-body{display:flex;flex-direction:column}.cli-body>#cliResult{order:-1}.cli-body>#cliNotice{order:-2}#cliNotice.cli-notice-ok{color:var(--ok)}.cli-link-row a{text-decoration:none}

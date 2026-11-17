@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
+import logging
 from dataclasses import dataclass, field
 from unittest.mock import patch
 
@@ -33,6 +35,11 @@ class FakeBridge:
     delay: float = 0
     delay_path: str | None = None
 
+    owner_headers: list = field(default_factory=list)
+    owner_by_browser: dict = field(default_factory=dict)
+    login_jobs: dict = field(default_factory=dict)
+    login_cancelled: set = field(default_factory=set)
+
     async def handle(self, request):  # noqa: C901, PLR0912 - explicit fake API contract
         assert request.headers.get("X-Dtw-Bridge-Token") == "fake-bridge-token"
         assert "Cookie" not in request.headers
@@ -41,6 +48,9 @@ class FakeBridge:
             request.transport.close()
             return web.Response()
         path = request.path.removeprefix("/webchat/v1")
+        self.owner_headers.append((path, request.headers.get("X-Dtw-Owner")))
+        if "browser" in request.query:
+            self.owner_by_browser[request.query["browser"]] = request.headers.get("X-Dtw-Owner")
         if path == "/events":
             socket = web.WebSocketResponse()
             await socket.prepare(request)
@@ -58,6 +68,63 @@ class FakeBridge:
         raw = await request.read()
         body = json.loads(raw) if raw else None
         self.calls.append((request.method, path, dict(request.query), body, raw))
+        if path.startswith("/cli-login/"):
+            owner = request.headers.get("X-Dtw-Owner")
+            assert owner
+            await asyncio.sleep(0.01)  # overlap concurrent requests from two browser sessions
+            active = next(
+                (
+                    (job, account)
+                    for job, account in self.login_jobs.items()
+                    if job not in self.login_cancelled
+                ),
+                None,
+            )
+            if path == "/cli-login/status":
+                return web.json_response(
+                    {
+                        "providers": dict.fromkeys(("claude", "codex", "grok"), "installed"),
+                        "claude_slots": [{"name": "claude", "priority": 1, "authenticated": False}],
+                        "running": active is not None,
+                        "provider": "codex" if active else None,
+                        "job_id": active[0] if active and active[1] == owner else None,
+                    }
+                )
+            if path == "/cli-login/jobs":
+                if body.get("provider") not in ("claude", "codex", "grok"):
+                    return web.json_response({"error": "invalid_login"}, status=400)
+                if active:
+                    return web.json_response({"error": "login_running"}, status=409)
+                job = "job-" + str(len(self.login_jobs) + 1)
+                self.login_jobs[job] = owner
+                return web.json_response({"job_id": job}, status=202)
+            job = path.split("/")[3]
+            if self.login_jobs.get(job) != owner:
+                return web.json_response({"error": "login_not_found"}, status=404)
+            if path.endswith("/input"):
+                if body.get("kind") != "line" or not body.get("value"):
+                    return web.json_response({"error": "invalid_input"}, status=400)
+                return web.json_response({"ok": True})
+            if path.endswith("/cancel"):
+                self.login_cancelled.add(job)
+                return web.json_response({"ok": True}, status=202)
+            return web.json_response(
+                {
+                    "job_id": job,
+                    "provider": "codex",
+                    "slot": None,
+                    "state": "cancelled" if job in self.login_cancelled else "running",
+                    "reason": None,
+                    "seq": 1,
+                    "output": []
+                    if request.query.get("after") == "1"
+                    else [{"seq": 1, "text": "relay-output-canary"}],
+                    "urls": ["https://fake.invalid/login"],
+                    "code": "FAKE-CODE",
+                    "needs_input": True,
+                    "restart_required": False,
+                }
+            )
         if path == "/meta":
             return web.json_response({"language": self.language})
         if path == "/auth/state":
@@ -860,3 +927,157 @@ async def test_button_relays_allow_six_second_bridge_response(site, route, body)
     assert response.status == 200
     assert await response.json() == {"path": f"/topics/1.7/{route}", "body": body}
     assert fake.calls[-1][1] == f"/topics/1.7/{route}"
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("GET", "/api/cli-login/status"),
+        ("GET", "/api/cli-login/jobs/job-1"),
+        ("POST", "/api/cli-login/jobs"),
+        ("POST", "/api/cli-login/jobs/job-1/input"),
+        ("POST", "/api/cli-login/jobs/job-1/cancel"),
+    ],
+)
+async def test_cli_login_requires_browser_session(site, method, path):
+    client, _ = site
+    response = await client.request(method, path, headers=CLIENT, json={})
+    assert response.status == 403
+    assert "WWW-Authenticate" not in response.headers
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/api/cli-login/jobs", "/api/cli-login/jobs/job-1/input", "/api/cli-login/jobs/job-1/cancel"],
+)
+@pytest.mark.parametrize("missing", ["X-Dtw-Client", "X-Dtw-Csrf"])
+async def test_cli_login_mutations_keep_existing_csrf_and_client_checks(site, path, missing):
+    client, fake = site
+    authorized, _ = await login(client)
+    forbidden = {key: value for key, value in authorized.items() if key != missing}
+    response = await client.post(path, headers=forbidden, json={"provider": "codex"})
+    assert response.status == 403
+    assert "WWW-Authenticate" not in response.headers
+    assert not any(call[1].startswith("/cli-login/") for call in fake.calls)
+
+
+async def test_cli_login_relay_contract_and_owner_isolation(site, caplog):
+    client, fake = site
+    caplog.set_level(logging.DEBUG)
+    first, first_response = await login(client)
+    second, second_response = await login(client)
+    original_headers = client.app[STATE].bridge._headers.copy()
+    # GET follows the normal session-only contract; supplied owner is never trusted.
+    only_cookie = {"Cookie": first["Cookie"], "X-Dtw-Owner": "forged-owner"}
+    response = await client.get("/api/cli-login/status", headers=only_cookie)
+    assert response.status == 200
+    assert (await response.json())["claude_slots"] == [
+        {"name": "claude", "priority": 1, "authenticated": False}
+    ]
+    created = await client.post("/api/cli-login/jobs", headers=first, json={"provider": "codex"})
+    assert created.status == 202
+    job = (await created.json())["job_id"]
+    own = await client.get(f"/api/cli-login/jobs/{job}?after=1", headers=only_cookie)
+    assert own.status == 200
+    assert (await own.json())["output"] == []
+    for method, suffix, body in (
+        ("GET", "", None),
+        ("POST", "/input", {"kind": "line", "value": "relay-input-canary"}),
+        ("POST", "/cancel", None),
+    ):
+        denied = await client.request(
+            method, f"/api/cli-login/jobs/{job}{suffix}", headers=second, json=body
+        )
+        assert denied.status == 404
+        assert await denied.json() == {"error": "login_not_found"}
+    for supplied, expected_job in ((first, job), (second, None)):
+        response = await client.get("/api/cli-login/status", headers=supplied)
+        assert (await response.json())["job_id"] == expected_job
+    sent = await client.post(
+        f"/api/cli-login/jobs/{job}/input",
+        headers=first,
+        json={"kind": "line", "value": "relay-input-canary"},
+    )
+    assert sent.status == 200
+    conflict = await client.post("/api/cli-login/jobs", headers=second, json={"provider": "grok"})
+    assert conflict.status == 409
+    canceled = await client.post(f"/api/cli-login/jobs/{job}/cancel", headers=first)
+    assert canceled.status == 202
+    assert (await (await client.get(f"/api/cli-login/jobs/{job}", headers=first)).json())[
+        "state"
+    ] == "cancelled"
+    invalid = await client.post("/api/cli-login/jobs", headers=first, json={"provider": "invalid"})
+    assert invalid.status == 400
+    assert "relay-input-canary" not in caplog.text
+    assert "relay-output-canary" not in caplog.text
+    assert client.app[STATE].bridge._headers == original_headers
+    key = client.app[STATE].owner_key
+    owners = [
+        hmac.digest(key, response.cookies["dtw_session"].value.encode(), "sha256").hex()
+        for response in (first_response, second_response)
+    ]
+    assert owners[0] != owners[1]
+    assert {owner for path, owner in fake.owner_headers if path.startswith("/cli-login/")} == set(
+        owners
+    )
+    assert all(
+        owner is None for path, owner in fake.owner_headers if not path.startswith("/cli-login/")
+    )
+
+
+async def test_two_sessions_concurrently_keep_per_request_owner_and_legacy_headers(site):
+    client, fake = site
+    first, one = await login(client)
+    second, two = await login(client)
+    key = client.app[STATE].owner_key
+    expected = [
+        hmac.digest(key, response.cookies["dtw_session"].value.encode(), "sha256").hex()
+        for response in (one, two)
+    ]
+    original = client.app[STATE].bridge._headers.copy()
+    start = len(fake.owner_headers)
+    responses = await asyncio.gather(
+        client.get(
+            "/api/cli-login/status?browser=one", headers={**first, "X-Dtw-Owner": expected[1]}
+        ),
+        client.get(
+            "/api/cli-login/status?browser=two", headers={**second, "X-Dtw-Owner": expected[0]}
+        ),
+        client.get("/api/topics", headers=first),
+    )
+    assert all(response.status == 200 for response in responses)
+    seen = [owner for path, owner in fake.owner_headers[start:] if path == "/cli-login/status"]
+    assert sorted(seen) == sorted(expected)
+    assert fake.owner_by_browser == {"one": expected[0], "two": expected[1]}
+    assert client.app[STATE].bridge._headers == original
+    assert all(
+        owner is None for path, owner in fake.owner_headers[start:] if path != "/cli-login/status"
+    )
+    assert {call[2]["browser"] for call in fake.calls if call[1] == "/cli-login/status"} == {
+        "one",
+        "two",
+    }
+
+
+@pytest.mark.parametrize("path", ["/api/cli-login/status", "/api/cli-login/jobs/job-1"])
+async def test_cli_login_requests_keep_five_second_upstream_timeout(site, path):
+    client, fake = site
+    authorized, _ = await login(client)
+    original = fake.handle
+
+    async def slow(request):
+        if "/cli-login/" in request.path:
+            await asyncio.sleep(6)
+        return await original(request)
+
+    bridge = client.app[STATE].bridge
+    from aiohttp.test_utils import TestServer
+
+    upstream = web.Application()
+    upstream.router.add_route("*", "/webchat/v1/{path:.*}", slow)
+    async with TestServer(upstream) as server:
+        bridge._url = str(server.make_url("/webchat/v1"))
+        response = await client.get(path, headers=authorized)
+        assert response.status == 503
+        assert await response.json() == {"error": "bot_unreachable"}
+    assert bridge._client.timeout.total == 5

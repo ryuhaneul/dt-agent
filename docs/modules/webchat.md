@@ -82,6 +82,34 @@ private frames require successful validation. Failed validation closes the socke
 so the browser can reconnect and resync. Logout clears the local session and
 cookies even while the bridge is unavailable.
 
+## CLI provider login
+
+Logged-in users can choose **CLI login** from the header account menu to authenticate
+Claude, Codex or Grok through the installed provider CLI. Select a provider
+or an existing Claude slot, or add a named Claude slot, then confirm before starting.
+The dialog opens authentication links in a new tab, copies device codes and accepts
+a pasted authorization code when needed. If prompt detection fails, expand the raw
+output and use the one-line input. Display-language changes preserve the job and typed input.
+Gemini web CLI login is unsupported because personal-account Gemini CLI OAuth ended on 2026-06-18.
+
+Only one login job can run at a time across all providers and browser sessions.
+Only the browser session that started a job can read its output, send input or cancel
+it; other sessions see that a login is in progress. No additional password or TOTP
+confirmation is required after web login. Cancel stops the job; jobs also time out
+after 10 minutes. A new Claude slot is added to `claude_accounts` only after successful
+login, and existing Claude slots can be authenticated again without being recreated.
+If a newly authenticated provider was not available when the bot started, the dialog
+instructs you to restart the bot before using it.
+
+**Codex clears the existing login as soon as authentication starts; cancelling does
+not restore it.** The start confirmation explains the provider's replacement behavior.
+
+Login input and output stay out of DT Agent's application logs, conversation history,
+durable outbox and Telegram mirrors. Output is held only in a bounded in-memory buffer
+and is discarded 10 minutes after the job ends. Input echoed by the CLI remains visible
+in the owner-only raw output; one-time codes are not masked. This guarantee does not cover
+log files written by the native provider CLI itself; this feature does not manage those files.
+
 ## Topics, turns and queue
 
 Web turns share the target Telegram `tg:` session key and `LockPool` lock.
