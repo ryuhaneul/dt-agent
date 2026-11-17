@@ -20,7 +20,8 @@ export function checkSession(active = () => true) {
     document.dispatchEvent(new CustomEvent('auth-required'));
   }).catch(() => {});
 }
-export function setCsrf(value) { csrf = value; }
+// A login retires older requests even when the new session returns the same CSRF token.
+export function setCsrf(value) { csrf = value; ++credentialEpoch; }
 
 export class ApiError extends Error {
   constructor(status, body) {

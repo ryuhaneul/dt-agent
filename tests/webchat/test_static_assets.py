@@ -1462,10 +1462,12 @@ def test_password_change_client_validation_errors_and_success_order():
 PASSWORD_CHANGE_API_TESTS = r"""
 import assert from 'node:assert/strict';import fs from 'node:fs';import vm from 'node:vm';
 const {source}=JSON.parse(fs.readFileSync(0,'utf8'));
-const events=[];let authenticated=true,lookups=0,release=null,headers=null,stateCsrf=null;
+const events=[],reauthReleases=[];let authenticated=true,lookups=0,release=null,headers=null,stateCsrf=null;
 const context=vm.createContext({document:{dispatchEvent:event=>events.push(event.type)},CustomEvent:class{constructor(type){this.type=type}},fetch:async(path,options)=>{
  headers=options.headers;
  if(path==='/api/auth/state'){lookups++;return {ok:true,status:200,json:async()=>({authenticated,csrf:stateCsrf})}}
+ if(path==='/api/probe')return {ok:true,status:200,json:async()=>({ok:true})};
+ if(path==='/api/held-reauth'){await new Promise(resolve=>reauthReleases.push(resolve))}
  if(path==='/api/held'){await new Promise(resolve=>{release=resolve})}
  return {ok:false,status:403,json:async()=>({error:'auth_required'})};
 }});
@@ -1484,7 +1486,23 @@ events.length=0;api.beginCredentialChange();const pending=api.api('/held').catch
 // Another tab rotated the shared cookie: a valid session check adopts the returned CSRF token.
 authenticated=true;stateCsrf='rotated-csrf';api.setCsrf('stale-csrf');events.length=0;await api.checkSession();
 await assert.rejects(api.api('/topics',{method:'POST'}));assert.equal(headers['X-Dtw-Csrf'],'rotated-csrf');stateCsrf=null;
-console.log('Concurrent REST credential-change contracts passed');
+// Four old mark-all requests must not invalidate a successful password/TOTP login.
+// Reusing the same token still starts a new authentication generation.
+for(const freshCsrf of ['reauth-csrf','original-csrf']){
+ events.length=0;api.setCsrf('original-csrf');
+ const old=Array.from({length:4},()=>api.api('/held-reauth').catch(error=>error));await flush();
+ await assert.rejects(api.api('/topics'),{status:403,code:'auth_required'});assert.deepEqual(events,['auth-required']);
+ api.setCsrf(freshCsrf);reauthReleases.splice(0).forEach(resolve=>resolve());
+ const errors=await Promise.all(old);
+ assert.ok(errors.every(error=>error instanceof api.ApiError&&error.status===403&&error.code==='auth_required'));
+ assert.deepEqual(events,['auth-required'],'old 403 responses must not request authentication again');
+ await api.api('/probe',{method:'POST'});assert.equal(headers['X-Dtw-Csrf'],freshCsrf);
+ // Current-generation failures retain the existing expiration behavior and clear CSRF.
+ await assert.rejects(api.api('/topics'),{status:403,code:'auth_required'});
+ assert.deepEqual(events,['auth-required','auth-required']);
+ await api.api('/probe',{method:'POST'});assert.equal(headers['X-Dtw-Csrf'],undefined);
+}
+console.log('Concurrent REST credential-change and reauthentication contracts passed');
 """
 
 
