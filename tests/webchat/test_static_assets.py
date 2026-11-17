@@ -536,6 +536,8 @@ try {
       assert.equal(body.code,'123456');authenticated=true;
     } else if(url.pathname==='/api/state') result={telegram:{state:'down',down_since:null,last_check:null,interval_s:30,strip:Array(30).fill('none'),strip_end:null},outbox:{pending:1},bot:{up:true},web_sessions:1};
     else if(url.pathname==='/api/topics') result={topics:archiveDeleted?[topic]:[topic,archive]};
+    else if(url.pathname==='/api/topics/seen-all') {topic.seen=205;archive.seen=205;result={seen:{'1.2':205,'1.3':205}};}
+    else if(url.pathname.endsWith('/seen')) {const row=url.pathname.includes('1.2')?topic:archive;row.seen=Math.max(row.seen??-Infinity,body.seq);result={seen:row.seen};}
     else if(url.pathname==='/api/topics/1.2'&&request.method()==='PATCH') {assert.equal(request.headers()['x-dtw-csrf'],'fake-csrf');topic.name=body.name;result={topic};}
     else if(url.pathname==='/api/topics/1.3'&&request.method()==='DELETE') {assert.equal(body.confirm_name,archive.name);archiveDeleted=true;result={telegram_deleted:true,session_removed:true,history_entries:1,outbox_dropped:0};}
     else if(url.pathname==='/api/files') result={files:Object.values(fileData).map(file=>({name:file.name,sha256:file.sha256,size:Buffer.byteLength(file.content),mtime:null}))};
@@ -617,7 +619,7 @@ try {
 
   if(width<=760)await page.locator('[data-route="list"]').click();
   await page.locator('#q').fill('Example');await page.locator('#markAllRead').click();
-  await page.waitForFunction(()=>localStorage.getItem('dtw-seen:1.3')==='205');
+  await page.waitForFunction(()=>!document.querySelector('#markAllRead').disabled&&!document.querySelector('#tlist .unread'));
   await page.screenshot({path:path.join(artifactDir,`topics-read-${width}.png`),fullPage:true});
 
   await page.locator('#q').fill('Message');await page.locator('#tlist [data-seq="2"]').waitFor();
@@ -772,7 +774,7 @@ class WebSocket extends Element{
 const storage=new Map(), calls=[], notices=[], routes=[];
 let topicsHold=null, failGet=null, slowCommandHold=null, buttonsHold=null, buttonsFailure=null, historyHold=null, callbackResult=null;
 let blockedStorage=false, session=true, coarse=false, failSend=null, turnNumber=0;
-const localStorage={getItem:key=>{if(blockedStorage)throw Error('blocked');return storage.get(key)??null},setItem:(key,value)=>{if(blockedStorage)throw Error('blocked');storage.set(key,value)}};
+const localStorage={getItem:key=>{if(blockedStorage)throw Error('blocked');return storage.get(key)??null},setItem:(key,value)=>{if(blockedStorage)throw Error('blocked');storage.set(key,value)},removeItem:key=>storage.delete(key)};
 const makeEntry=(seq,extras={})=>({id:`e${seq}`,seq,ts:'2025-01-01T01:01:00Z',role:'bot',source:'telegram',kind:'message',text:`Entry ${seq}`,imported:seq<0,mirror:null,...extras});
 const historyA=Array.from({length:205},(_,index)=>makeEntry(index+1));
 const historyB=[makeEntry(-5,{source:'import',text:'Imported <script>x</script>'})];
@@ -793,6 +795,10 @@ async function fetch(url,options={}){
   if(parsed.pathname==='/api/auth/state')return response(200,{authenticated:session,csrf:'fake-csrf'});
   if(!session)return response(403,{error:'auth_required'});
   if(parsed.pathname===failGet)return response(503,{error:'history_busy'});
+  if(options.method==='PUT'&&parsed.pathname.endsWith('/seen')){
+    const topic=topicRows.find(row=>row.tid===decodeURIComponent(parsed.pathname.split('/')[3]));
+    topic.seen=topic.seen==null?body.seq:Math.max(topic.seen,body.seq);return response(200,{seen:topic.seen});
+  }
   if(options.method==='POST'){
     assert.equal(options.headers['X-Dtw-Client'],'web');assert.equal(options.headers['X-Dtw-Csrf'],'fake-csrf');
     if(parsed.pathname.endsWith('/callbacks')){
@@ -865,8 +871,8 @@ const list=document.querySelector('#tlist'),thread=document.querySelector('#thre
 assert.ok(list.innerHTML.includes('Alpha &lt;img&gt;'));assert.ok(!list.innerHTML.includes('Alpha <img>'));
 assert.ok(list.innerHTML.includes(strings['topic.group_imported']));assert.ok(list.innerHTML.includes(strings['topic.group_unknown']));
 assert.equal(topics.getTopic().tid,'1.2');assert.ok(thread.innerHTML.includes('Entry 205'));assert.ok(!thread.innerHTML.includes('Entry 1</p>'));
-assert.equal(storage.get('dtw-seen:1.2'),'203');assert.ok(list.innerHTML.includes('2 unread'));
-topics.selectTopic('1.2');await flush();assert.equal(storage.get('dtw-seen:1.2'),'205');
+assert.equal(topicRows[0].seen,203);assert.equal(storage.has('dtw-seen:1.2'),false);assert.ok(list.innerHTML.includes('2 unread'));
+topics.selectTopic('1.2');await flush();assert.equal(topicRows[0].seen,205);
 assert.equal(document.querySelector('#outboxCount').textContent,3);
 assert.ok(document.querySelector('#outboxRows').innerHTML.includes('Result &lt;img&gt;'));
 assert.ok(document.querySelector('#outboxRows').innerHTML.includes(strings['outbox.tag_reply']));
@@ -1933,7 +1939,7 @@ document.dispatchEvent=event=>{for(const fn of document.listeners[event.type]||[
 class CustomEvent {constructor(type,options={}){this.type=type;this.detail=options.detail}}
 const storage=new Map(),fetches=[],windowEvents={};let blocked=false;
 const context=vm.createContext({document,CustomEvent,Node:Element,innerHeight:600,console,setTimeout,clearTimeout,
- localStorage:{getItem:key=>{if(blocked)throw Error('blocked');return storage.get(key)||null},setItem:(key,v)=>{if(blocked)throw Error('blocked');storage.set(key,v)}},
+ localStorage:{getItem:key=>{if(blocked)throw Error('blocked');return storage.get(key)||null},setItem:(key,v)=>{if(blocked)throw Error('blocked');storage.set(key,v)},removeItem:key=>storage.delete(key)},
  matchMedia:()=>({matches:false,addEventListener(){}}),addEventListener:(key,fn)=>{windowEvents[key]=fn},
  ResizeObserver:class {observe(){}},requestAnimationFrame:fn=>fn(),fetch:async url=>{fetches.push(url);const lang=new URL(url,'https://chat.example').searchParams.get('lang')||'ko';return {ok:true,json:async()=>({lang,strings:translations[lang]})}}});
 context.window=context;
@@ -2038,39 +2044,49 @@ if(scenario==='rename'||scenario==='rename-stale'){
 if(scenario==='unread'){
  const rows=Array.from({length:9},(_,i)=>({tid:String(i),name:'Topic '+i,group:'telegram',count:2}));
  const entries=new Map(rows.map((row,i)=>[row.tid,[{seq:-5},{seq:i===0?100:i===8?-2:2}]]));
- const requests=[];let inFlight=0,maxFlight=0,release=null;
- const api=async url=>{
-  if(url==='/topics')return {topics:rows.map(row=>({...row}))};
-  requests.push(url);inFlight++;maxFlight=Math.max(maxFlight,inFlight);
+ const cursors=new Map(),requests=[];let release=null;
+ const api=async(url,options={})=>{
+  requests.push({url,...options});
+  if(url==='/topics')return {topics:rows.map(row=>({...row,seen:cursors.get(row.tid)??null}))};
   if(release)await release;
-  const tid=url.split('/')[2],limit=Number(new URL(url,'https://test').searchParams.get('limit'));
-  inFlight--;return {entries:entries.get(tid).slice(-limit),has_more:false};
+  if(url==='/topics/seen-all'){
+   for(const row of rows){const seq=entries.get(row.tid).at(-1).seq;cursors.set(row.tid,Math.max(cursors.get(row.tid)??-Infinity,seq));}
+   return {seen:Object.fromEntries(cursors)};
+  }
+  const tid=url.split('/')[2];
+  if(url.endsWith('/seen')){
+   assert.equal(options.method,'PUT');const seq=Math.min(options.body.seq,entries.get(tid).at(-1).seq);
+   cursors.set(tid,Math.max(cursors.get(tid)??-Infinity,seq));return {seen:cursors.get(tid)};
+  }
+  const limit=Number(new URL(url,'https://test').searchParams.get('limit'));
+  return {entries:entries.get(tid).slice(-limit),has_more:false};
  };
  const topics=await load('topics.js',{'./api.js':{api},'./i18n.js':{t:(key,args)=>key==='topic.unread'?`${args.n} unread`:key},'./router.js':{go:()=>{}},'./auth.js':{notify:()=>{throw Error('unexpected notice')}},'./md.js':{esc:value=>String(value)}});
+ storage.set('dtw-seen:0','999');storage.set('dtw-seen:8','-5');
  topics.initTopics();document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));await topics.refreshTopics();
+ assert.equal(cursors.get('0'),100,'legacy state is capped by the server');assert.equal(cursors.get('8'),-5);
+ assert.equal(storage.has('dtw-seen:0'),false);assert.equal(storage.has('dtw-seen:8'),false);
  assert.ok(get('tlist').innerHTML.includes('2 unread'));
- // A second tab marks every topic read after this tab has cached null.
- for(const row of rows)storage.set('dtw-seen:'+row.tid,String(entries.get(row.tid).at(-1).seq));
- windowEvents.storage({storageArea:context.localStorage,key:'dtw-seen:0',newValue:'100'});
- await new Promise(setImmediate);assert.ok(!get('tlist').innerHTML.split('data-tid="0"')[1].split('</button>')[0].includes('unread'));
- await topics.refreshTopics();assert.ok(!get('tlist').innerHTML.includes('unread'));
- topics.markSeen('0',3);assert.equal(storage.get('dtw-seen:0'),'100','stale tabs cannot overwrite a newer cursor');
- topics.markSeen('8',-5);assert.equal(storage.get('dtw-seen:8'),'-2','imported cursors stay negative and monotonic');
- // Imported-only history retains negative sequences; storage denial keeps memory useful.
- blocked=true;topics.markSeen('unknown',-5);topics.markSeen('unknown',-9);blocked=false;
- // Mark all uses bounded latest-message requests, including topics outside a search filter.
+ topics.markSeen('0',3);assert.equal(cursors.get('0'),100,'stale readers cannot lower the cursor');
+ topics.markSeen('8',-2);await new Promise(setImmediate);topics.markSeen('8',-9);assert.equal(cursors.get('8'),-2);
+ // A different browser's cursor arrives over the existing websocket event path.
+ cursors.set('1',2);document.dispatchEvent(new CustomEvent('read-state',{detail:{seen:{'1':2}}}));
+ for(let i=0;i<3;i++)await new Promise(setImmediate);
+ assert.ok(!get('tlist').innerHTML.split('data-tid="1"')[1].split('</button>')[0].includes('unread'));
+ await topics.refreshTopics();assert.equal(requests.filter(request=>request.method==='PUT').length,3,'legacy migration runs once');
+ // Storage denial does not affect server cursors or mark-all, including filtered topics.
+ blocked=true;
  for(const row of rows){entries.get(row.tid).push({seq:101});topics.noteEntry(row.tid,{seq:101,text:'new'});}
  get('q').value='Topic 0';await get('q').emit('input');
- let unblock;release=new Promise(resolve=>{unblock=resolve});
- await get('markAllRead').emit('click');assert.equal(get('markAllRead').disabled,true);assert.equal(inFlight,4);
- unblock();release=null;
- for(let i=0;i<10;i++)await new Promise(setImmediate);
- assert.equal(get('markAllRead').disabled,false);assert.equal(maxFlight,4);
- for(const row of rows)assert.equal(storage.get('dtw-seen:'+row.tid),'101');
- assert.equal(requests.filter(url=>url.endsWith('limit=1')).length,9);
+ let unblock;release=new Promise(resolve=>{unblock=resolve});const before=requests.length;
+ await get('markAllRead').emit('click');assert.equal(get('markAllRead').disabled,true);
+ unblock();release=null;for(let i=0;i<10;i++)await new Promise(setImmediate);
+ assert.equal(get('markAllRead').disabled,false);assert.equal(requests.length-before,1);
+ assert.equal(requests.at(-1).url,'/topics/seen-all');assert.equal(requests.at(-1).method,'POST');
+ for(const row of rows)assert.equal(cursors.get(row.tid),101);
+ assert.ok(!get('tlist').innerHTML.includes('unread'));
  topics.noteEntry('0',{seq:102,text:'later'});assert.ok(get('tlist').innerHTML.includes('1 unread'));
- // Sign-out/in and list refresh restore the same persisted cursors.
- document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:false}}));
+ blocked=false;document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:false}}));
  document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));await topics.refreshTopics();
  assert.ok(!get('tlist').innerHTML.includes('unread'));
 }
@@ -2288,6 +2304,112 @@ def test_cli_login_client_input_modes_and_language_state(markup):
         ["node", "--experimental-vm-modules", "--input-type=module", "-e", CLI_LOGIN_CLIENT_TESTS],
         input=json.dumps(
             {"source": (STATIC / "js/cli-login.js").read_text(), "ids": [*ids, "accountButton"]}
+        ),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+READ_STATE_BROWSER_TESTS = r"""
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+const {chromium}=await import(process.env.DTW_PLAYWRIGHT_MODULE);
+const {origin,artifactDir,strings,commands}=JSON.parse(fs.readFileSync(0,'utf8'));
+const browser=await chromium.launch({headless:true});
+try {
+ const cursors=new Map(),peers=[],requests=[],failures=[];
+ const rows=[{tid:'1.2',chat_id:1,topic_id:2,name:'Empty topic',group:'telegram',count:0,preview:'latest',renamable:true,deletable:true},
+  {tid:'1.3',chat_id:1,topic_id:3,name:'Imported topic',group:'imported',count:2,imported_count:2,preview:'',renamable:true,deletable:true},
+  {tid:'1.4',chat_id:1,topic_id:4,name:'Live topic',group:'telegram',count:2,preview:'latest',renamable:true,deletable:true}];
+ const entries=new Map([['1.2',[]],['1.3',[-5,-2]],['1.4',[1,2]]]);
+ const contexts=[],pages=[];
+ const alternate=new URL(origin);alternate.hostname=alternate.hostname==='localhost'?'127.0.0.1':'localhost';
+ for(const address of [origin,alternate.origin]){
+  const context=await browser.newContext({viewport:{width:1280,height:900}});contexts.push(context);
+  const page=await context.newPage();pages.push(page);page.on('pageerror',error=>failures.push(error.message));
+  await page.routeWebSocket('**/api/ws',peer=>{peers.push(peer);peer.send(JSON.stringify({type:'bridge',up:true}));});
+  await page.route('**/api/**',async route=>{
+   const request=route.request(),url=new URL(request.url()),body=request.postDataJSON();
+   requests.push({address,path:url.pathname,method:request.method()});let result={};
+   if(url.pathname==='/api/i18n')result={lang:'en',strings};
+   else if(url.pathname==='/api/auth/state')result={authenticated:true,csrf:'fake-csrf',bridge_up:true};
+   else if(url.pathname==='/api/commands')result={commands};
+   else if(url.pathname==='/api/state')result={telegram:{state:'ok',strip:[]},outbox:{pending:0},bot:{up:true},web_sessions:2};
+   else if(url.pathname==='/api/outbox')result={items:[]};
+   else if(url.pathname==='/api/topics')result={topics:rows.map(row=>({...row,seen:cursors.get(row.tid)??null}))};
+   else if(url.pathname==='/api/topics/seen-all'){
+    assert.equal(request.method(),'POST');assert.equal(request.headers()['x-dtw-csrf'],'fake-csrf');
+    for(const [tid,seqs] of entries)if(seqs.length)cursors.set(tid,Math.max(cursors.get(tid)??-Infinity,seqs.at(-1)));
+    result={seen:Object.fromEntries(cursors)};for(const peer of peers)peer.send(JSON.stringify({type:'seen',...result,all:true}));
+   }else if(url.pathname.endsWith('/seen')){
+    assert.equal(request.method(),'PUT');assert.equal(request.headers()['x-dtw-client'],'web');assert.equal(request.headers()['x-dtw-csrf'],'fake-csrf');
+    const tid=url.pathname.split('/')[3];cursors.set(tid,Math.max(cursors.get(tid)??-Infinity,Math.min(body.seq,entries.get(tid).at(-1))));
+    result={seen:cursors.get(tid)};for(const peer of peers)peer.send(JSON.stringify({type:'seen',seen:{[tid]:result.seen}}));
+   }else if(url.pathname.endsWith('/messages')){
+    const tid=url.pathname.split('/')[3];result={entries:entries.get(tid).map(seq=>({id:tid+':'+seq,seq,role:'bot',source:seq<0?'import':'telegram',imported:seq<0,text:'Message '+seq,ts:null})),has_more:false};
+   }else if(url.pathname==='/api/cli-login/status')result={providers:{},claude_slots:[],running:false};
+   else if(url.pathname==='/api/files')result={files:[]};
+   else throw Error('Unexpected API '+url.pathname);
+   await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(result)});
+  });
+  await page.goto(address+'/#list');await page.locator('#tlist .unread').first().waitFor();
+  await page.evaluate(()=>{location.hash='#list'});
+ }
+ const [first,second]=pages;
+ assert.notEqual(await first.evaluate(()=>location.origin),await second.evaluate(()=>location.origin));
+ for(const page of pages)assert.equal(await page.evaluate(()=>localStorage.length),0);
+ // Reading imported-only history propagates a negative cursor to a separate browser/origin.
+ await first.locator('#tlist [data-tid="1.3"]').click();
+ await second.waitForFunction(()=>!document.querySelector('#tlist [data-tid="1.3"] .unread'));
+ assert.equal(cursors.get('1.3'),-2);
+ assert.equal(await second.locator('#tlist [data-tid="1.4"] .unread').textContent(),'2');
+ await second.locator('#msgIn').fill('Unsent draft');
+ // Reading a live topic updates the other device without reloading its list page.
+ await first.locator('#tlist [data-tid="1.4"]').click();
+ await second.waitForFunction(()=>!document.querySelector('#tlist .unread'));
+ assert.equal(cursors.get('1.4'),2);
+ assert.equal(await second.locator('#msgIn').inputValue(),'Unsent draft');
+ assert.equal(await second.locator('#msgIn').evaluate(input=>input===document.activeElement),true);
+ await first.evaluate(()=>{location.hash='#list'});
+ // New entries restore unread badges; mark-all is one mutation for both topics.
+ for(const [tid,seqs] of entries){if(!seqs.length)continue;const seq=seqs.at(-1)+1;seqs.push(seq);for(const peer of peers)peer.send(JSON.stringify({type:'entry',tid,entry:{id:tid+':'+seq,seq,role:'bot',source:seq<0?'import':'telegram',imported:seq<0,text:'New message',ts:null}}));}
+ await second.locator('#tlist .unread').first().waitFor();
+ await first.evaluate(()=>{location.hash='#list'});
+ const before=requests.filter(request=>request.method!=='GET').length;
+ await second.locator('#markAllRead').click();
+ await first.waitForFunction(()=>!document.querySelector('#tlist .unread'));
+ await second.waitForFunction(()=>!document.querySelector('#markAllRead').disabled&&!document.querySelector('#tlist .unread'));
+ assert.equal(requests.filter(request=>request.method!=='GET').length-before,1);
+ assert.equal(requests.filter(request=>request.method!=='GET').at(-1).path,'/api/topics/seen-all');
+ await second.reload();await second.locator('#tlist .cell').first().waitFor();
+ await second.waitForFunction(()=>!document.querySelector('#tlist .unread'));
+ assert.deepEqual(failures,[]);
+ for(let i=0;i<pages.length;i++)await pages[i].screenshot({path:path.join(artifactDir,`read-state-origin-${i}.png`),fullPage:true});
+ for(const context of contexts)await context.close();
+ console.log('Two browser contexts and origins: signed reads, WS sync, one-request mark-all and reload passed');
+}finally{await browser.close()}
+"""
+
+
+@pytest.mark.skipif(
+    not os.environ.get("DTW_UI_TEST_ORIGIN"),
+    reason="Browser execution requires the separately approved L verification environment",
+)
+def test_browser_read_state_across_contexts_and_origins(tmp_path):
+    from ductor_bot.webchat.commands import command_list
+
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", READ_STATE_BROWSER_TESTS],
+        input=json.dumps(
+            {
+                "origin": os.environ["DTW_UI_TEST_ORIGIN"],
+                "artifactDir": str(tmp_path),
+                "strings": STRINGS,
+                "commands": command_list("en"),
+            }
         ),
         capture_output=True,
         text=True,

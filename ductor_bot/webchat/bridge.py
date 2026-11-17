@@ -54,6 +54,7 @@ from ductor_bot.webchat.commands import (
     parse_command,
 )
 from ductor_bot.webchat.files import WebFileError, WebFiles
+from ductor_bot.webchat.read_state import ReadState
 from ductor_bot.webchat.secret import WebSecrets
 from ductor_bot.webchat.settings import resolve_default_chat_id
 from ductor_bot.webchat.topics import TopicBusyError, TopicDeleteError, WebTopics
@@ -172,6 +173,7 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
 ) -> None:
     turns = WebTurns(bot, runtime)
     topics = WebTopics(bot, runtime, turns)
+    read_state = ReadState(bot._orch.paths.webchat_dir / "read_state.json")
     dispatcher = WebCommandDispatcher(
         bot,
         turns,
@@ -200,7 +202,49 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
             listed = await topics.list()
         except LockTimeoutError:
             return _error("history_busy", 503)
-        return web.json_response({"topics": listed})
+        cursors = await read_state.load()
+        return web.json_response(
+            {"topics": [{**topic, "seen": cursors.get(topic["tid"])} for topic in listed]}
+        )
+
+    async def save_seen(request: web.Request) -> web.Response:
+        tid = request.match_info["tid"]
+        seq = (await _body(request)).get("seq")
+        if type(seq) is not int:
+            return _error("bad_request", 400)
+        async with read_state.lock:
+            if tid in turns.blocked or await topics.lookup(tid) is None:
+                return _error("unknown_topic", 404)
+            try:
+                latest = await runtime.history.last(tid)
+            except LockTimeoutError:
+                return _error("history_busy", 503)
+            updates = {tid: min(seq, latest.seq)} if latest is not None else {}
+            previous = await read_state.load()
+            cursors = await read_state.merge(updates)
+            if previous != cursors:
+                runtime.events.publish({"type": "seen", "seen": {tid: cursors[tid]}})
+            return web.json_response({"seen": cursors.get(tid)})
+
+    async def see_all(_request: web.Request) -> web.Response:
+        async with read_state.lock:
+            try:
+                listed = await topics.list()
+                updates = {}
+                for topic in listed:
+                    tid = topic["tid"]
+                    if tid in turns.blocked:
+                        continue
+                    latest = await runtime.history.last(tid)
+                    if latest is not None:
+                        updates[tid] = latest.seq
+            except LockTimeoutError:
+                return _error("history_busy", 503)
+            previous = await read_state.load()
+            cursors = await read_state.merge(updates)
+            if previous != cursors:
+                runtime.events.publish({"type": "seen", "seen": cursors, "all": True})
+            return web.json_response({"seen": cursors})
 
     async def create_topic(request: web.Request) -> web.Response:
         name = _name(await _body(request))
@@ -231,7 +275,10 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
                     return web.json_response({"topic": await topics.rename(topic, name)})
                 if data.get("confirm_name") != topic["name"]:
                     return _error("confirm_mismatch", 400)
-                return web.json_response(await topics.delete(tid))
+                async with read_state.lock:
+                    result = await topics.delete(tid)
+                    await read_state.remove(tid)
+                return web.json_response(result)
             except TopicBusyError:
                 return _error("topic_busy", 409)
             except (TelegramAPIError, ClientError, ConnectionError, TimeoutError, TopicDeleteError):
@@ -675,6 +722,8 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
     app.router.add_get(f"{_PREFIX}/commands", commands)
     app.router.add_get(f"{_PREFIX}/topics", list_topics)
     app.router.add_post(f"{_PREFIX}/topics", create_topic)
+    app.router.add_post(f"{_PREFIX}/topics/seen-all", see_all)
+    app.router.add_put(f"{_PREFIX}/topics/{{tid}}/seen", save_seen)
     app.router.add_patch(f"{_PREFIX}/topics/{{tid}}", manage_topic)
     app.router.add_delete(f"{_PREFIX}/topics/{{tid}}", manage_topic)
     app.router.add_get(f"{_PREFIX}/topics/{{tid}}/messages", messages)

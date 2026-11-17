@@ -25,7 +25,11 @@ export function connectEvents(onEvent, onConnection) {
     socket = current;
     current.addEventListener('open', () => { delay = 2000; onConnection(true); });
     current.addEventListener('message', event => {
-      try { onEvent(JSON.parse(event.data)); } catch { /* Ignore malformed frames. */ }
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'seen') document.dispatchEvent(new CustomEvent('read-state', { detail: data }));
+        else onEvent(data);
+      } catch { /* Ignore malformed frames. */ }
     });
     current.addEventListener('error', () => current.close());
     current.addEventListener('close', () => {

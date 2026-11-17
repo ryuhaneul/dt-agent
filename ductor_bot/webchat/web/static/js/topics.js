@@ -7,7 +7,7 @@ import { esc } from './md.js';
 let topics = [], selected = null, hits = [], query = '', searchTimer, revision = 0;
 let active = false, request = 0, readEpoch = 0, markingAll = false;
 let renaming = null, renameBusy = false, renameEpoch = 0;
-const unread = new Map(), seen = new Map();
+const unread = new Map(), seen = new Map(), latest = new Map(), migrated = new Set();
 export function getTopics() { return topics; }
 export function getTopic() { return topics.find(topic => topic.tid === selected) || null; }
 export function formatTime(value, date = false) {
@@ -15,48 +15,54 @@ export function formatTime(value, date = false) {
   return new Date(value).toLocaleString(document.documentElement.lang,
     date ? { dateStyle: 'medium', timeStyle: 'short' } : { hour: '2-digit', minute: '2-digit' });
 }
-function storedSeen(tid) {
-  let value = seen.get(tid) ?? null;
-  try {
-    const raw = localStorage.getItem(`dtw-seen:${tid}`);
-    if (raw !== null && Number.isFinite(Number(raw))) {
-      value = value === null ? Number(raw) : Math.max(value, Number(raw));
-    }
-  } catch { /* In-memory seen state still works when storage is blocked. */ }
-  seen.set(tid, value);
-  return value;
+function storedSeen(tid) { return seen.get(tid) ?? null; }
+function mergeSeen(tid, seq) {
+  if (!Number.isInteger(seq)) return;
+  const previous = storedSeen(tid);
+  seen.set(tid, previous === null ? seq : Math.max(previous, seq));
+}
+async function syncSeen(cursors, all = false) {
+  const generation = revision;
+  await Promise.all(topics.map(async topic => {
+    const seq = cursors[topic.tid];
+    if (!Number.isInteger(seq)) return;
+    mergeSeen(topic.tid, seq);
+    if ((all && !latest.has(topic.tid)) || latest.get(topic.tid) <= storedSeen(topic.tid)) {
+      unread.set(topic.tid, 0);
+    } else await countUnread(topic, generation);
+  }));
+  if (active && generation === revision) renderTopics();
 }
 export function markSeen(tid, seq) {
-  if (!Number.isFinite(seq)) return;
-  const previous = storedSeen(tid);
+  if (!active || !Number.isInteger(seq)) return;
+  const previous = storedSeen(tid), epoch = readEpoch;
   const value = previous === null ? seq : Math.max(previous, seq);
   if (previous === value && unread.get(tid) === 0) return;
-  seen.set(tid, value); unread.set(tid, 0);
-  if (previous === null || value > previous) {
-    try { localStorage.setItem(`dtw-seen:${tid}`, String(value)); } catch { /* Optional storage. */ }
-  }
-  renderTopics();
+  seen.set(tid, value); unread.set(tid, 0); renderTopics();
+  if (previous === value) return;
+  void api(`/topics/${encodeURIComponent(tid)}/seen`, { method: 'PUT', body: { seq: value } }).then(data => {
+    if (active && epoch === readEpoch) mergeSeen(tid, data.seen);
+  }).catch(async error => {
+    if (!active || epoch !== readEpoch) return;
+    if (storedSeen(tid) === value) seen.set(tid, previous);
+    if (error.code !== 'auth_required') notify('error.generic');
+    const topic = topics.find(item => item.tid === tid);
+    if (topic) {
+      try { await countUnread(topic, revision); renderTopics(); } catch { /* Retry on the next refresh. */ }
+    }
+  });
 }
 async function markAllSeen() {
   if (!active || markingAll) return;
-  const epoch = readEpoch, pending = topics.map(topic => topic.tid);
-  const button = document.querySelector('#markAllRead');
+  const epoch = readEpoch, button = document.querySelector('#markAllRead');
   markingAll = true; button.disabled = true;
-  let failed = false;
-  // Latest sequences are not part of /topics. Bound requests for large lists.
-  await Promise.all(Array.from({ length: Math.min(4, pending.length) }, async () => {
-    while (active && epoch === readEpoch && pending.length) {
-      const tid = pending.shift();
-      try {
-        const data = await api(`/topics/${encodeURIComponent(tid)}/messages?limit=1`);
-        if (!active || epoch !== readEpoch) return;
-        if (data.entries.length) markSeen(tid, data.entries.at(-1).seq);
-      } catch (error) { if (error.code !== 'auth_required') failed = true; }
-    }
-  }));
-  if (epoch === readEpoch) {
-    markingAll = false; button.disabled = false;
-    if (failed && active) notify('error.generic');
+  try {
+    const data = await api('/topics/seen-all', { method: 'POST' });
+    if (active && epoch === readEpoch) await syncSeen(data.seen, true);
+  } catch (error) {
+    if (active && epoch === readEpoch && error.code !== 'auth_required') notify('error.generic');
+  } finally {
+    if (epoch === readEpoch) { markingAll = false; button.disabled = false; }
   }
 }
 export function selectTopic(tid, seq = null, navigate = true) {
@@ -100,6 +106,7 @@ async function countUnread(topic, generation) {
   while (active && generation === revision) {
     const data = await api(`/topics/${encodeURIComponent(topic.tid)}/messages?limit=100${before}`);
     if (!active || generation !== revision) return;
+    if (data.entries.length) latest.set(topic.tid, Math.max(latest.get(topic.tid) ?? -Infinity, data.entries.at(-1).seq));
     count += data.entries.filter(entry => entry.seq > last).length;
     if (!data.has_more || !data.entries.length || data.entries[0].seq <= last) break;
     before = `&before=${data.entries[0].seq}`;
@@ -111,6 +118,23 @@ export async function refreshTopics() {
   const data = await api('/topics');
   if (!active || generation !== revision) return;
   topics = data.topics;
+  const epoch = readEpoch;
+  await Promise.all(topics.map(async topic => {
+    mergeSeen(topic.tid, topic.seen);
+    if (migrated.has(topic.tid)) return;
+    migrated.add(topic.tid);
+    let legacy = null;
+    try {
+      const raw = localStorage.getItem(`dtw-seen:${topic.tid}`);
+      if (raw !== null && Number.isInteger(Number(raw))) legacy = Number(raw);
+    } catch { /* Server cursors work when browser storage is blocked. */ }
+    if (legacy === null || (storedSeen(topic.tid) !== null && legacy <= storedSeen(topic.tid))) return;
+    const result = await api(`/topics/${encodeURIComponent(topic.tid)}/seen`, { method: 'PUT', body: { seq: legacy } });
+    if (!active || epoch !== readEpoch) return;
+    mergeSeen(topic.tid, result.seen);
+    try { localStorage.removeItem(`dtw-seen:${topic.tid}`); } catch { /* Optional legacy cleanup. */ }
+  }));
+  if (!active || generation !== revision) return;
   for (const topic of topics) {
     if (topic.name_key) topic.name = t(topic.name_key);
     topic.name ||= topic.tid === 'unknown' ? t('topic.unknown_name') : topic.topic_id === null
@@ -128,6 +152,7 @@ export function noteEntry(tid, entry) {
   const topic = topics.find(item => item.tid === tid);
   if (!topic) return;
   topic.last_ts = entry.ts; topic.preview = entry.text; topic.count++;
+  latest.set(tid, Math.max(latest.get(tid) ?? -Infinity, entry.seq));
   if (entry.imported) topic.imported_count++;
   if (storedSeen(tid) === null || entry.seq > storedSeen(tid)) unread.set(tid, (unread.get(tid) || 0) + 1);
   topics.sort((a, b) => (b.last_ts || '').localeCompare(a.last_ts || ''));
@@ -177,14 +202,11 @@ async function renameCurrentTopic() {
 }
 export function initTopics() {
   document.querySelector('#markAllRead').addEventListener('click', () => { void markAllSeen(); });
-  window.addEventListener('storage', event => {
-    if (event.storageArea !== localStorage || !event.key?.startsWith('dtw-seen:')) return;
-    const topic = topics.find(item => item.tid === event.key.slice('dtw-seen:'.length));
-    if (!active || !topic) return;
-    const generation = revision;
-    void countUnread(topic, generation).then(() => {
-      if (active && generation === revision) renderTopics();
-    }).catch(error => { if (active && error.code !== 'auth_required') notify('error.generic'); });
+  document.addEventListener('read-state', event => {
+    if (!active) return;
+    void syncSeen(event.detail.seen, event.detail.all).catch(error => {
+      if (active && error.code !== 'auth_required') notify('error.generic');
+    });
   });
   const dialog = document.querySelector('#renameDlg'), form = document.querySelector('#renameForm');
   const input = document.querySelector('#renameName'), opener = document.querySelector('#headerRename');
@@ -219,7 +241,7 @@ export function initTopics() {
       form.querySelectorAll('input, button').forEach(element => { element.disabled = false; });
       document.querySelector('#renameClose').disabled = false;
       ++revision; ++request; clearTimeout(searchTimer); topics = []; selected = null; hits = [];
-      query = ''; unread.clear(); seen.clear(); document.querySelector('#q').value = ''; renderTopics();
+      query = ''; unread.clear(); seen.clear(); latest.clear(); migrated.clear(); document.querySelector('#q').value = ''; renderTopics();
     }
   });
   document.querySelector('#tlist').addEventListener('click', event => {

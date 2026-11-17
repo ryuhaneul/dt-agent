@@ -3813,3 +3813,149 @@ async def test_cli_bridge_rejects_invalid_live_owner_list(cli_bridge, live):
         f"{_PREFIX}/cli-login/status", headers={**cli_headers(), "X-Dtw-Active-Owners": live}
     )
     assert response.status == 400
+
+
+@pytest.mark.parametrize("seq", [True, False, 1.0, "1", None, [], {}])
+async def test_seen_rejects_non_integer_sequences(conversation, seq):
+    response = await conversation.client.put(
+        f"{_PREFIX}/topics/-123.7/seen", json={"seq": seq}, headers=headers()
+    )
+    assert response.status == 400
+    assert await response.json() == {"error": "bad_request"}
+
+
+async def test_seen_signed_max_clamp_persistence_and_missing_topic(conversation):
+    h = conversation
+    for seq in [-9, -5, -2]:
+        await h.runtime.history.append(
+            "-123.7", Entry(role="bot", source="import", text="import", imported=True, seq=seq)
+        )
+    listed = await (await h.client.get(f"{_PREFIX}/topics", headers=headers())).json()
+    assert listed["topics"][0]["seen"] is None
+    for requested, expected in [(-8, -8), (-10, -8), (-3, -3), (999, -2), (-9, -2)]:
+        response = await h.client.put(
+            f"{_PREFIX}/topics/-123.7/seen", json={"seq": requested}, headers=headers()
+        )
+        assert response.status == 200
+        assert await response.json() == {"seen": expected}
+    path = h.paths.webchat_dir / "read_state.json"
+    assert json.loads(path.read_text()) == {"-123.7": -2}
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    # A new bridge instance restores the cursor without browser-local storage.
+    other = TestClient(TestServer(create_bridge_app(h.bot, h.runtime, _TOKEN)))
+    await other.start_server()
+    try:
+        listed = await (await other.get(f"{_PREFIX}/topics", headers=headers())).json()
+        assert listed["topics"][0]["seen"] == -2
+    finally:
+        await other.close()
+    await h.runtime.history.append("-123.7", Entry(role="bot", source="telegram", text="live"))
+    responses = await asyncio.gather(
+        *(
+            h.client.put(f"{_PREFIX}/topics/-123.7/seen", json={"seq": seq}, headers=headers())
+            for seq in [1, -5, -1]
+        )
+    )
+    assert all(response.status == 200 for response in responses)
+    assert json.loads(path.read_text()) == {"-123.7": 1}
+    response = await h.client.put(
+        f"{_PREFIX}/topics/-123.999/seen", json={"seq": 1}, headers=headers()
+    )
+    assert response.status == 404
+    # An existing, empty topic has no latest cursor, even for a negative request.
+    await h.bot._orch._sessions.resolve_session(SessionKey.telegram(-123, 8))
+    response = await h.client.put(
+        f"{_PREFIX}/topics/-123.8/seen", json={"seq": -3}, headers=headers()
+    )
+    assert await response.json() == {"seen": None}
+
+
+@pytest.mark.parametrize("content", ["{broken sensitive-data", "[]", '"invalid"', "\udcff"])
+async def test_seen_corrupt_file_is_safe(conversation, content, caplog):
+    h = conversation
+    path = h.paths.webchat_dir / "read_state.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content.encode("utf-8", errors="surrogateescape"))
+    response = await h.client.get(f"{_PREFIX}/topics", headers=headers())
+    assert response.status == 200
+    assert (await response.json())["topics"][0]["seen"] is None
+    await h.runtime.history.append("-123.7", Entry(role="bot", source="telegram", text="live"))
+    response = await h.client.post(f"{_PREFIX}/topics/seen-all", headers=headers())
+    assert response.status == 200
+    assert await response.json() == {"seen": {"-123.7": 1}}
+    assert "sensitive-data" not in caplog.text
+
+
+async def test_seen_all_signed_topics_and_websocket_fanout(conversation):
+    h = conversation
+    path = h.paths.webchat_dir / "read_state.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"-123.7":true,"-123.8":"2","unknown":null,"bad":1}')
+    await h.runtime.history.append(
+        "-123.7", Entry(role="bot", source="import", text="old", imported=True, seq=-3)
+    )
+    await h.runtime.history.append(
+        "unknown", Entry(role="bot", source="import", text="old", imported=True, seq=-7)
+    )
+    await h.bot._orch._sessions.resolve_session(SessionKey.telegram(-123, 8))
+    async with (
+        h.client.ws_connect(f"{_PREFIX}/events", headers=headers()) as first,
+        h.client.ws_connect(f"{_PREFIX}/events", headers=headers()) as second,
+    ):
+        response = await h.client.put(
+            f"{_PREFIX}/topics/-123.7/seen", json={"seq": -5}, headers=headers()
+        )
+        assert await response.json() == {"seen": -5}
+        expected = {"type": "seen", "seen": {"-123.7": -5}}
+        assert await first.receive_json(timeout=3) == expected
+        assert await second.receive_json(timeout=3) == expected
+        response = await h.client.post(f"{_PREFIX}/topics/seen-all", headers=headers())
+        assert await response.json() == {"seen": {"-123.7": -3, "unknown": -7}}
+        expected = {"type": "seen", "seen": {"-123.7": -3, "unknown": -7}, "all": True}
+        assert await first.receive_json(timeout=3) == expected
+        assert await second.receive_json(timeout=3) == expected
+    listed = await (await h.client.get(f"{_PREFIX}/topics", headers=headers())).json()
+    assert {topic["tid"]: topic["seen"] for topic in listed["topics"]} == {
+        "-123.7": -3,
+        "-123.8": None,
+        "unknown": -7,
+    }
+
+
+async def test_seen_save_and_delete_are_serialized(conversation, monkeypatch):
+    from ductor_bot.infra.json_store import atomic_json_save
+
+    h = conversation
+    await h.runtime.history.append("-123.7", Entry(role="bot", source="telegram", text="live"))
+    started, release = threading.Event(), threading.Event()
+
+    def held_save(path, values):
+        started.set()
+        assert release.wait(5)
+        atomic_json_save(path, values)
+
+    monkeypatch.setattr("ductor_bot.webchat.read_state.atomic_json_save", held_save)
+    saving = asyncio.ensure_future(
+        h.client.put(f"{_PREFIX}/topics/-123.7/seen", json={"seq": 1}, headers=headers())
+    )
+    deleting = None
+    try:
+        assert await asyncio.to_thread(started.wait, 3)
+        deleting = asyncio.ensure_future(
+            h.client.delete(
+                f"{_PREFIX}/topics/-123.7", json={"confirm_name": "Topic #7"}, headers=headers()
+            )
+        )
+        await asyncio.sleep(0.05)
+        h.runtime.ops.delete_topic.assert_not_awaited()
+        release.set()
+        assert (await saving).status == 200
+        assert (await deleting).status == 200
+    finally:
+        release.set()
+        await asyncio.gather(saving, *([deleting] if deleting else []), return_exceptions=True)
+    assert json.loads((h.paths.webchat_dir / "read_state.json").read_text()) == {}
+    response = await h.client.put(
+        f"{_PREFIX}/topics/-123.7/seen", json={"seq": 1}, headers=headers()
+    )
+    assert response.status == 404

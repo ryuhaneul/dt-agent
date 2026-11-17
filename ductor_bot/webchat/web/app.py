@@ -458,6 +458,8 @@ def create_app(
         ("/cli-login/jobs/{id}/cancel", ("POST",)),
         ("/commands", ("GET",)),
         ("/topics", ("GET", "POST")),
+        ("/topics/seen-all", ("POST",)),
+        ("/topics/{tid}/seen", ("PUT",)),
         ("/topics/{tid}", ("PATCH", "DELETE")),
         ("/topics/{tid}/messages", ("GET", "POST")),
         ("/topics/{tid}/abort", ("POST",)),

@@ -377,6 +377,8 @@ async def test_setup_new_paste_confirm_returns_to_password(site):
     [
         ("GET", "/api/topics", None, 200),
         ("POST", "/api/topics", {"name": "new"}, 200),
+        ("PUT", "/api/topics/-123.4/seen", {"seq": -5}, 200),
+        ("POST", "/api/topics/seen-all", None, 200),
         ("PATCH", "/api/topics/-123.4", {"name": "renamed"}, 200),
         ("DELETE", "/api/topics/-123.4", {"confirm_name": "renamed"}, 200),
         ("GET", "/api/topics/-123.4/messages?before=9&limit=20", None, 200),
@@ -1179,3 +1181,26 @@ async def test_expired_cli_owner_is_recoverable_and_browser_cannot_forge_live_ow
     assert (await client.get(f"/api/cli-login/jobs/{job}", headers=second)).status == 200
     assert (await client.post(f"/api/cli-login/jobs/{job}/cancel", headers=second)).status == 202
     assert (await client.get(f"/api/cli-login/jobs/{job}", headers=first)).status == 403
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [("PUT", "/api/topics/-123.7/seen", {"seq": -5}), ("POST", "/api/topics/seen-all", {})],
+)
+async def test_read_state_relay_requires_session_client_header_and_csrf(site, method, path, body):
+    client, fake = site
+    for request_headers in [{}, CLIENT]:
+        response = await client.request(method, path, json=body, headers=request_headers)
+        assert response.status == 403
+        assert "WWW-Authenticate" not in response.headers
+    headers, _ = await login(client)
+    before = len(fake.calls)
+    for request_headers in [
+        {key: value for key, value in headers.items() if key != "X-Dtw-Csrf"},
+        {**headers, "X-Dtw-Csrf": "bad"},
+        {key: value for key, value in headers.items() if key != "X-Dtw-Client"},
+    ]:
+        response = await client.request(method, path, json=body, headers=request_headers)
+        assert response.status == 403
+        assert "WWW-Authenticate" not in response.headers
+    assert not any(call[1] == path.removeprefix("/api") for call in fake.calls[before:])
