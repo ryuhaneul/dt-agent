@@ -47,6 +47,7 @@ def harness(tmp_path):
     sessions = SessionManager(tmp_path / "sessions.json", config)
     registry = ProcessRegistry()
     runtime = SimpleNamespace(
+        topic_registry_lock=asyncio.Lock(),
         events=hub,
         history=HistoryStore(paths.chat_log_dir / "history", hub),
         outbox=Outbox(paths.chat_log_dir / "outbox", hub),

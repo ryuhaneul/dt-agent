@@ -1491,3 +1491,57 @@ async def test_apostrophe_free_ill_is_not_classified_as_contraction(wired, mode)
     bot.edit_forum_topic.assert_awaited_once_with(
         chat_id=100, message_thread_id=42, name="Ill health research"
     )
+
+
+@pytest.mark.parametrize("api_fails", [False, True])
+async def test_automatic_title_records_web_title_without_service_edit(
+    wired, monkeypatch, api_fails
+):
+    from ductor_bot.chat_log.runtime import ChatLogRuntime
+    from ductor_bot.session.key import SessionKey
+    from ductor_bot.session.manager import SessionManager
+    from ductor_bot.webchat.topics import WebTopics
+    from ductor_bot.workspace.paths import DuctorPaths
+
+    tg, bot, cfg, orch, _, _, _ = wired
+    orch.paths = DuctorPaths(ductor_home=orch.paths.ductor_home)
+    orch._sessions = SessionManager(orch.paths.ductor_home / "sessions.json", cfg)
+    key = SessionKey.telegram(100, 42)
+    await orch._sessions.resolve_session(key)
+    await orch._sessions.set_topic_name(key, "Stale title")
+    runtime = ChatLogRuntime(tg)
+    tg._chat_log_runtime = runtime
+    monkeypatch.setattr(
+        topic_naming.DMTopicNamer, "_generate", AsyncMock(return_value="시스템 점검")
+    )
+    if api_fails:
+        bot.edit_forum_topic.side_effect = RuntimeError("Synthetic API failure")
+    await implicit(tg)
+    queue = runtime.events.subscribe()
+    tg._get_topic_namer().on_user_message(key, "시스템 점검 해봐")
+    await drain(tg)
+    if api_fails:
+        assert queue.empty()
+        assert (await orch._sessions.get_active(key)).topic_name == "New topic"
+        return
+    assert queue.get_nowait() == {"type": "topics"}
+    assert (await orch._sessions.get_active(key)).topic_name == "시스템 점검"
+    tg._topic_names = type(tg._topic_names)()
+    orch.is_chat_busy = lambda *_: False
+    turns = SimpleNamespace(active_turn_id=lambda _: None, busy=lambda _: False)
+    topics = await WebTopics(tg, runtime, turns).list()
+    assert topics[0]["name"] == "시스템 점검"
+
+
+async def test_title_recording_failure_does_not_retry_successful_telegram_rename(wired):
+    tg, bot, _, _, _, _, _ = wired
+    await implicit(tg)
+    callback = AsyncMock(side_effect=OSError("Synthetic recording failure"))
+    tg._get_topic_namer()._on_renamed = callback
+    await tg._on_message(message())
+    await drain(tg)
+    callback.assert_awaited_once()
+    assert tg._topic_names.get(100, 42) == "여행 계획"
+    await tg._on_message(message())
+    await drain(tg)
+    bot.edit_forum_topic.assert_awaited_once()

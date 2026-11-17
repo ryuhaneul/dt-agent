@@ -75,6 +75,7 @@ async def bridge(tmp_path, monkeypatch):
         _orch=SimpleNamespace(paths=paths),
     )
     runtime = SimpleNamespace(
+        topic_registry_lock=asyncio.Lock(),
         link=SimpleNamespace(state=lambda: {"state": "unknown"}),
         outbox=SimpleNamespace(pending=AsyncMock(return_value=[object(), object()])),
     )
@@ -274,6 +275,7 @@ async def conversation(tmp_path, monkeypatch):
     history = HistoryStore(paths.chat_log_dir / "history", hub)
     outbox = Outbox(paths.chat_log_dir / "outbox", hub)
     runtime = SimpleNamespace(
+        topic_registry_lock=asyncio.Lock(),
         events=hub,
         history=history,
         outbox=outbox,
@@ -476,11 +478,14 @@ async def test_topic_create_rename_and_delete(conversation):
     assert created["tid"] == "-123.10"
     h.runtime.ops.create_topic.assert_awaited_once_with(-123, "Created")
     assert h.bot._topic_names.get(-123, 10) == "Created"
+    queue = h.runtime.events.subscribe()
     response = await h.client.patch(
         f"{_PREFIX}/topics/-123.7", json={"name": "Renamed"}, headers=headers()
     )
     assert response.status == 200
     assert (await response.json())["topic"]["name"] == "Renamed"
+    h.runtime.ops.rename_topic.assert_awaited_once_with(-123, 7, "Renamed")
+    assert queue.get_nowait() == {"type": "topics"}
     assert (await h.bot._orch._sessions.get_active(h.key)).topic_name == "Renamed"
     row = await h.runtime.history.append("-123.7", Entry(role="user", source="web", text="saved"))
     await h.runtime.outbox.enqueue(
@@ -4038,3 +4043,73 @@ async def test_seen_store_does_not_write_after_read_failure(tmp_path, monkeypatc
             await action
     writes.assert_not_called()
     assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("implicit", [None, False, True])
+async def test_telegram_creation_registers_title_before_session_and_after_restart(
+    conversation, implicit
+):
+    from aiogram.types import Chat, ForumTopicCreated
+
+    from tests.messenger.telegram.test_app import _make_tg_bot
+    from tests.messenger.telegram.test_topic_naming import message
+
+    h = conversation
+    h.bot.config.telegram_token = "123456:TEST_TOKEN"
+    tg, _ = _make_tg_bot(h.bot.config)
+    tg._orchestrator = h.bot._orch
+    tg._topic_names = h.bot._topic_names
+    tg._chat_log_runtime = h.runtime
+    event = message(
+        created=ForumTopicCreated(name="Telegram title", icon_color=0, is_name_implicit=implicit)
+    )
+    event = event.model_copy(update={"chat": Chat(id=-123, type="private")})
+    queue = h.runtime.events.subscribe()
+    await tg._on_forum_topic_created(event)
+    assert await h.bot._orch._sessions.get_active(SessionKey.telegram(-123, 42)) is None
+    assert queue.get_nowait() == {"type": "topics"}
+    response = await h.client.get(f"{_PREFIX}/topics", headers=headers())
+    assert (
+        next(row for row in (await response.json())["topics"] if row["tid"] == "-123.42")["name"]
+        == "Telegram title"
+    )
+    h.bot._topic_names = TopicNameCache()
+    h.bot._orch._sessions = SessionManager(h.paths.ductor_home / "sessions.json", h.bot.config)
+    response = await h.client.get(f"{_PREFIX}/topics", headers=headers())
+    assert (
+        next(row for row in (await response.json())["topics"] if row["tid"] == "-123.42")["name"]
+        == "Telegram title"
+    )
+
+
+async def test_telegram_edit_updates_stale_session_registry_and_live_event(conversation):
+    from aiogram.types import Chat, ForumTopicEdited
+
+    from tests.messenger.telegram.test_app import _make_tg_bot
+    from tests.messenger.telegram.test_topic_naming import message
+
+    h = conversation
+    h.bot.config.telegram_token = "123456:TEST_TOKEN"
+    tg, _ = _make_tg_bot(h.bot.config)
+    tg._orchestrator = h.bot._orch
+    tg._topic_names = h.bot._topic_names
+    tg._chat_log_runtime = h.runtime
+    await WebTopics.record_name(tg, h.runtime, h.key, "Old title")
+    before = (await h.bot._orch._sessions.get_active(h.key)).last_active
+    queue = h.runtime.events.subscribe()
+    event = message(topic=7, edited=ForumTopicEdited(name="User title"))
+    await tg._on_forum_topic_edited(
+        event.model_copy(update={"chat": Chat(id=-123, type="private")})
+    )
+    assert queue.get_nowait() == {"type": "topics"}
+    session = await h.bot._orch._sessions.get_active(h.key)
+    assert session.topic_name == "User title"
+    assert session.last_active == before
+    h.bot._topic_names = TopicNameCache()
+    response = await h.client.get(f"{_PREFIX}/topics", headers=headers())
+    assert (
+        next(row for row in (await response.json())["topics"] if row["tid"] == "-123.7")["name"]
+        == "User title"
+    )
+    registry = json.loads((h.paths.webchat_dir / "topics.json").read_text())
+    assert next(row for row in registry if row["topic_id"] == 7)["name"] == "User title"

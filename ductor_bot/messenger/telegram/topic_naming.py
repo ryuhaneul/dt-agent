@@ -8,6 +8,7 @@ import logging
 import re
 import tempfile
 import unicodedata
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -210,9 +211,16 @@ class DMTopicNamer:
     """Persist only eligibility/attempt flags, never conversation text or titles."""
 
     def __init__(
-        self, config: AgentConfig, bot: Bot, orch: Orchestrator, names: TopicNameCache
+        self,
+        config: AgentConfig,
+        bot: Bot,
+        orch: Orchestrator,
+        names: TopicNameCache,
+        *,
+        on_renamed: Callable[[SessionKey, str], Awaitable[None]] | None = None,
     ) -> None:
         self._config, self._bot, self._orch, self._names = config, bot, orch, names
+        self._on_renamed = on_renamed
         self._path = Path(orch.paths.ductor_home) / "dm_topic_naming.json"
         data = load_json(self._path)
         self._usable = not self._path.exists() or (
@@ -418,6 +426,7 @@ class DMTopicNamer:
             await self._edit_topic(key, token, title)
             if self._state.get(token) == "attempted":
                 self._names.set(key.chat_id, cast("int", key.topic_id), title)
+                await self._record_renamed(key, title)
         except asyncio.CancelledError:
             if self._state.get(token) == "eligible":
                 self._state[token] = "attempted"
@@ -431,6 +440,18 @@ class DMTopicNamer:
 
         finally:
             self._pending.discard(token)
+
+    async def _record_renamed(self, key: SessionKey, title: str) -> None:
+        if self._on_renamed is None:
+            return
+        try:
+            await self._on_renamed(key, title)
+        except Exception:
+            logger.info(
+                "DM topic title recording failed chat_id=%s topic_id=%s",
+                key.chat_id,
+                key.topic_id,
+            )
 
     async def _edit_topic(self, key: SessionKey, token: str, title: str) -> None:
         try:

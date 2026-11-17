@@ -13,9 +13,12 @@ from ductor_bot.chat_log.ids import from_tid, timestamp, to_tid
 from ductor_bot.i18n.loader import load_web_strings
 from ductor_bot.infra.atomic_io import complete_write
 from ductor_bot.infra.json_store import atomic_json_save
+from ductor_bot.session.key import SessionKey
 from ductor_bot.webchat.settings import resolve_default_chat_id
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from ductor_bot.chat_log.runtime import ChatLogRuntime
     from ductor_bot.messenger.telegram.app import TelegramBot
     from ductor_bot.webchat.turns import WebTurns
@@ -44,7 +47,7 @@ class WebTopics:
         self.bot = bot
         self.runtime = runtime
         self.turns = turns
-        self._registry_lock = asyncio.Lock()
+        self._registry_lock = runtime.topic_registry_lock
         self._gates: dict[str, asyncio.Lock] = {}
         self._path = bot._orch.paths.webchat_dir / "topics.json"
         self._strings = load_web_strings(bot.config.language)
@@ -53,9 +56,13 @@ class WebTopics:
         return self._gates.setdefault(tid, asyncio.Lock())
 
     def _read(self) -> list[dict[str, Any]]:
-        if not self._path.exists():
+        return self._read_registry(self._path)
+
+    @staticmethod
+    def _read_registry(path: Path) -> list[dict[str, Any]]:
+        if not path.exists():
             return []
-        data = json.loads(self._path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
             raise ValueError("topics_registry_invalid")
         return data
@@ -199,29 +206,27 @@ class WebTopics:
     async def get(self, tid: str) -> dict[str, Any] | None:
         return next((topic for topic in await self.list() if topic["tid"] == tid), None)
 
-    async def create(self, name: str) -> dict[str, Any]:
-        chat_id = resolve_default_chat_id(self.bot.config)
-        topic_id = await self.runtime.ops.create_topic(chat_id, name)
-        async with self._registry_lock:
-            entries = await asyncio.to_thread(self._read)
-            entries.append(
-                {"chat_id": chat_id, "topic_id": topic_id, "name": name, "created_at": timestamp()}
-            )
-            await complete_write(atomic_json_save, self._path, entries)
-        self.bot._topic_names.set(chat_id, topic_id, name)
-        self.runtime.events.publish({"type": "topics"})
-        topic = await self.get(f"{chat_id}.{topic_id}")
-        assert topic is not None
-        return topic
-
-    async def rename(self, topic: dict[str, Any], name: str) -> dict[str, Any]:
-        key = from_tid(topic["tid"])
+    @staticmethod
+    async def record_name(
+        bot: TelegramBot,
+        runtime: ChatLogRuntime,
+        key: SessionKey,
+        name: str,
+        *,
+        topic: dict[str, Any] | None = None,
+    ) -> None:
+        """Persist an observed Telegram title using the web topic registry."""
         assert key.topic_id is not None
-        await self.runtime.ops.rename_topic(key.chat_id, key.topic_id, name)
-        self.bot._topic_names.set(key.chat_id, key.topic_id, name)
-        await self.bot._orch._sessions.set_topic_name(key, name)
-        async with self._registry_lock:
-            entries = await asyncio.to_thread(self._read)
+        tid = to_tid(key)
+        path = bot._orch.paths.webchat_dir / "topics.json"
+        async with runtime.topic_registry_lock:
+            if tid in runtime.recorder.blocked:
+                return
+            entries = await asyncio.to_thread(WebTopics._read_registry, path)
+            saved = next(
+                (item for item in entries if (item["chat_id"], item["topic_id"]) == key.lock_key),
+                None,
+            )
             entries = [
                 item for item in entries if (item["chat_id"], item["topic_id"]) != key.lock_key
             ]
@@ -230,11 +235,31 @@ class WebTopics:
                     "chat_id": key.chat_id,
                     "topic_id": key.topic_id,
                     "name": name,
-                    "created_at": topic["created_at"],
+                    "created_at": topic["created_at"]
+                    if topic is not None
+                    else saved.get("created_at")
+                    if saved
+                    else timestamp(),
                 }
             )
-            await complete_write(atomic_json_save, self._path, entries)
-        self.runtime.events.publish({"type": "topics"})
+            bot._topic_names.set(key.chat_id, key.topic_id, name)
+            await bot._orch._sessions.set_topic_name(key, name)
+            await complete_write(atomic_json_save, path, entries)
+        runtime.events.publish({"type": "topics"})
+
+    async def create(self, name: str) -> dict[str, Any]:
+        chat_id = resolve_default_chat_id(self.bot.config)
+        topic_id = await self.runtime.ops.create_topic(chat_id, name)
+        await self.record_name(self.bot, self.runtime, SessionKey.telegram(chat_id, topic_id), name)
+        topic = await self.get(f"{chat_id}.{topic_id}")
+        assert topic is not None
+        return topic
+
+    async def rename(self, topic: dict[str, Any], name: str) -> dict[str, Any]:
+        key = from_tid(topic["tid"])
+        assert key.topic_id is not None
+        await self.runtime.ops.rename_topic(key.chat_id, key.topic_id, name)
+        await self.record_name(self.bot, self.runtime, key, name, topic=topic)
         updated = await self.get(topic["tid"])
         assert updated is not None
         return updated

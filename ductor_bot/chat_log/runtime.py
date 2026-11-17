@@ -27,6 +27,7 @@ class ChatLogRuntime:
     def __init__(self, bot: TelegramBot) -> None:
         self._bot = bot
         self.events = EventHub()
+        self.topic_registry_lock = asyncio.Lock()
         directory = bot._orch.paths.chat_log_dir
         self.history = HistoryStore(directory / "history", self.events)
         self.outbox = Outbox(directory / "outbox", self.events)
