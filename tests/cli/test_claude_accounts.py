@@ -274,7 +274,7 @@ class TestSlotRegistry:
 
     @pytest.mark.parametrize(
         "contents",
-        [b'{"cooldowns":{"bad":' + b"9" * 4301 + b"}}", b"[" * 2000 + b"]" * 2000],
+        [b'{"cooldowns":{"bad":' + b"9" * 4301 + b"}}", b"[" * 100_000 + b"]" * 100_000],
         ids=["integer-limit", "deep-json"],
     )
     def test_load_invalid_json_limits_returns_empty_and_warns(self, tmp_path, caplog, contents):
@@ -316,7 +316,7 @@ class TestSlotRegistry:
             b"private-state-content\xff",
             json.dumps({"cooldowns": {"bad": 10**400, "good": 99}}).encode(),
             b'{"cooldowns":{"bad":' + b"9" * 4301 + b"}}",
-            b"[" * 2000 + b"]" * 2000,
+            b"[" * 100_000 + b"]" * 100_000,
             b'{"cooldowns":{"nan":NaN,"inf":Infinity,"neg":-Infinity,"overflow":1e400,"good":99}}',
         ],
         ids=["invalid-json", "non-utf8", "overflow", "integer-limit", "deep-json", "nonfinite"],
