@@ -1,6 +1,6 @@
 """Load credentials from the shared secrets store when a tool needs them.
 
-The store is a plain ``KEY=VALUE`` file (``secrets.env``) that is never injected into every
+Before master-key setup, the store is a plain ``KEY=VALUE`` file (``secrets.env``), never injected into every
 CLI run, so a tool asks for exactly the keys it uses and then reads them from ``os.environ``.
 
 Usage::
@@ -16,7 +16,7 @@ Usage::
 
 Rules:
 
-* Name the keys. A call without keys loads the whole store; it exists for older tools only.
+* Name the keys. Legacy loading without keys is supported only for an unencrypted store.
 * A value that is already set in the process environment wins over the store.
 * One line is ``KEY=VALUE``. Lines that start with ``#`` and empty values are skipped, matching
   quotes around a value are removed, and ``KEY=$OTHER_KEY`` takes the value of ``OTHER_KEY``
@@ -24,11 +24,16 @@ Rules:
 * The file is the one named by ``DUCTOR_SECRETS_FILE``. The framework sets it to the main home's
   ``secrets.env`` for every CLI run unless you set it yourself; without it the store is
   ``/ductor/secrets.env``.
-* A missing or unreadable file gives an empty result and no error. Values are never printed.
+* Unencrypted missing/unreadable files give an empty result. Encrypted stores require the bot
+  RPC and raise SECRETS_LOCKED when locked or unavailable. Values are never printed.
 """
 
 from __future__ import annotations
 
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
 import os
 from pathlib import Path
 
@@ -60,27 +65,114 @@ def _parse(path: Path) -> dict[str, str]:
     return values
 
 
-def load_secrets(*keys: str) -> dict[str, str]:
-    """Put the named secrets into ``os.environ`` and return the ones that were loaded.
+class SecretsError(RuntimeError):
+    """Safe tool-facing failure; never includes response values or credentials."""
 
-    Keys that already have a value in the environment, or that are missing or empty in the
-    store, are left alone. Without keys every entry of the store is considered.
+    def __init__(self, code: str, retry_after: int | None = None) -> None:
+        message = "Secrets store is locked - ask the owner to enter the master key"
+        super().__init__(f"{code}: {message}" if code == "SECRETS_LOCKED" else code)
+        self.code = code
+        self.retry_after = retry_after
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _encrypted() -> bool:
+    path = _store_path()
+    return path.with_name(path.name + ".enc").exists()
+
+
+def _rpc(resource: str) -> dict:
+    token = os.environ.get("DUCTOR_SECRETS_TOKEN", "")
+    host = os.environ.get("DUCTOR_INTERAGENT_HOST", "127.0.0.1")
+    port = os.environ.get("DUCTOR_INTERAGENT_PORT", "8799")
+    if not token or host != "127.0.0.1" or not port.isdecimal():
+        raise SecretsError("SECRETS_LOCKED")
+    expected = os.environ.get("DUCTOR_SECRETS_VAULT_FILE", "")
+    if not expected or Path(expected).expanduser().absolute() != _store_path().absolute():
+        raise SecretsError("SECRETS_LOCKED")
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/secrets/{resource}",
+        headers={"X-Ductor-Secrets-Token": token},
+    )
+    try:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect).open(
+            request, timeout=5
+        ) as response:
+            data = json.loads(response.read())
+        if not isinstance(data, dict):
+            raise ValueError
+        return data
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            raise SecretsError("SECRET_NOT_SET") from None
+        if exc.code == 429:
+            try:
+                data = json.loads(exc.read())
+                retry = data.get("retry_after") if isinstance(data, dict) else None
+            except (ValueError, OSError):
+                retry = None
+            raise SecretsError(
+                "SECRETS_RATE_LIMITED", retry if type(retry) is int else None
+            ) from None
+        raise SecretsError("SECRETS_LOCKED") from None
+    except (OSError, ValueError, urllib.error.URLError):
+        raise SecretsError("SECRETS_LOCKED") from None
+
+
+def secret_status() -> dict:
+    """Return only status metadata; plaintext stores need no running bot."""
+    if not _encrypted():
+        return {"state": "unconfigured", "ttl_seconds": 0, "remaining_seconds": None}
+    result = _rpc("status")
+    state = result.get("state")
+    if state not in {"unconfigured", "locked", "unlocked"}:
+        raise SecretsError("SECRETS_LOCKED")
+    return {name: result.get(name) for name in ("state", "ttl_seconds", "remaining_seconds")}
+
+
+def store_secrets(*keys: str) -> dict[str, str]:
+    """Read the store only, without consulting or modifying process environment values."""
+    if not _encrypted():
+        values = _parse(_store_path())
+        return {key: values[key] for key in keys or tuple(values) if key in values}
+    if not keys:
+        raise SecretsError("SECRETS_KEYS_REQUIRED")
+    values = {}
+    for key in keys:
+        try:
+            value = _rpc(urllib.parse.quote(key, safe="")).get("value")
+        except SecretsError as exc:
+            if exc.code == "SECRET_NOT_SET":
+                continue
+            raise
+        if not isinstance(value, str):
+            raise SecretsError("SECRETS_LOCKED")
+        values[key] = value
+    return values
+
+
+def load_secrets(*keys: str) -> dict[str, str]:
+    """Load requested store values into the environment, preserving existing values.
+
+    The legacy no-key form remains available only for an unencrypted store.
     """
-    store = _parse(_store_path())
+    missing = tuple(key for key in keys if not os.environ.get(key))
+    if keys and not missing:
+        return {}
+    store = store_secrets(*missing) if keys else store_secrets()
     loaded: dict[str, str] = {}
-    for key in keys or tuple(store):
-        if os.environ.get(key):
-            continue
-        value = store.get(key)
-        if value:
+    for key, value in store.items():
+        if value and not os.environ.get(key):
             os.environ[key] = value
             loaded[key] = value
     return loaded
 
 
 def get_secret(key: str, default: str | None = None) -> str | None:
-    """Return one secret: the environment first, then the store, then *default*."""
+    """Return one secret: environment first, then the store, then default."""
     value = os.environ.get(key)
-    if value:
-        return value
-    return _parse(_store_path()).get(key, default)
+    return value if value else store_secrets(key).get(key, default)

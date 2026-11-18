@@ -26,6 +26,11 @@ from aiogram.types import (
 from ductor_bot.i18n import t
 from ductor_bot.infra.atomic_io import atomic_text_save
 from ductor_bot.infra.env_secrets import load_env_secrets, main_home_of
+from ductor_bot.infra.secret_runtime import (
+    vault_delete_secret,
+    vault_list_keys,
+    vault_set_secret,
+)
 from ductor_bot.infra.secret_store import (
     delete_secret,
     list_keys,
@@ -242,7 +247,7 @@ class SecretInput:
             )
         elif action == "list" and len(parts) == 2:
             try:
-                keys = await asyncio.to_thread(list_keys, self._store_path)
+                keys = await vault_list_keys(self._store_path, plain=list_keys)
             except Exception as exc:
                 self._failure("list_failed", exc)
                 await self._send(chat_id, _text("save_failed"), thread_id=get_thread_id(message))
@@ -258,7 +263,7 @@ class SecretInput:
                 await self._send(chat_id, _text("invalid_key"), thread_id=get_thread_id(message))
                 return
             try:
-                exists = key in await asyncio.to_thread(list_keys, self._store_path)
+                exists = key in await vault_list_keys(self._store_path, plain=list_keys)
             except Exception as exc:
                 self._failure("list_failed", exc)
                 await self._send(chat_id, _text("save_failed"), thread_id=get_thread_id(message))
@@ -339,7 +344,7 @@ class SecretInput:
             )
             return
         try:
-            await asyncio.to_thread(set_secret, self._store_path, pending.key, message.text)
+            await vault_set_secret(self._store_path, pending.key, message.text, plain=set_secret)
         except Exception as exc:
             self._failure("save_failed", exc, pending.key)
             await self._send(
@@ -396,7 +401,7 @@ class SecretInput:
             await self._request(chat_id, user_id, key, thread_id=thread_id)
         else:
             try:
-                deleted = await asyncio.to_thread(delete_secret, self._store_path, key)
+                deleted = await vault_delete_secret(self._store_path, key, plain=delete_secret)
             except Exception as exc:
                 self._failure("delete_failed", exc, key)
                 await self._send(chat_id, _text("save_failed"), thread_id=thread_id)

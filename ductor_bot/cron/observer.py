@@ -827,6 +827,13 @@ class CronObserver(BaseTaskObserver):
 
         env = os.environ.copy()
         env["DUCTOR_HOME"] = str(self._paths.ductor_home)
+        from ductor_bot.cli.executor import framework_identity_env
+        from ductor_bot.infra.secret_runtime import secret_environment
+        from ductor_bot.infra.secret_store import store_path
+
+        env.update(framework_identity_env(self._agent_name, self._config.interagent_port))
+        env.update(secret_environment(self._paths.ductor_home))
+        env["DUCTOR_SECRETS_FILE"] = str(store_path(self._paths.ductor_home))
         try:
             proc = await asyncio.create_subprocess_exec(
                 sys.executable,

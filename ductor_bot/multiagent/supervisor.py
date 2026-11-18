@@ -38,6 +38,7 @@ from ductor_bot.text.response_format import show_crash_error
 from ductor_bot.workspace.paths import resolve_paths
 
 if TYPE_CHECKING:
+    from ductor_bot.infra.secret_runtime import SecretRuntime
     from ductor_bot.multiagent.bus import InterAgentBus
     from ductor_bot.multiagent.internal_api import InternalAgentAPI
     from ductor_bot.multiagent.shared_knowledge import SharedKnowledgeSync
@@ -206,6 +207,7 @@ class AgentSupervisor:
         # Bus, internal API, shared knowledge, task hub — created lazily in start()
         self._bus: InterAgentBus | None = None
         self._internal_api: InternalAgentAPI | None = None
+        self._secret_runtime: SecretRuntime | None = None
         self._shared_knowledge: SharedKnowledgeSync | None = None
         self._task_hub: TaskHub | None = None
 
@@ -239,10 +241,16 @@ class AgentSupervisor:
             and stack.config.transport != "headless"
         )
 
-    async def start(self) -> int:
+    async def start(self) -> int:  # noqa: PLR0915
         """Start main agent + all sub-agents. Blocks until main agent exits."""
         self._running = True
         self._redelivery_stopping = False
+
+        from ductor_bot.infra.secret_runtime import start_secret_runtime
+
+        self._secret_runtime = start_secret_runtime(
+            self._main_paths.ductor_home, interagent_port=self._main_config.interagent_port
+        )
 
         # Initialize inter-agent bus
         from ductor_bot.multiagent.bus import InterAgentBus
@@ -257,10 +265,15 @@ class AgentSupervisor:
         self._internal_api = InternalAgentAPI(
             self._bus,
             port=self._main_config.interagent_port,
+            secret_runtime=self._secret_runtime,
         )
         self._internal_api.set_health_ref(self._health)
         started = await self._internal_api.start()
         if not started:
+            from ductor_bot.infra.secret_runtime import stop_secret_runtime
+
+            await stop_secret_runtime(self._secret_runtime)
+            self._secret_runtime = None
             msg = "Internal agent API failed to start"
             raise RuntimeError(msg)
         logger.info("InterAgentBus and internal API started")
@@ -1223,7 +1236,7 @@ class AgentSupervisor:
             return False
         return True
 
-    async def stop_all(self) -> None:  # noqa: C901
+    async def stop_all(self) -> None:  # noqa: C901, PLR0912
         """Shut down all agents and cleanup within one shutdown budget."""
         budget = ShutdownBudget()
         self.begin_shutdown()
@@ -1274,5 +1287,11 @@ class AgentSupervisor:
             await wait_capped(
                 self._internal_api.stop(), budget.remaining(), label="internal api stop"
             )
+
+        if self._secret_runtime is not None:
+            from ductor_bot.infra.secret_runtime import stop_secret_runtime
+
+            await stop_secret_runtime(self._secret_runtime)
+            self._secret_runtime = None
 
         logger.info("AgentSupervisor stopped (all agents shut down)")

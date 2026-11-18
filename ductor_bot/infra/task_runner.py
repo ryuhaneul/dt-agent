@@ -107,6 +107,14 @@ def _supply_secrets_store_path(one_shot: OneShotCommand, ductor_home: Path) -> N
     )
 
 
+def _supply_secrets_credentials(one_shot: OneShotCommand, ductor_home: Path | None) -> None:
+    """Only the current bot runtime may supply vault credentials to children."""
+    from ductor_bot.infra.secret_runtime import TOKEN_ENV, VAULT_FILE_ENV, secret_environment
+
+    one_shot.env_overrides.update({TOKEN_ENV: None, VAULT_FILE_ENV: None})
+    one_shot.env_overrides.update(secret_environment(ductor_home))
+
+
 async def _save_claude_usage(
     stdout: bytes, working_dir: str, slot: str = "claude", *, captured_at: int
 ) -> None:
@@ -164,6 +172,7 @@ async def run_oneshot_task(
     if options.routing_env is not None:
         _normalize_routing_env(one_shot, options.routing_env)
     captured_at = int(time.time())
+    _supply_secrets_credentials(one_shot, options.ductor_home)
     execution = await execute_one_shot(
         one_shot,
         cwd=options.cwd,
@@ -232,6 +241,7 @@ async def _run_claude_with_rotation(  # noqa: C901 -- preserve real payloads for
         if options.routing_env is not None:
             _normalize_routing_env(one_shot, options.routing_env)
         captured_at = int(time.time())
+        _supply_secrets_credentials(one_shot, options.ductor_home)
         execution = await execute_one_shot(
             one_shot,
             cwd=options.cwd,

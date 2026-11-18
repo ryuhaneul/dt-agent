@@ -106,7 +106,12 @@ def build_subprocess_env(
 
     # Framework routing and identity always win over inherited, .env, and
     # provider-specific extra variables.
+    env.pop("DUCTOR_SECRETS_TOKEN", None)
+    env.pop("DUCTOR_SECRETS_VAULT_FILE", None)
     env.update(framework_identity_env(config.agent_name, config.interagent_port))
+    from ductor_bot.infra.secret_runtime import secret_environment
+
+    env.update(secret_environment(ductor_home))
     env["DUCTOR_HOME"] = str(ductor_home)
     env["DUCTOR_TRANSPORT"] = config.transport
     env["DUCTOR_SHARED_MEMORY_PATH"] = str(main_home / "SHAREDMEMORY.md")
@@ -220,7 +225,7 @@ async def run_streaming_subprocess(
     7. Cleanup: cancel drain, unregister tracked process
     8. Post-loop: delegate to *post_handler* (default: yield error on non-zero exit)
     """
-    subprocess_env = build_subprocess_env(config, spec.extra_env) if spec.use_cwd else None
+    subprocess_env = build_subprocess_env(config, spec.extra_env)
     process = await asyncio.create_subprocess_exec(
         *spec.exec_cmd,
         stdin=_stdin_pipe(spec),
@@ -377,7 +382,7 @@ async def run_oneshot_subprocess(
     4. Handle timeout
     5. Parse output via *parse_output* callback
     """
-    oneshot_env = build_subprocess_env(config, spec.extra_env) if spec.use_cwd else None
+    oneshot_env = build_subprocess_env(config, spec.extra_env)
     process = await asyncio.create_subprocess_exec(
         *spec.exec_cmd,
         stdin=_stdin_pipe(spec),

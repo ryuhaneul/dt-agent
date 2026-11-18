@@ -192,6 +192,7 @@ class SecretVault:
         *,
         ttl_seconds: int = 0,
         clock: Callable[[], float] = time.monotonic,
+        persist_ttl: Callable[[int], None] | None = None,
     ) -> None:
         self._validate_ttl(ttl_seconds)
         self.plaintext_path = plaintext_path
@@ -200,6 +201,7 @@ class SecretVault:
         self._mutex = asyncio.Lock()
         self._clock = clock
         self._ttl_seconds = ttl_seconds
+        self._persist_ttl = persist_ttl
         self._key: bytes | None = None
         self._salt: bytes | None = None
         self._text: str | None = None
@@ -362,6 +364,8 @@ class SecretVault:
         async with self._mutex:
             self._validate_ttl(ttl_seconds)
             self._expire()
+            if self._persist_ttl is not None:
+                await self._worker(self._persist_ttl, ttl_seconds)
             self._ttl_seconds = ttl_seconds
             self._expire()
             self._schedule_expiry()

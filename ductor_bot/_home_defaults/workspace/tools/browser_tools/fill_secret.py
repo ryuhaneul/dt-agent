@@ -55,9 +55,9 @@ def _load_parser() -> Callable[..., tuple[dict[str, str | bool], list[str]]]:
 def _load_secrets() -> Callable[..., dict[str, str]]:
     if _tools_dir() not in sys.path:
         sys.path.insert(0, _tools_dir())
-    from _secrets import _parse, _store_path
+    from _secrets import store_secrets
 
-    return lambda *_keys: _parse(_store_path())
+    return store_secrets
 
 
 def _post(expression: str) -> str:

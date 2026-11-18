@@ -12,16 +12,20 @@ The server also starts in **task-only mode** (no multi-agent bus) when
 
 from __future__ import annotations
 
+import hmac
 import logging
 from dataclasses import asdict
 from typing import TYPE_CHECKING
 
 from aiohttp import web
 
+from ductor_bot.infra.secret_runtime import TOKEN_HEADER
+from ductor_bot.infra.secret_vault import VaultError
 from ductor_bot.session.named import normalize_lane
 from ductor_bot.tasks.models import normalise_origin_kind, normalise_origin_transport
 
 if TYPE_CHECKING:
+    from ductor_bot.infra.secret_runtime import SecretRuntime
     from ductor_bot.multiagent.bus import InterAgentBus
     from ductor_bot.multiagent.health import AgentHealth
     from ductor_bot.tasks.hub import TaskHub
@@ -67,13 +71,18 @@ class InternalAgentAPI:
         self,
         bus: InterAgentBus | None = None,
         port: int = _DEFAULT_PORT,
+        *,
+        secret_runtime: SecretRuntime | None = None,
     ) -> None:
         self._bus = bus
+        self._secret_runtime = secret_runtime
         self._port = port
         self._bind_host = "127.0.0.1"
         self._health_ref: dict[str, AgentHealth] | None = None
         self._task_hub: TaskHub | None = None
         self._app = web.Application()
+        self._app.router.add_get("/secrets/status", self._handle_secrets_status)
+        self._app.router.add_get("/secrets/{key}", self._handle_secret_get)
 
         # Inter-agent routes (only when bus is available)
         if bus is not None:
@@ -91,6 +100,44 @@ class InternalAgentAPI:
         self._app.router.add_post("/tasks/delete", self._handle_task_delete)
 
         self._runner: web.AppRunner | None = None
+
+    def _secrets_authorized(self, request: web.Request) -> bool:
+        runtime = self._secret_runtime
+        supplied = request.headers.get(TOKEN_HEADER, "")
+        return bool(
+            runtime
+            and supplied
+            and hmac.compare_digest(supplied.encode("utf-8"), runtime.token.encode("utf-8"))
+        )
+
+    @staticmethod
+    def _secret_response(payload: dict[str, object], status: int = 200) -> web.Response:
+        return web.json_response(payload, status=status, headers={"Cache-Control": "no-store"})
+
+    async def _handle_secrets_status(self, request: web.Request) -> web.Response:
+        if not self._secrets_authorized(request):
+            return self._secret_response({"error": "forbidden"}, 403)
+        assert self._secret_runtime is not None
+        state = await self._secret_runtime.vault.status()
+        return self._secret_response(asdict(state))
+
+    async def _handle_secret_get(self, request: web.Request) -> web.Response:
+        if not self._secrets_authorized(request):
+            return self._secret_response({"error": "forbidden"}, 403)
+        assert self._secret_runtime is not None
+        try:
+            value = await self._secret_runtime.vault.get(request.match_info["key"])
+        except VaultError as exc:
+            status = {
+                "SECRETS_LOCKED": 423,
+                "SECRET_NOT_SET": 404,
+                "SECRETS_RATE_LIMITED": 429,
+            }.get(exc.code, 503)
+            payload: dict[str, object] = {"error": exc.code}
+            if exc.retry_after is not None:
+                payload["retry_after"] = exc.retry_after
+            return self._secret_response(payload, status)
+        return self._secret_response({"value": value})
 
     def set_health_ref(self, health: dict[str, AgentHealth]) -> None:
         """Set reference to supervisor health dict for the /health endpoint."""

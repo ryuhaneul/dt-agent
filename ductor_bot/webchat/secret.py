@@ -12,6 +12,11 @@ from typing import Any
 
 from ductor_bot.i18n.loader import TranslationStore
 from ductor_bot.infra.env_secrets import load_env_secrets, main_home_of
+from ductor_bot.infra.secret_runtime import (
+    vault_delete_secret,
+    vault_list_keys,
+    vault_set_secret,
+)
 from ductor_bot.infra.secret_store import (
     delete_secret,
     list_keys,
@@ -113,7 +118,7 @@ class WebSecrets:
             removed = self._remove(tid)
             return self._reply("cancelled", "cancelled" if removed else "nothing_pending")
         if action == "list" and len(parts) == 2:
-            keys = await asyncio.to_thread(list_keys, self._path)
+            keys = await vault_list_keys(self._path, plain=list_keys)
             return (
                 self._reply("list", "list", keys="\n".join(keys))
                 if keys
@@ -124,7 +129,7 @@ class WebSecrets:
         key = parts[2] if len(parts) == 3 else ""
         if validate_key(key):
             return self._reply("error", "invalid_key")
-        exists = key in await asyncio.to_thread(list_keys, self._path)
+        exists = key in await vault_list_keys(self._path, plain=list_keys)
         if action == "delete":
             return self._issue(tid, key, "confirm_delete")
         return self._issue(tid, key, "confirm_overwrite" if exists else "value")
@@ -149,7 +154,9 @@ class WebSecrets:
                         return 200, self._reply("cancelled", "cancelled")
                     if pending.stage == "confirm_overwrite":
                         return 200, self._issue(tid, pending.key, "value")
-                    deleted = await asyncio.to_thread(delete_secret, self._path, pending.key)
+                    deleted = await vault_delete_secret(
+                        self._path, pending.key, plain=delete_secret
+                    )
                     return 200, self._reply(
                         "deleted", "deleted" if deleted else "delete_missing", key=pending.key
                     )
@@ -180,7 +187,7 @@ class WebSecrets:
                 },
             )
             return result
-        await asyncio.to_thread(set_secret, self._path, pending.key, value)
+        await vault_set_secret(self._path, pending.key, value, plain=set_secret)
         result = self._reply("saved", "saved", key=pending.key, length=len(value))
         if pending.key in load_env_secrets(self._home / ".env"):
             result["text"] += "\n" + self._text("saved_env_note", key=pending.key)
