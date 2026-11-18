@@ -251,6 +251,8 @@ title = "Bahasa antarmuka web"
 empty = "Masukkan nama topik."
 
 [cli_login]
+api_key = "Kunci API"
+api_key_slot = "Kelola slot kunci API di server dengan ./scripts/login.sh claude-api."
 title = "Login CLI"
 accounts = "Akun"
 add_slot = "Tambah slot"

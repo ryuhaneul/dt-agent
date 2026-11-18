@@ -251,6 +251,8 @@ title = "Web display language"
 empty = "Enter a topic name."
 
 [cli_login]
+api_key = "API key"
+api_key_slot = "Manage API key slots on the server with ./scripts/login.sh claude-api."
 title = "CLI login"
 accounts = "Accounts"
 add_slot = "Add slot"

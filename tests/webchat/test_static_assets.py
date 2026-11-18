@@ -2359,7 +2359,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 const {source,ids}=JSON.parse(fs.readFileSync(0,'utf8'));
-let focus=null,language='ko',timerId=0,resumeJob=false;const fakeSlots=[{name:'claude',priority:1,authenticated:true},{name:'claude-empty',priority:2,authenticated:false},{name:'claude-expired',priority:3,authenticated:true,auth_expired:true},{name:'claude-unused',priority:null,authenticated:true,auth_expired:true}];const timers=new Map(),calls=[],events={},statusReplies=[];const providerStates={claude:'authenticated',codex:'installed',grok:'installed'};
+let focus=null,language='ko',timerId=0,resumeJob=false;const fakeSlots=[{name:'claude',priority:1,authenticated:true},{name:'claude-empty',priority:2,authenticated:false},{name:'claude-expired',priority:3,authenticated:true,auth_expired:true},{name:'claude-unused',priority:null,authenticated:true,auth_expired:true},{name:'claude-api',kind:'api_key',priority:4,authenticated:true}];const timers=new Map(),calls=[],events={},statusReplies=[];const providerStates={claude:'authenticated',codex:'installed',grok:'installed'};
 class Element {
  constructor(id=''){this.id=id;this.value='';this.hidden=false;this.disabled=false;this.open=false;this.children=[];this.listeners={};this.dataset={};this.textContent='';this.classList={toggle(){}}}
  addEventListener(name,fn){(this.listeners[name]??=[]).push(fn)}
@@ -2398,7 +2398,19 @@ for(const [index,state] of ['authenticated','unauthenticated','expired','unused'
  assert.equal(rows[index].children[1].className,'badge '+(index===0?'badge-ok':index===2?'badge-warn':'badge-off'));
  assert.equal(rows[index].children[2].textContent,'ko:cli_login.'+(index===1?'login':'relogin'));
 }
-await rows[3].children[2].emit('click');await get('cliConfirmYes').emit('click');await flush();
+assert.equal(rows[4].children.length,2,'API key slots must not offer an OAuth login button');
+assert.equal(rows[4].children[1].textContent,'ko:cli_login.api_key');
+assert.equal(rows[4].children[1].dataset.i18n,'cli_login.api_key');
+assert.equal(rows[4].children[1].className,'badge badge-ok');
+await get('cliProviders').children[0].children[0].children.at(-1).emit('click');
+for(const name of ['api','claude-api']){
+ get('cliSlotName').value=name;await get('cliSlotForm').emit('submit');
+ assert.equal(get('cliSlotError').hidden,false);
+ assert.equal(get('cliSlotError').textContent,'ko:cli_login.api_key_slot');
+ assert.equal(calls.filter(call=>call.path==='/cli-login/jobs').length,0);
+}
+get('cliLoginDlg').close();module.namespace.openCliLogin();await flush();
+await get('cliProviders').children[0].children[1].children[3].children[2].emit('click');await get('cliConfirmYes').emit('click');await flush();
 assert.deepEqual(calls.filter(call=>call.path==='/cli-login/jobs').at(-1).options.body,{provider:'claude',slot:'claude-unused',new_slot:false});
 current.state='cancelled';get('cliLoginDlg').close();fakeSlots.splice(1);module.namespace.openCliLogin();await flush();
 const stableProvider=get('cliProviders').children[0];language='en';events['language-changed']();

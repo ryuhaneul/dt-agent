@@ -251,6 +251,8 @@ title = "웹 화면 언어"
 empty = "토픽 이름을 입력해 주세요."
 
 [cli_login]
+api_key = "API 키"
+api_key_slot = "API 키 슬롯은 서버에서 ./scripts/login.sh claude-api 로 관리하세요."
 title = "CLI 로그인"
 accounts = "계정"
 add_slot = "슬롯 추가"

@@ -21,6 +21,7 @@ from ductor_bot.cli.claude_accounts import (
     SlotRegistry,
     host_cli_auth_dir,
     host_slot_config_dir,
+    slot_is_api_key,
     slot_is_authenticated,
     state_file_path,
 )
@@ -824,7 +825,7 @@ def _register_cli_login_routes(app: web.Application, bot: TelegramBot) -> None: 
         priority: list[str] = []
         for name in bot.config.claude_accounts or ["claude"]:
             with contextlib.suppress(ValueError):
-                if resolve_slot_name(name) == name and name not in priority:
+                if resolve_slot_name(name, allow_api_key=True) == name and name not in priority:
                     priority.append(name)
         names = priority.copy()
         directory = host_cli_auth_dir(paths.ductor_home)
@@ -833,7 +834,7 @@ def _register_cli_login_routes(app: web.Application, bot: TelegramBot) -> None: 
                 with contextlib.suppress(ValueError):
                     if (
                         entry.is_dir()
-                        and resolve_slot_name(entry.name) == entry.name
+                        and resolve_slot_name(entry.name, allow_api_key=True) == entry.name
                         and entry.name not in names
                     ):
                         names.append(entry.name)
@@ -846,6 +847,9 @@ def _register_cli_login_routes(app: web.Application, bot: TelegramBot) -> None: 
         return [
             {
                 "name": name,
+                "kind": "api_key"
+                if slot_is_api_key(host_slot_config_dir(paths.ductor_home, name))
+                else "oauth",
                 "auth_expired": name in expired_slots,
                 "priority": priority.index(name) + 1 if name in priority else None,
                 "authenticated": slot_is_authenticated(

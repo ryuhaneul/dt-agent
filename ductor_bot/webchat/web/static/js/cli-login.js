@@ -37,7 +37,7 @@ export function initCliLogin() {
   }
   function badge(authenticated, state = null) {
     const key = state ? `cli_login.${state}` : authenticated === null ? 'cli_login.checking' : authenticated ? 'cli_login.authenticated' : 'cli_login.unauthenticated';
-    const element = node('span', `badge ${state === 'expired' ? 'badge-warn' : !state && authenticated ? 'badge-ok' : 'badge-off'}`, t(key));
+    const element = node('span', `badge ${state === 'expired' ? 'badge-warn' : (!state || state === 'api_key') && authenticated ? 'badge-ok' : 'badge-off'}`, t(key));
     element.dataset.i18n = key; return element;
   }
   function renderAccounts() {
@@ -63,8 +63,12 @@ export function initCliLogin() {
           const name = node('span', 'cli-slot-name mono', slot.name === 'claude' ? t('cli_login.default_slot') : slot.name);
           if (slot.name === 'claude') name.dataset.i18n = 'cli_login.default_slot';
           const state = slot.priority == null ? 'unused' : slot.auth_expired ? 'expired' : null;
-          row.append(name, badge(slot.authenticated, state),
-            button(slot.authenticated ? 'cli_login.relogin' : 'cli_login.login', () => askStart({ provider, slot: slot.name, new_slot: false }), !slot.authenticated));
+          if (slot.kind === 'api_key') {
+            row.append(name, badge(true, 'api_key'));
+          } else {
+            row.append(name, badge(slot.authenticated, state),
+              button(slot.authenticated ? 'cli_login.relogin' : 'cli_login.login', () => askStart({ provider, slot: slot.name, new_slot: false }), !slot.authenticated));
+          }
           slots.append(row);
         });
         section.append(slots);
@@ -230,7 +234,7 @@ export function initCliLogin() {
       confirmation.close();
       if (error.code === 'login_running') { view = 'busy'; job = null; status = { ...status, running: true }; }
       else { job = { state: 'failed' }; view = 'result'; }
-      showNotice(error.code === 'invalid_slot' ? 'cli_login.invalid_slot' : error.code === 'bot_unreachable' ? 'error.bot_unreachable' : null);
+      showNotice(error.code === 'api_key_slot' ? 'cli_login.api_key_slot' : error.code === 'invalid_slot' ? 'cli_login.invalid_slot' : error.code === 'bot_unreachable' ? 'error.bot_unreachable' : null);
     } finally { if (version === generation && dialog.open) { busy = false; render(); schedule(); } }
   }
   async function retryJob() {
@@ -299,7 +303,7 @@ export function initCliLogin() {
     event.preventDefault();
     const name = $('cliSlotName').value, canonical = slotName(name);
     const key = !name || !/^claude(?:-[a-z0-9][a-z0-9_-]*)?$/.test(canonical) || canonical === 'claude-slots'
-      ? 'cli_login.invalid_slot' : status?.claude_slots?.some(slot => slot.name === canonical) ? 'cli_login.duplicate_slot' : null;
+      ? 'cli_login.invalid_slot' : canonical === 'claude-api' ? 'cli_login.api_key_slot' : status?.claude_slots?.some(slot => slot.name === canonical) ? 'cli_login.duplicate_slot' : null;
     $('cliSlotError').hidden = !key; $('cliSlotName').setAttribute('aria-invalid', String(Boolean(key)));
     if (key) { $('cliSlotError').dataset.key = key; $('cliSlotError').textContent = t(key); $('cliSlotName').focus(); return; }
     askStart({ provider: 'claude', slot: canonical, new_slot: true });

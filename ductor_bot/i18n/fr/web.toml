@@ -251,6 +251,8 @@ title = "Langue de l’interface web"
 empty = "Saisissez un nom de sujet."
 
 [cli_login]
+api_key = "Clé API"
+api_key_slot = "Gère les slots de clé API sur le serveur avec ./scripts/login.sh claude-api."
 title = "Connexion CLI"
 accounts = "Comptes"
 add_slot = "Ajouter un emplacement"

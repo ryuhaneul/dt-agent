@@ -29,7 +29,6 @@ from ductor_bot.cli.claude_accounts import container_slot_config_dir
 from ductor_bot.webchat.cli_login_slots import (
     ClaudeLoginSlots,
     PreparedClaudeSlot,
-    resolve_slot_name,
 )
 
 Provider = Literal["claude", "codex", "grok"]
@@ -274,11 +273,14 @@ class CliLoginManager:
         if provider not in PROVIDERS or not owner:
             raise CliLoginError(400, "invalid_login")
         if provider == "claude":
+            if slot in {"api", "claude-api"}:
+                raise CliLoginError(400, "api_key_slot")
             if self._slots is not None:
                 try:
-                    slot = resolve_slot_name(slot)
-                except ValueError:
-                    raise CliLoginError(400, "invalid_slot") from None
+                    slot = self._slots.resolve_oauth_slot(slot)
+                except ValueError as exc:
+                    code = "api_key_slot" if str(exc) == "api_key_slot" else "invalid_slot"
+                    raise CliLoginError(400, code) from None
             elif (
                 new_slot
                 or not slot

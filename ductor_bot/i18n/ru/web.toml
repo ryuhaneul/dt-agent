@@ -251,6 +251,8 @@ title = "Язык веб-интерфейса"
 empty = "Введите название темы."
 
 [cli_login]
+api_key = "Ключ API"
+api_key_slot = "Управляй слотами API-ключей на сервере через ./scripts/login.sh claude-api."
 title = "Вход через CLI"
 accounts = "Аккаунты"
 add_slot = "Добавить слот"

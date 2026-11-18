@@ -251,6 +251,8 @@ title = "Taal van de webinterface"
 empty = "Voer een onderwerpnaam in."
 
 [cli_login]
+api_key = "API-sleutel"
+api_key_slot = "Beheer API-sleutelslots op de server met ./scripts/login.sh claude-api."
 title = "CLI-aanmelding"
 accounts = "Accounts"
 add_slot = "Slot toevoegen"

@@ -72,6 +72,8 @@ esac
     [
         "",
         "default",
+        "api",
+        "claude-api",
         "claude",
         "alt",
         "claude-alt",
@@ -97,8 +99,9 @@ def test_name_contract_matches_login_sh(tmp_path, name):
     if result.returncode == 0:
         assert resolve_slot_name(name) == result.stdout.strip()
     else:
-        assert result.returncode == 2
-        with pytest.raises(ValueError, match="invalid_slot"):
+        api_key = name in {"api", "claude-api"}
+        assert result.returncode == (1 if api_key else 2)
+        with pytest.raises(ValueError, match="api_key_slot" if api_key else "invalid_slot"):
             resolve_slot_name(name)
 
 
@@ -602,3 +605,54 @@ def test_successful_existing_login_does_not_register_or_reorder_slots(paths, slo
     slots.finish(slots.prepare(slot, new_slot=False), succeeded=True)
     assert paths.config_path.read_bytes() == before
     assert paths.config_path.stat().st_ino == inode
+
+
+@pytest.mark.parametrize("name", ["api", "claude-api", "claude-manual"])
+@pytest.mark.parametrize("new_slot", [False, True])
+def test_api_key_oauth_preparation_rejected_without_filesystem_changes(paths, name, new_slot):
+    slot = paths.ductor_home / ".cli-auth/claude-manual"
+    slot.mkdir()
+    (slot / "settings.json").write_text('{"apiKeyHelper": "helper.sh"}')
+    before = tree(paths.ductor_home)
+    with pytest.raises(ValueError, match="api_key_slot"):
+        ClaudeLoginSlots(paths).prepare(name, new_slot=new_slot)
+    assert tree(paths.ductor_home) == before
+
+
+@pytest.mark.parametrize("settings", ['{"permissions": {"allow": ["Read"]}}', "invalid", "[]", None])
+@pytest.mark.parametrize("slot", ["claude-api", "claude-manual"])
+def test_api_shared_settings_match_login_sh_and_preserve_default(tmp_path, settings, slot):
+    homes = [tmp_path / "bash", tmp_path / "python"]
+    for home in homes:
+        default = seed(home)
+        source = default / "settings.json"
+        if settings is None:
+            source.unlink()
+        else:
+            source.write_text(settings)
+        alternate = home / ".cli-auth" / slot
+        alternate.mkdir()
+        (alternate / "settings.json").write_text(
+            '{"apiKeyHelper": "/ductor/.cli-auth/claude-api/api-key-helper.sh", "old": true}'
+        )
+    before = (homes[1] / ".cli-auth/claude/settings.json").read_bytes() if settings else None
+    result = bash_helper(homes[0], "share", slot)
+    assert result.returncode == 0, result.stderr
+    share_slot_from_default(homes[1], slot)
+    assert tree(homes[0]) == tree(homes[1])
+    path = homes[1] / ".cli-auth" / slot / "settings.json"
+    assert not path.is_symlink()
+    assert path.stat().st_mode & 0o777 == 0o644
+    data = json.loads(path.read_text())
+    assert data["apiKeyHelper"] == "/ductor/.cli-auth/claude-api/api-key-helper.sh"
+    assert "old" not in data
+    source = homes[1] / ".cli-auth/claude/settings.json"
+    assert (source.read_bytes() if source.exists() else None) == before
+
+
+def test_api_shared_settings_recreated_when_default_directory_is_missing(tmp_path):
+    alternate = tmp_path / ".cli-auth/claude-api"
+    alternate.mkdir(parents=True)
+    (alternate / "settings.json").write_text('{"apiKeyHelper": "helper.sh", "old": true}')
+    share_slot_from_default(tmp_path, "claude-api")
+    assert json.loads((alternate / "settings.json").read_text()) == {"apiKeyHelper": "helper.sh"}

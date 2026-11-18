@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import re
 import shutil
 from dataclasses import dataclass
@@ -11,15 +13,19 @@ from pathlib import Path
 from ductor_bot.cli.claude_accounts import (
     host_cli_auth_dir,
     host_slot_config_dir,
+    slot_is_api_key,
     slot_is_authenticated,
 )
 from ductor_bot.config import transform_config_file
+from ductor_bot.infra.json_store import atomic_json_save
 from ductor_bot.workspace.paths import DuctorPaths
+
+logger = logging.getLogger(__name__)
 
 _PRIVATE_FILES = frozenset({".credentials.json", "credentials.json", ".claude.json"})
 
 
-def resolve_slot_name(name: str | None) -> str:
+def resolve_slot_name(name: str | None, *, allow_api_key: bool = False) -> str:
     """Port login.sh's resolve_claude_slot_name, including aliases and reservation."""
     if name in {None, "", "default", "claude"}:
         slot = "claude"
@@ -27,6 +33,8 @@ def resolve_slot_name(name: str | None) -> str:
         slot = name if name.startswith("claude-") else f"claude-{name}"
     if not re.fullmatch(r"claude(?:-[a-z0-9][a-z0-9_-]*)?", slot) or slot == "claude-slots":
         raise ValueError("invalid_slot")
+    if slot == "claude-api" and not allow_api_key:
+        raise ValueError("api_key_slot")
     return slot
 
 
@@ -50,15 +58,35 @@ def ensure_slot_dir(ductor_home: Path, slot: str) -> None:
     projects.symlink_to("../_shared-projects")
 
 
-def share_slot_from_default(ductor_home: Path, slot: str) -> None:
+def share_slot_from_default(ductor_home: Path, slot: str) -> None:  # noqa: C901 -- API settings remain local during sharing
     """Port share_slot_from_default and _link_alt_to_default, after successful auth."""
-    slot = resolve_slot_name(slot)
+    slot = resolve_slot_name(slot, allow_api_key=True)
     default = host_slot_config_dir(ductor_home, "claude")
     alternate = host_slot_config_dir(ductor_home, slot)
-    if slot == "claude" or not default.is_dir() or not alternate.is_dir():
+    if slot == "claude" or not alternate.is_dir():
+        return
+    api_key = slot_is_api_key(alternate)
+    if api_key:
+        settings = alternate / "settings.json"
+        helper = json.loads(settings.read_text(encoding="utf-8"))["apiKeyHelper"]
+        try:
+            data = json.loads((default / "settings.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError, RecursionError):
+            data = None
+        if not isinstance(data, dict):
+            data = {}
+            logger.warning("Default Claude settings missing or invalid; retaining API key helper")
+        data["apiKeyHelper"] = helper
+        atomic_json_save(settings, data)
+        settings.chmod(0o644)
+    if not default.is_dir():
         return
     for entry in sorted(default.iterdir()):
-        if entry.name in _PRIVATE_FILES or entry.name == "projects":
+        if (
+            entry.name in _PRIVATE_FILES
+            or entry.name == "projects"
+            or (api_key and entry.name == "settings.json")
+        ):
             continue
         link = alternate / entry.name
         target = f"../claude/{entry.name}"
@@ -88,9 +116,16 @@ class ClaudeLoginSlots:
     def __init__(self, paths: DuctorPaths) -> None:
         self._paths = paths
 
+    def resolve_oauth_slot(self, name: str | None) -> str:
+        """Reject API key slots before reserving a web OAuth login job."""
+        slot = resolve_slot_name(name)
+        if slot_is_api_key(host_slot_config_dir(self._paths.ductor_home, slot)):
+            raise ValueError("api_key_slot")
+        return slot
+
     def prepare(self, name: str, *, new_slot: bool) -> PreparedClaudeSlot:
         """Create only requested new slots; existing re-logins skip preparation."""
-        name = resolve_slot_name(name)
+        name = self.resolve_oauth_slot(name)
         directory = host_slot_config_dir(self._paths.ductor_home, name)
         if not new_slot:
             if not directory.is_dir():

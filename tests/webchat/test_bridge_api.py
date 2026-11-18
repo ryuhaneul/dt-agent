@@ -3519,14 +3519,14 @@ async def test_cli_status_returns_ordered_slots_and_cache_without_auth_wait(cli_
                     "name": "claude-work",
                     "priority": 1,
                     "authenticated": True,
-                    "auth_expired": False,
+                    "kind": "oauth", "auth_expired": False,
                 },
-                {"name": "claude", "priority": 2, "authenticated": False, "auth_expired": False},
+                {"name": "claude", "priority": 2, "authenticated": False, "kind": "oauth", "auth_expired": False},
                 {
                     "name": "claude-orphan",
                     "priority": None,
                     "authenticated": True,
-                    "auth_expired": False,
+                    "kind": "oauth", "auth_expired": False,
                 },
             ],
         }
@@ -3560,9 +3560,9 @@ async def test_cli_status_preserves_slots_when_expiration_metadata_cannot_load(c
 
     assert response.status == 200
     assert (await response.json())["claude_slots"] == [
-        {"name": "claude", "priority": 1, "authenticated": True, "auth_expired": False},
-        {"name": "claude-empty", "priority": 2, "authenticated": False, "auth_expired": False},
-        {"name": "claude-unused", "priority": None, "authenticated": True, "auth_expired": False},
+        {"name": "claude", "priority": 1, "authenticated": True, "kind": "oauth", "auth_expired": False},
+        {"name": "claude-empty", "priority": 2, "authenticated": False, "kind": "oauth", "auth_expired": False},
+        {"name": "claude-unused", "priority": None, "authenticated": True, "kind": "oauth", "auth_expired": False},
     ]
     assert state.read_bytes() == payload
     assert state.stat().st_mtime_ns == state_mtime
@@ -3596,7 +3596,7 @@ async def test_cli_slot_expiration_tracks_rotation_fingerprint(cli_bridge):
             "name": "claude-work",
             "priority": 1,
             "authenticated": True,
-            "auth_expired": not changed,
+            "kind": "oauth", "auth_expired": not changed,
         }
         assert (
             slot["auth_expired"]
@@ -3742,7 +3742,7 @@ async def test_cli_status_empty_config_still_lists_default_slot(cli_bridge):
     bot.config.claude_accounts = []
     response = await client.get(f"{_PREFIX}/cli-login/status", headers=cli_headers())
     assert (await response.json())["claude_slots"] == [
-        {"name": "claude", "priority": 1, "authenticated": False, "auth_expired": False}
+        {"name": "claude", "priority": 1, "authenticated": False, "kind": "oauth", "auth_expired": False}
     ]
 
 
@@ -3760,7 +3760,7 @@ async def test_cli_status_default_slot_excluded_from_nonempty_priority(cli_bridg
         "name": "claude",
         "priority": None,
         "authenticated": True,
-        "auth_expired": False,
+        "kind": "oauth", "auth_expired": False,
     }
 
 
@@ -4943,3 +4943,55 @@ async def test_cancelled_admission_waits_for_worker_and_retires_receipt(conversa
     assert turns._journal.path.read_bytes() == b""
     assert turns._tasks == {}
     h.bot._orch.handle_message_streaming.assert_not_awaited()
+
+
+@pytest.mark.parametrize("configured", [False, True])
+async def test_cli_status_includes_api_kind_and_ignores_stale_expiry(cli_bridge, configured):
+    from ductor_bot.cli.claude_accounts import SlotRegistry, state_file_path
+
+    client, bot, _, paths, _ = cli_bridge
+    slot = paths.ductor_home / ".cli-auth/claude-api"
+    slot.mkdir()
+    (slot / "settings.json").write_text('{"apiKeyHelper": "helper.sh"}')
+    if configured:
+        bot.config.claude_accounts = ["claude", "claude-api"]
+    registry = SlotRegistry(state_file_path(paths.ductor_home))
+    registry.state_path.write_text(json.dumps({
+        "auth_failures": {"claude-api": registry.credential_mtimes("claude-api")},
+    }))
+    response = await client.get(f"{_PREFIX}/cli-login/status", headers=cli_headers())
+    assert response.status == 200
+    slots = (await response.json())["claude_slots"]
+    api_slot = next(slot for slot in slots if slot["name"] == "claude-api")
+    assert api_slot == {
+        "name": "claude-api", "kind": "api_key", "authenticated": True,
+        "auth_expired": False, "priority": 2 if configured else None,
+    }
+    assert slots[0]["kind"] == "oauth"
+
+
+@pytest.mark.parametrize("name", ["api", "claude-api", "claude-manual"])
+@pytest.mark.parametrize("new_slot", [False, True])
+@pytest.mark.parametrize("existing", [False, True])
+async def test_cli_api_key_oauth_request_is_rejected_without_job_or_mutation(
+    cli_bridge, name, new_slot, existing
+):
+    from tests.webchat.test_cli_login_slots import tree
+
+    client, _, _, paths, manager = cli_bridge
+    if existing or name == "claude-manual":
+        directory = paths.ductor_home / ".cli-auth" / (
+            "claude-api" if name in {"api", "claude-api"} else name
+        )
+        directory.mkdir()
+        (directory / "settings.json").write_text('{"apiKeyHelper": "helper.sh"}')
+    before = tree(paths.ductor_home)
+    response = await client.post(
+        f"{_PREFIX}/cli-login/jobs", headers=cli_headers(),
+        json={"provider": "claude", "slot": name, "new_slot": new_slot},
+    )
+    assert response.status == 400
+    assert await response.json() == {"error": "api_key_slot"}
+    assert manager._active is None
+    assert manager._jobs == {}
+    assert tree(paths.ductor_home) == before
