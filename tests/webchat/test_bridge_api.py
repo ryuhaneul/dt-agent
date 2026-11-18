@@ -4734,3 +4734,18 @@ async def test_web_queue_cancel_write_failure_can_retry_without_duplicates(
         h.bot._orch.handle_message_streaming.assert_not_awaited()
     finally:
         lock.release()
+
+
+async def test_queue_admission_journal_failure_rejects_before_202(conversation, monkeypatch):
+    from ductor_bot.webchat.turns import _QueueJournal
+
+    h = conversation
+    monkeypatch.setattr(
+        _QueueJournal, "accept", lambda *_: (_ for _ in ()).throw(OSError("unavailable"))
+    )
+    response = await post_message(h)
+    assert response.status == 503
+    assert await response.json() == {"error": "generic"}
+    h.bot._orch.handle_message_streaming.assert_not_awaited()
+    assert await h.runtime.history.read("-123.7") == []
+    assert await h.runtime.outbox.pending() == []

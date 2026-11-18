@@ -353,6 +353,22 @@ class Outbox:
         async with self._lock:
             return await complete_write(self._prune, days)
 
+    def _retained_items(self) -> list[OutboxItem]:
+        items = self._pending(skip_unreadable=True)
+        for path in sorted(self._done_dir.glob("*.json")):
+            try:
+                item = self._readable(path)
+            except FileNotFoundError:
+                continue
+            if item is not None:
+                items.append(item)
+        return items
+
+    async def retained_items(self) -> list[OutboxItem]:
+        """Read pending and all retained terminal receipts without the UI age window."""
+        async with self._lock:
+            return await complete_write(self._retained_items)
+
     async def views(self) -> list[dict[str, Any]]:
         async with self._lock:
             pending = await complete_write(self._pending, skip_unreadable=True)

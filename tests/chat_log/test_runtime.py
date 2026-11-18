@@ -906,3 +906,66 @@ async def test_command_sync_keyboard_reconciliation_is_bounded(tmp_path, continu
     assert bot.edit_message_text.call_args_list[0].kwargs["text"] == "Latest"
     assert (await history.metadata("123"))[entry.id]["buttons"] == rows
     assert ("after three state changes" in caplog.text) is continuous
+
+
+async def test_runtime_recovers_queue_before_delivery_and_retention(tmp_path, monkeypatch):
+    from ductor_bot.chat_log.ids import new_id
+    from ductor_bot.webchat.turns import WebTurns, _QueuedTurn
+
+    bot = make_bot(tmp_path)
+    bot.config.chat_log.retention_days = 7
+    preparing = ChatLogRuntime(bot)
+    queued = WebTurns(bot, preparing)
+    state = _QueuedTurn(
+        "123.7",
+        "queued before restart",
+        {"turn_id": new_id(), "user_entry_id": new_id(), "reply_entry_id": new_id()},
+    )
+    queued._journal.accept(state)
+    order = []
+
+    def observed(stage):
+        records = preparing.history._read(preparing.history._path("123.7"))
+        assert len(records) == 1
+        assert records[0].status == "cancelled"
+        order.append(stage)
+
+    monkeypatch.setattr(OutboxDrainer, "start", lambda _: observed("delivery"))
+    monkeypatch.setattr(TelegramLinkMonitor, "start", lambda _: observed("link"))
+
+    async def retention(_self):
+        observed("retention")
+
+    monkeypatch.setattr(ChatLogRuntime, "_run_retention", retention)
+    runtime = await ChatLogRuntime.start(bot)
+    await asyncio.sleep(0)
+    assert order == ["delivery", "link", "retention"]
+    assert await ChatLogRuntime.start(bot) is runtime
+    await runtime.stop()
+
+
+async def test_concurrent_runtime_start_waits_for_queue_recovery(tmp_path, monkeypatch):
+    from ductor_bot.webchat.turns import WebTurns
+
+    bot = make_bot(tmp_path)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def recover(_self):
+        entered.set()
+        await release.wait()
+
+    monkeypatch.setattr(WebTurns, "recover_pending", recover)
+    delivery = MagicMock()
+    monkeypatch.setattr(OutboxDrainer, "start", delivery)
+    monkeypatch.setattr(TelegramLinkMonitor, "start", MagicMock())
+    first = asyncio.create_task(ChatLogRuntime.start(bot))
+    await entered.wait()
+    second = asyncio.create_task(ChatLogRuntime.start(bot))
+    await asyncio.sleep(0)
+    assert not second.done()
+    delivery.assert_not_called()
+    release.set()
+    left, right = await asyncio.gather(first, second)
+    assert left is right is bot._chat_log_runtime
+    delivery.assert_called_once()
+    await left.stop()

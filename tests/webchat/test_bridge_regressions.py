@@ -7,10 +7,13 @@ Only temporary paths are used; no TCP listeners or real Telegram calls.
 import asyncio
 import inspect
 import json
+import stat
+from datetime import UTC, datetime, timedelta
 from types import MethodType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import time_machine
 from aiogram.exceptions import TelegramNetworkError
 from aiohttp.test_utils import make_mocked_request
 
@@ -19,6 +22,7 @@ from ductor_bot.bus.bus import MessageBus
 from ductor_bot.bus.lock_pool import LockPool
 from ductor_bot.chat_log.events import EventHub
 from ductor_bot.chat_log.history import Entry, HistoryStore
+from ductor_bot.chat_log.ids import new_id
 from ductor_bot.chat_log.outbox import Outbox
 from ductor_bot.chat_log.recorder import HistoryRecorder
 from ductor_bot.cli.process_registry import ProcessRegistry
@@ -36,7 +40,7 @@ from ductor_bot.webchat import files as files_module
 from ductor_bot.webchat.bridge import create_bridge_app
 from ductor_bot.webchat.files import WebFileError, WebFiles, _split_shared
 from ductor_bot.webchat.topics import WebTopics
-from ductor_bot.webchat.turns import WebTurns
+from ductor_bot.webchat.turns import WebTurns, _QueuedTurn
 from ductor_bot.workspace.paths import DuctorPaths
 
 
@@ -436,3 +440,283 @@ async def test_next_preparing_turn_does_not_inherit_completed_state(
             await asyncio.gather(stopping, return_exceptions=True)
         await app.shutdown()
         await app.cleanup()
+
+
+def journal_admission(turns, text="original\n한글 😀 <literal>"):
+    identity = {"turn_id": new_id(), "user_entry_id": new_id(), "reply_entry_id": new_id()}
+    state = _QueuedTurn("-123.7", text, identity)
+    turns._journal.accept(state)
+    return state
+
+
+async def test_queue_restart_cancels_two_real_waiters_once(tmp_path):
+    paths, bot, runtime = harness(tmp_path)
+    bot._orch.handle_message_streaming = AsyncMock()
+    turns = WebTurns(bot, runtime)
+    lock = bot._orch._lock_pool.get((-123, 7))
+    await lock.acquire()
+    queue = runtime.events.subscribe()
+    identities = [turns.submit("-123.7", text) for text in ["first\n한글", "second <body>"]]
+    snapshot = turns.snapshot("-123.7")
+    try:
+        prepared = set()
+        while len(prepared) < 2:
+            event = await asyncio.wait_for(queue.get(), 3)
+            if event.get("type") == "turn" and event.get("phase") == "queued":
+                prepared.add(event["turn_id"])
+        await turns.stop()
+    finally:
+        lock.release()
+        runtime.events.unsubscribe(queue)
+    bot._orch.handle_message_streaming.assert_not_awaited()
+    _, restarted_bot, restarted_runtime = harness(tmp_path)
+    recovered = WebTurns(restarted_bot, restarted_runtime)
+    await recovered.recover_pending()
+    entries = await restarted_runtime.history.read("-123.7")
+    assert [entry.turn_id for entry in entries] == identities
+    assert [entry.id for entry in entries] == [row["user_entry_id"] for row in snapshot]
+    assert [entry.text for entry in entries] == ["first\n한글", "second <body>"]
+    assert all(entry.role == "user" and entry.status == "cancelled" for entry in entries)
+    retained = await restarted_runtime.outbox.retained_items()
+    for entry in entries:
+        parts = [item for item in retained if item.history_id == entry.id]
+        assert len(parts) == 2
+        assert parts[1].origin == "web_queue_cancelled"
+    assert stat.S_IMODE(recovered._journal.path.stat().st_mode) == 0o600
+    assert recovered._journal.path.read_bytes() == b""
+    await WebTurns(restarted_bot, restarted_runtime).recover_pending()
+    assert len(await restarted_runtime.history.read("-123.7")) == 2
+    assert len(await restarted_runtime.outbox.retained_items()) == 4
+    assert paths.webchat_dir.joinpath("queue_journal.jsonl").exists()
+
+
+@pytest.mark.parametrize("mirror_state", ["pending", "sent", "pruned"])
+async def test_queue_restart_uses_journal_when_original_mirror_is_sent_or_pruned(
+    tmp_path, mirror_state
+):
+    _, bot, runtime = harness(tmp_path)
+    turns = WebTurns(bot, runtime)
+    state = journal_admission(turns)
+    item = await runtime.outbox.enqueue(
+        kind="user_mirror",
+        chat_id=-123,
+        topic_id=7,
+        text="display-only text",
+        history_id=state.identity["user_entry_id"],
+    )
+    if mirror_state != "pending":
+        await runtime.outbox.mark_sent(item.id)
+    if mirror_state == "pruned":
+        with time_machine.travel(datetime.now(UTC) + timedelta(days=8), tick=False):
+            assert await runtime.outbox.prune() == 1
+    await turns.recover_pending()
+    entries = await runtime.history.read("-123.7")
+    assert len(entries) == 1
+    assert (entries[0].text, entries[0].id, entries[0].turn_id) == (
+        state.text,
+        state.identity["user_entry_id"],
+        state.identity["turn_id"],
+    )
+    retained = await runtime.outbox.retained_items()
+    assert sum(item.origin == "web_queue_cancelled" for item in retained) == 1
+    assert sum(item.text == "display-only text" for item in retained) == (mirror_state != "pruned")
+    await WebTurns(bot, runtime).recover_pending()
+    assert len(await runtime.history.read("-123.7")) == 1
+    assert len(await runtime.outbox.retained_items()) == (1 if mirror_state == "pruned" else 2)
+
+
+@pytest.mark.parametrize("phase", ["started", "completed"])
+async def test_queue_restart_does_not_take_over_started_inflight_turn(tmp_path, phase):
+    _, bot, runtime = harness(tmp_path)
+    turns = WebTurns(bot, runtime)
+    state = journal_admission(turns)
+    turns._journal.mark(state.identity["turn_id"], "started")
+    if phase == "completed":
+        turns._journal.mark(state.identity["turn_id"], "completed")
+    # An existing recovery delivery remains exclusively owned by inflight recovery.
+    await runtime.outbox.enqueue(
+        kind="bus", chat_id=-123, topic_id=7, text="existing inflight notice"
+    )
+    await turns.recover_pending()
+    assert await runtime.history.read("-123.7") == []
+    items = await runtime.outbox.retained_items()
+    assert len(items) == 1
+    assert items[0].kind == "bus"
+    assert turns._journal.path.read_bytes() == b""
+
+
+@pytest.mark.parametrize("notice", ["missing", "legacy", "sent_marker"])
+async def test_queue_restart_finishes_partial_cancel_without_duplicate_notice(tmp_path, notice):
+    _, bot, runtime = harness(tmp_path)
+    turns = WebTurns(bot, runtime)
+    state = journal_admission(turns)
+    await runtime.history.append(
+        "-123.7",
+        Entry(
+            "user",
+            "web",
+            state.text,
+            id=state.identity["user_entry_id"],
+            turn_id=state.identity["turn_id"],
+            status="cancelled",
+        ),
+    )
+    if notice != "missing":
+        item = await runtime.outbox.enqueue(
+            kind="user_mirror",
+            chat_id=-123,
+            topic_id=7,
+            text="<i>[메시지가 취소됐어요.]</i>"
+            if notice == "legacy"
+            else "notice in a previous locale",
+            history_id=state.identity["user_entry_id"],
+            origin=None if notice == "legacy" else "web_queue_cancelled",
+        )
+        await runtime.outbox.mark_sent(item.id)
+    await turns.recover_pending()
+    assert len(await runtime.history.read("-123.7")) == 1
+    assert len(await runtime.outbox.retained_items()) == 1
+    await WebTurns(bot, runtime).recover_pending()
+    assert len(await runtime.outbox.retained_items()) == 1
+
+
+async def test_queue_restart_skips_committed_cancel_after_notice_is_pruned(tmp_path):
+    _, bot, runtime = harness(tmp_path)
+    turns = WebTurns(bot, runtime)
+    state = journal_admission(turns)
+    await runtime.history.append(
+        "-123.7",
+        Entry(
+            "user",
+            "web",
+            state.text,
+            id=state.identity["user_entry_id"],
+            turn_id=state.identity["turn_id"],
+            status="cancelled",
+        ),
+    )
+    turns._journal.mark(state.identity["turn_id"], "cancelled")
+    await turns.recover_pending()
+    assert len(await runtime.history.read("-123.7")) == 1
+    assert await runtime.outbox.retained_items() == []
+
+
+async def test_queue_restart_excludes_deleted_topic(tmp_path):
+    paths, bot, runtime = harness(tmp_path)
+    turns = WebTurns(bot, runtime)
+    journal_admission(turns)
+    (paths.webchat_dir / "deleted_topics.json").write_text(json.dumps([[-123, 7]]))
+    await turns.recover_pending()
+    assert await runtime.history.read("-123.7") == []
+    assert await runtime.outbox.retained_items() == []
+    assert turns._journal.path.read_bytes() == b""
+
+
+async def test_queue_restart_warns_on_corruption_without_logging_payload(tmp_path, caplog):
+    _, bot, runtime = harness(tmp_path)
+    turns = WebTurns(bot, runtime)
+    journal_admission(turns)
+    with turns._journal.path.open("ab") as stream:
+        stream.write(b'BROKEN_PRIVATE_TEST_PAYLOAD\n\xff\n{"event":"bad"}\n')
+    await turns.recover_pending()
+    assert len(await runtime.history.read("-123.7")) == 1
+    assert "corrupt web queue journal line" in caplog.text
+    assert "BROKEN_PRIVATE_TEST_PAYLOAD" not in caplog.text
+    assert turns._journal.path.read_bytes() == b""
+
+
+async def test_queue_compaction_preserves_unresolved_admission_verbatim(tmp_path, monkeypatch):
+    _, bot, runtime = harness(tmp_path)
+    turns = WebTurns(bot, runtime)
+    unresolved = journal_admission(turns, "newlines\n{} <>& 한글 😀")
+    finished = journal_admission(turns, "finished")
+    turns._journal.mark(finished.identity["turn_id"], "started")
+    before = turns._journal.path.stat().st_ino
+    original = runtime.outbox.enqueue
+    monkeypatch.setattr(runtime.outbox, "enqueue", AsyncMock(side_effect=OSError("unavailable")))
+    await turns.recover_pending()
+    remaining = turns._journal.read()
+    assert list(remaining) == [unresolved.identity["turn_id"]]
+    assert remaining[unresolved.identity["turn_id"]][0]["text"] == unresolved.text
+    assert turns._journal.path.stat().st_ino != before
+    assert stat.S_IMODE(turns._journal.path.stat().st_mode) == 0o600
+    monkeypatch.setattr(runtime.outbox, "enqueue", original)
+    await WebTurns(bot, runtime).recover_pending()
+    assert turns._journal.path.read_bytes() == b""
+    assert len(await runtime.history.read("-123.7")) == 1
+    assert len(await runtime.outbox.retained_items()) == 1
+
+
+def test_queue_journal_fsyncs_each_append_and_restricts_permissions(tmp_path, monkeypatch):
+    _, bot, runtime = harness(tmp_path)
+    turns = WebTurns(bot, runtime)
+    calls = []
+    import os
+
+    original = os.fsync
+
+    def fsync(fd):
+        calls.append(stat.S_ISREG(os.fstat(fd).st_mode))
+        original(fd)
+
+    monkeypatch.setattr(os, "fsync", fsync)
+    state = journal_admission(turns)
+    for phase in ["started", "cancelled", "completed"]:
+        turns._journal.mark(state.identity["turn_id"], phase)
+    assert calls == [True, False] * 4
+    assert stat.S_IMODE(turns._journal.path.stat().st_mode) == 0o600
+    assert len(turns._journal.path.read_text().splitlines()) == 4
+
+
+async def test_queue_restart_reply_evidence_excludes_missing_user_record(tmp_path):
+    _, bot, runtime = harness(tmp_path)
+    turns = WebTurns(bot, runtime)
+    state = journal_admission(turns)
+    await runtime.history.append(
+        "-123.7", Entry("bot", "web", "already answered", turn_id=state.identity["turn_id"])
+    )
+    await turns.recover_pending()
+    entries = await runtime.history.read("-123.7")
+    assert len(entries) == 1
+    assert entries[0].role == "bot"
+    assert await runtime.outbox.retained_items() == []
+    assert turns._journal.path.read_bytes() == b""
+
+
+async def test_queue_restart_keeps_conflicting_history_admission_for_review(tmp_path):
+    _, bot, runtime = harness(tmp_path)
+    turns = WebTurns(bot, runtime)
+    state = journal_admission(turns)
+    await runtime.history.append(
+        "-123.7",
+        Entry(
+            "user",
+            "web",
+            "different existing text",
+            id=state.identity["user_entry_id"],
+            turn_id=state.identity["turn_id"],
+            status="cancelled",
+        ),
+    )
+    await turns.recover_pending()
+    assert list(turns._journal.read()) == [state.identity["turn_id"]]
+    assert len(await runtime.history.read("-123.7")) == 1
+    assert await runtime.outbox.retained_items() == []
+
+
+async def test_queue_compaction_keeps_conflicting_journal_payloads(tmp_path):
+    _, bot, runtime = harness(tmp_path)
+    turns = WebTurns(bot, runtime)
+    state = journal_admission(turns, "first original")
+    duplicate = json.loads(turns._journal.path.read_text())
+    duplicate["text"] = "conflicting original"
+    turns._journal._append(duplicate)
+    retired = journal_admission(turns, "already started")
+    turns._journal.mark(retired.identity["turn_id"], "started")
+    for _ in range(2):
+        await turns.recover_pending()
+        rows = [json.loads(line) for line in turns._journal.path.read_text().splitlines()]
+        assert len(rows) == 2
+        assert {row["text"] for row in rows} == {state.text, duplicate["text"]}
+        assert await runtime.history.read("-123.7") == []
+        assert await runtime.outbox.retained_items() == []

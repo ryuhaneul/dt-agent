@@ -37,6 +37,7 @@ class ChatLogRuntime:
         self.drainer = OutboxDrainer(self.outbox, self.ops, self.link, history=self.history)
         self.link.on_up = self.drainer.wake
         self._stopped = False
+        self._startup_ready = asyncio.Event()
         self._retention_task: asyncio.Task[None] | None = None
         self._pruner = RetentionPruner(
             self.history, self.outbox, bot._orch.paths.webchat_dir / "backups"
@@ -47,7 +48,9 @@ class ChatLogRuntime:
         if not bot.config.chat_log.enabled or bot._agent_name != "main":
             return None
         if bot._chat_log_runtime is not None:
-            return bot._chat_log_runtime
+            existing = bot._chat_log_runtime
+            await existing._startup_ready.wait()
+            return existing if bot._chat_log_runtime is existing else await cls.start(bot)
         if bot._chat_log_checked:
             return None
         bot._chat_log_checked = True
@@ -59,22 +62,34 @@ class ChatLogRuntime:
             return None
         runtime = cls(bot)
         bot._chat_log_runtime = runtime
-        bot._orch.set_history_recorder(runtime.recorder)
-        bot._bus.set_delivery_observer(runtime.recorder.on_delivered)
-        bot._telegram_transport.set_outbox(
-            runtime.outbox,
-            history=runtime.history,
-            on_failure=runtime.link.report_failure,
-            on_retry_after=runtime.drainer.defer_retry,
-            is_blocked=runtime.recorder.blocked.__contains__,
-        )
-        runtime.drainer.start()
-        runtime.link.start()
-        if bot.config.chat_log.retention_days or bot.config.chat_log.backup_retention_days:
-            runtime._retention_task = asyncio.create_task(
-                runtime._run_retention(), name="chat-log-retention"
-            )
-        logger.info("Chat log runtime started")
+        try:
+            # Waiters cannot open a bridge while recovery or activation is incomplete.
+            from ductor_bot.webchat.turns import WebTurns
+
+            await WebTurns(bot, runtime).recover_pending()
+            if not runtime._stopped:
+                bot._orch.set_history_recorder(runtime.recorder)
+                bot._bus.set_delivery_observer(runtime.recorder.on_delivered)
+                bot._telegram_transport.set_outbox(
+                    runtime.outbox,
+                    history=runtime.history,
+                    on_failure=runtime.link.report_failure,
+                    on_retry_after=runtime.drainer.defer_retry,
+                    is_blocked=runtime.recorder.blocked.__contains__,
+                )
+                runtime.drainer.start()
+                runtime.link.start()
+                if bot.config.chat_log.retention_days or bot.config.chat_log.backup_retention_days:
+                    runtime._retention_task = asyncio.create_task(
+                        runtime._run_retention(), name="chat-log-retention"
+                    )
+                logger.info("Chat log runtime started")
+        except BaseException:
+            bot._chat_log_runtime = None
+            bot._chat_log_checked = False
+            raise
+        finally:
+            runtime._startup_ready.set()
         return runtime
 
     async def _run_retention(self) -> None:

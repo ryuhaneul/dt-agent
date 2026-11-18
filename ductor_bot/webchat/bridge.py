@@ -368,8 +368,12 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
             assert isinstance(text, str)
             try:
                 return await dispatch_text(tid, text)
-            except WebCommandBusyError:
-                return _error("web_turn_running", 409)
+            except (WebCommandBusyError, OSError) as error:
+                return (
+                    _error("web_turn_running", 409)
+                    if isinstance(error, WebCommandBusyError)
+                    else _error("generic", 503)
+                )
 
     async def cancel_turn(request: web.Request) -> web.Response:
         tid, turn_id = request.match_info["tid"], request.match_info["turn_id"]

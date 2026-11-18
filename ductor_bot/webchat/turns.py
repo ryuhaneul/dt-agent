@@ -4,13 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import html
+import json
 import logging
+import os
+import re
+import tempfile
 from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from ductor_bot.chat_log.history import Entry
-from ductor_bot.chat_log.ids import from_tid, history_filename, new_id, to_tid
+from ductor_bot.chat_log.ids import from_tid, history_filename, new_id, timestamp, to_tid
 from ductor_bot.chat_log.recorder import ChatLogTurn, chat_log_source, chat_log_turn
+from ductor_bot.i18n import LANGUAGES
 from ductor_bot.i18n.loader import TranslationStore
 from ductor_bot.infra.input_context import received_at
 
@@ -39,9 +46,128 @@ class _QueuedTurn:
     tid: str
     text: str
     identity: ChatLogTurn
+    received: str = field(default_factory=timestamp)
     phase: str = "queued"
     prepared: asyncio.Event = field(default_factory=asyncio.Event)
     cancellation: asyncio.Task[None] | None = None
+
+
+class _QueueJournal:
+    """Private append-only admission receipts, independent of history/outbox formats."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._conflicting: list[dict[str, str]] = []
+
+    def _sync_directory(self) -> None:
+        fd = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    def _append(self, event: dict[str, str]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(json.dumps(event, ensure_ascii=False) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        self._sync_directory()
+
+    def accept(self, state: _QueuedTurn) -> None:
+        self._append(
+            {
+                "event": "accepted",
+                "turn_id": state.identity["turn_id"],
+                "user_entry_id": state.identity["user_entry_id"],
+                "tid": state.tid,
+                "text": state.text,
+                "ts": state.received,
+            }
+        )
+
+    def mark(self, turn_id: str, event: Literal["started", "cancelled", "completed"]) -> None:
+        self._append({"event": event, "turn_id": turn_id, "ts": timestamp()})
+
+    @staticmethod
+    def _decode(line: bytes) -> dict[str, str]:
+        row = json.loads(line)
+        if not isinstance(row, dict) or row.get("event") not in {
+            "accepted",
+            "started",
+            "cancelled",
+            "completed",
+        }:
+            raise ValueError("Unsupported queue event")
+        keys = ["event", "turn_id", "ts"]
+        if row["event"] == "accepted":
+            keys += ["user_entry_id", "tid", "text"]
+        if not all(isinstance(row.get(key), str) for key in keys):
+            raise ValueError("Invalid queue event fields")
+        if datetime.fromisoformat(row["ts"]).tzinfo is None:
+            raise ValueError("Queue timestamps require a timezone")
+        if re.fullmatch(r"[0-9a-f]{12}", row["turn_id"]) is None:
+            raise ValueError("Invalid queue turn identifier")
+        if row["event"] == "accepted":
+            from_tid(row["tid"])
+            if re.fullmatch(r"[0-9a-f]{12}", row["user_entry_id"]) is None:
+                raise ValueError("Invalid queue user identifier")
+        return {key: row[key] for key in keys}
+
+    def read(self) -> dict[str, tuple[dict[str, str], set[str]]]:
+        if self.path.is_symlink():
+            raise OSError("Queue journal must be a regular file")
+        try:
+            content = self.path.read_bytes()
+        except FileNotFoundError:
+            return {}
+        self._conflicting = []
+        admissions: dict[str, dict[str, str]] = {}
+        events: dict[str, set[str]] = {}
+        conflicting: set[str] = set()
+        for number, line in enumerate(content.splitlines(), 1):
+            try:
+                row = self._decode(line)
+            except (ValueError, TypeError, UnicodeError):
+                logger.warning("Skipping corrupt web queue journal line %s", number)
+                continue
+            turn_id = row["turn_id"]
+            if row["event"] == "accepted":
+                previous = admissions.get(turn_id)
+                if previous is not None and previous != row:
+                    conflicting.add(turn_id)
+                    for version in (previous, row):
+                        if version not in self._conflicting:
+                            self._conflicting.append(version)
+                    logger.warning("Retaining conflicting web queue journal admission")
+                admissions[turn_id] = row
+            else:
+                events.setdefault(turn_id, set()).add(row["event"])
+        return {
+            identity: (row, events.get(identity, set()))
+            for identity, row in admissions.items()
+            if identity not in conflicting
+        }
+
+    def compact(self, admissions: list[dict[str, str]]) -> None:
+        # Called before admissions are allowed, so replacing the file cannot race appenders.
+        if not self.path.exists():
+            return
+        fd, name = tempfile.mkstemp(dir=self.path.parent, suffix=".tmp")
+        temporary = Path(name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                os.fchmod(stream.fileno(), 0o600)
+                for row in [*admissions, *self._conflicting]:
+                    stream.write(json.dumps(row, ensure_ascii=False) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            temporary.replace(self.path)
+            self._sync_directory()
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 class WebTurns:
@@ -56,6 +182,7 @@ class WebTurns:
         self._queues: dict[str, list[str]] = {}
         self._fifo_locks: dict[str, asyncio.Lock] = {}
         self._strings = TranslationStore(bot.config.language)
+        self._journal = _QueueJournal(bot._orch.paths.webchat_dir / "queue_journal.jsonl")
 
     def busy(self, tid: str) -> bool:
         return bool(self.snapshot(tid))
@@ -92,10 +219,12 @@ class WebTurns:
             "user_entry_id": new_id(),
             "reply_entry_id": new_id(),
         }
+        state = _QueuedTurn(tid, text, turn)
+        # Persist acceptance before a task can run or HTTP 202 can be returned.
+        self._journal.accept(state)
         queue = self._queues.setdefault(tid, [])
         self._fifo_locks.setdefault(tid, asyncio.Lock())
         turn_id = turn["turn_id"]
-        state = _QueuedTurn(tid, text, turn)
         self._turns[turn_id] = state
         work = self._run(tid, text, turn, session_name=session_name)
         task = asyncio.create_task(work, name="webchat-turn")
@@ -121,12 +250,14 @@ class WebTurns:
             if state.phase != "cancelled":
                 self._turns.pop(turn_id, None)
 
-    async def _recorded_phase(self, tid: str, turn_id: str) -> str | None:
+    async def _recorded_phase(
+        self, tid: str, turn_id: str, *, reply_only: bool = False
+    ) -> str | None:
         before = None
         while True:
             entries, more = await self.runtime.history.read_page(tid, before=before, limit=200)
             for entry in entries:
-                if entry.turn_id == turn_id:
+                if entry.turn_id == turn_id and (not reply_only or entry.role == "bot"):
                     return "cancelled" if entry.status == "cancelled" else "turn_started"
             if not more or not entries:
                 return None
@@ -186,28 +317,101 @@ class WebTurns:
                     text=self._strings.chat("chat_log.mirror_user", text=state.text),
                     history_id=turn["user_entry_id"],
                 )
-            if await self.runtime.history.get_entry(state.tid, turn["user_entry_id"]) is None:
-                await self.runtime.history.append(
-                    key,
-                    Entry(
-                        role="user",
-                        source="web",
-                        text=state.text,
-                        id=turn["user_entry_id"],
-                        turn_id=turn["turn_id"],
-                        status="cancelled",
-                    ),
-                )
-            await self.runtime.outbox.enqueue(
-                kind="user_mirror",
-                chat_id=key.chat_id,
-                topic_id=key.topic_id,
-                text=self._strings.chat("notice.queue_cancelled"),
-                history_id=turn["user_entry_id"],
+            await self._save_cancelled(
+                state.tid, turn["turn_id"], turn["user_entry_id"], state.text, state.received
             )
         self.runtime.drainer.wake()
         self._publish(state.tid, turn["turn_id"], "cancelled")
         self._turns.pop(turn["turn_id"], None)
+
+    async def _save_cancelled(
+        self, tid: str, turn_id: str, user_id: str, text: str, received: str
+    ) -> None:
+        entry = await self.runtime.history.get_entry(tid, user_id)
+        if entry is None:
+            await self.runtime.history.append(
+                from_tid(tid),
+                Entry(
+                    role="user",
+                    source="web",
+                    text=text,
+                    id=user_id,
+                    turn_id=turn_id,
+                    status="cancelled",
+                    ts=received,
+                ),
+            )
+        notices = {
+            TranslationStore(language).chat("notice.queue_cancelled") for language in LANGUAGES
+        }
+        retained = await self.runtime.outbox.retained_items()
+        sent = any(
+            item.tid == tid
+            and item.history_id == user_id
+            and item.kind == "user_mirror"
+            and (item.origin == "web_queue_cancelled" or item.text in notices)
+            for item in retained
+        )
+        if not sent:
+            key = from_tid(tid)
+            await self.runtime.outbox.enqueue(
+                kind="user_mirror",
+                chat_id=key.chat_id,
+                topic_id=key.topic_id,
+                history_id=user_id,
+                origin="web_queue_cancelled",
+                text=self._strings.chat("notice.queue_cancelled"),
+            )
+        self._journal.mark(turn_id, "cancelled")
+
+    async def _recover_admission(self, row: dict[str, str]) -> bool:
+        """Return false only when conflicting history requires retaining the admission."""
+        tid, turn_id, user_id = row["tid"], row["turn_id"], row["user_entry_id"]
+        async with self.runtime.outbox.delivery_lock:
+            if await self._recorded_phase(tid, turn_id, reply_only=True) is not None:
+                return True
+            entry = await self.runtime.history.get_entry(tid, user_id)
+            if entry is not None:
+                if not (
+                    entry.role == "user"
+                    and entry.source == "web"
+                    and entry.turn_id == turn_id
+                    and entry.text == row["text"]
+                ):
+                    logger.warning("Web queue admission has conflicting history")
+                    return False
+                if entry.status != "cancelled":
+                    return True
+            await self._save_cancelled(tid, turn_id, user_id, row["text"], row["ts"])
+        return True
+
+    async def recover_pending(self) -> None:
+        """Cancel admissions orphaned by a previous process, before delivery/retention."""
+        from ductor_bot.webchat.topics import WebTopics
+
+        try:
+            states = self._journal.read()
+        except (OSError, ValueError):
+            logger.warning("Web queue journal unavailable during startup")
+            return
+        deleted = WebTopics._read_deleted(self.bot._orch.paths.webchat_dir / "deleted_topics.json")
+        keep = []
+        for row, events in states.values():
+            # A durable start belongs to inflight recovery, never queue cancellation.
+            if events & {"started", "cancelled", "completed"}:
+                continue
+            if from_tid(row["tid"]).lock_key in deleted:
+                continue
+            try:
+                if not await self._recover_admission(row):
+                    keep.append(row)
+            except (OSError, ValueError):
+                keep.append(row)
+                logger.warning("Web queue startup cancellation could not be persisted")
+        try:
+            self._journal.compact(keep)
+        except OSError:
+            logger.warning("Web queue journal compaction failed")
 
     async def _status(self, tid: str, reply_id: str, *, aborted: bool = False) -> str | None:
         try:
@@ -358,7 +562,8 @@ class WebTurns:
             async with lock:
                 if tid in self.blocked or state.phase == "cancelled":
                     return
-                # No await between cancellation check and the started transition.
+                # The synchronous fsync keeps the start receipt and transition indivisible.
+                self._journal.mark(turn["turn_id"], "started")
                 state.phase = "started"
                 self._started.add(turn["turn_id"])
                 self._publish(tid, turn["turn_id"], "started")
@@ -442,6 +647,11 @@ class WebTurns:
             if owns_fifo:
                 fifo.release()
             self._started.discard(turn["turn_id"])
+            if state.phase == "started":
+                try:
+                    self._journal.mark(turn["turn_id"], "completed")
+                except OSError:
+                    logger.warning("Web queue completion receipt could not be persisted")
             if state.phase != "cancelled":
                 self._publish(tid, turn["turn_id"], "done" if status == "ok" else status)
 
