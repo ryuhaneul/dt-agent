@@ -371,6 +371,11 @@ async def relay(request: web.Request) -> web.Response:
                 ),
             },
         )
+    elif request.method == "POST" and re.fullmatch(r"/api/topics/[^/]+/messages", request.path):
+        token = request.cookies.get(SESSION_COOKIE, "")
+        status, data = await state.bridge.request(
+            request.method, path, body=body, headers={"X-Dtw-Owner": _login_owner(state, token)}
+        )
     else:
         status, data = await state.bridge.request(request.method, path, body=body)
     if request.path == "/api/state" and status == 200:
@@ -540,6 +545,7 @@ def create_app(
         ("/topics/{tid}/autocompact/automations/{kind}/{id}", ("PUT",)),
         ("/topics/{tid}", ("PATCH", "DELETE")),
         ("/topics/{tid}/messages", ("GET", "POST")),
+        ("/topics/{tid}/messages/{entry_id}/attachments", ("GET",)),
         ("/topics/{tid}/abort", ("POST",)),
         ("/topics/{tid}/turns/{turn_id}/cancel", ("POST",)),
         ("/topics/{tid}/buttons", ("POST",)),

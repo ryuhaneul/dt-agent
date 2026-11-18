@@ -322,8 +322,15 @@ class WebTurns:
             {"tid": state.tid, "turn_id": state.identity["turn_id"], **activity}
         )
 
-    async def submit(self, tid: str, text: str, *, session_name: str | None = None) -> str:
-        turn: ChatLogTurn = {
+    async def submit(
+        self,
+        tid: str,
+        text: str,
+        *,
+        session_name: str | None = None,
+        turn: ChatLogTurn | None = None,
+    ) -> str:
+        turn = turn or {
             "turn_id": new_id(),
             "user_entry_id": new_id(),
             "reply_entry_id": new_id(),

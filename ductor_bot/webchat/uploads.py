@@ -110,6 +110,7 @@ class UploadSession:
     sha256: str | None = None
     inline_allowed: bool = False
     reserved_bytes: int = 0
+    used_by: str | None = None
 
     def public(self) -> dict[str, Any]:
         return {
@@ -255,6 +256,7 @@ class UploadStore:
             or type(session.size) is not int
             or type(session.offset) is not int
             or not 0 <= session.offset <= session.size
+            or (session.used_by is not None and not isinstance(session.used_by, str))
         ):
             raise UploadError("upload_corrupt", 409)
 
@@ -496,6 +498,86 @@ class UploadStore:
                 self._safe(self.incoming / f"{upload_id}.{suffix}").unlink(missing_ok=True)
             self._reservations.pop(upload_id, None)
 
+    def completed_path(self, session: UploadSession) -> Path:
+        """Resolve only the finalized file belonging to this upload."""
+        if session.path is None or session.mime is None:
+            raise UploadError("upload_incomplete", 409)
+        relative = Path(session.path)
+        if relative.is_absolute() or ".." in relative.parts or relative.stem != session.id:
+            raise UploadError("file_unavailable", 404)
+        path = self._safe(self.directory / relative)
+        if not path.is_file() or path.stat().st_size != session.size:
+            raise UploadError("file_unavailable", 404)
+        return path
+
+    async def claim(
+        self,
+        upload_ids: list[str],
+        tid: str,
+        owner: str,
+        entry_id: str,
+        append: Callable[[list[UploadSession]], None],
+    ) -> list[UploadSession]:
+        """Claim a validated batch once, rolling back ordinary storage failures."""
+        if len(set(upload_ids)) != len(upload_ids):
+            raise UploadError("bad_attachments", 400)
+        async with contextlib.AsyncExitStack() as stack:
+            for upload_id in sorted(upload_ids):
+                await stack.enter_async_context(self._lock(upload_id))
+            return await complete_write(self._claim, upload_ids, tid, owner, entry_id, append)
+
+    def _claim(
+        self,
+        upload_ids: list[str],
+        tid: str,
+        owner: str,
+        entry_id: str,
+        append: Callable[[list[UploadSession]], None],
+    ) -> list[UploadSession]:
+        sessions = [self._load(upload_id, tid, owner) for upload_id in upload_ids]
+        for session in sessions:
+            self.completed_path(session)
+            if session.used_by is not None:
+                raise UploadError("attachment_used", 409)
+        marked = []
+        try:
+            for session in sessions:
+                session.used_by = entry_id
+                marked.append(session)
+                self._save(session)
+            append(sessions)
+        except BaseException:
+            for session in marked:
+                session.used_by = None
+                self._save(session)
+            raise
+        return sessions
+
+    async def recover_claims(self, indexed_entries: set[str] | None) -> int:
+        """Release interrupted claims only when their index entry is absent."""
+        await complete_write(self._prepare)
+        paths = await asyncio.to_thread(lambda: list(self.incoming.glob("*.json")))
+        retained = 0
+        for path in paths:
+            if _ID.fullmatch(path.stem) is None:
+                continue
+            async with self._lock(path.stem):
+                retained += await complete_write(self._recover_claim, path, indexed_entries)
+        return retained
+
+    def _recover_claim(self, path: Path, indexed_entries: set[str] | None) -> int:
+        try:
+            session = UploadSession(**json.loads(self._safe(path).read_text()))
+            self._validate_record(session)
+        except (FileNotFoundError, ValueError, TypeError, UploadError):
+            return 0
+        if indexed_entries is None:
+            return int(session.used_by is not None)
+        if session.used_by is not None and session.used_by not in indexed_entries:
+            session.used_by = None
+            self._save(session)
+        return 0
+
     async def cancel(self, upload_id: str, tid: str, owner: str) -> None:
         async with self._lock(upload_id):
             session = await complete_write(self._load, upload_id, tid, owner)
@@ -606,6 +688,7 @@ class AttachmentSettings:
 
 
 UPLOADS = web.AppKey("webchat_uploads", UploadStore)
+ATTACH_SETTINGS = web.AppKey("webchat_attachment_settings", AttachmentSettings)
 
 
 def register_upload_routes(  # noqa: C901, PLR0915 -- route lifecycle and request dispatch
@@ -624,6 +707,7 @@ def register_upload_routes(  # noqa: C901, PLR0915 -- route lifecycle and reques
     )
     settings = AttachmentSettings(settings_path, config)
     app[UPLOADS] = store
+    app[ATTACH_SETTINGS] = settings
 
     async def lifecycle(_app: web.Application) -> AsyncIterator[None]:
         await store.cleanup()

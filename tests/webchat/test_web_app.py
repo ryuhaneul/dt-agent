@@ -1332,3 +1332,23 @@ async def test_turn_cancel_relay_requires_session_csrf_and_client(site):
     response = await client.post(path, headers=session_headers)
     assert response.status == 200
     assert fake.calls[-1][:2] == ("POST", "/topics/-123.4/turns/turn-id/cancel")
+
+
+async def test_attachment_message_owner_is_derived_from_cookie(site):
+    client, fake = site
+    authorized, response = await login(client)
+    expected = hmac.digest(
+        client.app[STATE].owner_key, response.cookies["dtw_session"].value.encode(), "sha256"
+    ).hex()
+    posted = await client.post(
+        "/api/topics/123/messages",
+        json={"text": "message", "client_id": "request", "attachment_ids": []},
+        headers={**authorized, "X-Dtw-Owner": "forged-owner"},
+    )
+    assert posted.status == 202
+    assert [owner for path, owner in fake.owner_headers if path == "/topics/123/messages"] == [
+        expected
+    ]
+    fetched = await client.get("/api/topics/123/messages/entry/attachments", headers=authorized)
+    assert fetched.status == 200
+    assert (await fetched.json())["path"] == "/topics/123/messages/entry/attachments"
