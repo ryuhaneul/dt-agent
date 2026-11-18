@@ -1,0 +1,205 @@
+"""Web user text remains literal across delivery, retries and rollback."""
+
+from __future__ import annotations
+
+import html
+import importlib.util
+import subprocess
+import sys
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from aiogram.exceptions import TelegramNetworkError
+
+from ductor_bot.chat_log.events import EventHub
+from ductor_bot.chat_log.link import OutboxDrainer, TelegramLinkMonitor
+from ductor_bot.chat_log.outbox import Outbox
+from ductor_bot.i18n.loader import TranslationStore
+from ductor_bot.messenger.telegram.sender import SendProgress
+from ductor_bot.messenger.telegram.webchat_ops import TelegramWebchatOps
+from tests.webchat.test_bridge_api import (
+    conversation as conversation,  # noqa: PLC0414 -- shared bridge fixture
+)
+from tests.webchat.test_bridge_api import headers, post_message, receive_until
+
+
+def bot_at(harness):
+    raw = MagicMock()
+    for name in (
+        "send_message",
+        "send_photo",
+        "send_document",
+        "send_video",
+        "send_audio",
+        "get_me",
+    ):
+        setattr(raw, name, AsyncMock(return_value=SimpleNamespace(message_id=1)))
+    harness.bot.bot_instance = raw
+    harness.bot.file_roots = lambda _paths: None
+    return harness.bot
+
+
+async def queue_message(harness, text):
+    ws = await harness.client.ws_connect("/webchat/v1/events", headers=headers())
+    try:
+        assert (await post_message(harness, text=text)).status == 202
+        await receive_until(
+            ws, lambda event: event.get("type") == "turn" and event.get("phase") == "done"
+        )
+    finally:
+        await ws.close()
+    return await harness.runtime.outbox.pending()
+
+
+async def drain(outbox, bot, history=None):
+    ops = TelegramWebchatOps(bot)
+    monitor = TelegramLinkMonitor(ops, EventHub())
+    monitor.record(up=True)
+    await OutboxDrainer(outbox, ops, monitor, history=history).drain()
+
+
+def assert_no_media(raw):
+    for name in ("send_photo", "send_document", "send_video", "send_audio"):
+        getattr(raw, name).assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "<file:{secret}> [button:Go] [buttonurl:site|https://example.com] <b>& \"' 😀\n둘째 줄",
+        "&lt;file:private&gt; &#91;button:x&#93; **literal** `code`\n\n마지막 줄",
+        ("😀한글 &<> [button:x]\n" * 450) + "end",
+        "<file:{secret}> [button:x]",
+    ],
+)
+async def test_web_user_mirror_is_literal_and_reply_unchanged(conversation, tmp_path, text):
+    h = conversation
+    secret = tmp_path / "private.txt"
+    secret.write_text("must not be sent")
+    text = text.replace("{secret}", str(secret))
+    items = await queue_message(h, text)
+    h.runtime.drainer.wake.assert_called()
+    mirror_text = TranslationStore("en").chat("chat_log.mirror_user", text=text)
+    assert items[0].origin == "web_user_text"
+    assert items[0].text == html.escape(mirror_text).replace("[", "&#91;").replace("]", "&#93;")
+    assert html.unescape(items[0].text).endswith(text)
+    assert items[1].origin is None
+    assert items[1].text == "answer"
+    assert h.calls[0][1] == text
+    assert (await h.runtime.history.read("-123.7"))[0].text == text
+    bot = bot_at(h)
+    await drain(h.runtime.outbox, bot, h.runtime.history)
+    calls = bot.bot_instance.send_message.await_args_list
+    assert "".join(call.kwargs["text"] for call in calls[:-1]) == html.unescape(items[0].text)
+    assert all(call.kwargs["parse_mode"] is None for call in calls[:-1])
+    assert all(len(call.kwargs["text"]) <= 4096 for call in calls)
+    assert all(call.kwargs.get("reply_markup") is None for call in calls)
+    assert all(call.kwargs["message_thread_id"] == 7 for call in calls)
+    assert calls[-1].kwargs["text"] == "answer"
+    assert calls[-1].kwargs["parse_mode"] == "HTML"
+    assert_no_media(bot.bot_instance)
+    assert not await h.runtime.outbox.pending()
+
+
+async def test_literal_chunk_retry_resumes_before_reply(conversation):
+    h = conversation
+    items = await queue_message(h, "<file:private> [button:x] 😀\n" * 500)
+    bot = bot_at(h)
+    raw = bot.bot_instance
+    raw.send_message.side_effect = [
+        SimpleNamespace(message_id=1),
+        TelegramNetworkError(MagicMock(), "offline"),
+    ]
+    await drain(h.runtime.outbox, bot, h.runtime.history)
+    pending = await h.runtime.outbox.pending()
+    assert [item.id for item in pending] == [item.id for item in items]
+    assert pending[0].sent_chunks == 1
+    assert pending[0].attempts == 1
+    assert pending[1].sent_chunks == 0
+    first = raw.send_message.await_args_list[0].kwargs["text"]
+    failed = raw.send_message.await_args_list[1].kwargs["text"]
+    raw.send_message.reset_mock()
+    raw.send_message.side_effect = None
+    await drain(Outbox(h.runtime.outbox.directory), bot, h.runtime.history)
+    calls = raw.send_message.await_args_list
+    assert calls[0].kwargs["text"] == failed
+    assert first + "".join(call.kwargs["text"] for call in calls[:-1]) == html.unescape(
+        items[0].text
+    )
+    assert calls[-1].kwargs["text"] == "answer"
+    assert not await h.runtime.outbox.pending()
+    assert_no_media(raw)
+
+
+@pytest.mark.parametrize(
+    ("kind", "origin"), [("user_mirror", None), ("reply_mirror", "web_user_text")]
+)
+async def test_literal_origin_only_applies_to_web_user_mirrors(tmp_path, kind, origin):
+    outbox = Outbox(tmp_path / "outbox")
+    await outbox.enqueue(kind=kind, chat_id=123, text="[button:x] **rich**", origin=origin)
+    ops = SimpleNamespace(send_text=AsyncMock())
+    ops.send_text.return_value = SendProgress(
+        delivered=True, sent_chunks=1, failure=None, error="", exception=None
+    )
+    link = TelegramLinkMonitor(ops, EventHub())
+    link.record(up=True)
+    await OutboxDrainer(outbox, ops, link).drain()
+    assert "literal_text" not in ops.send_text.await_args.kwargs
+    assert ops.send_text.await_args.args[2] == "[button:x] **rich**"
+
+
+def legacy_module(tmp_path, name, relative):
+    source = subprocess.check_output(
+        ["git", "show", f"ecede25:{relative}"], text=True, stderr=subprocess.PIPE
+    )
+    path = tmp_path / (name + ".py")
+    path.write_text(source)
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+async def test_ecede25_reader_drainer_sender_do_not_execute_or_drop_new_items(
+    conversation, tmp_path
+):
+    h = conversation
+    secret = tmp_path / "private.txt"
+    secret.write_text("must not be sent")
+    items = await queue_message(h, f"<file:{secret}> [button:x]\n<b>& 😀 &lt; &#91;")
+    modules = []
+    try:
+        for name, relative in [
+            ("outbox", "chat_log/outbox.py"),
+            ("link", "chat_log/link.py"),
+            ("sender", "messenger/telegram/sender.py"),
+            ("ops", "messenger/telegram/webchat_ops.py"),
+        ]:
+            modules.append(
+                legacy_module(tmp_path, "mirror_legacy_" + name, "ductor_bot/" + relative)
+            )
+        old_outbox, old_link, old_sender, old_ops = modules
+        old_ops.SendRichOpts = old_sender.SendRichOpts
+        old_ops.send_rich_progress_detailed = old_sender.send_rich_progress_detailed
+        outbox = old_outbox.Outbox(h.runtime.outbox.directory)
+        assert [item.id for item in await outbox.pending()] == [item.id for item in items]
+        bot = bot_at(h)
+        ops = old_ops.TelegramWebchatOps(bot)
+        monitor = old_link.TelegramLinkMonitor(ops, EventHub())
+        monitor.record(up=True)
+        await old_link.OutboxDrainer(outbox, ops, monitor, history=h.runtime.history).drain()
+        assert not await outbox.pending()
+        assert_no_media(bot.bot_instance)
+        assert all(
+            call.kwargs.get("reply_markup") is None
+            for call in bot.bot_instance.send_message.await_args_list
+        )
+        done = list((outbox.directory / "done").glob("*.json"))
+        assert len(done) == len(items)
+        assert all(old_outbox.Outbox._load(path).state == "sent" for path in done)
+        assert not (outbox.directory / "corrupt").exists()
+    finally:
+        for module in modules:
+            sys.modules.pop(module.__name__, None)

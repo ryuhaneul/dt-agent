@@ -48,6 +48,7 @@ class TelegramWebchatOps:
         *,
         on_chunk: Callable[[int], Awaitable[None]] | None = None,
         buttons: list[list[dict[str, Any]]] | None = None,
+        literal_text: bool = False,
         on_keyboard: Callable[[int, InlineKeyboardMarkup, str | None], Awaitable[None]]
         | None = None,
     ) -> SendProgress:
@@ -77,6 +78,7 @@ class TelegramWebchatOps:
                 reply_markup=markup,
                 skip_unavailable_files=True,
                 on_keyboard=on_keyboard,
+                literal_text=literal_text,
             ),
             start_chunk=start_chunk,
             on_chunk=on_chunk,

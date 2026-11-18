@@ -48,6 +48,7 @@ class SendRichOpts(BaseSendOpts):
     thread_id: int | None = None
     ia_task_id: str = ""
     skip_unavailable_files: bool = False
+    literal_text: bool = False
     on_keyboard: Callable[[int, InlineKeyboardMarkup, str | None], Awaitable[None]] | None = None
 
 
@@ -453,8 +454,8 @@ async def _send_ia_text_chunk_outcome(  # noqa: PLR0913 -- sender and chunk opti
     try:
         response = await bot.send_message(
             **kwargs,
-            text=markdown_to_telegram_html(raw),
-            parse_mode=ParseMode.HTML,
+            text=raw if opts.literal_text else markdown_to_telegram_html(raw),
+            parse_mode=None if opts.literal_text else ParseMode.HTML,
         )
     except TelegramBadRequest as exc:
         rejection = exc
@@ -474,7 +475,7 @@ async def _send_ia_text_chunk_outcome(  # noqa: PLR0913 -- sender and chunk opti
             return _response_outcome(response)
         rejection = response
 
-    if not _is_html_parse_error(rejection):
+    if opts.literal_text or not _is_html_parse_error(rejection):
         logger.warning(
             "Telegram IA HTML chunk rejected task=%s chunk=%d error=%s",
             opts.ia_task_id,
@@ -623,13 +624,17 @@ async def send_rich_progress_detailed(  # noqa: PLR0913 -- resumable send and pr
     """Send IA text and files in fixed chunks, stopping at the first failure."""
     o = opts or SendRichOpts()
     # The bus hashes the original report; IA-only display parsing is stable.
-    clean_text, files, extracted_markup = _parse_ia_report(text)
+    clean_text, files, extracted_markup = (
+        (text, [], None) if o.literal_text else _parse_ia_report(text)
+    )
     markup = o.reply_markup if o.reply_markup is not None else extracted_markup
     if not clean_text and not files and markup is not None:
         # Telegram cannot attach a keyboard without a message.
         clean_text = t("telegram.choose_option")
     chunks = [
-        chunk for chunk in _ia_text_chunks(clean_text) if markdown_to_telegram_html(chunk).strip()
+        chunk
+        for chunk in _ia_text_chunks(clean_text)
+        if (chunk.strip() if o.literal_text else markdown_to_telegram_html(chunk).strip())
     ]
     total = len(chunks) + len(files)
     if total == 0 or start_chunk < 0 or start_chunk > total:

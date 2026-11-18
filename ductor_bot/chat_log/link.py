@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import html
 import logging
 import time
 from collections import deque
@@ -229,6 +230,9 @@ class OutboxDrainer:
                     raise
 
             text, keyboard, restart_screen = await self._mirror_content(item)
+            if item.kind == "user_mirror" and item.origin == "web_user_text":
+                text = html.unescape(text)
+                keyboard["literal_text"] = True
             progress = await self._ops.send_text(
                 item.chat_id,
                 item.topic_id,

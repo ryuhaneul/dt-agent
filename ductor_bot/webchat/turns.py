@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -199,11 +200,15 @@ class WebTurns:
             async with self.runtime.outbox.delivery_lock:
                 if tid in self.blocked:
                     return
+                mirror_text = self._strings.chat("chat_log.mirror_user", text=text)
+                # Older drainers parse file/button tags regardless of the item's origin.
+                mirror_text = html.escape(mirror_text).replace("[", "&#91;").replace("]", "&#93;")
                 await self.runtime.outbox.enqueue(
                     kind="user_mirror",
                     chat_id=key.chat_id,
                     topic_id=key.topic_id,
-                    text=self._strings.chat("chat_log.mirror_user", text=text),
+                    text=mirror_text,
+                    origin="web_user_text",
                     history_id=turn["user_entry_id"],
                 )
             self.runtime.drainer.wake()
