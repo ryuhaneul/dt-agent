@@ -6,12 +6,20 @@ import asyncio
 import json
 import logging
 import os
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from shutil import which
 from typing import Any
 
+from ductor_bot.cli.autocompact import (
+    autocompact_env,
+    claude_autocompact_flag_supported,
+    claude_settings_use_file,
+    codex_autocompact_args,
+    merge_claude_settings,
+)
 from ductor_bot.cli.base import write_private_temp_file
 from ductor_bot.cli.codex_events import parse_codex_jsonl
 from ductor_bot.cli.gemini_events import parse_gemini_json
@@ -34,10 +42,40 @@ class OneShotCommand:
     cleanup_paths: list[Path] = field(default_factory=list)
 
 
-def build_cmd(exec_config: TaskExecutionConfig, prompt: str) -> OneShotCommand | None:
+def build_cmd(
+    exec_config: TaskExecutionConfig, prompt: str, *, working_dir: Path | None = None
+) -> OneShotCommand | None:
     """Build a CLI command for one-shot cron execution."""
     builder = _CMD_BUILDERS.get(exec_config.provider, _build_claude_cmd)
-    return builder(exec_config, prompt)
+    command = builder(exec_config, prompt)
+    if command is None:
+        return None
+    if exec_config.provider == "claude":
+        command.cmd = merge_claude_settings(
+            command.cmd, exec_config.autocompact, working_dir or Path(exec_config.working_dir)
+        )
+        if exec_config.autocompact != "default" and claude_settings_use_file(exec_config.cli_parameters):
+            directory = Path(tempfile.mkdtemp(prefix="ductor_settings_"))
+            try:
+                index = command.cmd.index("--settings") + 1
+                private = Path(write_private_temp_file(command.cmd[index], prefix="settings_", suffix=".json", directory=str(directory)))
+            except BaseException:
+                directory.rmdir()
+                raise
+            command.cmd[index] = str(private)
+            command.cleanup_paths.extend([private, directory])
+        if isinstance(exec_config.autocompact, int) and claude_autocompact_flag_supported(command.cmd[0]):
+            command.cmd += ["--autocompact", str(exec_config.autocompact)]
+    apply_autocompact_env(command, exec_config)
+    return command
+
+
+def apply_autocompact_env(command: OneShotCommand, config: TaskExecutionConfig) -> None:
+    """The saved setting wins after slot, caller and bot-home env composition."""
+    command.env_overrides["DUCTOR_AUTOCOMPACT"] = str(config.autocompact)
+    command.env_overrides.update(autocompact_env(config.provider, config.autocompact))
+    if config.provider == "claude" and isinstance(config.autocompact, int):
+        command.env_overrides.update(DISABLE_AUTO_COMPACT=None, DISABLE_COMPACT=None)
 
 
 def enrich_instruction(instruction: str, task_folder: str) -> str:
@@ -220,6 +258,7 @@ def _build_codex_cmd(exec_config: TaskExecutionConfig, prompt: str) -> OneShotCo
 
     # Add extra CLI parameters
     cmd.extend(exec_config.cli_parameters)
+    cmd.extend(codex_autocompact_args(exec_config.autocompact))
 
     # "-" makes Codex read the prompt from stdin instead of argv.
     cmd += ["--", "-"]
@@ -351,6 +390,9 @@ async def execute_one_shot(
     finally:
         for path in one_shot.cleanup_paths:
             try:
-                path.unlink(missing_ok=True)
+                if path.is_dir():
+                    path.rmdir()
+                else:
+                    path.unlink(missing_ok=True)
             except OSError:
                 logger.debug("Failed to remove one-shot temp path %s", path)

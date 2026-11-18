@@ -13,6 +13,8 @@ from typing import Any, Protocol, runtime_checkable
 
 from ductor_bot.bus.envelope import DeliveryMode, DeliveryOutcome, Envelope, LockMode, Origin
 from ductor_bot.bus.lock_pool import LockPool
+from ductor_bot.cli.autocompact import autocompact_override_kwargs
+from ductor_bot.config import AutocompactValue
 from ductor_bot.i18n import t
 from ductor_bot.infra.input_context import input_lock, received_at
 from ductor_bot.text.response_format import show_run_result
@@ -62,6 +64,7 @@ class SessionInjector(Protocol):
         result_origin: str = "",
         broadcast_ref: str = "",
         counts_as_activity: bool = True,
+        autocompact: AutocompactValue | None = None,
     ) -> str:
         """Execute *prompt* in the active session. Returns response text."""
         ...
@@ -304,6 +307,7 @@ class MessageBus:
                     "transport": envelope.transport,
                 }
                 kwargs.update(_activity_kwargs(envelope))
+                kwargs.update(autocompact_override_kwargs(envelope.metadata.get("autocompact")))
                 if envelope.metadata.get("isolated"):
                     kwargs.update(
                         isolated=True,

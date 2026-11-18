@@ -242,3 +242,5 @@ Webhooks in `cron_task` mode can override global config settings in `webhooks.js
 **Use cases:**
 - High-capability model for complex webhooks: `"model": "gemini-2.5-pro"`
 - Fast processing: `"model": "gemini-3.1-flash-lite"`
+
+Automatic compaction is not supported by Gemini; stored autocompact values do not change its CLI behavior.

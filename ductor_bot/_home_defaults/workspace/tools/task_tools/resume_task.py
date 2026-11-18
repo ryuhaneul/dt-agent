@@ -7,7 +7,7 @@ resumes on the original provider/model regardless of the current chat
 provider.
 
 Usage:
-    python3 resume_task.py TASK_ID "your follow-up prompt"
+    python3 resume_task.py [--autocompact VALUE] TASK_ID "your follow-up prompt"
 """
 
 from __future__ import annotations
@@ -37,19 +37,31 @@ def _load_parser() -> Callable[..., tuple[dict[str, str | bool], list[str]]]:
 
 def main() -> None:
     get_api_url, post_json, detect_agent_name = _load_shared()
-    _, args = _load_parser()(
+    options, args = _load_parser()(
         sys.argv[1:],
         usage='Usage: python3 resume_task.py TASK_ID "follow-up prompt"',
         help_text=(__doc__ or "").strip(),
+        valued=("--autocompact",),
         min_positional=2,
         max_positional=2,
     )
+
+    from _tool_shared import parse_autocompact_option
+
+    try:
+        autocompact = parse_autocompact_option(options.get("--autocompact"), use_env=False)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     task_id = args[0]
     prompt = args[1]
     sender = detect_agent_name()
 
     body: dict[str, object] = {"task_id": task_id, "prompt": prompt, "from": sender}
+    if autocompact is not None:
+        body["autocompact"] = autocompact
+
     # Route the resumed run's result/questions to the chat/topic that asked for it,
     # even if the task was created from another topic (same convention as create_task.py).
     chat_id = os.environ.get("DUCTOR_CHAT_ID", "")

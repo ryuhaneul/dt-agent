@@ -26,10 +26,11 @@ from aiogram.types import BotCommand, ChatMemberUpdated, MessageEntity, ReplyPar
 
 from ductor_bot.bus.bus import MessageBus
 from ductor_bot.bus.lock_pool import LockPool
+from ductor_bot.cli.autocompact import autocompact_override_kwargs
 from ductor_bot.commands import BOT_COMMANDS as _COMMAND_DEFS
 from ductor_bot.commands import MULTIAGENT_SUB_COMMANDS as _MA_SUB_DEFS
 from ductor_bot.commands import get_main_only_commands
-from ductor_bot.config import AgentConfig
+from ductor_bot.config import AgentConfig, AutocompactValue
 from ductor_bot.errors import ProductError
 from ductor_bot.files.allowed_roots import resolve_allowed_roots
 from ductor_bot.i18n import t
@@ -2233,7 +2234,7 @@ class TelegramBot:
             from_task_question(task_id, question, prompt_preview, chat_id, topic_id=thread_id)
         )
 
-    async def _handle_webhook_wake(self, chat_id: int, prompt: str) -> str | None:
+    async def _handle_webhook_wake(self, chat_id: int, prompt: str, *, autocompact: AutocompactValue | None = None) -> str | None:
         """Process webhook wake prompt via the message bus."""
         from ductor_bot.bus.envelope import LockMode
 
@@ -2241,7 +2242,7 @@ class TelegramBot:
         key = SessionKey(chat_id=chat_id)
         lock = self._lock_pool.get(key.lock_key)
         async with lock:
-            result = await self._orch.handle_message(key, prompt)
+            result = await self._orch.handle_message(key, prompt, **autocompact_override_kwargs(autocompact))
 
         # Deliver result — lock already released, skip bus lock
         from ductor_bot.bus.adapters import from_webhook_wake

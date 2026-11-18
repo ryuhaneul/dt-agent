@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from _shared import (
+    parse_autocompact_option,
     CRON_TASKS_DIR,
     DELIVERY_MODES,
     JOBS_PATH,
@@ -285,7 +286,12 @@ def main() -> None:
         "is injected into the topic's session; in_session: the instruction runs in the topic's "
         "session. inject and in_session need a chat.",
     )
+    parser.add_argument("--autocompact", help="default, off, or 100000-1000000 tokens; defaults to the creating topic value")
     args = parser.parse_args()
+    try:
+        args.autocompact = parse_autocompact_option(args.autocompact, use_env=True)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     missing = [p for p in ("name", "title", "description", "schedule") if not getattr(args, p)]
     if missing:
@@ -343,6 +349,7 @@ def main() -> None:
     }
     if args.timezone:
         job["timezone"] = args.timezone.strip()
+    job["autocompact"] = args.autocompact
     if args.provider:
         job["provider"] = args.provider
     if args.model:

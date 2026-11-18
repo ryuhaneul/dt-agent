@@ -7,6 +7,8 @@ file path) and the load/save/sanitize patterns of the cron and webhook tools.
 from __future__ import annotations
 
 import json
+import logging
+import os
 import re
 import sys
 from pathlib import Path
@@ -139,3 +141,32 @@ def find_by_id(
 ) -> dict[str, Any] | None:
     """Find an item dict by its ID field."""
     return next((item for item in items if item.get(id_field) == item_id), None)
+
+
+def parse_autocompact_option(
+    value: str | None, *, allow_inherit: bool = False, use_env: bool = False
+) -> str | int | None:
+    """Parse CLI text without importing the bot's optional Python dependencies."""
+    if value is None:
+        value = os.environ.get("DUCTOR_AUTOCOMPACT", "default") if use_env else None
+    if value is None or (allow_inherit and value == "inherit"):
+        return None
+    if value in ("default", "off"):
+        return value
+    if value.isascii() and value.isdigit() and 100000 <= int(value) <= 1000000:
+        return int(value)
+    raise ValueError("autocompact must be default, off, or an integer from 100000 to 1000000" + (" (inherit is also allowed)" if allow_inherit else ""))
+
+
+def normalize_autocompact_records(data: dict[str, Any], key: str) -> dict[str, Any]:
+    """Repair invalid existing values on tool writes, preserving all other record fields."""
+    inherit = key == "hooks"
+    for record in data.get(key, []):
+        if not isinstance(record, dict) or "autocompact" not in record:
+            continue
+        value = record["autocompact"]
+        valid = value in ("default", "off") if isinstance(value, str) else type(value) is int and 100000 <= value <= 1000000
+        if not valid and not (inherit and value is None):
+            logging.getLogger(__name__).warning("Invalid stored autocompact for record %s; using fallback", record.get("id", "?"))
+            record["autocompact"] = None if inherit else "default"
+    return data

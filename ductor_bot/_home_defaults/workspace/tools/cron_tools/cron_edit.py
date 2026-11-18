@@ -22,6 +22,7 @@ from _shared import (
     DELIVERY_MODES,
     DUCTOR_HOME,
     JOBS_PATH,
+    parse_autocompact_option,
     available_job_ids,
     describe_job,
     detect_rule_filenames,
@@ -216,6 +217,7 @@ def _parse_args() -> argparse.Namespace:
         help="separate: result as a message; inject: result injected into the "
         "topic's session; in_session: instruction runs in the topic's session.",
     )
+    parser.add_argument("--autocompact", type=parse_autocompact_option, help="default, off, or 100000-1000000 tokens")
     return parser.parse_args()
 
 
@@ -328,6 +330,9 @@ def _apply_updates(args: argparse.Namespace, job: dict[str, Any]) -> tuple[list[
             job["model"] = model
             updated_fields.append("model")
 
+    if args.autocompact is not None:
+        job["autocompact"] = args.autocompact
+        updated_fields.append("autocompact")
     if args.reasoning_effort is not None and job.get("reasoning_effort") != args.reasoning_effort:
         job["reasoning_effort"] = args.reasoning_effort
         updated_fields.append("reasoning_effort")
@@ -448,6 +453,7 @@ def main() -> None:
             args.schedule is not None,
             args.timezone is not None,
             args.provider is not None,
+            args.autocompact is not None,
             args.model is not None,
             args.reasoning_effort is not None,
             args.cli_parameters is not None,

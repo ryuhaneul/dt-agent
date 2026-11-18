@@ -166,3 +166,32 @@ class TestTaskOnlyMode:
     async def test_task_routes_work_without_bus(self, api_client: TestClient) -> None:
         resp = await api_client.get("/tasks/list")
         assert resp.status == 200
+
+
+async def test_create_autocompact_is_validated_before_submit(api_client):
+    hub = api_client.app["_test_hub"]
+    for value in [None, True, "100000", 99999, 1000001]:
+        response = await api_client.post("/tasks/create", json={"from": "main", "prompt": "hello", "autocompact": value})
+        assert response.status == 400
+    hub.submit.assert_not_called()
+    response = await api_client.post("/tasks/create", json={"from": "main", "prompt": "hello", "autocompact": 300000})
+    assert response.status == 200
+    assert hub.submit.call_args.args[0].autocompact == 300000
+
+
+async def test_resume_autocompact_is_forwarded_only_when_present(api_client):
+    hub = api_client.app["_test_hub"]
+    hub.registry.get.return_value = None
+    hub.resume.return_value = "task-id"
+    for body, expected in [({}, None), ({"autocompact": "off"}, "off")]:
+        response = await api_client.post("/tasks/resume", json={"from": "main", "prompt": "hello", "task_id": "task-id", **body})
+        assert response.status == 200
+        kwargs = hub.resume.call_args.kwargs
+        if expected is None:
+            assert "autocompact" not in kwargs
+        else:
+            assert kwargs["autocompact"] == expected
+    hub.resume.reset_mock()
+    response = await api_client.post("/tasks/resume", json={"from": "main", "prompt": "hello", "task_id": "task-id", "autocompact": None})
+    assert not (await response.json())["success"]
+    hub.resume.assert_not_called()

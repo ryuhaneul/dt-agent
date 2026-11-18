@@ -27,7 +27,7 @@ from ductor_bot.utils.quiet_hours import check_quiet_hour
 
 if TYPE_CHECKING:
     from ductor_bot.cli.codex_cache import CodexModelCache
-    from ductor_bot.config import AgentConfig
+    from ductor_bot.config import AgentConfig, AutocompactValue
     from ductor_bot.cron.manager import CronJob
     from ductor_bot.infra.task_runner import TaskResult
     from ductor_bot.workspace.paths import DuctorPaths
@@ -380,6 +380,7 @@ class CronObserver(BaseTaskObserver):
         retry_transports: list[str] | None = None,
         delivery_mode: str = "separate",
         prompt: str = "",
+        autocompact: AutocompactValue | None = None,
     ) -> tuple[bool, str, list[str]]:
         """Send result to the external handler (e.g. Telegram).
 
@@ -407,6 +408,7 @@ class CronObserver(BaseTaskObserver):
                     delivery_mode=delivery_mode,
                     prompt=prompt,
                     job_id=job_id,
+                    **({"autocompact": autocompact} if autocompact is not None else {}),
                 )
             elif retry_transports:
                 ack = await self._on_result(
@@ -601,6 +603,7 @@ class CronObserver(BaseTaskObserver):
             return
 
         overrides = TaskOverrides(
+            autocompact=job.autocompact if job else "default",
             provider=job.provider if job else None,
             model=job.model if job else None,
             reasoning_effort=job.reasoning_effort if job else None,
@@ -806,6 +809,7 @@ class CronObserver(BaseTaskObserver):
                 routing,
                 delivery_mode="in_session",
                 prompt=prompt,
+                autocompact=job.autocompact,
             )
         self._manager.update_run_status(
             job.id,

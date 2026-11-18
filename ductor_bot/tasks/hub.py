@@ -10,8 +10,10 @@ from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
+from ductor_bot.cli.autocompact import validate_autocompact
 from ductor_bot.cli.claude_features import snapshot_refresh_active
 from ductor_bot.cli.types import AgentRequest
+from ductor_bot.config import AutocompactValue
 from ductor_bot.infra.input_context import current_input_context, received_at
 from ductor_bot.infra.shutdown_budget import CANCEL_FLOOR_SECONDS, ShutdownBudget, wait_capped
 from ductor_bot.tasks.models import (
@@ -391,6 +393,7 @@ class TaskHub:
         origin_transport: str = "",
         origin_session_kind: str = "",
         origin_session_id: str = "",
+        autocompact: AutocompactValue | None = None,
     ) -> str:
         """Resume a completed task's CLI session with a follow-up. Returns task_id.
 
@@ -430,6 +433,7 @@ class TaskHub:
             msg = f"Task '{task_id}' is already running"
             raise ValueError(msg)
 
+        settings = {"autocompact": validate_autocompact(autocompact)} if autocompact is not None else {}
         routing: dict[str, object] = {"chat_id": chat_id, "thread_id": thread_id} if chat_id else {}
 
         # Reset to running — same entry, same folder, same task_id
@@ -448,6 +452,7 @@ class TaskHub:
             notify_pending=False,
             notify_attempts=0,
             **routing,
+            **settings,
         )
 
         # Append a short system reminder so the task agent remembers how to
@@ -860,6 +865,7 @@ class TaskHub:
             model_override=entry.model or None,
             provider_override=entry.provider or None,
             effort_override=entry.reasoning_effort or None,
+            autocompact=entry.autocompact,
             chat_id=entry.chat_id,
             topic_id=entry.thread_id,
             process_label=f"task:{entry.task_id}",

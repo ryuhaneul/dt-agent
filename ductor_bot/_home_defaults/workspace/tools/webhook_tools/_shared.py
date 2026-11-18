@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from ductor_bot._home_defaults.workspace.tools._tool_shared import (
+    parse_autocompact_option,  # noqa: F401 -- shared CLI option parser
+    normalize_autocompact_records,
     parse_tool_args,  # noqa: F401 -- re-exported for the tool scripts
     available_ids,
     find_by_id,
@@ -25,12 +27,12 @@ CRON_TASKS_DIR = DUCTOR_HOME / "workspace" / "cron_tasks"
 
 def load_hooks_or_default(hooks_path: Path) -> dict[str, Any]:
     """Load webhooks JSON or return an empty payload if missing/corrupt."""
-    return load_collection_or_default(hooks_path, "hooks")
+    return normalize_autocompact_records(load_collection_or_default(hooks_path, "hooks"), "hooks")
 
 
 def load_hooks_strict(hooks_path: Path) -> dict[str, Any]:
     """Load webhooks JSON and raise on malformed structure."""
-    return load_collection_strict(hooks_path, "hooks")
+    return normalize_autocompact_records(load_collection_strict(hooks_path, "hooks"), "hooks")
 
 
 def save_hooks(hooks_path: Path, data: dict[str, Any]) -> None:

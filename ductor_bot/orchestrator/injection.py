@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, TypedDict
 from ductor_bot.cli.autocompact import resolve_autocompact
 from ductor_bot.cli.claude_features import snapshot_refresh_active
 from ductor_bot.cli.types import AgentRequest
+from ductor_bot.config import AutocompactValue
 from ductor_bot.infra.input_context import (
     acquire_input_lock,
     add_input_wait,
@@ -120,6 +121,7 @@ async def _inject_prompt(  # noqa: PLR0913
     broadcast_ref: str = "",
     counts_as_activity: bool = True,
     private_task_question: bool = False,
+    autocompact: AutocompactValue | None = None,
 ) -> str:
     """Execute *prompt* in the current active session and update session state.
 
@@ -156,7 +158,7 @@ async def _inject_prompt(  # noqa: PLR0913
         model_override=active.model if active else None,
         effort_override=(active.reasoning_effort or None) if active else None,
         autocompact=resolve_autocompact(
-            active.autocompact if active else None, orch._config.autocompact
+            autocompact if autocompact is not None else (active.autocompact if active else None), orch._config.autocompact
         ),
         session_kind="background" if isolated else "foreground",
         resume_session=resume_id,

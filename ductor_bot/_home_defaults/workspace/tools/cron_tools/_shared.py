@@ -16,6 +16,8 @@ from ductor_bot.cron.jobs_file import save_definitions
 from ductor_bot.infra.file_lock import LockTimeoutError
 
 from ductor_bot._home_defaults.workspace.tools._tool_shared import (
+    parse_autocompact_option,  # noqa: F401 -- shared CLI option parser
+    normalize_autocompact_records,
     parse_tool_args,  # noqa: F401 -- re-exported for the tool scripts
     available_ids,
     find_by_id,
@@ -181,12 +183,12 @@ and well-formatted manner.
 
 def load_jobs_or_default(jobs_path: Path) -> dict[str, Any]:
     """Load cron jobs JSON or return an empty payload if missing/corrupt."""
-    return load_collection_or_default(jobs_path, "jobs")
+    return normalize_autocompact_records(load_collection_or_default(jobs_path, "jobs"), "jobs")
 
 
 def load_jobs_strict(jobs_path: Path) -> dict[str, Any]:
     """Load cron jobs JSON and raise on malformed structure."""
-    return load_collection_strict(jobs_path, "jobs")
+    return normalize_autocompact_records(load_collection_strict(jobs_path, "jobs"), "jobs")
 
 
 def find_job_by_id_or_task_folder(jobs: list[dict[str, Any]], job_id: str) -> dict[str, Any] | None:

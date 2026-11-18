@@ -116,3 +116,7 @@ about five minutes.
   finish what you can, include the unresolved question in your final result,
   and end this run. The parent will resume you with the answer after the run ends.
 - Record each question and any answer in `TASKMEMORY.md` and your final result.
+
+## Automatic compaction
+
+`create_task.py --autocompact VALUE` and `resume_task.py --autocompact VALUE TASK_ID "prompt"` accept `default`, `off`, or an integer from 100000 to 1000000. Creating without the option copies `DUCTOR_AUTOCOMPACT` (the parent topic's effective value; `default` if absent). Later parent topic/global changes do not change the task. Resuming without the option preserves the saved value; an explicit value changes it for that resumed run and subsequent resumes. `inherit` is only available to webhook tools. Codex cannot apply `off`; Grok and Gemini do not apply autocompact overrides.

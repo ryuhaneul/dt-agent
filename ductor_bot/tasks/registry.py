@@ -123,6 +123,7 @@ class TaskRegistry:
             status="running",
             original_prompt=submit.prompt,
             thinking=thinking,
+            autocompact=submit.autocompact,
             reasoning_effort=reasoning_effort,
             tasks_dir=str(resolved_dir),
             thread_id=submit.thread_id,

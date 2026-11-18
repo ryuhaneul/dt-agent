@@ -189,3 +189,7 @@ python3 tools/cron_tools/cron_check_secrets.py "<job-name>"
 
 The check scans TASK_DESCRIPTION.md and task scripts for static secret-use evidence and returns names only. It may miss dynamic names, imported/outside helpers or external commands, and can produce false positives. An empty result is not proof that the task needs no secrets: also review the assignment yourself.
 If this job needs secrets, the completion report MUST warn the owner that a configured store will lock on restart, manual lock or TTL expiry and the job's secret-dependent work will fail with SECRETS_LOCKED until the owner unlocks via `/masterkey unlock` or the webchat modal. Do not promise unattended success while locked. Do not put values or master keys in TASK_DESCRIPTION.md or scripts.
+
+## Automatic compaction
+
+`cron_add.py --autocompact VALUE` and `cron_edit.py JOB --autocompact VALUE` accept `default`, `off`, or an integer from 100000 to 1000000. Without the option, creation copies `DUCTOR_AUTOCOMPACT` (the creating topic's effective value; `default` if absent). That snapshot stays independent of later topic/global changes. Editing without the option keeps the stored value. The saved value also overrides the target topic for `in_session` runs. Codex cannot apply `off`; Grok and Gemini do not apply autocompact overrides.

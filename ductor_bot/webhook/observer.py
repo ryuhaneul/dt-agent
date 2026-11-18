@@ -8,7 +8,9 @@ import secrets
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from ductor_bot.cli.autocompact import resolve_autocompact
 from ductor_bot.cli.param_resolver import TaskOverrides
+from ductor_bot.config import AutocompactValue
 from ductor_bot.infra.base_task_observer import BaseTaskObserver
 from ductor_bot.infra.file_watcher import FileWatcher
 from ductor_bot.infra.task_runner import execute_in_task_folder
@@ -31,7 +33,7 @@ _SAFETY_END = "#-- END EXTERNAL WEBHOOK PAYLOAD --#"
 WebhookResultCallback = Callable[[WebhookResult], Awaitable[None]]
 
 # Wake handler: (chat_id, prompt) -> response text or None
-WakeHandler = Callable[[int, str], Awaitable[str | None]]
+WakeHandler = Callable[..., Awaitable[str | None]]
 
 
 class WebhookObserver(BaseTaskObserver):
@@ -155,10 +157,11 @@ class WebhookObserver(BaseTaskObserver):
                         "(provider/model/effort/cli_parameters); use mode=cron_task",
                         hook_id,
                     )
-                result = await self._dispatch_wake(hook_id, hook.title, safe_prompt)
+                result = await self._dispatch_wake(hook_id, hook.title, safe_prompt, autocompact=resolve_autocompact(hook.autocompact, self._config.autocompact))
             elif hook.mode == "cron_task":
                 # Build TaskOverrides from hook
                 overrides = TaskOverrides(
+                    autocompact=hook.autocompact,
                     provider=hook.provider,
                     model=hook.model,
                     reasoning_effort=hook.reasoning_effort,
@@ -212,6 +215,8 @@ class WebhookObserver(BaseTaskObserver):
         hook_id: str,
         title: str,
         prompt: str,
+        *,
+        autocompact: AutocompactValue | None = None,
     ) -> WebhookResult:
         """Resume main session with rendered prompt for each allowed user."""
         if self._handle_wake is None:
@@ -226,7 +231,7 @@ class WebhookObserver(BaseTaskObserver):
         results: list[str] = []
         for chat_id in self._config.allowed_user_ids:
             try:
-                text = await self._handle_wake(chat_id, prompt)
+                text = await self._handle_wake(chat_id, prompt, **({"autocompact": autocompact} if autocompact is not None else {}))
                 if text:
                     results.append(text)
             except asyncio.CancelledError:

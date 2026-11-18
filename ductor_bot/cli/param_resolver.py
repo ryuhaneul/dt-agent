@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from ductor_bot.cli.autocompact import resolve_autocompact
+from ductor_bot.config import AutocompactValue
 from ductor_bot.errors import DuctorError
 
 if TYPE_CHECKING:
@@ -60,6 +62,7 @@ class TaskOverrides:
     model: str | None = None
     reasoning_effort: str | None = None
     cli_parameters: list[str] = field(default_factory=list)
+    autocompact: AutocompactValue | None = None
 
 
 @dataclass(frozen=True)
@@ -79,6 +82,7 @@ class TaskExecutionConfig:
     claude_accounts: list[str] = field(default_factory=list)
     # User timezone label used to render reset-time strings.
     user_timezone: str = ""
+    autocompact: AutocompactValue = "default"
 
 
 def _static_effort(
@@ -230,4 +234,5 @@ def resolve_cli_config(
         file_access=base_config.file_access,
         claude_accounts=list(base_config.claude_accounts),
         user_timezone=base_config.user_timezone,
+        autocompact=resolve_autocompact(overrides.autocompact, base_config.autocompact),
     )

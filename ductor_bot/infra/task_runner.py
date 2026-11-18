@@ -145,12 +145,12 @@ async def run_oneshot_task(
     so cron/webhook/background tasks share the same cooldown state and
     fallback behaviour as the interactive chat provider.
     """
-    from ductor_bot.cron.execution import build_cmd, execute_one_shot
+    from ductor_bot.cron.execution import apply_autocompact_env, build_cmd, execute_one_shot
 
     if exec_config.provider == "claude" and exec_config.claude_accounts:
         return await _run_claude_with_rotation(exec_config, prompt, options)
 
-    one_shot = build_cmd(exec_config, prompt)
+    one_shot = build_cmd(exec_config, prompt, working_dir=options.cwd)
     if one_shot is None:
         return TaskResult(
             status=f"error:cli_not_found_{exec_config.provider}",
@@ -171,6 +171,7 @@ async def run_oneshot_task(
     one_shot.env_overrides.update(options.env_overrides)
     if options.routing_env is not None:
         _normalize_routing_env(one_shot, options.routing_env)
+    apply_autocompact_env(one_shot, exec_config)
     captured_at = int(time.time())
     _supply_secrets_credentials(one_shot, options.ductor_home)
     execution = await execute_one_shot(
@@ -208,6 +209,7 @@ async def _run_claude_with_rotation(  # noqa: C901 -- preserve real payloads for
         slot_extra_env,
     )
     from ductor_bot.cron.execution import (
+        apply_autocompact_env,
         build_cmd,
         execute_one_shot,
     )
@@ -217,7 +219,7 @@ async def _run_claude_with_rotation(  # noqa: C901 -- preserve real payloads for
     default_tz = _resolve_tz(exec_config.user_timezone)
 
     async def _attempt(slot: str | None) -> tuple[AttemptOutcome, OneShotExecutionResult | None]:
-        one_shot = build_cmd(exec_config, prompt)
+        one_shot = build_cmd(exec_config, prompt, working_dir=options.cwd)
         if one_shot is None:
             outcome = AttemptOutcome(
                 returncode=None,
@@ -240,6 +242,7 @@ async def _run_claude_with_rotation(  # noqa: C901 -- preserve real payloads for
         one_shot.env_overrides.update(options.env_overrides)
         if options.routing_env is not None:
             _normalize_routing_env(one_shot, options.routing_env)
+        apply_autocompact_env(one_shot, exec_config)
         captured_at = int(time.time())
         _supply_secrets_credentials(one_shot, options.ductor_home)
         execution = await execute_one_shot(

@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 
+from ductor_bot.cli.autocompact import validate_autocompact
 from ductor_bot.infra.secret_runtime import TOKEN_HEADER
 from ductor_bot.infra.secret_vault import VaultError, VaultState
 from ductor_bot.session.named import normalize_lane
@@ -389,7 +390,7 @@ class InternalAgentAPI:
 
     # -- Task endpoints ----------------------------------------------------------
 
-    async def _handle_task_create(self, request: web.Request) -> web.Response:
+    async def _handle_task_create(self, request: web.Request) -> web.Response:  # noqa: PLR0911 -- task API validation responses
         """POST /tasks/create — create a background task.
 
         Expects JSON: ``{"from": "agent", "prompt": "...", "name": "...",
@@ -430,6 +431,10 @@ class InternalAgentAPI:
 
         from ductor_bot.tasks.models import TaskSubmit, normalise_priority
 
+        try:
+            autocompact = validate_autocompact(data.get("autocompact", "default"))
+        except ValueError:
+            return web.json_response({"success": False, "error": "Invalid autocompact"}, status=400)
         submit = TaskSubmit(
             chat_id=data.get("chat_id", 0),
             prompt=prompt,
@@ -444,6 +449,7 @@ class InternalAgentAPI:
             model_override=data.get("model") or "",
             thinking_override=data.get("thinking") or "",
             priority=normalise_priority(data.get("priority")),
+            autocompact=autocompact,
         )
 
         try:
@@ -494,6 +500,7 @@ class InternalAgentAPI:
                 )
 
         try:
+            autocompact = {"autocompact": validate_autocompact(data["autocompact"])} if "autocompact" in data else {}
             chat_id, topic_id = _parse_origin(data)
             resumed_id = self._task_hub.resume(
                 task_id,
@@ -504,6 +511,7 @@ class InternalAgentAPI:
                 origin_transport=normalise_origin_transport(data.get("transport") or ""),
                 origin_session_kind=normalise_origin_kind(data.get("source_session_kind") or ""),
                 origin_session_id=data.get("source_session_id") or "",
+                **autocompact,
             )
         except ValueError as exc:
             return web.json_response({"success": False, "error": str(exc)})

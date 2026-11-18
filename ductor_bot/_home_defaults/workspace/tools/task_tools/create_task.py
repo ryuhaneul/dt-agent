@@ -14,6 +14,7 @@ Options:
     --provider PROV    Override provider (claude, codex, gemini, grok)
     --model MODEL      Override model (opus, sonnet, flash, etc.)
     --thinking LEVEL   Reasoning effort for codex (low, medium, high)
+    --autocompact VALUE  default, off, or 100000-1000000 tokens (topic value at creation)
     --priority LEVEL   Scheduling priority (interactive|background|batch)
                        interactive bypasses the concurrency cap so user
                        follow-ups stay responsive; background (default)
@@ -60,7 +61,7 @@ def main() -> None:
             '[--model M] [--thinking L] [--priority LEVEL] "prompt"'
         ),
         help_text=(__doc__ or "").strip(),
-        valued=("--name", "--provider", "--model", "--thinking", "--priority"),
+        valued=("--name", "--provider", "--model", "--thinking", "--priority", "--autocompact"),
         min_positional=1,
         max_positional=1,
     )
@@ -74,6 +75,14 @@ def main() -> None:
             f"Error: unknown priority '{priority}'. Choose one of: {', '.join(_VALID_PRIORITIES)}",
             file=sys.stderr,
         )
+        sys.exit(1)
+
+    from _tool_shared import parse_autocompact_option
+
+    try:
+        autocompact = parse_autocompact_option(options.get("--autocompact"), use_env=True)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
 
     prompt = args[0]
@@ -91,6 +100,9 @@ def main() -> None:
         body["thinking"] = thinking
     if priority:
         body["priority"] = priority
+
+    if autocompact is not None:
+        body["autocompact"] = autocompact
 
     # Propagate sender context so task results route back to the originating chat/topic
     chat_id = os.environ.get("DUCTOR_CHAT_ID", "")

@@ -14,6 +14,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from ductor_bot.background import BackgroundObserver, BackgroundResult
+from ductor_bot.config import AutocompactValue
 
 if TYPE_CHECKING:
     from ductor_bot.bus.bus import MessageBus
@@ -245,7 +246,7 @@ class ObserverManager:
         self,
         bus: MessageBus,
         *,
-        wake_handler: Callable[[int, str], Awaitable[str | None]] | None = None,
+        wake_handler: Callable[..., Awaitable[str | None]] | None = None,
     ) -> None:
         """Wire all observer result callbacks to the message bus.
 
@@ -272,6 +273,7 @@ class ObserverManager:
                 delivery_mode: str = "separate",
                 prompt: str = "",
                 job_id: str = "",
+                autocompact: AutocompactValue | None = None,
             ) -> tuple[bool, str, list[str]]:
                 env = from_cron_result(
                     title,
@@ -283,6 +285,7 @@ class ObserverManager:
                     broadcast_targets=retry_transports,
                     prompt=prompt,
                     job_id=job_id,
+                    **({"autocompact": autocompact} if autocompact is not None else {}),
                 )
                 await bus.submit(env)
                 return _cron_ack(env, delivery_mode)

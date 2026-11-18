@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from ductor_bot.bus.envelope import DeliveryMode, Envelope, LockMode, Origin
 from ductor_bot.bus.failure_reason import english_reason
+from ductor_bot.config import AutocompactValue
 from ductor_bot.infra.input_context import current_input_timestamp
 from ductor_bot.session.named import lane_from_session_name
 
@@ -64,6 +65,7 @@ def from_cron_result(  # noqa: PLR0913
     broadcast_targets: list[str] | None = None,
     prompt: str = "",
     job_id: str = "",
+    autocompact: AutocompactValue | None = None,
 ) -> Envelope:
     """Convert a cron job result (title, text, status triple).
 
@@ -88,7 +90,7 @@ def from_cron_result(  # noqa: PLR0913
             delivery=DeliveryMode.UNICAST,
             lock_mode=LockMode.REQUIRED,
             needs_injection=True,
-            metadata={"title": title, "job_id": job_id, "counts_as_activity": False},
+            metadata={"title": title, "job_id": job_id, "counts_as_activity": False, **({"autocompact": autocompact} if autocompact is not None else {})},
         )
     if chat_id:
         return Envelope(

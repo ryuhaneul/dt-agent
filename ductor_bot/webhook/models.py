@@ -7,6 +7,9 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from ductor_bot.cli.autocompact import stored_autocompact, validate_autocompact
+from ductor_bot.config import AutocompactValue
+
 _TEMPLATE_RE = re.compile(r"\{\{(\w+)\}\}")
 
 
@@ -40,6 +43,7 @@ class WebhookEntry:
     model: str | None = None
     reasoning_effort: str | None = None
     cli_parameters: list[str] = field(default_factory=list)
+    autocompact: AutocompactValue | None = None
 
     # Quiet hours (None = use global config defaults)
     quiet_start: int | None = None
@@ -49,6 +53,8 @@ class WebhookEntry:
     dependency: str | None = None
 
     def __post_init__(self) -> None:
+        if self.autocompact is not None:
+            self.autocompact = validate_autocompact(self.autocompact)
         if not self.created_at:
             self.created_at = datetime.now(UTC).isoformat()
 
@@ -78,6 +84,7 @@ class WebhookEntry:
             "model": self.model,
             "reasoning_effort": self.reasoning_effort,
             "cli_parameters": self.cli_parameters,
+            "autocompact": self.autocompact,
             "quiet_start": self.quiet_start,
             "quiet_end": self.quiet_end,
             "dependency": self.dependency,
@@ -110,6 +117,7 @@ class WebhookEntry:
             model=data.get("model"),
             reasoning_effort=data.get("reasoning_effort"),
             cli_parameters=data.get("cli_parameters", []),
+            autocompact=stored_autocompact(data.get("autocompact"), data["id"], inherit=True),
             quiet_start=data.get("quiet_start"),
             quiet_end=data.get("quiet_end"),
             dependency=data.get("dependency"),

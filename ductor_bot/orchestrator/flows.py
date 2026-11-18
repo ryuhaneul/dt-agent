@@ -13,7 +13,11 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from ductor_bot.cli import auth as cli_auth
-from ductor_bot.cli.autocompact import resolve_autocompact
+from ductor_bot.cli.autocompact import (
+    autocompact_override_kwargs,
+    resolve_autocompact,
+    validate_autocompact,
+)
 from ductor_bot.cli.claude_features import snapshot_refresh_active
 from ductor_bot.cli.stream_events import ToolUseEvent
 from ductor_bot.cli.timeout_controller import TimeoutConfig as TCConfig
@@ -392,6 +396,7 @@ class _RecoveryContext:
 
     reason: str
     model_override: str | None
+    autocompact: AutocompactValue | None = None
     streaming: bool = False
     cbs: StreamingCallbacks = field(default_factory=StreamingCallbacks)
     turn_started_at: float | None = None
@@ -426,6 +431,7 @@ async def _maybe_recover_session(  # noqa: PLR0913, PLR0917 -- keeps the existin
     response: AgentResponse,
     *,
     model_override: str | None,
+    autocompact: AutocompactValue | None = None,
     streaming: bool = False,
     cbs: StreamingCallbacks | None = None,
     turn_started_at: float | None = None,
@@ -458,6 +464,7 @@ async def _maybe_recover_session(  # noqa: PLR0913, PLR0917 -- keeps the existin
     reason = "invalid_session" if session_recovered else "sigkill"
     ctx = _RecoveryContext(
         reason=reason,
+        autocompact=autocompact,
         model_override=model_override,
         streaming=streaming,
         cbs=cbs or StreamingCallbacks(),
@@ -502,6 +509,8 @@ async def _recover_session(
         await cb.on_system_status("recovering")
 
     request, session = await _prepare_normal(orch, key, text, model_override=ctx.model_override)
+    if ctx.autocompact is not None:
+        request = replace(request, autocompact=validate_autocompact(ctx.autocompact))
     ctx.turn_started_at = time.time()
     if ctx.streaming:
         request = replace(request, include_partial_messages=cb.include_partial_messages)
@@ -692,10 +701,13 @@ async def normal(  # noqa: PLR0913
     model_override: str | None = None,
     is_recovery: bool = False,
     counts_as_activity: bool = True,
+    autocompact: AutocompactValue | None = None,
 ) -> OrchestratorResult:
     """Handle normal conversation with session resume."""
     logger.info("Normal flow starting")
     request, session = await _prepare_normal(orch, key, text, model_override=model_override)
+    if autocompact is not None:
+        request = replace(request, autocompact=validate_autocompact(autocompact))
     warning = await _gemini_missing_config_key_warning(orch, request)
     if warning is not None:
         logger.warning("Gemini API-key mode without configured ductor key")
@@ -717,6 +729,7 @@ async def normal(  # noqa: PLR0913
             session,
             response,
             model_override=model_override,
+            **autocompact_override_kwargs(autocompact),
             turn_started_at=turn_started_at,
         )
         finished = outcome.failed_result is None and _turn_finished(orch, key, outcome.response)

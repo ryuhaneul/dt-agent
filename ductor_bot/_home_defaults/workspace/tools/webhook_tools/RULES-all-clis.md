@@ -313,3 +313,7 @@ Gemini webhook:
 - Provider-specific webhook: `"provider": "gemini"` while main agent uses Claude
 - Webhook-specific model: Different model per webhook
 - Advanced CLI flags: `"cli_parameters": [...]` (only if explicitly needed)
+
+## Automatic compaction
+
+`webhook_add.py --autocompact VALUE` and `webhook_edit.py HOOK --autocompact VALUE` accept `inherit`, `default`, `off`, or an integer from 100000 to 1000000. Creation defaults to `inherit`: use this agent's global setting at trigger time, independently of the topic and `DUCTOR_AUTOCOMPACT`. Editing without the option keeps the stored value; `inherit` restores global following. This applies to both `wake` session turns and `cron_task` runs. Codex cannot apply `off`; Grok and Gemini do not apply autocompact overrides.

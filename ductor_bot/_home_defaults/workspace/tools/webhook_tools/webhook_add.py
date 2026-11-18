@@ -23,6 +23,7 @@ from _shared import (
     CRON_TASKS_DIR,
     DUCTOR_HOME,
     HOOKS_PATH,
+    parse_autocompact_option,
     load_hooks_or_default,
     reject_wake_overrides,
     sanitize_name,
@@ -310,7 +311,12 @@ def main() -> None:
         help="Resource dependency (e.g. 'chrome_browser'). "
         "Hooks with same dependency run sequentially, different dependencies run in parallel.",
     )
+    parser.add_argument("--autocompact", help="inherit (agent global), default, off, or 100000-1000000 tokens")
     args = parser.parse_args()
+    try:
+        autocompact = parse_autocompact_option(args.autocompact, allow_inherit=True)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     required = ["name", "title", "description", "mode", "prompt_template"]
     missing = [p for p in required if not getattr(args, p)]
@@ -407,6 +413,7 @@ def main() -> None:
         "provider": args.provider,
         "model": args.model,
         "reasoning_effort": args.reasoning_effort,
+        "autocompact": autocompact,
         "cli_parameters": cli_params_list,
         "quiet_start": args.quiet_start,
         "quiet_end": args.quiet_end,

@@ -13,6 +13,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from ductor_bot.cli.autocompact import stored_autocompact, validate_autocompact
+from ductor_bot.config import AutocompactValue
 from ductor_bot.cron.jobs_file import STATE_FIELDS, update_jobs_file
 from ductor_bot.infra.file_lock import LockTimeoutError
 from ductor_bot.infra.json_store import load_json
@@ -55,6 +57,7 @@ class CronJob:
     model: str | None = None
     reasoning_effort: str | None = None
     cli_parameters: list[str] = field(default_factory=list)
+    autocompact: AutocompactValue = "default"
 
     # Quiet hours (None = use global config defaults)
     quiet_start: int | None = None
@@ -87,6 +90,7 @@ class CronJob:
         return "separate" if self.delivery_mode_problem() else self.delivery_mode
 
     def __post_init__(self) -> None:
+        self.autocompact = validate_autocompact(self.autocompact)
         if not self.created_at:
             self.created_at = datetime.now(UTC).isoformat()
 
@@ -106,6 +110,7 @@ class CronJob:
             "model": self.model,
             "reasoning_effort": self.reasoning_effort,
             "cli_parameters": self.cli_parameters,
+            "autocompact": self.autocompact,
             "quiet_start": self.quiet_start,
             "quiet_end": self.quiet_end,
             "dependency": self.dependency,
@@ -156,6 +161,7 @@ class CronJob:
             model=data.get("model"),
             reasoning_effort=data.get("reasoning_effort"),
             cli_parameters=data.get("cli_parameters", []),
+            autocompact=stored_autocompact(data.get("autocompact", "default"), data["id"]) or "default",
             quiet_start=data.get("quiet_start"),
             quiet_end=data.get("quiet_end"),
             dependency=data.get("dependency"),
@@ -398,6 +404,9 @@ class CronManager:
                 patch(jobs)
             result = mutate(jobs)
             self._adopt(self._parse(jobs))
+            for raw, parsed in zip(jobs, self._jobs, strict=True):
+                if "autocompact" in raw:
+                    raw["autocompact"] = parsed.autocompact
             return result
 
         result = update_jobs_file(self._jobs_path, run)

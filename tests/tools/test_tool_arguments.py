@@ -228,6 +228,7 @@ def test_create_task_ordinary_call(server: tuple[_Recorder, int], tmp_path: Path
         "model": "m",
         "thinking": "low",
         "priority": "batch",
+        "autocompact": "default",
     }
     assert "Background task 'N' created" in result.stdout
 
@@ -624,4 +625,33 @@ def test_browser_surplus_after_the_separator_is_still_an_error(
 
     assert result.returncode != 0
     assert "too many arguments" in result.stderr
+    assert recorder.requests == []
+
+
+@pytest.mark.parametrize(
+    ("command", "option", "expected"),
+    [("create_task", None, 300000), ("create_task", "default", "default"),
+     ("resume_task", None, None), ("resume_task", "400000", 400000)],
+)
+def test_task_autocompact_creation_snapshot_and_resume_override(server, tmp_path, command, option, expected):
+    recorder, port = server
+    env = _env(tmp_path, port)
+    env["DUCTOR_AUTOCOMPACT"] = "300000"
+    args = ([] if option is None else ["--autocompact", option]) + (["task-id"] if command == "resume_task" else []) + ["prompt"]
+    result = _run(f"task_tools/{command}.py", args, env)
+    assert result.returncode == 0, result.stderr
+    body = _only_request(recorder)
+    if expected is None:
+        assert "autocompact" not in body
+    else:
+        assert body["autocompact"] == expected
+
+
+@pytest.mark.parametrize("command", ["create_task", "resume_task"])
+@pytest.mark.parametrize("option", ["inherit", "99999", "1000001", "100000.5"])
+def test_task_invalid_autocompact_sends_no_request(server, tmp_path, command, option):
+    recorder, port = server
+    args = ["--autocompact", option] + (["task-id"] if command == "resume_task" else []) + ["prompt"]
+    result = _run(f"task_tools/{command}.py", args, _env(tmp_path, port))
+    assert result.returncode != 0
     assert recorder.requests == []

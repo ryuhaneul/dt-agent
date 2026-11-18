@@ -8,6 +8,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from ductor_bot.cli.autocompact import stored_autocompact, validate_autocompact
+from ductor_bot.config import AutocompactValue
+
 # #79: allowed priority levels for background tasks. The scheduler gives
 # ``interactive`` a concurrency-cap bypass so user-facing follow-ups stay
 # responsive while heavy ``batch`` work runs. ``background`` is the default
@@ -53,6 +56,11 @@ class TaskSubmit:
     origin_transport: str = ""
     origin_session_kind: str = ""
     origin_session_id: str = ""
+    autocompact: AutocompactValue = "default"
+
+
+    def __post_init__(self) -> None:
+        self.autocompact = validate_autocompact(self.autocompact)
 
 
 def _count(value: object) -> int:
@@ -96,6 +104,10 @@ class TaskEntry:
     origin_transport: str = ""
     origin_session_kind: str = ""
     origin_session_id: str = ""
+    autocompact: AutocompactValue = "default"
+
+    def __post_init__(self) -> None:
+        self.autocompact = validate_autocompact(self.autocompact)
 
     def to_dict(self) -> dict[str, object]:
         d: dict[str, object] = {
@@ -131,6 +143,7 @@ class TaskEntry:
             "reasoning_effort": self.reasoning_effort,
             "tasks_dir": self.tasks_dir,
             "priority": self.priority,
+            "autocompact": self.autocompact,
             "notify_pending": self.notify_pending,
             "notify_attempts": self.notify_attempts,
         }
@@ -195,6 +208,7 @@ class TaskEntry:
             notify_pending=d.get("notify_pending") is True,
             notify_attempts=_count(d.get("notify_attempts")),
             priority=normalise_priority(d.get("priority")),
+            autocompact=stored_autocompact(d.get("autocompact", "default"), d["task_id"]) or "default",
         )
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 from functools import lru_cache
 from pathlib import Path
@@ -12,12 +13,32 @@ from pydantic import TypeAdapter
 
 from ductor_bot.config import AutocompactValue
 
+logger = logging.getLogger(__name__)
+
 _VALUE: TypeAdapter[AutocompactValue] = TypeAdapter(AutocompactValue)
 
 
 def validate_autocompact(value: object) -> AutocompactValue:
     """Reject coercions, unsupported modes and token counts outside 100k-1M."""
     return _VALUE.validate_python(value)
+
+
+def stored_autocompact(
+    value: object, record_id: str, *, inherit: bool = False
+) -> AutocompactValue | None:
+    """Repair only an invalid stored setting, preserving the automation record."""
+    if inherit and value is None:
+        return None
+    try:
+        return validate_autocompact(value)
+    except ValueError:
+        logger.warning("Invalid stored autocompact for record %s; using fallback", record_id)
+        return None if inherit else "default"
+
+
+def autocompact_override_kwargs(value: AutocompactValue | None) -> dict[str, Any]:
+    """Keep existing call contracts unchanged when no automation override was supplied."""
+    return {"autocompact": value} if value is not None else {}
 
 
 def resolve_autocompact(

@@ -140,3 +140,5 @@ from the user's requested automation (not just "created job").
 - IDs are sanitized (lowercase + hyphens).
 - Prefer exact IDs from `cron_list.py` output.
 - Run any tool without args for its built-in tutorial.
+
+Automatic compaction is not supported by Gemini; stored autocompact values do not change its CLI behavior.

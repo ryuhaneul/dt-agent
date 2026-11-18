@@ -16,6 +16,7 @@ import sys
 
 from _shared import (
     HOOKS_PATH,
+    parse_autocompact_option,
     available_hook_ids,
     load_hooks_strict,
     reject_wake_overrides,
@@ -136,7 +137,13 @@ def main() -> None:
         action="store_true",
         help="Remove dependency (allow parallel execution).",
     )
+    parser.add_argument("--autocompact", help="inherit (agent global), default, off, or 100000-1000000 tokens")
     args = parser.parse_args()
+    autocompact_provided = args.autocompact is not None
+    try:
+        autocompact = parse_autocompact_option(args.autocompact, allow_inherit=True)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     if not args.hook_id:
         print(_TUTORIAL)
@@ -237,6 +244,9 @@ def main() -> None:
     if override_error:
         print(json.dumps({"error": override_error}))
         sys.exit(1)
+    if autocompact_provided:
+        hook["autocompact"] = autocompact
+        changes["autocompact"] = autocompact
     if args.provider:
         hook["provider"] = args.provider
         changes["provider"] = args.provider

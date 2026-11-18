@@ -12,11 +12,12 @@ from ductor_bot.background import (
     BackgroundSubmit,
     BackgroundTask,
 )
+from ductor_bot.cli.autocompact import autocompact_override_kwargs
 from ductor_bot.cli.process_registry import ProcessRegistry
 from ductor_bot.cli.service import CLIService, CLIServiceConfig
 from ductor_bot.cli.stream_events import ToolUseEvent
 from ductor_bot.cli.types import AgentRequest
-from ductor_bot.config import AgentConfig
+from ductor_bot.config import AgentConfig, AutocompactValue
 from ductor_bot.cron.manager import CronManager
 from ductor_bot.errors import (
     CLIError,
@@ -123,6 +124,7 @@ class _MessageDispatch:
     on_system_status: _SystemStatusCallback | None = None
     on_reasoning_delta: _ReasoningCallback | None = None
     counts_as_activity: bool = True
+    autocompact: AutocompactValue | None = None
 
     def streaming_callbacks(self) -> StreamingCallbacks:
         """Bundle the streaming callbacks into a StreamingCallbacks instance."""
@@ -368,7 +370,7 @@ class Orchestrator:
         return self._command_registry.resolve(text.strip().lower()) is not None
 
     async def handle_message(
-        self, key: SessionKey, text: str, *, counts_as_activity: bool = True
+        self, key: SessionKey, text: str, *, counts_as_activity: bool = True, autocompact: AutocompactValue | None = None
     ) -> OrchestratorResult:
         """Main entry point: route message to appropriate handler.
 
@@ -380,6 +382,7 @@ class Orchestrator:
             text=text,
             cmd=text.strip().lower(),
             counts_as_activity=counts_as_activity,
+            autocompact=autocompact,
         )
         return await self._handle_message_impl(dispatch)
 
@@ -533,6 +536,7 @@ class Orchestrator:
             prompt_text,
             model_override=directives.model,
             counts_as_activity=dispatch.counts_as_activity,
+            **autocompact_override_kwargs(dispatch.autocompact),
         )
 
     def _register_commands(self) -> None:
@@ -1001,6 +1005,7 @@ class Orchestrator:
         result_origin: str = "",
         broadcast_ref: str = "",
         counts_as_activity: bool = True,
+        autocompact: AutocompactValue | None = None,
     ) -> str:
         """Execute *prompt* in the active session (fulfils ``SessionInjector`` protocol)."""
         from ductor_bot.orchestrator.injection import _inject_prompt
@@ -1016,6 +1021,7 @@ class Orchestrator:
             result_origin=result_origin,
             broadcast_ref=broadcast_ref,
             counts_as_activity=counts_as_activity,
+            **autocompact_override_kwargs(autocompact),
         )
 
     async def answer_task_question(  # noqa: PLR0913, PLR0917
