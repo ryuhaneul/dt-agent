@@ -19,6 +19,8 @@ from ductor_bot.chat_log.ids import from_tid, history_filename, new_id, timestam
 from ductor_bot.chat_log.recorder import ChatLogTurn, chat_log_source, chat_log_turn
 from ductor_bot.i18n import LANGUAGES
 from ductor_bot.i18n.loader import TranslationStore
+from ductor_bot.infra.atomic_io import complete_write
+from ductor_bot.infra.file_lock import exclusive_file_lock
 from ductor_bot.infra.input_context import received_at
 from ductor_bot.text.response_format import normalize_tool_name, system_status_label
 
@@ -54,6 +56,7 @@ class _QueuedTurn:
     activity_seq: int = 0
     prepared: asyncio.Event = field(default_factory=asyncio.Event)
     cancellation: asyncio.Task[None] | None = None
+    transition: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class _QueueJournal:
@@ -62,6 +65,15 @@ class _QueueJournal:
     def __init__(self, path: Path) -> None:
         self.path = path
         self._conflicting: list[dict[str, str]] = []
+
+    def _clean_temporary(self) -> None:
+        removed = False
+        for temporary in self.path.parent.glob(self.path.name + ".*.tmp"):
+            if not temporary.is_symlink():
+                temporary.unlink(missing_ok=True)
+                removed = True
+        if removed:
+            self._sync_directory()
 
     def _sync_directory(self) -> None:
         fd = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY)
@@ -81,6 +93,12 @@ class _QueueJournal:
         self._sync_directory()
 
     def accept(self, state: _QueuedTurn) -> None:
+        with exclusive_file_lock(self.path):
+            self._clean_temporary()
+            self._sweep()
+            self._append_admission(state)
+
+    def _append_admission(self, state: _QueuedTurn) -> None:
         self._append(
             {
                 "event": "accepted",
@@ -93,7 +111,10 @@ class _QueueJournal:
         )
 
     def mark(self, turn_id: str, event: Literal["started", "cancelled", "completed"]) -> None:
-        self._append({"event": event, "turn_id": turn_id, "ts": timestamp()})
+        with exclusive_file_lock(self.path):
+            self._clean_temporary()
+            self._append({"event": event, "turn_id": turn_id, "ts": timestamp()})
+            self._sweep()
 
     @staticmethod
     def _decode(line: bytes) -> dict[str, str]:
@@ -121,6 +142,13 @@ class _QueueJournal:
         return {key: row[key] for key in keys}
 
     def read(self) -> dict[str, tuple[dict[str, str], set[str]]]:
+        if not self.path.exists():
+            return {}
+        with exclusive_file_lock(self.path):
+            self._clean_temporary()
+            return self._read()
+
+    def _read(self) -> dict[str, tuple[dict[str, str], set[str]]]:
         if self.path.is_symlink():
             raise OSError("Queue journal must be a regular file")
         try:
@@ -149,17 +177,24 @@ class _QueueJournal:
                 admissions[turn_id] = row
             else:
                 events.setdefault(turn_id, set()).add(row["event"])
+        self._conflicting = [
+            row
+            for row in self._conflicting
+            if not events.get(row["turn_id"], set()) & {"started", "cancelled", "completed"}
+        ]
         return {
             identity: (row, events.get(identity, set()))
             for identity, row in admissions.items()
             if identity not in conflicting
         }
 
-    def compact(self, admissions: list[dict[str, str]]) -> None:
-        # Called before admissions are allowed, so replacing the file cannot race appenders.
+    def _compact(self, admissions: list[dict[str, str]]) -> None:
+        # Every caller holds the fixed sidecar lock across read-modify-replace.
         if not self.path.exists():
             return
-        fd, name = tempfile.mkstemp(dir=self.path.parent, suffix=".tmp")
+        fd, name = tempfile.mkstemp(
+            dir=self.path.parent, prefix=self.path.name + ".", suffix=".tmp"
+        )
         temporary = Path(name)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
@@ -173,6 +208,56 @@ class _QueueJournal:
         finally:
             temporary.unlink(missing_ok=True)
 
+    def _sweep(self, *, retired: set[str] | None = None, tid: str | None = None) -> int:
+        states = self._read()
+        retired = retired or set()
+        remaining = [
+            row
+            for identity, (row, events) in states.items()
+            if identity not in retired
+            and row["tid"] != tid
+            and not events & {"started", "cancelled", "completed"}
+        ]
+        self._conflicting = [
+            row for row in self._conflicting if row["turn_id"] not in retired and row["tid"] != tid
+        ]
+        before = self.path.stat().st_size if self.path.exists() else 0
+        self._compact(remaining)
+        return max(0, before - (self.path.stat().st_size if self.path.exists() else 0))
+
+    def sweep(self, *, dry_run: bool = False) -> int:
+        """Drop settled receipts; all unstarted admissions remain recoverable regardless of age."""
+        if not self.path.exists():
+            return 0
+        if dry_run:
+            states = self._read()
+            rows = [
+                row
+                for row, events in states.values()
+                if not events & {"started", "cancelled", "completed"}
+            ]
+            size = sum(
+                len((json.dumps(row, ensure_ascii=False) + "\n").encode())
+                for row in [*rows, *self._conflicting]
+            )
+            return max(0, self.path.stat().st_size - size)
+        with exclusive_file_lock(self.path):
+            self._clean_temporary()
+            return self._sweep()
+
+    def retire(self, identities: set[str]) -> None:
+        if not self.path.exists():
+            return
+        with exclusive_file_lock(self.path):
+            self._clean_temporary()
+            self._sweep(retired=identities)
+
+    def drop_topic(self, tid: str) -> None:
+        if self.path.exists():
+            with exclusive_file_lock(self.path):
+                self._clean_temporary()
+                self._sweep(tid=tid)
+
 
 class WebTurns:
     def __init__(self, bot: TelegramBot, runtime: ChatLogRuntime) -> None:
@@ -185,6 +270,7 @@ class WebTurns:
         self._turns: dict[str, _QueuedTurn] = {}
         self._queues: dict[str, list[str]] = {}
         self._fifo_locks: dict[str, asyncio.Lock] = {}
+        self._admission_lock = asyncio.Lock()
         self._strings = TranslationStore(bot.config.language)
         self._journal = _QueueJournal(bot._orch.paths.webchat_dir / "queue_journal.jsonl")
 
@@ -236,25 +322,34 @@ class WebTurns:
             {"tid": state.tid, "turn_id": state.identity["turn_id"], **activity}
         )
 
-    def submit(self, tid: str, text: str, *, session_name: str | None = None) -> str:
+    async def submit(self, tid: str, text: str, *, session_name: str | None = None) -> str:
         turn: ChatLogTurn = {
             "turn_id": new_id(),
             "user_entry_id": new_id(),
             "reply_entry_id": new_id(),
         }
         state = _QueuedTurn(tid, text, turn)
-        # Persist acceptance before a task can run or HTTP 202 can be returned.
-        self._journal.accept(state)
-        queue = self._queues.setdefault(tid, [])
-        self._fifo_locks.setdefault(tid, asyncio.Lock())
-        turn_id = turn["turn_id"]
-        self._turns[turn_id] = state
-        work = self._run(tid, text, turn, session_name=session_name)
-        task = asyncio.create_task(work, name="webchat-turn")
-        self._tasks[turn_id] = task
-        queue.append(turn_id)
-        task.add_done_callback(lambda completed: self._finished(turn_id, completed))
-        return turn_id
+        async with self._admission_lock:
+            if tid in self.blocked:
+                raise OSError("Topic no longer accepts turns")
+            try:
+                await complete_write(self._journal.accept, state)
+            except asyncio.CancelledError:
+                await complete_write(self._journal.retire, {turn["turn_id"]})
+                raise
+            if tid in self.blocked:
+                await complete_write(self._journal.retire, {turn["turn_id"]})
+                raise OSError("Topic no longer accepts turns")
+            queue = self._queues.setdefault(tid, [])
+            self._fifo_locks.setdefault(tid, asyncio.Lock())
+            turn_id = turn["turn_id"]
+            self._turns[turn_id] = state
+            work = self._run(tid, text, turn, session_name=session_name)
+            task = asyncio.create_task(work, name="webchat-turn")
+            self._tasks[turn_id] = task
+            queue.append(turn_id)
+            task.add_done_callback(lambda completed: self._finished(turn_id, completed))
+            return turn_id
 
     def _finished(self, turn_id: str, task: asyncio.Task[None]) -> None:
         if not task.cancelled() and (error := task.exception()) is not None:
@@ -297,12 +392,12 @@ class WebTurns:
             )
         if state.tid != tid:
             return "unknown_turn"
-        task = self._tasks.get(turn_id)
-        if state.phase != "cancelled":
-            if state.phase != "queued" or task is None or task.done():
-                return "turn_started"
-            # Claim cancellation without yielding, mutually exclusive with started below.
-            state.phase = "cancelled"
+        async with state.transition:
+            task = self._tasks.get(turn_id)
+            if state.phase != "cancelled":
+                if state.phase != "queued" or task is None or task.done():
+                    return "turn_started"
+                state.phase = "cancelled"
         if state.cancellation is None or (
             state.cancellation.done()
             and (state.cancellation.cancelled() or state.cancellation.exception() is not None)
@@ -385,7 +480,7 @@ class WebTurns:
                 origin="web_queue_cancelled",
                 text=self._strings.chat("notice.queue_cancelled"),
             )
-        self._journal.mark(turn_id, "cancelled")
+        await complete_write(self._journal.mark, turn_id, "cancelled")
 
     async def _recover_admission(self, row: dict[str, str]) -> bool:
         """Return false only when conflicting history requires retaining the admission."""
@@ -413,7 +508,7 @@ class WebTurns:
         from ductor_bot.webchat.topics import WebTopics
 
         try:
-            states = self._journal.read()
+            states = await complete_write(self._journal.read)
         except (OSError, ValueError):
             logger.warning("Web queue journal unavailable during startup")
             return
@@ -432,7 +527,9 @@ class WebTurns:
                 keep.append(row)
                 logger.warning("Web queue startup cancellation could not be persisted")
         try:
-            self._journal.compact(keep)
+            await complete_write(
+                self._journal.retire, set(states) - {row["turn_id"] for row in keep}
+            )
         except OSError:
             logger.warning("Web queue journal compaction failed")
 
@@ -583,14 +680,14 @@ class WebTurns:
             assert pool is not None
             lock = pool.get(key.lock_key)
             async with lock:
-                if tid in self.blocked or state.phase == "cancelled":
-                    return
-                # The synchronous fsync keeps the start receipt and transition indivisible.
-                self._journal.mark(turn["turn_id"], "started")
-                state.phase = "started"
-                state.started_at = timestamp()
-                self._started.add(turn["turn_id"])
-                self._publish(tid, turn["turn_id"], "started")
+                async with state.transition:
+                    if tid in self.blocked or state.phase == "cancelled":
+                        return
+                    await complete_write(self._journal.mark, turn["turn_id"], "started")
+                    state.phase = "started"
+                    state.started_at = timestamp()
+                    self._started.add(turn["turn_id"])
+                    self._publish(tid, turn["turn_id"], "started")
 
                 async def delta(value: str) -> None:
                     nonlocal partial
@@ -679,7 +776,7 @@ class WebTurns:
             self._started.discard(turn["turn_id"])
             if state.phase == "started":
                 try:
-                    self._journal.mark(turn["turn_id"], "completed")
+                    await complete_write(self._journal.mark, turn["turn_id"], "completed")
                 except OSError:
                     logger.warning("Web queue completion receipt could not be persisted")
             if state.phase != "cancelled":
@@ -721,6 +818,9 @@ class WebTurns:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         return killed
+
+    async def discard_topic(self, tid: str) -> None:
+        await complete_write(self._journal.drop_topic, tid)
 
     async def stop(self) -> None:
         tasks = list(self._tasks.items())

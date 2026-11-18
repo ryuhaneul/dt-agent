@@ -413,7 +413,7 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
             if accept is not None:
                 await accept()
             return web.json_response(
-                {"turn_id": turns.submit(tid, text, session_name=session_name)}, status=202
+                {"turn_id": await turns.submit(tid, text, session_name=session_name)}, status=202
             )
 
         async def record_input() -> None:
@@ -463,7 +463,7 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
             raise WebCommandBusyError
         if accept is not None:
             await accept()
-        return web.json_response({"turn_id": turns.submit(tid, text)}, status=202)
+        return web.json_response({"turn_id": await turns.submit(tid, text)}, status=202)
 
     async def mirror_secret(
         tid: str, text: str, entry_id: str, *, kind: Literal["user_mirror", "reply_mirror"]

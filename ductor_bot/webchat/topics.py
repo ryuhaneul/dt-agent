@@ -378,6 +378,7 @@ class WebTopics:
                         if (item["chat_id"], item["topic_id"]) != key.lock_key
                     ]
                     await complete_write(atomic_json_save, self._path, entries)
+                await self.turns.discard_topic(tid)
                 count = await self.runtime.history.delete(tid)
                 dropped = await self.runtime.outbox.drop_tid(tid)
             finally:

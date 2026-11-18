@@ -1838,7 +1838,7 @@ async def test_shutdown_preserves_completed_result_while_status_is_loading(conve
 
     turns._status = status
     queue = h.runtime.events.subscribe()
-    turns.submit("-123.7", "hello")
+    await turns.submit("-123.7", "hello")
     await loading.wait()
     stopping = asyncio.create_task(turns.stop())
     await asyncio.sleep(0)
@@ -1854,8 +1854,18 @@ async def test_shutdown_preserves_completed_result_while_status_is_loading(conve
 
 
 @pytest.mark.parametrize("started", [False, True])
-async def test_topics_snapshot_exposes_active_web_turn(conversation, started):
+async def test_topics_snapshot_exposes_active_web_turn(conversation, started, monkeypatch):
+    from ductor_bot.webchat.turns import _QueueJournal
+
     h = conversation
+    admitted = []
+    original = _QueueJournal.accept
+
+    def accept(journal, state):
+        admitted.append(state.received)
+        return original(journal, state)
+
+    monkeypatch.setattr(_QueueJournal, "accept", accept)
     lock = h.pool.get(h.key.lock_key)
     release = asyncio.Event()
     preparing = asyncio.Event()
@@ -1878,12 +1888,10 @@ async def test_topics_snapshot_exposes_active_web_turn(conversation, started):
         assert topic["busy"]
         assert topic["turn_id"] == turn_id
         receipt = next(item for item in topic["turns"] if item["turn_id"] == turn_id)
-        events = [
-            json.loads(line)
-            for line in (h.paths.webchat_dir / "queue_journal.jsonl").read_text().splitlines()
-        ]
-        accepted = next(event for event in events if event["event"] == "accepted")
-        assert receipt["received"] == accepted["ts"]
+        assert receipt["received"] == admitted[0]
+        if started:
+            assert (h.paths.webchat_dir / "queue_journal.jsonl").read_bytes() == b""
+
     finally:
         if not started:
             lock.release()
@@ -2205,7 +2213,7 @@ async def test_response_button_claim_dispatch_edit_and_duplicate(conversation, m
     h.bot.bot_instance = SimpleNamespace(
         edit_message_text=AsyncMock(), edit_message_reply_markup=AsyncMock()
     )
-    submit = MagicMock(return_value="button-turn")
+    submit = AsyncMock(return_value="button-turn")
     monkeypatch.setattr(WebTurns, "submit", submit)
     entry = await h.runtime.history.append(h.key, Entry("bot", "telegram", "Pick [button:Yes]"))
     await h.runtime.history.bind_telegram_message(
@@ -2247,7 +2255,7 @@ async def test_response_button_named_destination_and_selector_rejection(conversa
     h.bot.bot_instance = SimpleNamespace(
         edit_message_text=AsyncMock(), edit_message_reply_markup=AsyncMock()
     )
-    submit = MagicMock(return_value="named-turn")
+    submit = AsyncMock(return_value="named-turn")
     monkeypatch.setattr(WebTurns, "submit", submit)
     entry = await h.runtime.history.append(
         h.key,
@@ -2293,7 +2301,7 @@ async def test_response_button_busy_does_not_claim_and_legacy_remains_immutable(
     assert response.status == 409
     assert not await h.runtime.history.is_answered("-123.7", entry.id)
     monkeypatch.setattr(WebTurns, "busy", lambda _self, _tid: False)
-    monkeypatch.setattr(WebTurns, "submit", MagicMock(return_value="legacy-turn"))
+    monkeypatch.setattr(WebTurns, "submit", AsyncMock(return_value="legacy-turn"))
     path = h.runtime.history._path("-123.7")
     h.runtime.history._metadata_path("-123.7").unlink()
     # Old entries can still contain literal markers, without a sidecar.
@@ -2331,8 +2339,8 @@ async def test_response_button_named_turn_reaches_named_session_and_keeps_reply_
     work = []
     original = WebTurns.submit
 
-    def submit(self, tid, text, **kwargs):
-        result = original(self, tid, text, **kwargs)
+    async def submit(self, tid, text, **kwargs):
+        result = await original(self, tid, text, **kwargs)
         work.append(self._tasks[result])
         return result
 
@@ -2368,7 +2376,7 @@ async def test_telegram_choice_prevents_web_replay(conversation, monkeypatch):
         _make_callback_query(data="Yes", chat_id=-123, message_id=42, topic_thread_id=7)
     )
     bot._handle_streaming.assert_awaited_once()
-    submit = MagicMock(return_value="must-not-run")
+    submit = AsyncMock(return_value="must-not-run")
     monkeypatch.setattr(WebTurns, "submit", submit)
     response = await h.client.post(
         f"{_PREFIX}/topics/-123.7/buttons",
@@ -2416,8 +2424,8 @@ async def test_response_button_waits_for_telegram_busy_and_rejects_web_busy(
     tasks = []
     original = WebTurns.submit
 
-    def submit(self, tid, text, **kwargs):
-        turn_id = original(self, tid, text, **kwargs)
+    async def submit(self, tid, text, **kwargs):
+        turn_id = await original(self, tid, text, **kwargs)
         tasks.append(self._tasks[turn_id])
         return turn_id
 
@@ -2491,7 +2499,7 @@ async def test_response_button_edit_failure_keeps_dispatch_and_answer(conversati
         edit_message_text=AsyncMock(side_effect=failure),
         edit_message_reply_markup=AsyncMock(side_effect=failure),
     )
-    submit = MagicMock(return_value="accepted")
+    submit = AsyncMock(return_value="accepted")
     monkeypatch.setattr(WebTurns, "submit", submit)
     entry = await h.runtime.history.append(h.key, Entry("bot", "telegram", "[button:Yes]"))
     await h.runtime.history.bind_telegram_message("-123.7", entry.id, 42, html_text="Actual")
@@ -2515,7 +2523,7 @@ async def test_response_button_competing_transports_dispatch_once(conversation, 
     h.bot.bot_instance = SimpleNamespace(
         edit_message_text=AsyncMock(), edit_message_reply_markup=AsyncMock()
     )
-    submit = MagicMock(return_value="web-turn")
+    submit = AsyncMock(return_value="web-turn")
     monkeypatch.setattr(WebTurns, "submit", submit)
     entry = await h.runtime.history.append(h.key, Entry("bot", "telegram", "[button:Yes]"))
     await h.runtime.history.bind_telegram_message("-123.7", entry.id, 42, html_text="Actual")
@@ -2559,7 +2567,7 @@ async def test_late_button_delivery_reconciles_answered_once(
             kind="reply_mirror", chat_id=-123, topic_id=7, text=text, history_id=entry.id
         )
     if answered:
-        monkeypatch.setattr(WebTurns, "submit", MagicMock(return_value="accepted"))
+        monkeypatch.setattr(WebTurns, "submit", AsyncMock(return_value="accepted"))
         response = await h.client.post(
             f"{_PREFIX}/topics/-123.7/buttons",
             json={"entry_id": entry.id, "label": "Yes"},
@@ -2637,7 +2645,7 @@ async def test_web_choice_before_telegram_binding_is_reconciled_once(
             )
         )
     )
-    monkeypatch.setattr(WebTurns, "submit", MagicMock(return_value="accepted"))
+    monkeypatch.setattr(WebTurns, "submit", AsyncMock(return_value="accepted"))
     try:
         await asyncio.wait_for(entered.wait(), 3)
         entry = (await h.runtime.history.read("-123.7"))[-1]
@@ -2988,7 +2996,7 @@ async def test_web_choice_binding_between_context_and_claim_is_annotated(
     h.bot.bot_instance = SimpleNamespace(
         edit_message_text=AsyncMock(), edit_message_reply_markup=AsyncMock()
     )
-    submit = MagicMock(return_value="accepted")
+    submit = AsyncMock(return_value="accepted")
     monkeypatch.setattr(WebTurns, "submit", submit)
     callback_data = "Yes" if route == "buttons" else "w:1"
     entry = await h.runtime.history.append(
@@ -3138,7 +3146,7 @@ async def test_post_claim_metadata_error_still_submits_once(
     h.bot.bot_instance = SimpleNamespace(
         edit_message_text=AsyncMock(), edit_message_reply_markup=AsyncMock()
     )
-    submit = MagicMock(return_value="accepted")
+    submit = AsyncMock(return_value="accepted")
     monkeypatch.setattr(WebTurns, "submit", submit)
     data = "Yes" if route == "buttons" else "w:1"
     entry = await h.runtime.history.append(
@@ -3304,8 +3312,8 @@ async def test_busy_selector_returns_prompt_conflict_without_blocking_topic(
     original_submit = WebTurns.submit
     original_handle = h.bot._orch.handle_message_streaming.side_effect
 
-    def submit(self, *args, **kwargs):
-        turn_id = original_submit(self, *args, **kwargs)
+    async def submit(self, *args, **kwargs):
+        turn_id = await original_submit(self, *args, **kwargs)
         tasks.append(self._tasks[turn_id])
         return turn_id
 
@@ -4556,7 +4564,7 @@ async def test_web_queue_start_cancel_race_has_one_winner(conversation, cancel_f
         return await original(*args, **kwargs)
 
     h.bot._orch.handle_message_streaming.side_effect = handle
-    turn_id = turns.submit("-123.7", "race")
+    turn_id = await turns.submit("-123.7", "race")
     task = turns._tasks[turn_id]
     try:
         while True:
@@ -4590,7 +4598,7 @@ async def test_web_queue_start_cancel_race_has_one_winner(conversation, cancel_f
 async def test_web_queue_cancel_before_preparation_and_wrong_topic(conversation):
     h = conversation
     turns = WebTurns(h.bot, h.runtime)
-    turn_id = turns.submit("-123.7", "cancel immediately")
+    turn_id = await turns.submit("-123.7", "cancel immediately")
     assert await turns.cancel("-123.8", turn_id) == "unknown_turn"
     assert await turns.cancel("-123.7", turn_id) == "cancelled"
     assert await turns.cancel("-123.7", turn_id) == "cancelled"
@@ -4818,3 +4826,120 @@ async def test_activity_payload_is_indicator_only_and_snapshot_is_current(conver
         release_tool.set()
         release_text.set()
         await ws.close()
+
+
+async def test_admission_fsync_is_off_loop_and_precedes_202(conversation, monkeypatch):
+    import os
+    import threading
+
+    h = conversation
+    entered, release = threading.Event(), threading.Event()
+    loop_thread = threading.get_ident()
+    threads = []
+    original = os.fsync
+
+    def fsync(fd):
+        threads.append(threading.get_ident())
+        if not entered.is_set():
+            entered.set()
+            assert release.wait(3)
+        original(fd)
+
+    monkeypatch.setattr(os, "fsync", fsync)
+    request = asyncio.create_task(post_message(h))
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        tick = asyncio.Event()
+        asyncio.get_running_loop().call_soon(tick.set)
+        await asyncio.wait_for(tick.wait(), 1)
+        assert not request.done()
+        h.bot._orch.handle_message_streaming.assert_not_awaited()
+    finally:
+        release.set()
+    assert (await request).status == 202
+    assert threads
+    assert all(thread != loop_thread for thread in threads)
+
+
+async def test_topic_delete_removes_journal_payload_without_restart(conversation, monkeypatch):
+    h = conversation
+    lock = h.pool.get(h.key.lock_key)
+    aborted = asyncio.Event()
+
+    async def kill(*_args):
+        aborted.set()
+        return 0
+
+    monkeypatch.setattr(h.bot._orch._process_registry, "kill_by_chat_topic", kill)
+    await lock.acquire()
+    try:
+        assert (await post_message(h, text="delete-topic-private-payload")).status == 202
+        path = h.paths.webchat_dir / "queue_journal.jsonl"
+        assert "delete-topic-private-payload" in path.read_text()
+        deletion = asyncio.create_task(h.client.delete(
+            f"{_PREFIX}/topics/-123.7", json={"confirm_name": "Topic #7"}, headers=headers()
+        ))
+        await asyncio.wait_for(aborted.wait(), 3)
+    finally:
+        lock.release()
+    response = await deletion
+    assert response.status == 200
+    path = h.paths.webchat_dir / "queue_journal.jsonl"
+    assert "delete-topic-private-payload" not in path.read_text()
+
+
+async def test_cancel_waits_for_durable_start_claim(conversation, monkeypatch):
+    from ductor_bot.webchat.turns import _QueueJournal
+
+    h = conversation
+    turns = WebTurns(h.bot, h.runtime)
+    entered, release = threading.Event(), threading.Event()
+    original = _QueueJournal.mark
+
+    def mark(journal, identity, event):
+        if event == "started":
+            entered.set()
+            assert release.wait(3)
+        original(journal, identity, event)
+
+    monkeypatch.setattr(_QueueJournal, "mark", mark)
+    turn_id = await turns.submit("-123.7", "start-claim")
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        cancellation = asyncio.create_task(turns.cancel("-123.7", turn_id))
+        await asyncio.sleep(0)
+        assert not cancellation.done()
+    finally:
+        release.set()
+    assert await cancellation == "turn_started"
+    await asyncio.gather(*list(turns._tasks.values()))
+    assert len(h.calls) == 1
+
+
+async def test_cancelled_admission_waits_for_worker_and_retires_receipt(conversation, monkeypatch):
+    from ductor_bot.webchat.turns import _QueueJournal
+
+    h = conversation
+    turns = WebTurns(h.bot, h.runtime)
+    entered, release = threading.Event(), threading.Event()
+    original = _QueueJournal.accept
+
+    def accept(journal, state):
+        entered.set()
+        assert release.wait(3)
+        original(journal, state)
+
+    monkeypatch.setattr(_QueueJournal, "accept", accept)
+    admission = asyncio.create_task(turns.submit("-123.7", "disconnected-before-202"))
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        admission.cancel()
+        await asyncio.sleep(0)
+        assert not admission.done()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await admission
+    assert turns._journal.path.read_bytes() == b""
+    assert turns._tasks == {}
+    h.bot._orch.handle_message_streaming.assert_not_awaited()

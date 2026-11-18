@@ -359,5 +359,5 @@ class WebCommandDispatcher:
         if prompt is not None:
             if self.turns.busy(tid):
                 raise WebCommandBusyError
-            self.turns.submit(tid, prompt)
+            await self.turns.submit(tid, prompt)
         return _response(text, keyboard)

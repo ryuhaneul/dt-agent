@@ -15,6 +15,7 @@ from ductor_bot.chat_log.history import HistoryStore
 from ductor_bot.chat_log.outbox import Outbox
 from ductor_bot.infra.atomic_io import atomic_bytes_save, atomic_text_save, complete_write
 from ductor_bot.infra.file_lock import exclusive_file_lock
+from ductor_bot.webchat.turns import _QueueJournal
 
 logger = logging.getLogger(__name__)
 _BACKUP = re.compile(
@@ -221,6 +222,13 @@ class RetentionPruner:
         """Remove only records strictly older than the selected positive day limits."""
         now = datetime.now(UTC)
         result = PruneResult()
+        if history_days or backup_days or done_days:
+            try:
+                journal = _QueueJournal(self.backups.parent / "queue_journal.jsonl")
+                result.bytes += await complete_write(journal.sweep, dry_run=dry_run)
+            except OSError as exc:
+                logger.warning("Queue journal retention failed: %s", type(exc).__name__)
+                result.failures += 1
         if history_days:
             cutoff = now - timedelta(days=history_days)
             for tid in sorted(set(self.history.tids()) | set(self.history.metadata_tids())):

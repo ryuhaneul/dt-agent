@@ -107,7 +107,7 @@ async def test_aborted_partial_reply_is_persisted(tmp_path):
     orch._handle_message_impl = MethodType(Orchestrator._handle_message_impl, orch)
     orch.handle_message_streaming = MethodType(Orchestrator.handle_message_streaming, orch)
     turns = WebTurns(bot, runtime)
-    turn_id = turns.submit("-123.7", "hello")
+    turn_id = await turns.submit("-123.7", "hello")
     task = turns._tasks[turn_id]
     await asyncio.wait_for(started.wait(), 2)
     await turns.abort("-123.7")
@@ -132,7 +132,9 @@ async def test_other_topic_save_cannot_resurrect_deleted_session(tmp_path, monke
     sessions = bot._orch._sessions
     key = SessionKey.telegram(-123, 7)
     await sessions.resolve_session(key)
-    turns = SimpleNamespace(blocked=set(), abort=AsyncMock(return_value=0))
+    turns = SimpleNamespace(
+        blocked=set(), abort=AsyncMock(return_value=0), discard_topic=AsyncMock()
+    )
     topics = WebTopics(bot, runtime, turns)
     captured, release = asyncio.Event(), asyncio.Event()
     original = sessions._save
@@ -457,7 +459,7 @@ async def test_queue_restart_cancels_two_real_waiters_once(tmp_path):
     lock = bot._orch._lock_pool.get((-123, 7))
     await lock.acquire()
     queue = runtime.events.subscribe()
-    identities = [turns.submit("-123.7", text) for text in ["first\ncafé", "second <body>"]]
+    identities = [await turns.submit("-123.7", text) for text in ["first\ncafé", "second <body>"]]
     snapshot = turns.snapshot("-123.7")
     try:
         prepared = set()
@@ -664,9 +666,9 @@ def test_queue_journal_fsyncs_each_append_and_restricts_permissions(tmp_path, mo
     state = journal_admission(turns)
     for phase in ["started", "cancelled", "completed"]:
         turns._journal.mark(state.identity["turn_id"], phase)
-    assert calls == [True, False] * 4
+    assert calls == [True, False] * 7
     assert stat.S_IMODE(turns._journal.path.stat().st_mode) == 0o600
-    assert len(turns._journal.path.read_text().splitlines()) == 4
+    assert turns._journal.path.read_bytes() == b""
 
 
 async def test_queue_restart_reply_evidence_excludes_missing_user_record(tmp_path):
@@ -721,3 +723,119 @@ async def test_queue_compaction_keeps_conflicting_journal_payloads(tmp_path):
         assert {row["text"] for row in rows} == {state.text, duplicate["text"]}
         assert await runtime.history.read("-123.7") == []
         assert await runtime.outbox.retained_items() == []
+
+
+async def test_journal_sequential_turns_are_bounded_by_pending_payloads(tmp_path):
+    from ductor_bot.infra.atomic_io import complete_write
+
+    _, bot, runtime = harness(tmp_path)
+    turns = WebTurns(bot, runtime)
+    pending = journal_admission(turns, "pending-body")
+    initial = json.loads(turns._journal.path.read_text())
+    largest = 0
+    for index in range(128):
+        state = _QueuedTurn(
+            "-123.7", f"{index:04d}" + "x" * 31996,
+            {"turn_id": new_id(), "user_entry_id": new_id(), "reply_entry_id": new_id()},
+        )
+        await complete_write(turns._journal.accept, state)
+        largest = max(largest, turns._journal.path.stat().st_size)
+        assert len(turns._journal.path.read_text().splitlines()) == 2
+        await complete_write(turns._journal.mark, state.identity["turn_id"], "started")
+        assert json.loads(turns._journal.path.read_text()) == initial
+        await complete_write(turns._journal.mark, state.identity["turn_id"], "completed")
+        assert json.loads(turns._journal.path.read_text()) == initial
+    assert largest < 33000
+    await complete_write(turns._journal.mark, pending.identity["turn_id"], "cancelled")
+    assert turns._journal.path.read_bytes() == b""
+
+
+async def test_journal_concurrent_instances_do_not_lose_pending_admissions(tmp_path):
+    from ductor_bot.infra.atomic_io import complete_write
+    from ductor_bot.webchat.turns import _QueueJournal
+
+    _, bot, runtime = harness(tmp_path)
+    path = WebTurns(bot, runtime)._journal.path
+    writers = [_QueueJournal(path) for _ in range(3)]
+    pending = set()
+
+    async def write(index):
+        state = _QueuedTurn(
+            "-123.7", "body-" + str(index),
+            {"turn_id": new_id(), "user_entry_id": new_id(), "reply_entry_id": new_id()},
+        )
+        journal = writers[index % len(writers)]
+        await complete_write(journal.accept, state)
+        if index % 3:
+            await complete_write(journal.mark, state.identity["turn_id"], "started")
+        else:
+            pending.add(state.identity["turn_id"])
+        await complete_write(journal.sweep)
+
+    await asyncio.gather(*(write(index) for index in range(36)))
+    records = writers[0].read()
+    assert set(records) == pending
+    assert all(not events for _, events in records.values())
+    await complete_write(writers[1].retire, pending)
+    assert path.read_bytes() == b""
+
+
+async def test_retention_removes_settled_journal_but_keeps_old_pending(tmp_path):
+    from ductor_bot.chat_log.prune import RetentionPruner
+
+    paths, bot, runtime = harness(tmp_path)
+    turns = WebTurns(bot, runtime)
+    pending = journal_admission(turns, "old-pending-required")
+    finished = journal_admission(turns, "old-finished-private")
+    old = "2020-01-01T00:00:00.000Z"
+    rows = [json.loads(line) for line in turns._journal.path.read_text().splitlines()]
+    for row in rows:
+        row["ts"] = old
+    rows.append({"event": "completed", "turn_id": finished.identity["turn_id"], "ts": old})
+    turns._journal.path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    before = turns._journal.path.read_bytes()
+    pruner = RetentionPruner(runtime.history, runtime.outbox, paths.webchat_dir / "backups")
+    preview = await pruner.prune(history_days=1, dry_run=True)
+    assert preview.bytes > 0
+    assert turns._journal.path.read_bytes() == before
+    result = await pruner.prune(history_days=1)
+    assert result.failures == 0
+    assert "old-finished-private" not in turns._journal.path.read_text()
+    assert set(turns._journal.read()) == {pending.identity["turn_id"]}
+
+
+@pytest.mark.parametrize("point", ["before_replace", "after_replace"])
+async def test_journal_recovers_after_process_exit_during_compaction(tmp_path, point):
+    import subprocess
+    import sys
+
+    paths, bot, runtime = harness(tmp_path)
+    turns = WebTurns(bot, runtime)
+    started = journal_admission(turns, "already-starting")
+    pending = journal_admission(turns, "still-pending")
+    script = """
+import os, sys
+from pathlib import Path
+from ductor_bot.webchat.turns import _QueueJournal
+original = Path.replace
+def replace(path, target):
+    if sys.argv[3] == 'before_replace': os._exit(73)
+    result = original(path, target)
+    os._exit(73)
+Path.replace = replace
+_QueueJournal(Path(sys.argv[1])).mark(sys.argv[2], 'started')
+"""
+    result = await asyncio.to_thread(
+        subprocess.run,
+        [sys.executable, "-c", script, str(turns._journal.path), started.identity["turn_id"], point],
+        check=False, capture_output=True, text=True,
+    )
+    assert result.returncode == 73, result.stderr
+    await WebTurns(bot, runtime).recover_pending()
+    entries = await runtime.history.read("-123.7")
+    assert [entry.turn_id for entry in entries] == [pending.identity["turn_id"]]
+    assert entries[0].status == "cancelled"
+    assert turns._journal.path.read_bytes() == b""
+    assert not list(paths.webchat_dir.glob("queue_journal.jsonl.*.tmp"))
+    await WebTurns(bot, runtime).recover_pending()
+    assert len(await runtime.history.read("-123.7")) == 1

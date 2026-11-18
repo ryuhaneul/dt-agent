@@ -384,11 +384,11 @@ async def test_info_returns_url_buttons_and_leave_uses_explicit_group(commands):
 
 async def test_file_browser_followup_uses_same_topic_turn(commands):
     h = commands
-    h.turns.submit = MagicMock(return_value="turn1")
+    h.turns.submit = AsyncMock(return_value="turn1")
     initial = await h.dispatcher.dispatch("1.7", "/showfiles")
     assert initial["buttons"]
     result = await h.dispatcher.file_browser_response("1.7", "sf!")
-    h.turns.submit.assert_called_once_with(
+    h.turns.submit.assert_awaited_once_with(
         "1.7", t("file_browser.file_request_prompt", dir=h.orch.paths.ductor_home.resolve())
     )
     assert set(result) == {"text", "buttons"}
@@ -514,7 +514,7 @@ async def test_stop_all_cancels_waiting_web_turn_before_killing(commands):
     await lock.acquire()
     queue = h.runtime.events.subscribe()
     try:
-        h.turns.submit("1.7", "waiting prompt")
+        await h.turns.submit("1.7", "waiting prompt")
         task = h.turns._tasks[h.turns.active_turn_id("1.7")]
         while True:
             event = await asyncio.wait_for(queue.get(), 2)
@@ -556,7 +556,7 @@ async def test_stop_all_keeps_running_turn_until_existing_registry_kill(commands
         return OrchestratorResult(text="")
 
     h.orch.handle_message_streaming = AsyncMock(side_effect=running)
-    h.turns.submit("1.7", "running prompt")
+    await h.turns.submit("1.7", "running prompt")
     await asyncio.wait_for(started.wait(), 2)
     task = h.turns._tasks[h.turns.active_turn_id("1.7")]
 

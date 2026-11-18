@@ -448,7 +448,7 @@ async def test_web_mirrors_follow_delivery_lock_order(tmp_path, immediate):
 
     outbox.delivery_lock.acquire = observed_acquire
     turns = WebTurns(bot, active)
-    turn_id = turns.submit("42.7", "B")
+    turn_id = await turns.submit("42.7", "B")
     newer = turns._tasks[turn_id]
     observed = asyncio.create_task(mirror_waiting.wait())
     try:
