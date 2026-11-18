@@ -22,7 +22,7 @@ from cmarkgfm.cmark import Options, markdown_to_html_with_extensions
 ROOT = Path(__file__).resolve().parents[2]
 HARNESS = Path(__file__).with_name("markdown_render.mjs")
 VENDOR = ROOT / "ductor_bot/webchat/web/static/js/vendor/micromark-gfm.js"
-VENDOR_SHA256 = "1edc4ec68814249b9e988e0f9236a9827e2477e910fc361f629a6791034eb1b3"
+VENDOR_SHA256 = "4ead1a943c25831048020caa80b92c16d053bcff80b7524f29a52297a352449f"
 KOREAN_TEXT = "".join(map(chr, [54620, 44544]))
 KOREAN_LINK = "".join(map(chr, [54620, 44544, 32, 47553, 53356]))
 KOREAN_AFTER = "".join(map(chr, [46244]))
@@ -501,6 +501,8 @@ def test_hostile_html_protocols_and_images_are_inert_strings():
         "[![x](data:image/svg+xml,attack)](javascript:alert(1))",
         '![x](https://image.test/x "\\" onerror=alert(1)")',
         "<style>body{background:url(https://image.test/x)}</style>",
+        '[x](https://example.test/x "&#34; onmouseover=alert(1) &#62;")',
+        '![x](https://image.test/x "&#34; onerror=alert(1) &#62;")',
     ]
     output = render(payloads + [f"| x |\n| - |\n| {p} |" for p in payloads])["output"]
     for item in output:

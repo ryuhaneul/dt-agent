@@ -12,6 +12,8 @@ npm pack --ignore-scripts --json --pack-destination packs micromark@4.0.3 microm
 cat > entry.js <<'JS'
 export {micromark} from 'micromark';
 export {gfm, gfmHtml} from 'micromark-extension-gfm';
+export {sanitizeUri} from 'micromark-util-sanitize-uri';
+export {normalizeIdentifier} from 'micromark-util-normalize-identifier';
 JS
 node --input-type=module - "$repo" <<'JS'
 import fs from 'node:fs';
@@ -46,6 +48,8 @@ const notices = packages.map(directory => {
 });
 const banner = `/*\nVendored micromark 4.0.3 + micromark-extension-gfm 3.0.0 (MIT).\n` +
   `Generated with esbuild 0.25.12; command: sh scripts/vendor_micromark.sh\n` +
+  'Exported helpers: micromark-util-sanitize-uri ' + lock.packages['node_modules/micromark-util-sanitize-uri'].version +
+  '; micromark-util-normalize-identifier ' + lock.packages['node_modules/micromark-util-normalize-identifier'].version + '\n' +
   sources.join('\n') + '\nFull original MIT notices for bundled packages:\n\n' + notices.join('\n') + '*/\n';
 fs.writeFileSync(path.join(repo, 'ductor_bot/webchat/web/static/js/vendor/micromark-gfm.js'),
   banner + result.outputFiles[0].text);
