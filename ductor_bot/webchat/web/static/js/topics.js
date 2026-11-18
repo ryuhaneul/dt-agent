@@ -1,6 +1,6 @@
 import { api } from './api.js';
 import { t } from './i18n.js';
-import { go } from './router.js';
+import { go, renderRoute } from './router.js';
 import { notify } from './auth.js';
 import { esc } from './md.js';
 
@@ -67,12 +67,12 @@ async function markAllSeen() {
     if (epoch === readEpoch) { markingAll = false; button.disabled = false; }
   }
 }
-export function selectTopic(tid, seq = null, navigate = true) {
+export function selectTopic(tid, seq = null, navigate = true, focusComposer = false) {
   if (!topics.some(topic => topic.tid === tid)) return;
   selected = tid;
   renderTopics();
   if (navigate) go('chat');
-  document.dispatchEvent(new CustomEvent('topic-selected', { detail: { topic: getTopic(), seq } }));
+  document.dispatchEvent(new CustomEvent('topic-selected', { detail: { topic: getTopic(), seq, focusComposer } }));
 }
 export function renderTopics() {
   let html = '';
@@ -263,7 +263,15 @@ export function initTopics() {
   });
   document.querySelector('#tlist').addEventListener('click', event => {
     const button = event.target.closest('[data-tid]');
-    if (button) selectTopic(button.dataset.tid, button.dataset.seq === undefined ? null : Number(button.dataset.seq));
+    if (!button) return;
+    const topic = topics.find(item => item.tid === button.dataset.tid);
+    const seq = button.dataset.seq === undefined ? null : Number(button.dataset.seq);
+    const focusComposer = !!(event.isTrusted && seq === null && topic && !topic.read_only && topic.tid !== 'unknown');
+    selectTopic(button.dataset.tid, seq, true, focusComposer);
+    if (focusComposer) {
+      renderRoute();
+      document.querySelector('#msgIn').focus();
+    }
   });
   document.querySelector('#q').addEventListener('input', event => {
     query = event.target.value.trim(); hits = []; const generation = ++request;

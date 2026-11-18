@@ -429,8 +429,12 @@ def test_display_policy_and_escaping():
             tag, attrs, children = node
             if tag == "a":
                 assert not inside
-                assert attrs["target"] == "_blank"
-                assert attrs["rel"] == "noopener noreferrer"
+                if attrs["href"].startswith("#"):
+                    assert "target" not in attrs
+                    assert "rel" not in attrs
+                else:
+                    assert attrs["target"] == "_blank"
+                    assert attrs["rel"] == "noopener noreferrer"
                 assert SAFE_HREF.match(attrs["href"])
             for child in children:
                 check(child, inside or tag == "a")
@@ -513,3 +517,15 @@ def test_hostile_html_protocols_and_images_are_inert_strings():
                 check(child)
 
         check(tree.root)
+
+
+def test_entry_cache_and_incremental_final_render():
+    result = subprocess.run(
+        ["node", str(HARNESS)],
+        input=json.dumps({"checks": True}),
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=120,
+    )
+    assert json.loads(result.stdout) == {"checks": "passed"}

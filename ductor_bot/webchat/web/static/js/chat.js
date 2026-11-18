@@ -4,7 +4,7 @@ import { initSecret } from './secret.js';
 import { t } from './i18n.js';
 import { notify } from './auth.js';
 import { connectEvents } from './ws.js';
-import { esc, md } from './md.js';
+import { md, esc, createMarkdownCache, createMarkdownStream, initMarkdownLinks } from './md.js';
 import { getTopic, getTopics, selectTopic, refreshTopics, noteEntry, markSeen, formatTime } from './topics.js';
 
 const histories = new Map(), turns = new Map(), busy = new Map(), drafts = new Map(), topicVersions = new Map(), busyVersions = new Map();
@@ -14,7 +14,7 @@ let view = 'chat', loading = false, selection = 0, commandMenu = null, secretDia
 let streamFrame = null;
 const streamUpdates = new Set();
 function history(tid) {
-  if (!histories.has(tid)) histories.set(tid, { entries: new Map(), meta: new Map(), choices: new Map(), hasMore: false, loaded: false });
+  if (!histories.has(tid)) histories.set(tid, { entries: new Map(), meta: new Map(), choices: new Map(), hasMore: false, loaded: false, markdown: createMarkdownCache(`entry:${tid}`) });
   return histories.get(tid);
 }
 export function mergeEntries(entries, incoming) {
@@ -168,6 +168,7 @@ function addActivity(turn, event) {
   if (last && last.type === event.type && last.value === value && last.offset === offset) {
     last.count++; last.seq = event.seq;
   } else items.push({ type: event.type, value, offset, count: 1, seq: event.seq });
+  turn.activityRevision = (turn.activityRevision || 0) + 1;
 }
 function activityLine(item) {
   const text = item.type === 'tool' ? `TOOL: ${item.value}` : t(systemLabels[item.value]);
@@ -181,14 +182,22 @@ function activitySummary(turn) {
   return `<details class="activity-trace" data-activity-turn="${esc(turn.id)}"${turn.activityOpen ? ' open' : ''}><summary>${esc(label)}<span class="sr-only"> · ${esc(t('chat.activity'))}</span></summary><div class="activity-lines" role="group" aria-label="${esc(t('chat.activity'))}">${turn.activities.map(activityLine).join('')}</div></details>`;
 }
 function streamContent(turn, live) {
-  if (!live) return activitySummary(turn) + md(turn.text);
+  if (!live) {
+    turn.markdown ||= createMarkdownStream(`turn:${turn.id}`);
+    return activitySummary(turn) + turn.markdown.render(turn.text, true);
+  }
   let html = '', offset = 0;
   for (const item of turn.activities || []) {
-    html += md(turn.text.slice(offset, item.offset)) + activityLine(item);
+    html += md(turn.text.slice(offset, item.offset), { scope: `turn:${turn.id}:activity:${offset}` }) + activityLine(item);
     offset = item.offset;
   }
-  return html + md(turn.text.slice(offset));
+  if (turn.markdownOffset !== offset) turn.markdown = createMarkdownStream(`turn:${turn.id}`);
+  turn.markdownOffset = offset;
+  turn.markdown.render(turn.text.slice(offset));
+  turn.renderedActivityRevision = turn.activityRevision;
+  return html + `<div data-stream-complete data-length="${turn.markdown.completeHTML.length}">${turn.markdown.completeHTML}</div><div data-stream-tail>${turn.markdown.tailHTML}</div>`;
 }
+
 function entryMarkup(entry) {
   const time = esc(formatTime(entry.ts));
   const delegated = entry.role === 'event' && entry.kind === 'interagent';
@@ -196,11 +205,11 @@ function entryMarkup(entry) {
     const failed = ['failed', 'error', 'cancelled'].includes(entry.status);
     const key = entry.kind === 'task_result' && failed ? 'task_failed' : entry.kind;
     const kind = ['task_result', 'task_failed', 'task_question', 'heartbeat', 'interagent', 'cron', 'webhook', 'background'].includes(key) ? key : 'background';
-    return `<div class="event${entry.imported ? ' old' : ''}" data-entry-seq="${entry.seq}"><span class="badge ${kind === 'task_result' ? 'badge-ok' : kind === 'task_failed' ? 'badge-down' : 'badge-off'}">${esc(t(`event.${kind}`))}</span><div><div class="meta">${sourceTag(entry)}<span class="tm">${time}</span>${entry.title ? `<b>${esc(entry.title)}</b>` : ''}</div><div class="md">${md(entry.text || '')}</div>${responseButtons(entry)}${mirror(entry)}</div></div>`;
+    return `<div class="event${entry.imported ? ' old' : ''}" data-entry-seq="${entry.seq}"><span class="badge ${kind === 'task_result' ? 'badge-ok' : kind === 'task_failed' ? 'badge-down' : 'badge-off'}">${esc(t(`event.${kind}`))}</span><div><div class="meta">${sourceTag(entry)}<span class="tm">${time}</span>${entry.title ? `<b>${esc(entry.title)}</b>` : ''}</div><div class="md">${history(getTopic().tid).markdown(entry)}</div>${responseButtons(entry)}${mirror(entry)}</div></div>`;
   }
   const turn = turns.get(entry.turn_id);
   const stopped = entry.status === 'aborted' || (entry.role === 'bot' && turn?.phase === 'aborted');
-  return `<div class="msg ${entry.role === 'user' ? 'me' : 'bot'}${entry.imported ? ' old' : ''}${entry.kind === 'command' ? ' command-message' : ''}" data-entry-seq="${entry.seq}"><div class="meta">${sourceTag(entry)}${delegated ? `<span class="tag">${esc(t('chat.delegated_response'))}</span>` : ''}<span class="tm">${time}</span>${delegated && entry.title ? `<span>${esc(entry.title)}</span>` : ''}</div><div class="bubble md">${entry.role === 'bot' ? activitySummary(turn) : ''}${entry.kind === 'command' ? esc(entry.text || '') : md(entry.text || '')}${responseButtons(entry)}</div>${entry.role === 'user' ? queueStatus(entry.turn_id, entry.status) : ''}${stopped ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : ''}${mirror(entry)}</div>`;
+  return `<div class="msg ${entry.role === 'user' ? 'me' : 'bot'}${entry.imported ? ' old' : ''}${entry.kind === 'command' ? ' command-message' : ''}" data-entry-seq="${entry.seq}"><div class="meta">${sourceTag(entry)}${delegated ? `<span class="tag">${esc(t('chat.delegated_response'))}</span>` : ''}<span class="tm">${time}</span>${delegated && entry.title ? `<span>${esc(entry.title)}</span>` : ''}</div><div class="bubble md">${entry.role === 'bot' ? activitySummary(turn) : ''}${entry.kind === 'command' ? esc(entry.text || '') : history(getTopic().tid).markdown(entry)}${responseButtons(entry)}</div>${entry.role === 'user' ? queueStatus(entry.turn_id, entry.status) : ''}${stopped ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : ''}${mirror(entry)}</div>`;
 }
 function streamMarkup(turn) {
   const live = ['queued', 'started'].includes(turn.phase);
@@ -225,8 +234,20 @@ function scheduleStreamRender(turnId) {
       const turn = turns.get(id);
       if (!turn || turn.tid !== topic.tid) continue;
       const element = [...thread.querySelectorAll('[data-turn]')].find(node => node.dataset.turn === id);
-      if (element) element.outerHTML = streamMarkup(turn);
-      else if (![...history(topic.tid).entries.values()].some(entry => entry.role === 'bot' && entry.turn_id === id)) {
+      if (element) {
+        if (turn.renderedActivityRevision !== turn.activityRevision) {
+          element.querySelector('.bubble').innerHTML = streamContent(turn, true) + '<span class="caret" aria-hidden="true"></span>';
+          continue;
+        }
+        turn.markdown.render(turn.text.slice(turn.markdownOffset || 0));
+        const complete = element.querySelector('[data-stream-complete]');
+        const tail = element.querySelector('[data-stream-tail]');
+        const length = Number(complete.dataset.length || 0);
+        if (turn.markdown.completeHTML.length < length) complete.innerHTML = turn.markdown.completeHTML;
+        else complete.insertAdjacentHTML('beforeend', turn.markdown.completeHTML.slice(length));
+        complete.dataset.length = turn.markdown.completeHTML.length;
+        tail.innerHTML = turn.markdown.tailHTML;
+      } else if (![...history(topic.tid).entries.values()].some(entry => entry.role === 'bot' && entry.turn_id === id)) {
         renderThread();
         return;
       }
@@ -467,6 +488,7 @@ export async function handleEvent(event) {
       if (event.phase === 'queued' && turn.userText === undefined) await resync();
       if (!['queued', 'started'].includes(event.phase)) {
         turn.finished = new Date().toISOString();
+        if (topic?.tid === tid) renderThread();
         if (topic?.tid === tid) await loadHistory(tid);
         await refreshTopics();
       }
@@ -593,6 +615,7 @@ export function initChat() {
     });
   }
   new ResizeObserver(updateThreadNavigation).observe(thread);
+  initMarkdownLinks(thread);
   input.maxLength = 32000;
   commandMenu = initCommands(input, value => { if (getTopic()) drafts.set(getTopic().tid, value); resizeComposer(); });
   input.addEventListener('input', () => { if (getTopic()) drafts.set(getTopic().tid, input.value); resizeComposer(); renderHeader(); });
@@ -634,7 +657,7 @@ export function initChat() {
       await loadHistory(topic.tid, { target: seq });
       if (active && generation === epoch && selected === selection && getTopic()?.tid === topic.tid) {
         renderThread({ bottom: seq === null, seq });
-        if (location.hash === '#chat') document.querySelector('[data-view="chat"] h2').focus();
+        if (location.hash === '#chat' && (!event.detail.focusComposer || document.activeElement !== input)) document.querySelector('[data-view="chat"] h2').focus();
       }
     } catch (error) { if (active && generation === epoch) errorNotice(error); }
   });

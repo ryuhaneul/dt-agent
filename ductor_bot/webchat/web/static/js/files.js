@@ -1,6 +1,6 @@
 import { api } from './api.js';
 import { t } from './i18n.js';
-import { md, esc } from './md.js';
+import { md, esc, initMarkdownLinks } from './md.js';
 import { diff } from './diff.js';
 import { go, openDialog, closeDialog } from './router.js';
 import { notify } from './auth.js';
@@ -123,6 +123,7 @@ async function save() {
   }
 }
 export function initFiles() {
+  initMarkdownLinks(document.querySelector('#prev'));
   document.addEventListener('language-changed', renderFiles);
   document.addEventListener('click', event => {
     const button = event.target.closest('[data-file]');
