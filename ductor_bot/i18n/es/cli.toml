@@ -98,7 +98,7 @@ prune_preview = "Vista previa: se eliminarían {entries} entradas del historial 
 prune_summary = "Eliminados: {entries} entradas del historial en {files} archivos, {outbox} elementos completados de la cola y {backups} copias de seguridad; {bytes} bytes. fallos: {failures}."
 
 [webchat]
-totp_reenroll_required = "Debe configurar TOTP de nuevo en el próximo inicio de sesión."
+totp_reenroll_required = "Debes configurar TOTP de nuevo en el próximo inicio de sesión."
 credentials_status = "Credenciales: {storage}; contraseña: {password_configured}; TOTP: {totp_configured}; migración necesaria: {migration_required}."
 credentials_failed = "No se pudieron actualizar las credenciales web."
 vault_locked = "Este comando no puede modificar el almacén de secretos cifrado."
