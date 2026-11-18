@@ -80,6 +80,7 @@ current = "{name} · 토픽 #{id}"
 last_active = "마지막 활동 {time}"
 
 [chat]
+delegated_response = "위임 결과 응답"
 scroll_top = "맨 위로"
 scroll_bottom = "맨 아래로"
 list = "토픽 목록"

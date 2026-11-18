@@ -736,7 +736,7 @@ const {staticDir,strings,locales}=JSON.parse(fs.readFileSync(0,'utf8'));
 const pending=[];
 const frames=new Map();let frameId=0;
 class Element {
-  constructor(){this.listeners={};this.dataset={};this.children=[];this.textContent='';this.html='';this.value='';this.hidden=false;this.scrollTop=0;this.scrollHeight=500;this.clientHeight=500;this.attributes={};this.disabled=false;}
+  constructor(){this.listeners={};this.dataset={};this.children=[];this.textContent='';this.html='';this.value='';this.hidden=false;this.scrollTop=0;this.scrollHeight=500;this.clientHeight=500;this.attributes={};this.disabled=false;this.style={};this.offsetHeight=500;}
   addEventListener(type,callback){(this.listeners[type] ||= []).push(callback);}
   emit(type,extra={}){for(const callback of this.listeners[type] || []){const result=callback({type,target:this,preventDefault(){this.prevented=true},...extra});if(result?.then)pending.push(result);}}
   setAttribute(key,value){this.attributes[key]=String(value);}

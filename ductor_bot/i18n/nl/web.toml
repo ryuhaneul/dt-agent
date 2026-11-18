@@ -80,6 +80,7 @@ current = "{name} · Onderwerp #{id}"
 last_active = "Laatst actief: {time}"
 
 [chat]
+delegated_response = "Antwoord op gedelegeerde taak"
 scroll_top = "Naar boven scrollen"
 scroll_bottom = "Naar beneden scrollen"
 list = "Onderwerpenlijst"

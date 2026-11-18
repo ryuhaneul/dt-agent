@@ -80,6 +80,7 @@ current = "{name} · Tópico #{id}"
 last_active = "Última atividade: {time}"
 
 [chat]
+delegated_response = "Resposta delegada"
 scroll_top = "Ir para o início"
 scroll_bottom = "Ir para o fim"
 list = "Lista de tópicos"

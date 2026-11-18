@@ -41,7 +41,7 @@ export function md(text) {
       closeList();
       const row = (values, tag) => '<tr>' + alignments.map((align, column) =>
         `<${tag}${align ? ` class="align-${align}"` : ''}>${inline(values[column] || '')}</${tag}>`).join('') + '</tr>';
-      output += '<div class="table-scroll" tabindex="0"><table><thead>' + row(cells(line), 'th') + '</thead><tbody>';
+      output += `<div class="table-scroll" tabindex="0"><table><colgroup><col span="${alignments.length}"></colgroup><thead>` + row(cells(line), 'th') + '</thead><tbody>';
       index += 2;
       while (index < lines.length && lines[index].trim()
         && !/^ {0,3}(?:#{1,6}(?:\s|$)|[-+*]\s|\d+[.)]\s|>|`{3,}|~{3,}|(?:[-*_]\s*){3,}$)/.test(lines[index])) {

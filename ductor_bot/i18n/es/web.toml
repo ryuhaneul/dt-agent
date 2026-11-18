@@ -80,6 +80,7 @@ current = "{name} · Tema #{id}"
 last_active = "Última actividad: {time}"
 
 [chat]
+delegated_response = "Respuesta delegada"
 scroll_top = "Ir al principio"
 scroll_bottom = "Ir al final"
 list = "Lista de temas"

@@ -121,7 +121,8 @@ async function chooseButton(entryId, value, kind) {
 }
 function entryMarkup(entry) {
   const time = esc(formatTime(entry.ts));
-  if (entry.role === 'event') {
+  const delegated = entry.role === 'event' && entry.kind === 'interagent';
+  if (entry.role === 'event' && !delegated) {
     const failed = ['failed', 'error', 'cancelled'].includes(entry.status);
     const key = entry.kind === 'task_result' && failed ? 'task_failed' : entry.kind;
     const kind = ['task_result', 'task_failed', 'task_question', 'heartbeat', 'interagent', 'cron', 'webhook', 'background'].includes(key) ? key : 'background';
@@ -129,7 +130,7 @@ function entryMarkup(entry) {
   }
   const turn = turns.get(entry.turn_id);
   const stopped = entry.status === 'aborted' || (entry.role === 'bot' && turn?.phase === 'aborted');
-  return `<div class="msg ${entry.role === 'user' ? 'me' : 'bot'}${entry.imported ? ' old' : ''}${entry.kind === 'command' ? ' command-message' : ''}" data-entry-seq="${entry.seq}"><div class="meta">${sourceTag(entry)}<span class="tm">${time}</span></div><div class="bubble md">${entry.kind === 'command' ? esc(entry.text || '') : md(entry.text || '')}${responseButtons(entry)}</div>${stopped ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : ''}${mirror(entry)}</div>`;
+  return `<div class="msg ${entry.role === 'user' ? 'me' : 'bot'}${entry.imported ? ' old' : ''}${entry.kind === 'command' ? ' command-message' : ''}" data-entry-seq="${entry.seq}"><div class="meta">${sourceTag(entry)}${delegated ? `<span class="tag">${esc(t('chat.delegated_response'))}</span>` : ''}<span class="tm">${time}</span>${delegated && entry.title ? `<span>${esc(entry.title)}</span>` : ''}</div><div class="bubble md">${entry.kind === 'command' ? esc(entry.text || '') : md(entry.text || '')}${responseButtons(entry)}</div>${stopped ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : ''}${mirror(entry)}</div>`;
 }
 function streamMarkup(turn) {
   const live = ['queued', 'started'].includes(turn.phase);
@@ -391,6 +392,11 @@ export async function handleEvent(event) {
   }
   if (active) renderThread();
 }
+function resizeComposer() {
+  const input = document.querySelector('#msgIn');
+  input.style.height = 'auto';
+  input.style.height = `${input.scrollHeight + input.offsetHeight - input.clientHeight}px`;
+}
 async function sendOrStop() {
   commandMenu?.close();
   const topic = getTopic(), input = document.querySelector('#msgIn');
@@ -412,14 +418,14 @@ async function sendOrStop() {
       if (result.turn_id && !turns.has(result.turn_id)) turns.set(result.turn_id, { id: result.turn_id, tid: topic.tid, phase: 'queued', text: '' });
       if (result.secret && getTopic()?.tid === topic.tid) secretDialog.show(result, topic.tid);
       drafts.delete(topic.tid);
-      if (getTopic()?.tid === topic.tid && input.value === text) input.value = '';
+      if (getTopic()?.tid === topic.tid && input.value === text) { input.value = ''; resizeComposer(); }
     }
   } catch (error) { if (active && generation === epoch) errorNotice(error); }
   finally { if (!control) sending = false; if (active) { renderHeader(); renderThread({ bottom: true }); } }
 }
 export function initChat() {
   secretDialog = initSecret();
-  document.addEventListener('language-changed', () => { renderThread(); renderStatus(); });
+  document.addEventListener('language-changed', () => { renderThread(); renderStatus(); resizeComposer(); });
   const thread = document.querySelector('#thread'), input = document.querySelector('#msgIn');
   for (const [id, toBottom] of [['threadTop', false], ['threadBottom', true]]) {
     document.querySelector(`#${id}`).addEventListener('click', () => {
@@ -431,8 +437,10 @@ export function initChat() {
   }
   new ResizeObserver(updateThreadNavigation).observe(thread);
   input.maxLength = 32000;
-  commandMenu = initCommands(input, value => { if (getTopic()) drafts.set(getTopic().tid, value); });
-  input.addEventListener('input', () => { if (getTopic()) drafts.set(getTopic().tid, input.value); renderHeader(); });
+  commandMenu = initCommands(input, value => { if (getTopic()) drafts.set(getTopic().tid, value); resizeComposer(); });
+  input.addEventListener('input', () => { if (getTopic()) drafts.set(getTopic().tid, input.value); resizeComposer(); renderHeader(); });
+  window.addEventListener('resize', resizeComposer);
+  globalThis.visualViewport?.addEventListener('resize', resizeComposer);
   input.addEventListener('keydown', event => {
     if (commandMenu.keydown(event)) return;
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && matchMedia('(pointer: fine)').matches) {
@@ -462,7 +470,7 @@ export function initChat() {
   });
   document.addEventListener('topic-selected', async event => {
     const { topic, seq } = event.detail, generation = epoch, selected = ++selection;
-    input.value = drafts.get(topic.tid) || ''; renderThread();
+    input.value = drafts.get(topic.tid) || ''; renderThread(); resizeComposer();
     try {
       await loadHistory(topic.tid, { target: seq });
       if (active && generation === epoch && selected === selection && getTopic()?.tid === topic.tid) {
@@ -474,7 +482,7 @@ export function initChat() {
   document.addEventListener('topic-updated', () => renderHeader());
   document.addEventListener('route-change', event => {
     view = event.detail.view;
-    if (active && event.detail.route === 'chat') renderThread();
+    if (active && event.detail.route === 'chat') { renderThread(); resizeComposer(); }
   });
   document.addEventListener('visibilitychange', () => { if (active && !document.hidden) void resync(); });
   document.addEventListener('auth-change', event => {
@@ -483,7 +491,7 @@ export function initChat() {
     stopEvents?.(); stopEvents = null;
     histories.clear(); turns.clear(); busy.clear(); drafts.clear(); topicVersions.clear(); busyVersions.clear(); input.value = '';
     telegram = { state: 'unknown' }; botUp = false; webSessions = null;
-    pending = 0; outbox = []; renderStatus(); renderHeader();
+    pending = 0; outbox = []; renderStatus(); renderHeader(); resizeComposer();
     if (!active) { thread.replaceChildren(); updateThreadNavigation(); return; }
     stopEvents = connectEvents(event => { void handleEvent(event).catch(errorNotice); }, up => {
       if (!up) { botUp = false; renderStatus(); }
