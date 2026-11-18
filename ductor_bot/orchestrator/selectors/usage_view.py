@@ -7,6 +7,11 @@ from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import TYPE_CHECKING
 
+from ductor_bot.cli.claude_accounts import (
+    host_slot_config_dir,
+    resolve_ductor_home,
+    slot_is_api_key,
+)
 from ductor_bot.config import AgentConfig, resolve_user_timezone
 from ductor_bot.i18n import t
 from ductor_bot.orchestrator.selectors.models import Button, ButtonGrid
@@ -110,8 +115,11 @@ def render_usage(
     timezone = resolve_user_timezone(config.user_timezone)
     lines = [t("usage.title", time=_clock(current, current, timezone))]
     for name in config.claude_accounts or ["claude"]:
-        usage = slots.get(name)
         title = f"Claude · {name}"
+        if slot_is_api_key(host_slot_config_dir(resolve_ductor_home(config.ductor_home), name)):
+            lines.extend([title, t("accounts.api_key")])
+            continue
+        usage = slots.get(name)
         if usage is not None:
             limited = usage.windows.get(usage.rate_limit_type or "")
             if usage.status == "rejected" and limited is not None and current < limited.resets_at:

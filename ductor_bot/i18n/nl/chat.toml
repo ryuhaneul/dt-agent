@@ -688,6 +688,7 @@ btn_cancel = "Annuleren"
 
 
 [accounts]
+api_key = "API-sleutel"
 auth_expired = "Aanmelding verlopen; meld opnieuw aan"
 error = "Accountbeheer is mislukt. Probeer het opnieuw."
 title = "Claude-accounts (hoogste prioriteit eerst)"

@@ -340,3 +340,27 @@ async def test_auth_expiry_overview_and_clear_cooldown_preserve_block(home):
     slot = overview(home, config)["slots"][0]
     assert slot["auth_expired"] is False
     assert slot["authenticated"] is True
+
+
+def test_overview_ignores_stored_api_key_auth_failure(home):
+    from ductor_bot.cli.claude_slots import overview
+
+    slot = home / ".cli-auth" / "claude-api"
+    slot.mkdir(parents=True)
+    (slot / "settings.json").write_text('{"apiKeyHelper": "helper.sh"}')
+    registry = SlotRegistry(state_file_path(home))
+    registry.state_path.write_text(
+        json.dumps(
+            {
+                "auth_failures": {"claude-api": registry.credential_mtimes("claude-api")},
+            }
+        )
+    )
+    assert overview(home, AgentConfig(claude_accounts=["claude-api"]))["slots"] == [
+        {
+            "name": "claude-api",
+            "authenticated": True,
+            "auth_expired": False,
+            "cooldown_until": None,
+        }
+    ]

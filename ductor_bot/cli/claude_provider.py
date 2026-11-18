@@ -22,7 +22,12 @@ from ductor_bot.cli.base import (
     add_cli_opt,
     format_cli_cmd,
 )
-from ductor_bot.cli.claude_accounts import SlotRegistry, detect_auth_failure, detect_rate_limit
+from ductor_bot.cli.claude_accounts import (
+    SlotRegistry,
+    detect_auth_failure,
+    detect_rate_limit,
+    slot_is_api_key,
+)
 from ductor_bot.cli.claude_usage import UsageStore, extract_usage_events, usage_file_path
 from ductor_bot.cli.executor import (
     PostHandler,
@@ -414,7 +419,9 @@ class ClaudeCodeCLI(BaseCLI):
                 result_text=final.result if final is not None else "",
             )
 
-            if detect_auth_failure(
+            if not (
+                self._registry and slot_is_api_key(self._registry.state_path.parent / slot)
+            ) and detect_auth_failure(
                 returncode=attempt.returncode,
                 is_error=attempt.is_error,
                 stderr=attempt.stderr,
@@ -599,7 +606,9 @@ class ClaudeCodeCLI(BaseCLI):
         returncode = capture.returncode
         if returncode is None and final is not None:
             returncode = final.returncode
-        is_auth_failure = detect_auth_failure(
+        is_auth_failure = not (
+            self._registry and slot_is_api_key(self._registry.state_path.parent / slot_name)
+        ) and detect_auth_failure(
             returncode=returncode,
             is_error=bool(final.is_error) if final is not None else False,
             stderr=capture.stderr_text,

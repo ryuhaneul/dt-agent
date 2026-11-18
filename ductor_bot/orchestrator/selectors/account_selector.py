@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ductor_bot.cli import claude_slots
+from ductor_bot.cli.claude_accounts import host_slot_config_dir, slot_is_api_key
 from ductor_bot.cli.claude_usage import UsageStore, usage_file_path
 from ductor_bot.config import AgentConfig, resolve_user_timezone
 from ductor_bot.i18n import t
@@ -77,7 +78,10 @@ def _slot_button(text: str, action: str, name: str) -> Button | None:
     return Button(text=text, callback_data=data)
 
 
-def _build_page(home: Path, config: AgentConfig, note: str = "") -> SelectorResponse:
+# API key slots skip the OAuth usage line, which adds one branch.
+def _build_page(  # noqa: C901
+    home: Path, config: AgentConfig, note: str = ""
+) -> SelectorResponse:
     data = json.loads((home / "config" / "config.json").read_text(encoding="utf-8"))
     current = AgentConfig(claude_accounts=data.get("claude_accounts") or [])
     slots = claude_slots.overview(home, current)["slots"]
@@ -92,8 +96,11 @@ def _build_page(home: Path, config: AgentConfig, note: str = "") -> SelectorResp
         lines.extend(["", t("accounts.empty")])
     for index, slot in enumerate(slots):
         name = slot["name"]
+        api_key = slot_is_api_key(host_slot_config_dir(home, name))
         auth = t(
-            "accounts.auth_expired"
+            "accounts.api_key"
+            if api_key
+            else "accounts.auth_expired"
             if slot["auth_expired"]
             else "accounts.authenticated"
             if slot["authenticated"]
@@ -110,12 +117,13 @@ def _build_page(home: Path, config: AgentConfig, note: str = "") -> SelectorResp
                 time=datetime.fromtimestamp(reset, timezone).strftime("%H:%M"),
             )
         lines.append(f"{index + 1}. {name}  {auth} · {cooldown}")
-        try:
-            usage_line = render_account_usage(usage.get(name), config, now=now)
-        except Exception as exc:
-            logger.warning("Account usage display failed: %s", type(exc).__name__)
-            usage_line = t("usage.account_empty")
-        lines.append("   " + usage_line)
+        if not api_key:
+            try:
+                usage_line = render_account_usage(usage.get(name), config, now=now)
+            except Exception as exc:
+                logger.warning("Account usage display failed: %s", type(exc).__name__)
+                usage_line = t("usage.account_empty")
+            lines.append("   " + usage_line)
         candidates: list[Button | None] = []
         if index > 0:
             candidates.extend(

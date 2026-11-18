@@ -688,6 +688,7 @@ btn_cancel = "Abbrechen"
 
 
 [accounts]
+api_key = "API-Schlüssel"
 auth_expired = "Anmeldung abgelaufen; erneut anmelden"
 error = "Die Kontenverwaltung ist fehlgeschlagen. Bitte erneut versuchen."
 title = "Claude-Konten (höchste Priorität zuerst)"

@@ -687,6 +687,7 @@ btn_cancel = "취소"
 
 
 [accounts]
+api_key = "API 키"
 auth_expired = "로그인 만료 · 재로그인 필요"
 error = "계정 관리에 실패했어요. 다시 시도해 주세요."
 title = "Claude 계정 슬롯 (위가 먼저 쓰임)"

@@ -420,3 +420,25 @@ async def test_expired_slot_is_visible_on_accounts_page(page, language):
     response = await selector.account_selector_start(home, config)
     assert f"1. claude-a  {t('accounts.auth_expired')}" in response.text
     assert "accounts.auth_expired" not in response.text
+
+
+@pytest.mark.parametrize("language", ["en", "de", "nl", "es", "fr", "id", "pt", "ru", "ko"])
+async def test_api_key_account_has_label_without_usage_or_login_warning(page, language):
+    selector, home, config = page
+    init(language)
+    (home / "config" / "config.json").write_text('{"claude_accounts": ["claude-api"]}')
+    slot = home / ".cli-auth" / "claude-api"
+    slot.mkdir()
+    (slot / "settings.json").write_text('{"apiKeyHelper": "helper.sh"}')
+    registry = SlotRegistry(state_file_path(home))
+    registry.state_path.write_text(
+        json.dumps(
+            {
+                "auth_failures": {"claude-api": registry.credential_mtimes("claude-api")},
+            }
+        )
+    )
+    response = await selector.account_selector_start(home, config)
+    assert f"1. claude-api  {t('accounts.api_key')} · {t('accounts.no_cooldown')}" in response.text
+    for key in ("accounts.unauthenticated", "accounts.auth_expired", "usage.account_empty"):
+        assert t(key) not in response.text

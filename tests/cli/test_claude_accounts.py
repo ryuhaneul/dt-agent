@@ -724,3 +724,75 @@ def test_auth_diagnostic_must_start_its_own_line(channel, text):
         stderr=text if channel == "stderr" else "",
         result=text if channel == "result" else "",
     )
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        "{}",
+        '{"apiKeyHelper": ""}',
+        '{"apiKeyHelper": null}',
+        '{"apiKeyHelper": 1}',
+        "[]",
+        "invalid",
+        '{"apiKeyHelper": "helper.sh"}',
+        '{"apiKeyHelper": " "}',
+    ],
+)
+def test_api_key_slot_requires_nonempty_top_level_string(tmp_path, contents):
+    from ductor_bot.cli.claude_accounts import slot_is_api_key
+
+    (tmp_path / "settings.json").write_text(contents)
+    expected = contents in ('{"apiKeyHelper": "helper.sh"}', '{"apiKeyHelper": " "}')
+    assert slot_is_api_key(tmp_path) is expected
+    assert slot_is_authenticated(tmp_path) is expected
+
+
+def test_api_key_slot_rejects_link_missing_and_directory_settings(tmp_path):
+    from ductor_bot.cli.claude_accounts import slot_is_api_key
+
+    settings = tmp_path / "settings.json"
+    assert not slot_is_api_key(tmp_path)
+    target = tmp_path / "shared.json"
+    target.write_text('{"apiKeyHelper": "helper.sh"}')
+    settings.symlink_to(target)
+    assert not slot_is_api_key(tmp_path)
+    assert not slot_is_authenticated(tmp_path)
+    settings.unlink()
+    settings.mkdir()
+    assert not slot_is_api_key(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Credit balance is too low",
+        "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing.",
+    ],
+)
+@pytest.mark.parametrize("returncode", [0, 1, None])
+@pytest.mark.parametrize("source", ["stderr", "error_result", "normal_result"])
+def test_credit_exhaustion_detection(text, returncode, source):
+    assert detect_rate_limit(
+        returncode=returncode,
+        is_error=source == "error_result",
+        stderr=text if source == "stderr" else "",
+        result=text if source != "stderr" else "",
+    ) is (returncode == 1 and source != "normal_result")
+
+
+def test_registry_ignores_stored_api_key_auth_failure(tmp_path):
+    slot = tmp_path / "claude-api"
+    slot.mkdir()
+    (slot / "settings.json").write_text('{"apiKeyHelper": "helper.sh"}')
+    registry = SlotRegistry(tmp_path / "slots.json")
+    registry.state_path.write_text(
+        json.dumps(
+            {
+                "auth_failures": {"claude-api": registry.credential_mtimes("claude-api")},
+                "cooldowns": {"claude-api": 123},
+            }
+        )
+    )
+    assert registry.load().auth_failures == {}
+    assert registry.load().cooldowns == {"claude-api": 123}

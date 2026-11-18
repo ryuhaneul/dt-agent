@@ -37,6 +37,7 @@ from ductor_bot.cli.claude_accounts import (
     host_slot_config_dir,
     parse_reset_time,
     resolve_ductor_home,
+    slot_is_api_key,
     state_file_path,
 )
 from ductor_bot.i18n import t
@@ -195,12 +196,13 @@ async def record_auth_failure(
     registry: SlotRegistry | None, slot: str, credential_mtimes: dict[str, int | None]
 ) -> None:
     """Quarantine only the credentials fingerprinted before the failed attempt."""
-    if registry is None:
+    if registry is None or slot_is_api_key(registry.state_path.parent / slot):
         return
 
     def record(snapshot: SlotSnapshot) -> None:
         if (
-            registry.credential_mtimes(slot) == credential_mtimes
+            not slot_is_api_key(registry.state_path.parent / slot)
+            and registry.credential_mtimes(slot) == credential_mtimes
             and snapshot.auth_failures.get(slot, credential_mtimes) == credential_mtimes
         ):
             snapshot.auth_failures[slot] = credential_mtimes
@@ -314,7 +316,7 @@ def build_unparsable_prefix(raw_stderr: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def run_with_rotation(  # noqa: C901 -- auth/quota rotation shares one state machine
+async def run_with_rotation(  # noqa: C901, PLR0915 -- auth/quota rotation shares one state machine
     *,
     accounts: Sequence[str],
     registry: SlotRegistry | None,
@@ -353,7 +355,8 @@ async def run_with_rotation(  # noqa: C901 -- auth/quota rotation shares one sta
         top = await fallback_slot(registry, account_list)
         mtimes = await asyncio.to_thread(registry.credential_mtimes, top) if registry else {}
         outcome, payload = await attempt(top)
-        if detect_auth_failure(
+        api_key_slot = bool(registry and slot_is_api_key(registry.state_path.parent / top))
+        if not api_key_slot and detect_auth_failure(
             returncode=outcome.returncode,
             is_error=outcome.is_error,
             stderr=outcome.stderr,
@@ -400,7 +403,8 @@ async def run_with_rotation(  # noqa: C901 -- auth/quota rotation shares one sta
         last_payload = payload
         last_slot = slot
 
-        if detect_auth_failure(
+        api_key_slot = bool(registry and slot_is_api_key(registry.state_path.parent / slot))
+        if not api_key_slot and detect_auth_failure(
             returncode=outcome.returncode,
             is_error=outcome.is_error,
             stderr=outcome.stderr,

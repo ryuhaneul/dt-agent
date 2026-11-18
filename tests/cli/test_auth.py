@@ -502,3 +502,16 @@ def test_gemini_uses_api_key_mode_false_for_oauth(
     )
 
     assert gemini_uses_api_key_mode() is False
+
+
+def test_claude_auth_api_slot_without_credentials(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "user")
+    monkeypatch.setenv("DUCTOR_HOME", str(tmp_path))
+    slot = tmp_path / ".cli-auth" / "claude-api"
+    slot.mkdir(parents=True)
+    settings = slot / "settings.json"
+    settings.write_text('{"apiKeyHelper": "helper.sh"}')
+    result = check_claude_auth()
+    assert result.status == AuthStatus.AUTHENTICATED
+    assert result.auth_file == settings
+    assert result.auth_age is not None

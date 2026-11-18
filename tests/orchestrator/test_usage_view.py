@@ -186,3 +186,20 @@ def test_unrepresentable_reset_keeps_values_and_marks_time_unknown():
     assert " 5h █░░░░░░░░░  11%  ?" in text
     assert " 5h ██░░░░░░░░  23%  ?" in text
     assert "5h 11% · ?" in render_account_usage(slots["claude-main"], config, now=stamp(21, 13, 30))
+
+
+@pytest.mark.parametrize("locale", ["en", "de", "nl", "es", "fr", "id", "pt", "ru", "ko"])
+@pytest.mark.parametrize("cached", [False, True])
+def test_api_key_usage_has_label_instead_of_usage_cache(tmp_path, locale, cached):
+    init(locale)
+    slot = tmp_path / ".cli-auth" / "claude-api"
+    slot.mkdir(parents=True)
+    (slot / "settings.json").write_text('{"apiKeyHelper": "helper.sh"}')
+    config = AgentConfig(ductor_home=str(tmp_path), claude_accounts=["claude-api"])
+    _, slots, _ = sample()
+    cache = {"claude-api": slots["claude-sub"]} if cached else {}
+    text = render_usage(config, cache, None, now=stamp(21, 13, 30))
+    assert f"Claude · claude-api\n{t('accounts.api_key')}\nCodex" in text
+    assert t("usage.empty") not in text
+    assert "⛔" not in text
+    assert "5h" not in text

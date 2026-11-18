@@ -106,6 +106,7 @@ def state_file_path(ductor_home: Path) -> Path:
 
 _RATE_LIMIT_TOKENS = re.compile(
     r"\brate[ _-]?limit|\busage limit|(?<!context )\blimit reached\b|"
+    r"\bcredit balance is too low\b|"
     r"\bhit the (?:usage )?limit\b|"
     r"\bhit your (?:(?!context\b)[\w-]+ )?limit\b|"
     r"\breached your (?:(?!context\b)[\w.-]+ ){1,3}limit\b|"
@@ -433,6 +434,7 @@ class SlotRegistry:
             and isinstance(mtimes, dict)
             and set(mtimes) == {"credentials.json", ".credentials.json"}
             and all(value is None or type(value) is int for value in mtimes.values())
+            and not slot_is_api_key(self._state_path.parent / slot)
             and mtimes == self.credential_mtimes(slot)
         }
         return SlotSnapshot(cooldowns=cooldowns, last_used=last_used, auth_failures=auth_failures)
@@ -467,6 +469,19 @@ class SlotRegistry:
 # ---------------------------------------------------------------------------
 
 
+def slot_is_api_key(config_dir: Path) -> bool:
+    """Recognize a slot-local API key helper without following settings links."""
+    settings = config_dir / "settings.json"
+    if settings.is_symlink() or not settings.is_file():
+        return False
+    try:
+        data = json.loads(settings.read_text(encoding="utf-8"))
+    except (ValueError, RecursionError, OSError):
+        return False
+    helper = data.get("apiKeyHelper") if isinstance(data, dict) else None
+    return isinstance(helper, str) and bool(helper)
+
+
 def slot_is_authenticated(config_dir: Path) -> bool:
     """Return True when ``config_dir`` looks like a logged-in slot."""
     if not config_dir.is_dir():
@@ -474,4 +489,4 @@ def slot_is_authenticated(config_dir: Path) -> bool:
     for candidate in ("credentials.json", ".credentials.json"):
         if (config_dir / candidate).is_file():
             return True
-    return False
+    return slot_is_api_key(config_dir)

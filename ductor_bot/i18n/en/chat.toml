@@ -689,6 +689,7 @@ btn_cancel = "Cancel"
 
 
 [accounts]
+api_key = "API key"
 auth_expired = "Login expired; sign in again"
 error = "Account management failed. Please try again."
 title = "Claude accounts (top first)"

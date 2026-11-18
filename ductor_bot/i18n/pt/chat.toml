@@ -690,6 +690,7 @@ btn_cancel = "Cancelar"
 
 
 [accounts]
+api_key = "Chave de API"
 auth_expired = "Sessão expirada; entre novamente"
 error = "Falha no gerenciamento de contas. Tente novamente."
 title = "Contas Claude (prioridade no topo)"

@@ -692,6 +692,7 @@ btn_cancel = "Annuler"
 
 
 [accounts]
+api_key = "Clé API"
 auth_expired = "Connexion expirée ; reconnecte-toi"
 error = "La gestion des comptes a échoué. Veuillez réessayer."
 title = "Comptes Claude (priorité en haut)"

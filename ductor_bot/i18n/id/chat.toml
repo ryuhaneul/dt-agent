@@ -687,6 +687,7 @@ btn_cancel = "Batal"
 
 
 [accounts]
+api_key = "Kunci API"
 auth_expired = "Login kedaluwarsa; login kembali"
 error = "Pengelolaan akun gagal. Silakan coba lagi."
 title = "Akun Claude (prioritas teratas di atas)"

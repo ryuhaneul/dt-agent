@@ -113,7 +113,7 @@ def check_claude_auth() -> AuthResult:  # noqa: C901
         return result
 
     # Fork multi-slot scan: any authenticated slot under cli-auth counts.
-    from ductor_bot.cli.claude_accounts import slot_is_authenticated
+    from ductor_bot.cli.claude_accounts import slot_is_api_key, slot_is_authenticated
 
     ductor_home = os.environ.get("DUCTOR_HOME")
     if ductor_home:
@@ -134,6 +134,7 @@ def check_claude_auth() -> AuthResult:  # noqa: C901
                     cred = slot_dir / ".credentials.json"
                     if not cred.is_file():
                         cred = slot_dir / "credentials.json"
+                    cred = slot_dir / "settings.json" if slot_is_api_key(slot_dir) else cred
                     mtime = datetime.fromtimestamp(cred.stat().st_mtime, tz=UTC)
                     result = AuthResult("claude", AuthStatus.AUTHENTICATED, cred, mtime)
                     logger.debug(
