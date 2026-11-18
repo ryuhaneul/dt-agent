@@ -50,7 +50,15 @@ The header Rename dialog updates the current topic name while keeping the conver
 ## Authentication
 
 Set the password with `ductor webchat set-password` (at least 12 characters).
-A scrypt hash and TOTP seed are stored through the bot's secret store.
+`webchat/credentials.json` (0600, atomic writes) stores a password hash and encrypted TOTP
+record `{salt, nonce, ciphertext}`. A separate scrypt salt derives the TOTP encryption key from
+the web password; the secrets-store master key is not involved. Login works while the vault
+is locked. After password verification, decrypted seed and derived key live only in the
+preauthentication context (not the raw password), with the same 300-second lifetime; success,
+final failure, logout and expiry discard them. Initial enrollment encrypts using that context.
+When the new file is absent, legacy secrets.env credentials still work; the next successful
+TOTP login/enrollment writes and verifies the encrypted file before atomically removing both
+legacy entries. Migration failure keeps the old source and does not reject a successful login.
 After password verification, a preauthentication token lasts 300 seconds and is bound
 to the credential generation at issuance. Credential changes invalidate it.
 First setup accepts a new QR code or an existing Base32 seed; confirmation saves it.
@@ -68,8 +76,14 @@ and a fresh TOTP code. A successful change logs out all other sessions and close
 their WebSockets; the current window receives a new session cookie and CSRF token
 and stays logged in. Resetting TOTP and recovering a forgotten password still require the CLI.
 
-`ductor webchat reset-totp` resets enrollment. `clear-credentials` removes the
-password hash and TOTP seed. Credential maintenance and TOTP enrollment rotate a
+`ductor webchat set-password` does not need the old password: it writes a new hash and
+**discards TOTP**, so the next login must enroll it again. `reset-totp` deletes the seed without
+asking for the password. `clear-credentials` removes new credentials and legacy entries.
+These standalone edits refuse `SECRETS_LOCKED` when an encrypted store marker is present;
+they do not decrypt or rewrite an encrypted store outside its owning process. Do not remove
+the marker or create a plaintext copy to bypass that refusal. Authenticated web password change
+decrypts the seed with the current password and atomically reencrypts it under the new password.
+Credential maintenance and TOTP enrollment rotate a
 persistent nonce in `webchat/auth_state.json` (0600), revoking prior sessions even
 when the same seed is enrolled again. This state file also stores TOTP usage records.
 If it cannot be written, the TOTP login step is rejected with 503 to prevent code
@@ -166,6 +180,45 @@ confirmations use `POST /api/topics/{tid}/secret/confirm`. Only sanitized comman
 text and result messages are recorded and mirrored. Values and input tokens never
 enter conversation history, the outbox, mirrors, logs or CLI input.
 
+## Master-key and secret dialogs
+
+The header lock badge (emphasized while locked) and account menu open the **Master key** /
+**Manage secrets** modal. Setup, unlock, key change, expiry including unlimited, and manual lock
+use the same process vault as Telegram. Master-key fields use password inputs with
+`autocomplete=off`. Before setup, the secrets tab still lists/adds/updates/deletes plaintext
+secrets and recommends encryption; value viewing is disabled until setup. The existing chat
+`/secret` input dialog remains available.
+
+Lists contain names only. **View value** requires the master key again and returns one value;
+copying is explicit. It is removed from the DOM after 30 seconds, on close/Esc, route navigation,
+logout or a vault invalidation. Late responses cannot reopen a closed dialog. Keys and values
+never enter chat history, mirrors, drafts, local storage or debug/access logs. The browser APIs
+use JSON bodies with a 64 KiB limit and `Cache-Control: no-store` on every new response.
+
+Browser prefix `/api` and bridge prefix `/webchat/v1` share these resources:
+
+| Method / resource | Body or result |
+|---|---|
+| `GET /masterkey/status` | `{state, ttl_seconds, remaining_seconds}` |
+| `POST /masterkey/setup` | `{master_key, confirm_key}` |
+| `POST /masterkey/unlock` | `{master_key}` |
+| `POST /masterkey/lock` | `{}` |
+| `POST /masterkey/change` | `{current_key, new_key, confirm_key}` |
+| `POST /masterkey/ttl` | `{ttl_seconds}` (0 = unlimited) |
+| `GET /secrets/keys` | `{keys: [names]}`; no values |
+| `POST /secrets/set` | `{key, value}` |
+| `POST /secrets/delete` | `{key}` |
+| `POST /secrets/reveal` | `{key, master_key}` → `{value: one_value}` |
+
+All browser routes require the existing session/client/CSRF checks; bridge routes require their
+bridge token. Wrong master keys return **422 `MASTER_KEY_INVALID`**, not session-expiry 403.
+Shared backoff returns 429 `SECRETS_RATE_LIMITED` with `retry_after`; locked operations use
+409 `SECRETS_LOCKED`; setup blocked by legacy web credentials uses
+409 `WEB_AUTH_MIGRATION_REQUIRED`. `MASTER_KEY_TOO_SHORT` and `MASTER_KEY_MISMATCH` use 400.
+The existing WebSocket forwards only `{type: "secrets_changed"}` invalidations for setup,
+unlock, lock/expiry, TTL, key change and secret writes; open clients requery status/names.
+No value is included in these events.
+
 ## Bridge contracts
 
 The browser app relays bridge JSON statuses and error codes. Bridge routes use
@@ -196,6 +249,7 @@ The browser app relays bridge JSON statuses and error codes. Bridge routes use
 {
   "errors": [],
   "chat_log": {"enabled": true},
+  "credentials": {"storage": "encrypted", "password_configured": true, "totp_configured": true, "migration_required": false},
   "webchat": {
     "enabled": true,
     "exposure": "direct",
@@ -246,3 +300,5 @@ A noncooperating external writer, including shared-memory synchronization, can
 still race after that check and before replacement. Coordinate external edits
 with web saves and retain backups for recovery. This limitation also applies to
 MAINMEMORY saves, which perform a single comparison and atomic replacement.
+
+Credential diagnostics use `storage: encrypted|legacy|unconfigured`; a corrupt new credential file adds `credentials_invalid` to `errors`. The report never contains the hash, seed or values.

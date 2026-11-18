@@ -86,22 +86,52 @@ one-time-code seed) belong in `secrets.env` at the root of the main home, not in
 Onboarding creates it empty with mode `0600` when it is missing and never changes an existing
 one. Sub-agents use the main home's file.
 
-Values are not injected as environment variables, but an agent running as the same user can read the file; this protects against accidental exposure only.
+Before master-key setup this is a plaintext `KEY=VALUE` store (`#` comments; no `export`);
+`KEY=$OTHER_KEY` refers to another stored key. After setup, `secrets.env.enc` is authoritative.
+Only `secrets.env` is covered; provider startup keys in `.env` are not encrypted by this feature.
 
-- The file holds plain `KEY=VALUE` lines (`#` comments; no `export`). `KEY=$OTHER_KEY` takes the
-  value of `OTHER_KEY` from the same file.
-- It is not injected into CLI runs. The framework gives every run the path in
-  `DUCTOR_SECRETS_FILE` unless the process environment, the home `.env` or the caller already
-  sets it. A tool asks for exactly the keys it uses:
+A consuming script requests only needed names:
 
-  ```python
-  from _secrets import load_secrets  # tools/_secrets.py
+```python
+from _secrets import load_secrets  # tools/_secrets.py
 
-  load_secrets("MY_API_KEY")
-  ```
+load_secrets("MY_API_KEY")  # missing requested values become available in this script's os.environ
+```
 
-- A value that is already in the environment wins over the file.
-- Never `cat`, print or log the file; look at key names only.
+Existing environment values take precedence. Store values are never injected into every CLI
+run. Do not read or source the store directly, copy plaintext out of it, or print values.
+Use `python3 tools/secret_tools/secret_status.py` for value-free state, TTL and remaining time.
+
+#### Master-key lifecycle
+
+The main bot owns one vault for interactive, sub-agent, task, cron and webhook tool access.
+Set it up with `/masterkey setup` in an allowed user's one-to-one chat with the main Telegram
+bot or in the webchat **Master key** modal. Keys need at least eight characters and confirmation.
+Setup encrypts the existing store and removes the plaintext file only after encryption succeeds;
+a failed migration keeps the plaintext source. It refuses setup with `WEB_AUTH_MIGRATION_REQUIRED`
+only while legacy `DT_WEBCHAT_PASSWORD_HASH` or `DT_WEBCHAT_TOTP_SEED` entries remain in that
+store: successfully sign in to webchat first to migrate them.
+
+The vault has `unconfigured`, `locked` and `unlocked` states. A configured store starts locked
+on every bot-process restart. The master key is not written to a file; derived key material
+and decrypted values stay in the bot's memory. Manual lock or TTL expiry drops those references.
+This is not a guarantee of Python memory zeroization or forensic erasure of old plaintext files.
+TTL is saved separately in `config/secret_vault.json`: `ttl_seconds: 0` (default) means unlimited
+until manual lock or restart. Changing TTL recalculates the absolute deadline from the last
+successful unlock immediately; revealing a value or changing the key does not extend it.
+
+A locked store read fails with `SECRETS_LOCKED` and
+`Secrets store is locked - ask the owner to enter the master key`. Stop the blocked work and
+ask for `/masterkey unlock` or webchat unlock, never for the key in conversation. Do not search
+for plaintext copies, bypass the lock or extract process tokens. `SECRETS_RATE_LIMITED` shares
+an increasing in-memory delay across Telegram, web unlock, key change and reveal; respect
+`retry_after`. `SECRET_NOT_SET` identifies a missing requested name.
+
+Tools use a token-authenticated localhost API, not a plaintext temporary file. Each bot start
+creates a random token kept in memory and passed only to its own CLI/task/cron children through
+`DUCTOR_SECRETS_TOKEN`; it is never written to disk. OS process permissions restrict access to that process
+environment from other unprivileged UIDs. The same UID can inspect its own processes and memory, so this boundary does not
+protect against a malicious agent or program running as the bot user. See [infrastructure](modules/infra.md).
 
 Sources: environment builder (`ductor_bot/cli/executor.py`),
 dotenv loader (`ductor_bot/infra/env_secrets.py`),

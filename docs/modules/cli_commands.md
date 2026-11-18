@@ -15,9 +15,11 @@ are implemented in `chat_log/cli.py` and `webchat/cli.py`.
 | `ductor chat-log status` | Show recording validation, history counts and queue state |
 | `ductor chat-log import [--dry-run] [--undo]` | Import Claude/Codex transcripts or remove imported entries; actual import/undo requires active recording |
 | `ductor chat-log prune --older-than N [--backups] [--dry-run]` | Prune old history and terminal/quarantined queue files; optionally web edit backups |
-| `ductor webchat set-password` | Set a password interactively (at least 12 characters) and revoke web sessions |
+| `ductor webchat set-password` | Reset the password without the old password, revoke sessions and discard TOTP (reenrollment required) |
 | `ductor webchat reset-totp` / `clear-credentials` | Reset enrollment or remove password/TOTP credentials and revoke sessions |
 | `ductor webchat check-config [--json]` | Validate history/web settings; exit 1 for validation errors, 0 otherwise |
+
+Standalone web-credential edits return `SECRETS_LOCKED` if an encrypted tool-store marker is present; see [web authentication](webchat.md#authentication) for the supported maintenance paths.
 
 History/web CLI usage errors exit 2. Manual prune works even when recording is off;
 use `--dry-run` before deleting data. Credential changes take effect without a bot

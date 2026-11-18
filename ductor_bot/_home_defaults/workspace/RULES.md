@@ -55,13 +55,18 @@ Custom skills live in `skills/`. See the `skills/` rules file (`CLAUDE.md`, `AGE
 - For cron task behavior changes, edit `cron_tasks/<name>/TASK_DESCRIPTION.md`.
 - For cron task folder structure, see the `cron_tasks/` rules file (`CLAUDE.md`, `AGENTS.md` or `GEMINI.md`).
 
-## Secrets and API Keys
+## Secrets and master keys
 
-- Provider keys that a CLI reads when it starts belong in `$DUCTOR_HOME/.env`.
-- Credentials that a tool needs while it runs belong in `~/.ductor/secrets.env` (mode 0600, one `KEY=VALUE` per line). It is not given to CLI runs; a script loads the keys it uses with `load_secrets("KEY")` from `tools/_secrets.py`. Values are not injected as environment variables, but an agent running as the same user can read the file; this protects against accidental exposure only.
-- Never print, `cat` or log either file; look at key names only. See the `tools/` rules file (`CLAUDE.md`, `AGENTS.md` or `GEMINI.md`) for details.
+- Tool credentials in `secrets.env` may be encrypted with a master key. Provider startup keys in `.env` are separate and are not encrypted by this feature.
+- Use `load_secrets("KEY")` from `tools/_secrets.py` for only the needed names; an existing environment value takes precedence. Never read/source `secrets.env`, its `.enc` file, or plaintext copies directly.
+- Check `python3 tools/secret_tools/secret_status.py` before a task that needs secrets. It reports `unconfigured`, `locked`, or `unlocked`, TTL and remaining time without values. Restart always locks a configured store; TTL expiry locks it too; TTL 0 means unlimited until restart or manual lock.
+- `SECRETS_LOCKED` means stop the secret-dependent work and report the code. Ask the owner to use `/masterkey unlock` in the main Telegram bot's private chat or unlock in the webchat modal. Do not bypass the lock, search for plaintext/backups, inspect process memory, or retrieve authentication tokens from files or other processes.
+- `SECRETS_RATE_LIMITED` means wait for `retry_after`; do not loop, retry aggressively, or bypass the shared limit. `SECRET_NOT_SET` means the requested name is missing; never invent a value.
+- Never ask for, accept, or process a master key in ordinary conversation, prompts, task files, or tool arguments. Master-key input belongs only in the `/masterkey` private input flow or the webchat modal. If locked, request the unlock action, not the key itself.
+- Never cat, print, log or bulk-source credential files, including `.env`; inspect names without values.
+- Never print, log, mirror, or persist secret values or master/derived keys in chat, memory, task descriptions, scripts, results, or temporary files. Use only needed values inside the consuming process. Key-name inventories and status tools must never fetch values.
 
-- Do not ask users to paste secrets into the conversation; direct them to `/secret set KEY` in a one-to-one chat with the main Telegram bot.
+- For adding/updating values, use `/secret set KEY` in the main Telegram bot's private chat or the webchat secret modal; do not ask for values in ordinary conversation.
 
 ## Bot Restart
 

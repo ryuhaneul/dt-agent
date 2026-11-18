@@ -234,7 +234,7 @@ Optional history and web administration:
 | `ductor chat-log status` | Recording activation, history and recovery queue counts. |
 | `ductor chat-log import [--dry-run] [--undo]` | Import Claude/Codex transcripts, preview or undo imports. |
 | `ductor chat-log prune --older-than N [--backups] [--dry-run]` | Clean old history and completed/quarantined queue data; optionally web edit backups. |
-| `ductor webchat set-password` | Set a password interactively (12+ characters). |
+| `ductor webchat set-password` | Set a password (12+ characters), revoke sessions and discard TOTP; enrollment is required again. |
 | `ductor webchat reset-totp` / `clear-credentials` | Reset TOTP enrollment or remove web credentials; revoke sessions. |
 | `ductor webchat check-config [--json]` | Validate configuration; exit 1 on validation errors. |
 
@@ -262,6 +262,7 @@ These are chat messages, **not shell commands**. Matrix accepts !command as well
 | `/usage` | All Telegram agent bots: read-only usage. Claude shows the last values received during normal runs; Codex is queried on command or refresh. |
 | `/effort` | Select provider reasoning effort. |
 | `/status` | Current session/model/runtime status. |
+| `/masterkey` | Main Telegram bot, allowed-user DM only: status, setup, unlock, lock, change and TTL; never put a key in the command. Also available in webchat modals. |
 | `/secret` | Main Telegram bot only, in an allowed user’s private chat: set, list, delete or cancel tool secrets; send values as replies to the input request. |
 | `/memory` | Read main memory. |
 | `/session [prompt]` | Submit a named background session; optional @provider/model/session directive; no args shows help. |
@@ -325,7 +326,8 @@ There is no nested CLI sandbox/Docker socket mount and no host service installat
 $DUCTOR_HOME/                     # host; mounted as /ductor
   config/config.json              # main settings and messaging credentials
   .env                            # provider keys read when a CLI starts
-  secrets.env                     # tool credentials (0600); loaded on demand, not injected
+  secrets.env                     # tool credentials before master-key setup (0600)
+  secrets.env.enc                 # encrypted tool store after setup; no master key on disk
   .env.shared                     # BROWSER_TOKEN and TZ; both services
   .cli-auth/                      # persistent CLI auth (0700 at onboarding)
     claude/, claude-*/            # independent credentials, shared settings
@@ -516,3 +518,20 @@ after comparison. Coordinate memory edits and retain backups.
 Known limits are recorded in [CHANGES §7](docs/CHANGES.md#7-known-limitations). Unfinished button markers: a valid file marker after an unclosed outer button marker can be treated as top-level and uploaded. Parent symbolic links of config/auth paths may be followed, and a race remains between the link check and chmod. A naturally exited sub-agent only stops reporting health while its registration stays, so `/agent_stop` followed by `/agent_start` may be needed. A failed file read/move combined with a restart can deliver the same result again (delivery is not exactly-once). If an inter-agent broadcast fails for some recipients, the whole broadcast is sent again and recipients that already received it may get a duplicate. An enabled receipt notice fails to send when the sub-agent’s bot cannot reach the origin chat (result delivery is separate). API and Telegram sessions of the same chat ID can be shared. If the source is a Named session, cannot be identified, or the session lock is not obtained within 60 seconds, the question is handled in a separate session.
 
 The project is licensed under [MIT](LICENSE), retaining copyright © 2025–2026 PleasePrompto.
+
+### Master-key encrypted tool credentials
+
+Use `/masterkey setup` in an allowed-user DM with the main Telegram bot or the webchat master-key
+modal to encrypt the existing tool store. A restart always locks it; manual lock and configurable
+TTL expiry also discard unlocked material. TTL 0 (the default) is unlimited until restart/manual
+lock. Owner input unlocks it again; no master key is saved to disk. `.env` provider startup keys
+are outside this feature. Tools use `load_secrets("KEY")`; they must not read/source the store
+or search for plaintext copies. `tools/secret_tools/secret_status.py` reports safe status.
+
+Web login uses `webchat/credentials.json` with a password-encrypted TOTP seed, independently of
+the master key. Existing web credentials migrate after successful login; setup refuses while
+legacy web-auth entries remain in the tool store. The web secrets modal supports CRUD before
+setup and a master-key-confirmed, single-value view after setup (hidden after 30 seconds or
+closing). Agent rules explain locked-store errors and cron creation warns when locked runs can
+fail. See [credentials and lifecycle](docs/config.md#tool-credentials-secretsenv),
+[web dialogs](docs/modules/webchat.md) and [cron checks](docs/modules/cron.md).

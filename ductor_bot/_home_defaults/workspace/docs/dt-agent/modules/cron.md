@@ -241,3 +241,31 @@ Shared queue key behavior:
 - refresh
 - per-job enable/disable
 - bulk all-on/all-off
+
+## Secret-use check and creation warning
+
+After filling TASK_DESCRIPTION.md and creating/editing scripts, run
+`python3 tools/cron_tools/cron_check_secrets.py JOB_NAME` from the agent workspace. A folder
+inside this home's workspace/cron_tasks is also accepted. `--key NAME` declares an additional
+name to recognize in prose. No code is executed and no secret value is requested.
+
+The checker inspects TASK_DESCRIPTION.md and supported script files: Python identifier/API
+key contexts and shell-style variable/assignment/fill_secret contexts. It matches declared
+or inventoried names in free prose, not arbitrary string values. Output gives `requires_secrets`,
+candidate `keys`, fixed `indicators`, inventory availability, a warning, limitations and a
+skipped-file count. Available inventories classify candidates into `known` and `unknown`;
+locked/unreachable/tokenless inventories omit that classification and explain why.
+The inventory uses name fields before setup and the boot-token-protected names-only API after
+setup. It never reads bridge tokens, loads values or changes environment variables.
+
+This is a static heuristic: dynamic names, imported/outside helpers and external commands can
+be missed; unused code/comments can cause false positives. `unknown` means absent from this
+store, not necessarily missing from a preexisting process environment. Linked/outside or
+unreadable files are not scanned and make the result incomplete (exit 1); warnings and an
+unavailable inventory alone exit 0. Review the assignment even if no evidence was found.
+
+If a job needs store-backed secrets, its creation/edit completion report must warn that
+restart, manual lock and TTL expiry can make it fail with `SECRETS_LOCKED` until the owner
+unlocks using `/masterkey unlock` or the webchat modal. This warning also applies when the
+static check was negative but the assignment needs credentials. `cron_add.py` prints the final
+check/report reminder in `action_required`. Never embed values or master keys in job files.

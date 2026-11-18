@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 
 from ductor_bot.infra.secret_runtime import TOKEN_HEADER
-from ductor_bot.infra.secret_vault import VaultError
+from ductor_bot.infra.secret_vault import VaultError, VaultState
 from ductor_bot.session.named import normalize_lane
 from ductor_bot.tasks.models import normalise_origin_kind, normalise_origin_transport
 
@@ -82,6 +82,7 @@ class InternalAgentAPI:
         self._task_hub: TaskHub | None = None
         self._app = web.Application()
         self._app.router.add_get("/secrets/status", self._handle_secrets_status)
+        self._app.router.add_get("/secrets/keys", self._handle_secret_keys)
         self._app.router.add_get("/secrets/{key}", self._handle_secret_get)
 
         # Inter-agent routes (only when bus is available)
@@ -120,6 +121,18 @@ class InternalAgentAPI:
         assert self._secret_runtime is not None
         state = await self._secret_runtime.vault.status()
         return self._secret_response(asdict(state))
+
+    async def _handle_secret_keys(self, request: web.Request) -> web.Response:
+        if not self._secrets_authorized(request):
+            return self._secret_response({"error": "forbidden"}, 403)
+        assert self._secret_runtime is not None
+        vault = self._secret_runtime.vault
+        try:
+            if (await vault.status()).state is not VaultState.UNLOCKED:
+                return self._secret_response({"error": "SECRETS_LOCKED"}, 423)
+            return self._secret_response({"keys": await vault.list_keys()})
+        except VaultError as exc:
+            return self._secret_response({"error": exc.code}, 423)
 
     async def _handle_secret_get(self, request: web.Request) -> web.Response:
         if not self._secrets_authorized(request):

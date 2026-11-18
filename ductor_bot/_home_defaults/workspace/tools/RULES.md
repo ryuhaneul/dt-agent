@@ -23,6 +23,8 @@ This is the navigation index for workspace tools.
 - web browsing / screenshots -> `browser_tools/CLAUDE.md`
 - GitHub over HTTPS (push with a stored token, git credential helper, one-time codes) -> `github_tools/CLAUDE.md`
 
+- secret-store state (no values) -> `python3 tools/secret_tools/secret_status.py`
+
 ## Secrets and API Keys
 
 Two files, by who reads the value:
@@ -47,13 +49,18 @@ Two files, by who reads the value:
   load_secrets("MY_API_KEY")  # name the keys; then read os.environ["MY_API_KEY"]
   ```
 
-  Values are not injected as environment variables, but an agent running as the same user can read the file; this protects against accidental exposure only.
+  Before master-key setup the store is plaintext `KEY=VALUE` (`#` comments; no `export`); `KEY=$OTHER_KEY` takes a value from that store. After setup the bot serves requested values from its in-memory vault. `load_secrets` preserves environment precedence and adds only requested, missing values to the consuming script's environment. Never bulk-source either file.
 
-  The file holds plain `KEY=VALUE` lines (`#` comments; no `export`). `KEY=$OTHER_KEY` takes the
-  value of `OTHER_KEY` from the same file.
+## Secrets and master keys
 
-Existing environment variables are never overridden by values from either file. Never print,
-`cat` or log a secrets file; look at key names only.
+- Tool credentials in `secrets.env` may be encrypted with a master key. Provider startup keys in `.env` are separate and are not encrypted by this feature.
+- Use `load_secrets("KEY")` from `tools/_secrets.py` for only the needed names; an existing environment value takes precedence. Never read/source `secrets.env`, its `.enc` file, or plaintext copies directly.
+- Check `python3 tools/secret_tools/secret_status.py` before a task that needs secrets. It reports `unconfigured`, `locked`, or `unlocked`, TTL and remaining time without values. Restart always locks a configured store; TTL expiry locks it too; TTL 0 means unlimited until restart or manual lock.
+- `SECRETS_LOCKED` means stop the secret-dependent work and report the code. Ask the owner to use `/masterkey unlock` in the main Telegram bot's private chat or unlock in the webchat modal. Do not bypass the lock, search for plaintext/backups, inspect process memory, or retrieve authentication tokens from files or other processes.
+- `SECRETS_RATE_LIMITED` means wait for `retry_after`; do not loop, retry aggressively, or bypass the shared limit. `SECRET_NOT_SET` means the requested name is missing; never invent a value.
+- Never ask for, accept, or process a master key in ordinary conversation, prompts, task files, or tool arguments. Master-key input belongs only in the `/masterkey` private input flow or the webchat modal. If locked, request the unlock action, not the key itself.
+- Never cat, print, log or bulk-source credential files, including `.env`; inspect names without values.
+- Never print, log, mirror, or persist secret values or master/derived keys in chat, memory, task descriptions, scripts, results, or temporary files. Use only needed values inside the consuming process. Key-name inventories and status tools must never fetch values.
 
 ## Bot Restart
 

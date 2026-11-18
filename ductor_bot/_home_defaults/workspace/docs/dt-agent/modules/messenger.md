@@ -423,3 +423,33 @@ All bots in a `MultiBotAdapter` share:
 Actual allowlist denials in Telegram, Matrix and Slack emit INFO `Allowlist rejection chat_type=... chat_id=... user_id=... topic_id=...`, containing metadata only, never message content (the Telegram bot's own messages and service messages are dropped without this log once the bot id is known). The common `RejectionLog` helper limits each retained chat/user pair to one entry per 600 seconds (topics share that pair’s limit). Each logger instance retains up to 1,024 pairs and evicts the oldest when full; an evicted pair can log again. This does not change each transport’s authorization/mention policy or its handling of non-message events.
 
 Foreground user conversations recheck the **resolved session provider** authentication immediately before CLI execution. Text, media and prompt-button turns, including named-session foreground follow-ups, return localized host-repository `./scripts/login.sh <provider>` instructions and do not run the CLI when unauthenticated. Authentication changes are reread on the next user turn; Gemini can use its configured API key. Telegram, Matrix, Slack and direct API use these shared orchestrator flows. Inter-agent, cron and webhook task execution paths are unchanged by this foreground check.
+
+### Telegram master key (`/masterkey`)
+
+This command is restricted to allowed users in a one-to-one DM with the main bot; sub-agent
+bots and group chats cannot manage the vault. It is registered in the main command menu and
+help. Do not put keys in the command or ordinary conversation.
+
+| Command | Behavior |
+|---|---|
+| `/masterkey` / `/masterkey status` | State, expiry policy and remaining unlock time |
+| `/masterkey setup` | ForceReply key and confirmation, then encrypt the existing tool store |
+| `/masterkey unlock` | ForceReply key; shared wrong-key backoff applies |
+| `/masterkey lock` | Drop unlocked material now |
+| `/masterkey change` | While unlocked: current key, new key and confirmation |
+| `/masterkey ttl [minutes]` | Buttons (15 min, 1 h, 8 h, 24 h, unlimited) or direct nonnegative whole minutes; 0 means unlimited |
+| `/masterkey cancel` | Cancel input and discard in-memory key context |
+
+Value/key messages are consumed before update-journal admission and ordinary middleware,
+chat history or Telegram mirrors. Inputs are deleted with the existing retry/guard mechanism.
+Only non-secret stage names and message IDs are persisted; staged keys expire after 120 seconds
+and are discarded on cancel, confirmed failure/success or shutdown. A restart cannot resume a
+partially entered key. Telegram transit, deletion API failure and user-created copies remain
+limitations; messages are not end-to-end encrypted.
+
+`/secret set` and `/secret delete` (including stale buttons) refuse a configured, locked vault
+and direct the owner to `/masterkey unlock` or webchat. Too-short keys, mismatched confirmation,
+wrong keys, shared rate limiting and pending web-auth migration produce value-free guidance.
+At startup a configured, locked vault sends one security-state DM to each allowed user,
+independently of `notifications.startup_targets` lifecycle opt-outs. Each later TTL lock sends
+the corresponding alert once; repeated reads of the same locked state do not duplicate it.

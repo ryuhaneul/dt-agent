@@ -29,6 +29,8 @@ Typed in the chat (Telegram `/cmd`; Matrix also `!cmd`). They are chat messages,
 | `/agent_commands` | Explain the multi-agent system and list its commands |
 | `/showfiles` | Browse workspace files |
 | `/diagnose` | Runtime diagnostics |
+| `/secret list/set/delete/cancel` | Main Telegram allowed-user DM: manage tool secrets; values only in private input requests or the webchat modal |
+| `/masterkey status/setup/unlock/lock/change/ttl/cancel` | Main Telegram bot, allowed-user DM only: manage the tool-store master key; keys only through private input requests |
 | `/restart` | Restart this agent (interrupts running work) |
 | `/where` | Telegram group management: show where the bot is a member |
 | `/leave` | Telegram group management: leave a group |
@@ -48,7 +50,7 @@ Inside the bot container: `ductor` (no arguments) starts the configured bot, `du
 | `ductor chat-log status` | Recording validation, history and queue counts |
 | `ductor chat-log import [--dry-run] [--undo]` | Import Claude/Codex transcripts, preview or undo imported entries |
 | `ductor chat-log prune --older-than N [--backups] [--dry-run]` | Clean old history and terminal/quarantined queue files; optionally edit backups |
-| `ductor webchat set-password` | Set password interactively (12+ characters), revoke sessions |
+| `ductor webchat set-password` | Reset password (12+ characters), revoke sessions and discard TOTP (reenrollment required) |
 | `ductor webchat reset-totp` / `clear-credentials` | Reset enrollment or remove password/TOTP credentials, revoke sessions |
 | `ductor webchat check-config [--json]` | Validate recording/web settings; validation errors exit 1 |
 
@@ -80,7 +82,7 @@ Run from the agent workspace with `python3 tools/<dir>/<script>`; each directory
 
 | Directory | Scripts | Purpose |
 |---|---|---|
-| `tools/cron_tools/` | `cron_add.py`, `cron_edit.py`, `cron_list.py`, `cron_remove.py`, `cron_time.py` | Scheduled jobs and their task folders |
+| `tools/cron_tools/` | `cron_add.py`, `cron_edit.py`, `cron_list.py`, `cron_remove.py`, `cron_time.py`, `cron_check_secrets.py` | Scheduled jobs and their task folders |
 | `tools/webhook_tools/` | `webhook_add.py`, `webhook_edit.py`, `webhook_list.py`, `webhook_remove.py`, `webhook_rotate_token.py`, `webhook_test.py` | Incoming HTTP triggers |
 | `tools/task_tools/` | `create_task.py`, `resume_task.py`, `list_tasks.py`, `cancel_task.py`, `delete_task.py`, `ask_parent.py` | Background tasks (delegate long work, follow up, ask the parent) |
 | `tools/agent_tools/` | `ask_agent.py`, `ask_agent_async.py`, `create_agent.py`, `list_agents.py`, `remove_agent.py`, `edit_shared_knowledge.py` | Sub-agents, delegation and shared knowledge (`create_agent.py`, `remove_agent.py`, `list_agents.py` are management tools operated from main: an operating convention, not a separate caller permission check) |
@@ -88,6 +90,7 @@ Run from the agent workspace with `python3 tools/<dir>/<script>`; each directory
 | `tools/media_tools/` | `file_info.py`, `list_files.py`, `process_video.py`, `read_document.py`, `transcribe_audio.py` | Received media and documents |
 | `tools/browser_tools/` | `browser.py`, `fill_secret.py` | Browser container control (screenshots, browsing); `fill_secret.py` fills a form field from a stored secret |
 | `tools/github_tools/` | `totp.py` | One-time codes from a stored seed; `tools/git_push.py` and `tools/git_credential_from_ductor_env.sh` push to GitHub over HTTPS with a stored token |
+| `tools/secret_tools/` | `secret_status.py` | Value-free tool-store state, TTL and remaining time |
 | `tools/user_tools/` | your own scripts | User-owned, never overwritten |
 
 Tool scripts are framework-managed: edits to bundled tool scripts are replaced on update (a `.bak` copy is kept). Put your own scripts in `tools/user_tools/`.

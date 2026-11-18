@@ -134,6 +134,43 @@ def secret_status() -> dict:
     return {name: result.get(name) for name in ("state", "ttl_seconds", "remaining_seconds")}
 
 
+def secret_keys() -> list[str]:
+    """Return store names only, without parsing values or changing the environment."""
+    if _encrypted():
+        names = _rpc("keys").get("keys")
+        if not isinstance(names, list) or any(not isinstance(name, str) for name in names):
+            raise SecretsError("SECRETS_LOCKED")
+        return sorted(set(names))
+    names: set[str] = set()
+    try:
+        with _store_path().open("rb") as stream:
+            prefix = bytearray()
+            reading_name = True
+            while char := stream.read(1):
+                if char in (b"\n", b"\r"):
+                    prefix.clear()
+                    reading_name = True
+                elif reading_name and char == b"=":
+                    name = prefix.decode("utf-8").strip().removeprefix("export ").strip()
+                    if name:
+                        names.add(name)
+                    prefix.clear()
+                    reading_name = False
+                elif reading_name:
+                    # Value bytes are skipped without constructing a value or a full line.
+                    # Supported key names are at most 56 characters; allow surrounding syntax.
+                    if char == b"#" or len(prefix) >= 128:
+                        prefix.clear()
+                        reading_name = False
+                    else:
+                        prefix.extend(char)
+    except FileNotFoundError:
+        pass
+    except (OSError, UnicodeError):
+        raise SecretsError("SECRETS_INVENTORY_UNAVAILABLE") from None
+    return sorted(names)
+
+
 def store_secrets(*keys: str) -> dict[str, str]:
     """Read the store only, without consulting or modifying process environment values."""
     if not _encrypted():

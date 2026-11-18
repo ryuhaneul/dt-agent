@@ -162,7 +162,7 @@ Ownership checks are enforced for resume/cancel/delete when `from=<agent>` is su
 - `SHAREDMEMORY.md`
 - `logs/agent.log`
 - `.env` (provider keys read when a CLI starts), `.env.shared` (browser token/timezone)
-- `secrets.env` (tool credentials, mode 0600; loaded on demand by `tools/_secrets.py`, not injected)
+- `secrets.env` before master-key setup, `secrets.env.enc` after setup (tool credentials; loaded on demand through `tools/_secrets.py`, not bulk-injected; configured stores lock on restart/TTL)
 - `.cli-auth/` (CLI credentials and persistent Claude state)
 - `interagent/inflight/`, `interagent/undelivered/` (durable async recovery/retry state)
 - `chat_log/history/`, `chat_log/outbox/`, `chat_log/import_refs.json` (optional recording and import state)

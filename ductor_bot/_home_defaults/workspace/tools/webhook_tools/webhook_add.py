@@ -176,6 +176,18 @@ You are an **automated agent** triggered by a webhook. Complete your task autono
 - Stay focused on this task only.
 - Do not modify files outside this task folder unless explicitly instructed by the user or the assigned TASK_DESCRIPTION.md.
 - Use `.venv` for Python dependencies if needed.
+
+## Secrets and master keys
+
+- Tool credentials in `secrets.env` may be encrypted with a master key. Provider startup keys in `.env` are separate and are not encrypted by this feature.
+- Use `load_secrets("KEY")` from `{DUCTOR_HOME / "workspace" / "tools"}/_secrets.py` for only the needed names; an existing environment value takes precedence. Never read/source `secrets.env`, its `.enc` file, or plaintext copies directly.
+- Check `python3 {DUCTOR_HOME / "workspace" / "tools"}/secret_tools/secret_status.py` before a task that needs secrets. It reports `unconfigured`, `locked`, or `unlocked`, TTL and remaining time without values. Restart always locks a configured store; TTL expiry locks it too; TTL 0 means unlimited until restart or manual lock.
+- `SECRETS_LOCKED` means stop the secret-dependent work and report the code. Ask the owner to use `/masterkey unlock` in the main Telegram bot's private chat or unlock in the webchat modal. Do not bypass the lock, search for plaintext/backups, inspect process memory, or retrieve authentication tokens from files or other processes.
+- `SECRETS_RATE_LIMITED` means wait for `retry_after`; do not loop, retry aggressively, or bypass the shared limit. `SECRET_NOT_SET` means the requested name is missing; never invent a value.
+- Never ask for, accept, or process a master key in ordinary conversation, prompts, task files, or tool arguments. Master-key input belongs only in the `/masterkey` private input flow or the webchat modal. If locked, request the unlock action, not the key itself.
+- Never cat, print, log or bulk-source credential files, including `.env`; inspect names without values.
+- Never print, log, mirror, or persist secret values or master/derived keys in chat, memory, task descriptions, scripts, results, or temporary files. Use only needed values inside the consuming process. Key-name inventories and status tools must never fetch values.
+
 """
     for filename in rule_filenames:
         target = task_dir / filename

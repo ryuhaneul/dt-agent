@@ -396,6 +396,9 @@ def main() -> None:
         "folder_created": True,
         "json_entry_created": True,
         "action_required": [
+            f'After finishing the task files, run python3 tools/cron_tools/cron_check_secrets.py "{name}"; '
+            'if secrets are needed, warn the owner in the completion report that locked runs fail '
+            'with SECRETS_LOCKED until /masterkey unlock or webchat unlock (even if the static check is negative).',
             f"Open {task_path}/TASK_DESCRIPTION.md and fill in the Assignment and Output sections NOW.",
             "TASK_DESCRIPTION.md is the cron agent's task file. "
             "The agent spawns blind in this folder -- no chat history, no main memory.",
