@@ -440,8 +440,8 @@ asyncio.run(main())
     assert measured["python_peak_bytes"] < 32 * 1024 * 1024
 
 
-@pytest.mark.parametrize(("extra", "accepted"), [(0, 1), (16 * 1024**2, 2)])
-async def test_concurrent_reservations_include_staging_and_floor(tmp_path, extra, accepted):
+@pytest.mark.parametrize(("extra", "accepted"), [(0, 2), (16 * 1024**2, 2)])
+async def test_concurrent_reservations_preserve_exact_floor(tmp_path, extra, accepted):
     free = 5 * 1024**3 + extra
     store = UploadStore(tmp_path / "files", free_bytes=lambda _: free)
     results = await asyncio.gather(
@@ -458,7 +458,7 @@ async def test_concurrent_reservations_include_staging_and_floor(tmp_path, extra
     assert len(errors) == 3 - accepted
     for session in sessions:
         record = json.loads((store.incoming / f"{session.id}.json").read_text())
-        assert record["reserved_bytes"] == 2 * 1024**3 + CHUNK_BYTES
+        assert record["reserved_bytes"] == 2 * 1024**3
 
 
 async def test_reservations_restore_decrease_and_release(tmp_path):
@@ -467,11 +467,11 @@ async def test_reservations_restore_decrease_and_release(tmp_path):
     first = await begin(store, b"abcdefgh")
     await store.put(first.id, "123", "session-one", 0, chunks(b"abcd"))
     record = json.loads((store.incoming / f"{first.id}.json").read_text())
-    assert record["reserved_bytes"] == 4 + CHUNK_BYTES
+    assert record["reserved_bytes"] == 4
     second = await begin(store, b"other")
     restarted = UploadStore(store.directory, free_bytes=lambda _: free)
     await restarted.status(first.id, "123", "session-one")
-    assert sum(restarted._reservations.values()) == 9 + 2 * CHUNK_BYTES
+    assert sum(restarted._reservations.values()) == 9
     await restarted.cancel(second.id, "123", "session-one")
     assert second.id not in restarted._reservations
     await restarted.put(first.id, "123", "session-one", 4, chunks(b"efgh"))
@@ -769,3 +769,273 @@ async def test_gzip_bomb_is_rejected_without_inflating(relay, client):
         ),
     )
     assert peak < 16 * 1024**2
+
+
+@pytest.mark.parametrize("format_name", ["JPEG", "PNG", "WEBP", "GIF", "BMP"])
+async def test_raster_header_validation_and_truncation(tmp_path, format_name):
+    stream = io.BytesIO()
+    Image.new("RGB", (9, 7), "white").save(stream, format=format_name)
+    payload = stream.getvalue()
+    mime = Image.MIME[format_name]
+    store = UploadStore(tmp_path / "files")
+    session = await begin(store, payload, mime=mime)
+    await store.put(session.id, "123", "session-one", 0, chunks(payload))
+    result = await store.complete(
+        session.id, "123", "session-one", hashlib.sha256(payload).hexdigest()
+    )
+    assert result.inline_allowed is True
+    assert (store.directory / result.path).read_bytes() == payload
+    broken = payload[:20]
+    session = await begin(store, broken, mime=mime)
+    await store.put(session.id, "123", "session-one", 0, chunks(broken))
+    with pytest.raises(UploadError, match="invalid_image") as error:
+        await store.complete(session.id, "123", "session-one", hashlib.sha256(broken).hexdigest())
+    assert error.value.status == 415
+
+
+def oversized_image_header(format_name, payload):
+    padding = b"x" * (1024**2 + 1)
+    if format_name == "PNG":
+        chunk = b"tEXt" + padding
+        return (
+            payload[:33]
+            + struct.pack(">I", len(padding))
+            + chunk
+            + struct.pack(">I", zlib.crc32(chunk))
+            + payload[33:]
+        )
+    if format_name == "WEBP":
+        chunk = b"JUNK" + struct.pack("<I", len(padding)) + padding + b"\0"
+        extended = (
+            b"VP8X"
+            + struct.pack("<I", 10)
+            + b"\0" * 4
+            + (8).to_bytes(3, "little")
+            + (6).to_bytes(3, "little")
+        )
+        return (
+            b"RIFF"
+            + struct.pack("<I", len(payload) + len(extended) + len(chunk) - 8)
+            + payload[8:12]
+            + extended
+            + chunk
+            + payload[12:]
+        )
+    if format_name == "JPEG":
+        marker = b"\xff\xe1" + struct.pack(">H", 65535) + b"x" * 65533
+        return payload[:2] + marker * 17 + payload[2:]
+    if format_name == "GIF":
+        # No global palette; comment subblocks exceed the header budget before the frame.
+        return (
+            b"GIF89a"
+            + struct.pack("<HHBBB", 9, 7, 0, 0, 0)
+            + b"\x21\xfe"
+            + (b"\xff" + b"x" * 255) * 4097
+            + b"\0"
+            + payload[13:]
+        )
+    # An oversized DIB header cannot be read from the bounded BMP header buffer.
+    return payload[:14] + struct.pack("<I", 1024**2 + 1) + padding + payload[18:]
+
+
+@pytest.mark.parametrize("format_name", ["JPEG", "PNG", "WEBP", "GIF", "BMP"])
+async def test_raster_header_budget_is_enforced(tmp_path, format_name):
+    stream = io.BytesIO()
+    Image.new("RGB", (9, 7), "white").save(stream, format=format_name)
+    payload = oversized_image_header(format_name, stream.getvalue())
+    store = UploadStore(tmp_path / "files")
+    session = await begin(store, payload, mime=Image.MIME[format_name])
+    await store.put(session.id, "123", "session-one", 0, chunks(payload))
+    with pytest.raises(UploadError, match="invalid_image") as error:
+        await store.complete(session.id, "123", "session-one", hashlib.sha256(payload).hexdigest())
+    assert error.value.status == 415
+
+
+@pytest.mark.parametrize("format_name", ["TIFF", "ICO"])
+async def test_other_image_formats_remain_download_only(tmp_path, format_name):
+    stream = io.BytesIO()
+    Image.new("RGB", (32, 32), "white").save(stream, format=format_name)
+    payload = stream.getvalue()
+    store = UploadStore(tmp_path / "files")
+    session = await begin(store, payload, mime=Image.MIME[format_name])
+    await store.put(session.id, "123", "session-one", 0, chunks(payload))
+    result = await store.complete(
+        session.id, "123", "session-one", hashlib.sha256(payload).hexdigest()
+    )
+    assert result.inline_allowed is False
+    assert (store.directory / result.path).read_bytes() == payload
+
+
+async def test_animated_and_lossless_webp_headers(tmp_path):
+    for options in (
+        {"lossless": True},
+        {
+            "save_all": True,
+            "append_images": [Image.new("RGB", (8, 8), "blue")],
+            "duration": 100,
+            "loop": 0,
+        },
+    ):
+        stream = io.BytesIO()
+        Image.new("RGB", (8, 8), "red").save(stream, format="WEBP", **options)
+        payload = stream.getvalue()
+        store = UploadStore(tmp_path / "files")
+        session = await begin(store, payload, mime="image/webp")
+        await store.put(session.id, "123", "session-one", 0, chunks(payload))
+        result = await store.complete(
+            session.id, "123", "session-one", hashlib.sha256(payload).hexdigest()
+        )
+        assert result.inline_allowed is True
+        assert (store.directory / result.path).read_bytes() == payload
+
+
+async def test_reserved_bytes_do_not_double_count_committed_storage(tmp_path):
+    free = 5 * 1024**3
+    store = UploadStore(tmp_path / "files", free_bytes=lambda _: free)
+    first = await store.start("123", "owner", {"name": "first.bin", "size": 2 * 1024**3})
+    block = b"\0" * 65536
+    await store.put(first.id, "123", "owner", 0, chunks(block))
+    free -= len(block)
+    restarted = UploadStore(store.directory, free_bytes=lambda _: free)
+    second = await restarted.start("123", "owner", {"name": "second.bin", "size": 2 * 1024**3})
+    assert restarted._reservations[first.id] == first.size - len(block)
+    assert restarted._reservations[second.id] == second.size
+    with pytest.raises(UploadError, match="insufficient_space"):
+        await restarted.start("123", "owner", {"name": "third.bin", "size": 2 * 1024**3})
+
+
+async def test_api_exact_five_gib_accepts_two_uploads(client):
+    client.app[UPLOADS]._free_bytes = lambda _: 5 * 1024**3
+    responses = await asyncio.gather(
+        *(
+            client.post(_BASE, json={"name": "large.bin", "size": 2 * 1024**3}, headers=_HEADERS)
+            for _ in range(3)
+        )
+    )
+    assert sorted(response.status for response in responses) == [200, 200, 507]
+    rejected = next(response for response in responses if response.status == 507)
+    assert (await rejected.json())["error"] == "insufficient_space"
+
+
+@pytest.mark.parametrize("format_name", ["WEBP", "PNG"])
+@pytest.mark.parametrize("size", [64 * 1024**2, 2 * 1024**3 - 16])
+def test_large_image_completion_memory_is_bounded(tmp_path, format_name, size):
+    pytest.importorskip("resource")
+    script = r"""
+import asyncio, gc, hashlib, io, json, os, struct, sys, tempfile, threading, tracemalloc, zlib
+from pathlib import Path
+from PIL import Image
+from ductor_bot.webchat.uploads import UploadStore
+async def main():
+    size, format_name = int(sys.argv[2]), sys.argv[3]
+    with tempfile.TemporaryDirectory(dir=sys.argv[1]) as directory:
+        store = UploadStore(Path(directory))
+        stream = io.BytesIO()
+        Image.new("RGB", (4, 4), "white").save(stream, format=format_name)
+        payload = stream.getvalue()
+        mime = "image/webp" if format_name == "WEBP" else "image/png"
+        session = await store.start("123", "owner", {"name":"large-image", "size":size, "mime":mime})
+        padding = size - len(payload) - (8 if format_name == "WEBP" else 12)
+        if format_name == "WEBP":
+            prefix = payload[:4] + struct.pack("<I", size - 8) + payload[8:] + b"JUNK" + struct.pack("<I", padding)
+        else:
+            prefix = payload[:-12] + struct.pack(">I", padding) + b"paDd"
+        digest, crc = hashlib.sha256(), zlib.crc32(b"paDd")
+        path = store.incoming / (session.id + ".part")
+        with path.open("wb") as output:
+            output.write(prefix); digest.update(prefix)
+            block = b"\0" * 65536
+            while padding:
+                data = block[:min(padding, len(block))]
+                output.write(data); digest.update(data)
+                if format_name == "PNG": crc = zlib.crc32(data, crc)
+                padding -= len(data)
+            if format_name == "PNG":
+                suffix = struct.pack(">I", crc) + payload[-12:]
+                output.write(suffix); digest.update(suffix)
+            output.flush(); os.fsync(output.fileno())
+        assert path.stat().st_size == size
+        session.offset = size
+        store._save(session)
+        gc.collect()
+        def rss():
+            return int(next(line.split()[1] for line in Path("/proc/self/status").read_text().splitlines() if line.startswith("VmRSS:")))
+        baseline = rss()
+        sampled = [baseline]
+        stop = threading.Event()
+        def sample():
+            while not stop.wait(0.002): sampled[0] = max(sampled[0], rss())
+        watcher = threading.Thread(target=sample)
+        watcher.start()
+        tracemalloc.start()
+        try:
+            result = await store.complete(session.id, "123", "owner", digest.hexdigest())
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop(); stop.set(); watcher.join()
+        rss_peak = max(sampled[0], rss())
+        stored = store.directory / result.path
+        actual = hashlib.sha256()
+        with stored.open("rb") as source:
+            while data := source.read(65536): actual.update(data)
+        assert stored.stat().st_size == size
+        assert actual.hexdigest() == digest.hexdigest() == result.sha256
+        assert result.inline_allowed and result.mime == mime
+        print(json.dumps({"format":format_name,"bytes":size,"python_peak_bytes":peak,"baseline_rss_kib":baseline,"peak_rss_kib":rss_peak,"rss_growth_kib":rss_peak-baseline,"sha256":result.sha256}))
+asyncio.run(main())
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path), str(size), format_name],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    measured = json.loads(result.stdout)
+    print("IMAGE_COMPLETION_MEMORY", json.dumps(measured))
+    (tmp_path / "memory.json").write_text(json.dumps(measured))
+    assert measured["bytes"] == size
+    assert measured["python_peak_bytes"] < 32 * 1024**2
+    assert measured["rss_growth_kib"] < 32 * 1024
+
+
+async def test_webp_canvas_pixel_limit_precedes_decoding(tmp_path):
+    stream = io.BytesIO()
+    Image.new("RGB", (4, 4), "white").save(stream, format="WEBP")
+    payload = stream.getvalue()
+    extended = (
+        b"VP8X"
+        + struct.pack("<I", 10)
+        + b"\0" * 4
+        + (10000).to_bytes(3, "little")
+        + (9999).to_bytes(3, "little")
+    )
+    payload = (
+        payload[:4]
+        + struct.pack("<I", len(payload) + len(extended) - 8)
+        + payload[8:12]
+        + extended
+        + payload[12:]
+    )
+    store = UploadStore(tmp_path / "files")
+    session = await begin(store, payload, mime="image/webp")
+    await store.put(session.id, "123", "session-one", 0, chunks(payload))
+    with pytest.raises(UploadError, match="image_too_large") as error:
+        await store.complete(session.id, "123", "session-one", hashlib.sha256(payload).hexdigest())
+    assert error.value.status == 413
+
+
+@pytest.mark.parametrize("format_name", ["PNG", "WEBP"])
+async def test_streamed_image_structure_rejects_corruption(tmp_path, format_name):
+    stream = io.BytesIO()
+    Image.new("RGB", (4, 4), "white").save(stream, format=format_name)
+    payload = bytearray(stream.getvalue())
+    if format_name == "PNG":
+        payload[-13] ^= 1  # Damage an IDAT CRC, keeping the MIME and dimensions intact.
+    else:
+        payload[16:20] = struct.pack("<I", len(payload) + 1)  # Chunk exceeds its RIFF boundary.
+    store = UploadStore(tmp_path / "files")
+    session = await begin(store, payload, mime=Image.MIME[format_name])
+    await store.put(session.id, "123", "session-one", 0, chunks(payload))
+    with pytest.raises(UploadError, match="invalid_image"):
+        await store.complete(session.id, "123", "session-one", hashlib.sha256(payload).hexdigest())

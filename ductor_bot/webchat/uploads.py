@@ -8,15 +8,18 @@ import contextlib
 import errno
 import hashlib
 import hmac
+import io
 import json
 import logging
 import os
 import re
 import secrets
 import shutil
+import struct
 import threading
 import time
 import warnings
+import zlib
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -158,6 +161,181 @@ def _valid_text(path: Path) -> bool:
     return True
 
 
+_IMAGE_HEADERS = 1024 * 1024
+_INLINE_IMAGES = frozenset({"image/jpeg", "image/png", "image/webp", "image/gif", "image/bmp"})
+
+
+def _pixels(width: int, height: int) -> None:
+    if width <= 0 or height <= 0:
+        raise ValueError("invalid_dimensions")
+    if width * height > 100_000_000:
+        raise UploadError("image_too_large", 413)
+
+
+def _header_read(stream: BinaryIO, size: int, budget: list[int]) -> bytes:
+    if size > budget[0]:
+        raise ValueError("image_header_limit")
+    budget[0] -= size
+    data = stream.read(size)
+    if len(data) != size:
+        raise ValueError("truncated_image")
+    return data
+
+
+def _png_dimensions(data: bytes) -> None:
+    width, height, bits, color, compression, filtering, interlace = struct.unpack(">IIBBBBB", data)
+    _pixels(width, height)
+    depths = {0: {1, 2, 4, 8, 16}, 2: {8, 16}, 3: {1, 2, 4, 8}, 4: {8, 16}, 6: {8, 16}}
+    if bits not in depths.get(color, set()) or compression or filtering or interlace > 1:
+        raise ValueError("invalid_png_header")
+
+
+def _png_crc(stream: BinaryIO, kind: bytes, size: int, *, first: bool) -> None:
+    checksum, remaining = zlib.crc32(kind), size
+    while remaining:
+        data = stream.read(min(remaining, _BUFFER_BYTES))
+        if not data:
+            raise ValueError("truncated_png")
+        checksum = zlib.crc32(data, checksum)
+        remaining -= len(data)
+        if first:
+            _png_dimensions(data)
+    crc = stream.read(4)
+    if len(crc) != 4 or struct.unpack(">I", crc)[0] != checksum:
+        raise ValueError("invalid_png_checksum")
+
+
+def _verify_png(stream: BinaryIO) -> None:
+    if stream.read(8) != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("invalid_png")
+    budget, first, image_data = _IMAGE_HEADERS, True, False
+    while True:
+        header = stream.read(8)
+        if len(header) != 8:
+            raise ValueError("truncated_png")
+        size, kind = struct.unpack(">I4s", header)
+        if first and (kind != b"IHDR" or size != 13):
+            raise ValueError("invalid_png_header")
+        if not image_data:
+            budget -= 12 + (size if kind != b"IDAT" else 0)
+            if budget < 0:
+                raise ValueError("image_header_limit")
+        _png_crc(stream, kind, size, first=first)
+        first = False
+        image_data |= kind == b"IDAT"
+        if kind == b"IEND":
+            if size or not image_data:
+                raise ValueError("invalid_png_end")
+            return
+
+
+def _webp_image(
+    stream: BinaryIO, kind: bytes, size: int, budget: list[int], canvas: tuple[int, int] | None
+) -> tuple[int, int]:
+    minimum = 10 if kind == b"VP8 " else 5
+    if size < minimum:
+        raise ValueError("invalid_webp_image")
+    data = _header_read(stream, minimum, budget)
+    if kind == b"VP8 ":
+        if data[0] & 1 or data[3:6] != b"\x9d\x01\x2a":
+            raise ValueError("invalid_webp_frame")
+        width, height = struct.unpack("<HH", data[6:10])
+        measured = (width & 0x3FFF, height & 0x3FFF)
+    else:
+        bits = int.from_bytes(data[1:5], "little")
+        if data[0] != 0x2F or bits >> 29:
+            raise ValueError("invalid_webp_lossless")
+        measured = ((bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1)
+    _pixels(*measured)
+    if canvas is not None and canvas != measured:
+        raise ValueError("inconsistent_webp_dimensions")
+    return measured
+
+
+def _webp_animation(stream: BinaryIO, end: int, budget: list[int], canvas: tuple[int, int]) -> None:
+    data = _header_read(stream, 16, budget)
+    x, y = int.from_bytes(data[:3], "little") * 2, int.from_bytes(data[3:6], "little") * 2
+    measured = (int.from_bytes(data[6:9], "little") + 1, int.from_bytes(data[9:12], "little") + 1)
+    _pixels(*measured)
+    if data[15] & 0xFC or x + measured[0] > canvas[0] or y + measured[1] > canvas[1]:
+        raise ValueError("invalid_webp_animation_bounds")
+    if _webp_chunks(stream, end, budget, frame=True) != measured:
+        raise ValueError("inconsistent_webp_frame")
+
+
+def _webp_extended(
+    stream: BinaryIO, size: int, budget: list[int], previous: tuple[int, int] | None
+) -> tuple[int, int]:
+    if size != 10 or previous is not None:
+        raise ValueError("invalid_webp_header")
+    data = _header_read(stream, 10, budget)
+    if data[0] & 0xC1 or data[1:4] != b"\0\0\0":
+        raise ValueError("invalid_webp_flags")
+    dimensions = (
+        int.from_bytes(data[4:7], "little") + 1,
+        int.from_bytes(data[7:10], "little") + 1,
+    )
+    _pixels(*dimensions)
+    return dimensions
+
+
+def _webp_chunks(
+    stream: BinaryIO, end: int, budget: list[int], *, frame: bool = False
+) -> tuple[int, int]:
+    dimensions = None
+    found_image = False
+    while stream.tell() < end:
+        kind, size = struct.unpack("<4sI", _header_read(stream, 8, budget))
+        start = stream.tell()
+        following = start + size + (size & 1)
+        if following > end:
+            raise ValueError("truncated_webp_chunk")
+        if kind == b"VP8X" and not frame:
+            dimensions = _webp_extended(stream, size, budget, dimensions)
+        elif kind in {b"VP8 ", b"VP8L"}:
+            measured = _webp_image(stream, kind, size, budget, dimensions)
+            dimensions, found_image = measured, True
+        elif kind == b"ANMF" and not frame:
+            if size < 16 or dimensions is None:
+                raise ValueError("invalid_webp_animation")
+            _webp_animation(stream, start + size, budget, dimensions)
+            found_image = True
+        elif not found_image and kind != b"ALPH":
+            # Metadata before the image counts towards the bounded header budget.
+            if size > budget[0]:
+                raise ValueError("image_header_limit")
+            budget[0] -= size
+        stream.seek(following)
+    if stream.tell() != end or dimensions is None or not found_image:
+        raise ValueError("invalid_webp_structure")
+    return dimensions
+
+
+def _verify_image(path: Path, mime: str) -> None:
+    try:
+        with path.open("rb") as stream:
+            if mime == "image/png":
+                _verify_png(stream)
+            elif mime == "image/webp":
+                budget = [_IMAGE_HEADERS]
+                header = _header_read(stream, 12, budget)
+                end = 8 + int.from_bytes(header[4:8], "little")
+                if header[:4] != b"RIFF" or header[8:] != b"WEBP" or end > path.stat().st_size:
+                    raise ValueError("invalid_webp")  # noqa: TRY301 -- map invalid input to 415
+                _webp_chunks(stream, end, budget)
+            else:
+                # Pillow only sees a bounded header, never the complete uploaded file.
+                header = stream.read(_IMAGE_HEADERS)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", Image.DecompressionBombWarning)
+                    with Image.open(io.BytesIO(header)) as image:
+                        _pixels(image.width, image.height)
+    except Image.DecompressionBombError as exc:
+        raise UploadError("image_too_large", 413) from exc
+    except (OSError, ValueError, SyntaxError, struct.error) as exc:
+        raise UploadError("invalid_image", 415) from exc
+
+
 def _sniff(path: Path, candidate: str, name: str) -> tuple[str, str, bool]:
     with path.open("rb") as stream:
         sample = stream.read(_BUFFER_BYTES)
@@ -178,17 +356,9 @@ def _sniff(path: Path, candidate: str, name: str) -> tuple[str, str, bool]:
     if mime == "text/plain":
         suffix = Path(name).suffix.lower().lstrip(".")
         extension = suffix if suffix in _TEXT_EXTENSIONS else "txt"
-    inline = mime.startswith("image/") and mime != "image/svg+xml"
+    inline = mime in _INLINE_IMAGES
     if inline:
-        try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", Image.DecompressionBombWarning)
-                with Image.open(path) as image:
-                    if image.width * image.height > 100_000_000:
-                        raise UploadError("image_too_large", 413)
-                    image.verify()
-        except (OSError, ValueError, SyntaxError, Image.DecompressionBombError) as exc:
-            raise UploadError("invalid_image", 415) from exc
+        _verify_image(path, mime)
     if re.fullmatch(r"[a-z0-9]{1,12}", extension) is None:
         raise UploadError("invalid_type", 415)
     return mime, extension, inline
@@ -243,7 +413,7 @@ class UploadStore:
                 logger.warning("Ignoring invalid upload reservation record")
                 continue
             if session.path is None:
-                session.reserved_bytes = session.size - session.offset + self.chunk_bytes
+                session.reserved_bytes = session.size - session.offset
                 self._reservations[session.id] = session.reserved_bytes
                 self._save(session)
         self._ledger_ready = True
@@ -350,7 +520,7 @@ class UploadStore:
     def _create(self, session: UploadSession) -> None:
         with self._space_lock:
             self._prepare()
-            reservation = session.size + self.chunk_bytes
+            reservation = session.size
             available = self._free_bytes(self.directory) - sum(self._reservations.values())
             if available - SPACE_FLOOR < reservation:
                 raise UploadError("insufficient_space", 507)
@@ -440,13 +610,13 @@ class UploadStore:
                 target.flush()
                 os.fsync(target.fileno())
             session.offset += size
-            session.reserved_bytes = session.size - session.offset + self.chunk_bytes
+            session.reserved_bytes = session.size - session.offset
             session.updated = time.time()
             self._save(session)
             self._reservations[session.id] = session.reserved_bytes
         except BaseException:
             session.offset = offset
-            session.reserved_bytes = session.size - offset + self.chunk_bytes
+            session.reserved_bytes = session.size - offset
             with path.open("r+b") as target:
                 target.truncate(offset)
             raise
