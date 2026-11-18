@@ -363,3 +363,96 @@ class LogoutStatusTests(unittest.TestCase):
                 self.assertIn('Invalid Claude slot name', result.stderr)
                 self.assertEqual(config.read_bytes(), before)
                 self.assertFalse(self.log.exists())
+
+    def api_slot(self, helper_header=True):
+        slot = self.home / '.cli-auth/claude-api'
+        slot.mkdir(exist_ok=True)
+        (slot / 'settings.json').write_text('{"apiKeyHelper": "helper.sh"}')
+        if helper_header:
+            (slot / 'api-key-helper.sh').write_text(
+                '#!/bin/sh\n# dt-agent api-key slot; key name: ANTHROPIC_CREDIT_API_KEY\nexit 0\n'
+            )
+        (self.home / 'config/config.json').write_text(
+            '{"claude_accounts": ["claude-api", "claude"]}'
+        )
+        return slot
+
+    def test_api_disable_and_remove_preserve_helper_store_and_folder(self):
+        for action in ('--disable', '--remove'):
+            for helper_header in (True, False):
+                with self.subTest(action=action, helper_header=helper_header):
+                    slot = self.api_slot(helper_header=helper_header)
+                    helper = slot / 'api-key-helper.sh'
+                    if not helper_header:
+                        helper.write_text('#!/bin/sh\n# legacy helper\nexit 0\n')
+                    before = helper.read_bytes()
+                    store = self.home / 'secrets.env'
+                    store.write_text('ANTHROPIC_CREDIT_API_KEY=synthetic-value\n')
+                    result = self.run_script('logout.sh', 'claude', action, 'claude-api')
+                    config = json.loads((self.home / 'config/config.json').read_text())
+                    self.assertEqual(config['claude_accounts'], ['claude'])
+                    self.assertFalse((slot / 'settings.json').exists())
+                    removed = list(slot.glob('settings.json.removed-*'))
+                    self.assertTrue(removed)
+                    self.assertRegex(removed[0].name, r'^settings.json.removed-\d{8}T\d{6}$')
+                    self.assertEqual(helper.read_bytes(), before)
+                    self.assertEqual(store.read_text(), 'ANTHROPIC_CREDIT_API_KEY=synthetic-value\n')
+                    key = 'ANTHROPIC_CREDIT_API_KEY' if helper_header else '<KEY_NAME>'
+                    self.assertIn('./scripts/login.sh claude-api ' + key, result.stdout)
+                    self.assertNotIn('synthetic-value', result.stdout + result.stderr)
+                    self.assertTrue(slot.is_dir())
+                    self.assertFalse(self.log.exists())
+
+    def test_api_status_and_lists_are_localized_without_oauth_probe(self):
+        labels = {'en': 'API key', 'de': 'API-Schlüssel', 'es': 'Clave de API',
+                  'fr': 'Clé API', 'id': 'Kunci API', 'nl': 'API-sleutel',
+                  'pt': 'Chave de API', 'ru': 'Ключ API', 'ko': 'API 키'}
+        self.api_slot()
+        for language, label in labels.items():
+            with self.subTest(language=language):
+                self.env['ONBOARD_LANGUAGE'] = language
+                for name in ('login.sh', 'logout.sh'):
+                    result = self.run_script(name, 'claude', '--list')
+                    row = next(line for line in result.stdout.splitlines()
+                               if line.startswith('  claude-api'))
+                    self.assertIn(label, row)
+                self.log.unlink(missing_ok=True)
+                result = self.run_script('status.sh')
+                self.assertIn('Claude (claude-api): ' + label + ' (ANTHROPIC_CREDIT_API_KEY)',
+                              result.stdout)
+                probes = [call['args'] for call in self.calls()
+                          if call['args'][-3:] == ['claude', 'auth', 'status']]
+                self.assertEqual(len(probes), 1)
+                self.assertIn('CLAUDE_CONFIG_DIR=/ductor/.cli-auth/claude', probes[0])
+                self.assertNotIn('CLAUDE_CONFIG_DIR=/ductor/.cli-auth/claude-api', probes[0])
+
+    def test_api_status_legacy_helper_uses_placeholder(self):
+        self.api_slot(helper_header=False)
+        result = self.run_script('status.sh')
+        self.assertIn('Claude (claude-api): API key (<KEY_NAME>)', result.stdout)
+
+    def test_api_predicate_rejects_links_invalid_json_and_nonstring_helpers(self):
+        slot = self.api_slot()
+        settings = slot / 'settings.json'
+        for contents in ('{}', '{"apiKeyHelper": ""}', '{"apiKeyHelper": null}',
+                         '{"apiKeyHelper": 42}', '[]', 'invalid'):
+            with self.subTest(contents=contents):
+                settings.write_text(contents)
+                for script in ('login.sh', 'logout.sh'):
+                    result = self.run_script(script, 'claude', '--list')
+                    row = next(line for line in result.stdout.splitlines()
+                               if line.startswith('  claude-api'))
+                    self.assertIn('not authenticated', row)
+                    self.assertNotIn('API key', row)
+                result = self.run_script('status.sh')
+                self.assertIn('Claude (claude-api): not authenticated', result.stdout)
+        (self.home / '.cli-auth/claude/settings.json').write_text('{"apiKeyHelper": "helper.sh"}')
+        settings.unlink()
+        settings.symlink_to('../claude/settings.json')
+        for script in ('login.sh', 'logout.sh'):
+            result = self.run_script(script, 'claude', '--list')
+            row = next(line for line in result.stdout.splitlines()
+                       if line.startswith('  claude-api'))
+            self.assertIn('not authenticated', row)
+        result = self.run_script('status.sh')
+        self.assertIn('Claude (claude-api): not authenticated', result.stdout)

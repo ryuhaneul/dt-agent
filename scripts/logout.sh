@@ -35,6 +35,7 @@ say_err() { say "$@" >&2; }
 
 logout_text_en() {
     case "$1" in
+        state_api_key) printf '%s' $'API key' ;;
         err_slot_name) printf '%s' $'Invalid Claude slot name; slots is reserved.' ;;
         err_container_stopped) printf '%s' $'Error: container {1} is not running. Start it before retrying.' ;;
         h_out_prefer) printf '%s' $'prefer this slot' ;;
@@ -100,6 +101,7 @@ logout_text_en() {
 
 logout_text_de() {
     case "$1" in
+        state_api_key) printf '%s' $'API-Schlüssel' ;;
         err_slot_name) printf '%s' $'Ungültiger Claude-Slotname; slots ist reserviert.' ;;
         err_container_stopped) printf '%s' $'Fehler: Container {1} läuft nicht. Vor dem erneuten Versuch starten.' ;;
         h_out_prefer) printf '%s' $'diesen Slot bevorzugen' ;;
@@ -165,6 +167,7 @@ logout_text_de() {
 
 logout_text_es() {
     case "$1" in
+        state_api_key) printf '%s' $'Clave de API' ;;
         err_slot_name) printf '%s' $'Nombre de slot Claude no válido; slots está reservado.' ;;
         err_container_stopped) printf '%s' $'Error: el contenedor {1} no está en ejecución. Inícialo antes de reintentar.' ;;
         h_out_prefer) printf '%s' $'preferir este slot' ;;
@@ -230,6 +233,7 @@ logout_text_es() {
 
 logout_text_fr() {
     case "$1" in
+        state_api_key) printf '%s' $'Clé API' ;;
         err_slot_name) printf '%s' $'Nom de slot Claude invalide ; slots est réservé.' ;;
         err_container_stopped) printf '%s' $'Erreur : le conteneur {1} est arrêté. Démarrez-le avant de réessayer.' ;;
         h_out_prefer) printf '%s' $'préférer ce slot' ;;
@@ -295,6 +299,7 @@ logout_text_fr() {
 
 logout_text_id() {
     case "$1" in
+        state_api_key) printf '%s' $'Kunci API' ;;
         err_slot_name) printf '%s' $'Nama slot Claude tidak valid; slots dicadangkan.' ;;
         err_container_stopped) printf '%s' $'Kesalahan: kontainer {1} tidak berjalan. Jalankan sebelum mencoba lagi.' ;;
         h_out_prefer) printf '%s' $'utamakan slot ini' ;;
@@ -360,6 +365,7 @@ logout_text_id() {
 
 logout_text_nl() {
     case "$1" in
+        state_api_key) printf '%s' $'API-sleutel' ;;
         err_slot_name) printf '%s' $'Ongeldige Claude-slotnaam; slots is gereserveerd.' ;;
         err_container_stopped) printf '%s' $'Fout: container {1} draait niet. Start deze voordat u het opnieuw probeert.' ;;
         h_out_prefer) printf '%s' $'geef deze slot voorrang' ;;
@@ -425,6 +431,7 @@ logout_text_nl() {
 
 logout_text_pt() {
     case "$1" in
+        state_api_key) printf '%s' $'Chave de API' ;;
         err_slot_name) printf '%s' $'Nome de slot Claude inválido; slots é reservado.' ;;
         err_container_stopped) printf '%s' $'Erro: o contêiner {1} não está em execução. Inicie-o antes de tentar novamente.' ;;
         h_out_prefer) printf '%s' $'priorizar este slot' ;;
@@ -490,6 +497,7 @@ logout_text_pt() {
 
 logout_text_ru() {
     case "$1" in
+        state_api_key) printf '%s' $'Ключ API' ;;
         err_slot_name) printf '%s' $'Недопустимое имя слота Claude; slots зарезервировано.' ;;
         err_container_stopped) printf '%s' $'Ошибка: контейнер {1} не запущен. Запустите его перед повторной попыткой.' ;;
         h_out_prefer) printf '%s' $'предпочитать этот слот' ;;
@@ -557,6 +565,7 @@ logout_text_ru() {
 
 logout_text_ko() {
     case "$1" in
+        state_api_key) printf '%s' $'API 키' ;;
         err_slot_name) printf '%s' $'잘못된 Claude 슬롯 이름입니다. slots는 예약어입니다.' ;;
         err_container_stopped) printf '%s' $'오류: 컨테이너 {1}이 실행 중이 아닙니다. 시작한 뒤 다시 시도하십시오.' ;;
         h_out_prefer) printf '%s' $'이 슬롯을 우선 사용' ;;
@@ -657,10 +666,29 @@ ensure_container() {
     fi
 }
 
+slot_is_api_key() {
+    python3 - "$1/settings.json" <<'PYAPI'
+import json
+import sys
+from pathlib import Path
+settings = Path(sys.argv[1])
+if settings.is_symlink() or not settings.is_file():
+    sys.exit(1)
+try:
+    data = json.loads(settings.read_text(encoding="utf-8"))
+except (OSError, ValueError, RecursionError):
+    sys.exit(1)
+helper = data.get("apiKeyHelper") if isinstance(data, dict) else None
+sys.exit(0 if isinstance(helper, str) and helper else 1)
+PYAPI
+}
+
 slot_auth_state() {
-    # $1: slot dir; echoes "authenticated" or "not authenticated"
+    # $1: slot dir; echoes "api_key", "authenticated" or "not authenticated"
     local dir="$1"
-    if [ -f "${dir}/credentials.json" ] || [ -f "${dir}/.credentials.json" ]; then
+    if slot_is_api_key "$dir"; then
+        echo "api_key"
+    elif [ -f "${dir}/credentials.json" ] || [ -f "${dir}/.credentials.json" ]; then
         echo "authenticated"
     else
         echo "not authenticated"
@@ -670,6 +698,7 @@ slot_auth_state() {
 slot_state_label() {
     # $1: the internal state from slot_auth_state; the internal value is never translated.
     case "$1" in
+        api_key) say state_api_key ;;
         authenticated) say state_auth ;;
         *) say state_not ;;
     esac
@@ -848,6 +877,29 @@ invalidate_slot_credentials() {
     fi
 }
 
+api_slot_restore_command() {
+    local slot="$1" key_name
+    key_name="$(python3 - "${AUTH_DIR_HOST}/${slot}/api-key-helper.sh" <<'PYKEYNAME'
+import re
+import sys
+from pathlib import Path
+try:
+    lines = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+    match = re.fullmatch(r"# dt-agent api-key slot; key name: (.+)", lines[1])
+except (OSError, ValueError, IndexError):
+    match = None
+print(match.group(1) if match else "<KEY_NAME>")
+PYKEYNAME
+)"
+    printf './scripts/login.sh claude-api %s' "$key_name"
+}
+
+invalidate_api_slot_settings() {
+    local slot="$1" ts
+    ts="$(date +%Y%m%dT%H%M%S)"
+    mv "${AUTH_DIR_HOST}/${slot}/settings.json" "${AUTH_DIR_HOST}/${slot}/settings.json.removed-${ts}"
+}
+
 # ── high-level commands ───────────────────────────────────────────────────
 
 logout_claude_active() {
@@ -863,8 +915,20 @@ logout_claude_active() {
 cmd_disable_slot() {
     local slot
     slot="$(resolve_claude_slot_name "$1")" || return $?
+    local restore="" api_key=0
+    if slot_is_api_key "${AUTH_DIR_HOST}/${slot}"; then
+        api_key=1
+        restore="$(api_slot_restore_command "$slot")"
+    fi
     say disable_title "$slot"
     remove_slot_from_config "$slot"
+    if [ "$api_key" -eq 1 ]; then
+        invalidate_api_slot_settings "$slot"
+        echo
+        say done_reload
+        say to_restore "$restore"
+        return
+    fi
     echo
     say done_reload
     say to_reenable "$CONFIG_HOST" "$slot" \
@@ -874,8 +938,20 @@ cmd_disable_slot() {
 cmd_remove_slot() {
     local slot
     slot="$(resolve_claude_slot_name "$1")" || return $?
+    local restore="" api_key=0
+    if slot_is_api_key "${AUTH_DIR_HOST}/${slot}"; then
+        api_key=1
+        restore="$(api_slot_restore_command "$slot")"
+    fi
     say remove_title "$slot"
     remove_slot_from_config "$slot"
+    if [ "$api_key" -eq 1 ]; then
+        invalidate_api_slot_settings "$slot"
+        echo
+        say done_reload
+        say to_restore "$restore"
+        return
+    fi
     invalidate_slot_credentials "$slot"
     echo
     say done_reload

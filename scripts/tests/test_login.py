@@ -572,5 +572,336 @@ class DocumentationConsistencyTests(unittest.TestCase):
         self.assertIn('live-build.log', script)
 
 
+
+
+class ApiSlotLoginTests(unittest.TestCase):
+    def setUp(self):
+        import shutil
+        import sys
+
+        self.temp = tempfile.TemporaryDirectory(prefix='ductorverify-api-login-')
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.home = self.root / 'home'
+        self.config = self.home / 'config/config.json'
+        self.config.parent.mkdir(parents=True)
+        self.config.write_text(json.dumps({'claude_accounts': [], 'model': 'opus'}))
+        self.config.chmod(0o600)
+        self.default = self.home / '.cli-auth/claude'
+        self.default.mkdir(parents=True)
+        (self.default / 'settings.json').write_text('{"permissions": {"allow": ["Read"]}}')
+        (self.default / 'skills').mkdir()
+        self.slot = self.home / '.cli-auth/claude-api'
+        tools = self.home / 'workspace/tools'
+        tools.mkdir(parents=True)
+        source = SCRIPT.parents[1] / 'ductor_bot/_home_defaults/workspace/tools/_secrets.py'
+        shutil.copy2(source, tools / '_secrets.py')
+        with (tools / '_secrets.py').open('a') as stream:
+            stream.write('''
+_original_store_secrets = store_secrets
+def store_secrets(*keys):
+    with open(os.environ["VALUE_AUDIT"], "a") as stream:
+        stream.write("value-read\\n")
+    return _original_store_secrets(*keys)
+''')
+        self.key = 'ANTHROPIC_CREDIT_API_KEY'
+        self.value = 'synthetic-credit-' + 'not-a-real-secret'
+        self.store = self.home / 'secrets.env'
+        self.store.write_text(self.key + '=' + self.value + '\n')
+        self.audit = self.root / 'value-audit'
+        self.log = self.root / 'docker-log'
+        binary = self.root / 'bin'
+        binary.mkdir()
+        docker = binary / 'docker'
+        docker.write_text('#!' + sys.executable + '\n' + r'''
+import json, os, subprocess, sys
+from pathlib import Path
+args = sys.argv[1:]
+with open(os.environ['FAKE_LOG'], 'a') as stream:
+    stream.write(json.dumps(args) + '\n')
+assert args[:2] == ['compose', '--project-directory']
+args = args[3:]
+if args[0] == 'ps':
+    print('synthetic-api-container')
+elif args[:3] == ['exec', '-T', 'ductor-bot']:
+    command = args[3:]
+    assert command[:3] == ['python3', '-I', '-c']
+    command[0] = sys.executable
+    command[3] = command[3].replace('/ductor', os.environ['FAKE_HOME'])
+    sys.exit(subprocess.run(command).returncode)
+else:
+    sys.exit(98)
+''')
+        docker.chmod(0o700)
+        # Map the container-only helper import path for disposable host execution.
+        python = binary / 'python3'
+        python.write_text('#!' + sys.executable + '\n' + r'''
+import os, sys
+args = sys.argv[1:]
+if '-c' in args:
+    index = args.index('-c') + 1
+    args[index] = args[index].replace('/ductor/workspace/tools', os.environ['FAKE_HOME'] + '/workspace/tools')
+os.execv(sys.executable, [sys.executable] + args)
+''')
+        python.chmod(0o700)
+        self.env = dict(os.environ, HOME=str(self.root), DUCTOR_HOME=str(self.home),
+                        FAKE_HOME=str(self.home), FAKE_LOG=str(self.log),
+                        VALUE_AUDIT=str(self.audit), DUCTOR_SECRETS_FILE=str(self.store),
+                        ONBOARD_LANGUAGE='en', LC_ALL='C',
+                        PATH=str(binary) + os.pathsep + os.environ['PATH'])
+        for name in ('DUCTOR_SECRETS_TOKEN', 'DUCTOR_SECRETS_VAULT_FILE',
+                     'DUCTOR_INTERAGENT_HOST', 'DUCTOR_INTERAGENT_PORT'):
+            self.env.pop(name, None)
+
+    def run_login(self, *args):
+        result = subprocess.run(['bash', str(SCRIPT), *args], env=self.env,
+                                input='', capture_output=True, text=True, timeout=15,
+                                check=False)
+        self.assertTrue(self.value not in result.stdout + result.stderr,
+                        'login output exposed the synthetic value')
+        if self.log.exists():
+            self.assertTrue(self.value not in self.log.read_text(), 'Docker log exposed a value')
+        return result
+
+    def test_api_registration_order_modes_files_and_idempotence(self):
+        for current, expected in (([], ['claude', 'claude-api']),
+                                  (['claude-sub', 'claude'], ['claude-sub', 'claude', 'claude-api']),
+                                  (['claude-api', 'claude'], ['claude-api', 'claude'])):
+            with self.subTest(current=current):
+                self.config.write_text(json.dumps({'claude_accounts': current, 'model': 'opus'}))
+                before = (self.default / 'settings.json').read_bytes()
+                result = self.run_login('claude-api')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(self.config.read_text()),
+                                 {'claude_accounts': expected, 'model': 'opus'})
+                self.assertEqual(self.config.stat().st_mode & 0o777, 0o600)
+                settings = self.slot / 'settings.json'
+                self.assertFalse(settings.is_symlink())
+                self.assertEqual(settings.stat().st_mode & 0o777, 0o644)
+                data = json.loads(settings.read_text())
+                self.assertEqual(data['permissions'], {'allow': ['Read']})
+                self.assertEqual(data['apiKeyHelper'], '/ductor/.cli-auth/claude-api/api-key-helper.sh')
+                self.assertEqual((self.default / 'settings.json').read_bytes(), before)
+                self.assertEqual((self.slot / 'api-key-helper.sh').stat().st_mode & 0o777, 0o700)
+                self.assertTrue((self.slot / 'skills').is_symlink())
+                self.assertTrue((self.slot / 'projects').is_symlink())
+                self.assertFalse(self.audit.exists(), 'registration must not read values')
+                self.assertTrue(self.value not in settings.read_text())
+                self.assertTrue(self.value not in (self.slot / 'api-key-helper.sh').read_text())
+
+    def test_api_invalid_names_and_oauth_aliases_do_not_call_docker(self):
+        for args in (('claude-api', ''), ('claude-api', 'bad-name'),
+                     ('claude-api', '9BAD'), ('claude-api', 'HAS SPACE'),
+                     ('claude-api', 'BAD;command'), ('claude-api', self.key, 'extra'),
+                     ('claude', 'api'), ('claude', 'claude-api')):
+            with self.subTest(args=args):
+                before = self.config.read_bytes()
+                result = self.run_login(*args)
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(self.config.read_bytes(), before)
+                self.assertFalse(self.log.exists())
+                self.assertFalse(self.slot.exists())
+                if args[0] == 'claude':
+                    self.assertIn('./scripts/login.sh claude-api', result.stderr)
+
+    def test_api_existing_oauth_slot_is_rejected_without_mutation(self):
+        self.slot.mkdir()
+        for name in ('.credentials.json', 'credentials.json'):
+            with self.subTest(name=name):
+                credential = self.slot / name
+                credential.write_text('{}')
+                before = self.config.read_bytes()
+                result = self.run_login('claude-api')
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('OAuth', result.stderr)
+                self.assertEqual(self.config.read_bytes(), before)
+                self.assertEqual(credential.read_text(), '{}')
+                self.assertFalse((self.slot / 'settings.json').exists())
+                credential.unlink()
+
+    def test_api_missing_key_keeps_order_and_leaves_slot_for_retry(self):
+        self.store.write_text('')
+        before = self.config.read_bytes()
+        result = self.run_login('claude-api')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('/secret set ' + self.key, result.stderr)
+        self.assertEqual(self.config.read_bytes(), before)
+        self.assertTrue((self.slot / 'settings.json').is_file())
+        self.assertFalse(self.audit.exists())
+
+    def test_api_settings_fallback_does_not_modify_default(self):
+        settings = self.default / 'settings.json'
+        for contents in (None, 'invalid', '[]'):
+            with self.subTest(contents=contents):
+                if contents is None:
+                    settings.unlink()
+                else:
+                    settings.write_text(contents)
+                result = self.run_login('claude-api')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('Warning:', result.stderr)
+                self.assertEqual(json.loads((self.slot / 'settings.json').read_text()),
+                                 {'apiKeyHelper': '/ductor/.cli-auth/claude-api/api-key-helper.sh'})
+                self.assertEqual(settings.read_text() if settings.exists() else None, contents)
+
+    def test_api_helper_uses_store_value_and_fails_without_key(self):
+        result = self.run_login('claude-api')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # The store value wins over a conflicting inherited provider key.
+        env = dict(self.env, **{self.key: 'synthetic-inherited-value'})
+        helper = self.slot / 'api-key-helper.sh'
+        result = subprocess.run([str(helper)], env=env, capture_output=True, text=True,
+                                timeout=15, check=False)
+        self.assertEqual(result.returncode, 0)
+        self.assertTrue(result.stdout == self.value, 'helper must return the store value')
+        self.assertEqual(result.stderr, '')
+        self.assertEqual(self.audit.read_text().splitlines(), ['value-read'])
+        self.store.write_text('')
+        result = subprocess.run([str(helper)], env=env, capture_output=True, text=True,
+                                timeout=15, check=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, '')
+        self.assertIn(self.key, result.stderr)
+        self.assertTrue(self.value not in result.stderr)
+        self.assertNotIn('Traceback', result.stderr)
+
+    def test_api_repair_preserves_helper_and_refreshes_shared_settings(self):
+        result = self.run_login('claude-api')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        settings = self.slot / 'settings.json'
+        helper = '/ductor/.cli-auth/claude-api/custom-helper.sh'
+        settings.write_text(json.dumps({'apiKeyHelper': helper, 'old': True}))
+        (self.default / 'settings.json').write_text('{"new": true}')
+        before = (self.default / 'settings.json').read_bytes()
+        result = self.run_login('claude', '--repair')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(settings.is_symlink())
+        self.assertEqual(json.loads(settings.read_text()), {'apiKeyHelper': helper, 'new': True})
+        self.assertEqual((self.default / 'settings.json').read_bytes(), before)
+        self.assertTrue((self.slot / 'skills').is_symlink())
+
+
+
+    def test_api_reregister_replaces_key_name_without_reordering(self):
+        result = self.run_login('claude-api')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        before = self.config.read_bytes()
+        inode = self.config.stat().st_ino
+        replacement = self.key + '_ALTERNATE'
+        with self.store.open('a') as stream:
+            stream.write(replacement + '=' + self.value + '\n')
+        result = self.run_login('claude-api', replacement)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.config.read_bytes(), before)
+        self.assertEqual(self.config.stat().st_ino, inode)
+        helper = (self.slot / 'api-key-helper.sh').read_text()
+        self.assertEqual(helper.splitlines()[1], '# dt-agent api-key slot; key name: ' + replacement)
+        self.assertIn("'" + replacement + "'", helper)
+        self.assertFalse(self.audit.exists())
+
+    def test_api_login_replaces_settings_link_without_writing_default(self):
+        self.slot.mkdir()
+        settings = self.slot / 'settings.json'
+        settings.symlink_to('../claude/settings.json')
+        before = (self.default / 'settings.json').read_bytes()
+        result = self.run_login('claude-api')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(settings.is_symlink())
+        self.assertEqual((self.default / 'settings.json').read_bytes(), before)
+
+    def test_encrypted_api_registration_warns_without_rpc_or_value_read(self):
+        tools = self.home / 'workspace/tools/_secrets.py'
+        with tools.open('a') as stream:
+            stream.write('''
+def _rpc(resource):
+    with open(os.environ["RPC_AUDIT"], "a") as stream:
+        stream.write("rpc-call\\n")
+    raise AssertionError("registration must not call RPC")
+''')
+        rpc_audit = self.root / 'rpc-audit'
+        self.env['RPC_AUDIT'] = str(rpc_audit)
+        self.store.unlink()
+        (self.home / 'secrets.env.enc').write_text('synthetic-encrypted-envelope')
+        warnings = set()
+        for language in ('en', 'de', 'es', 'fr', 'id', 'nl', 'pt', 'ru', 'ko'):
+            with self.subTest(language=language):
+                self.env['ONBOARD_LANGUAGE'] = language
+                self.config.write_text('{"claude_accounts": []}')
+                result = self.run_login('claude-api')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(self.config.read_text())['claude_accounts'],
+                                 ['claude', 'claude-api'])
+                self.assertIn(self.key, result.stderr)
+                self.assertNotIn('warn_api_unverified', result.stderr)
+                self.assertTrue(result.stderr.strip())
+                warnings.add(result.stderr.strip())
+                self.assertFalse(self.audit.exists())
+                self.assertFalse(rpc_audit.exists())
+        self.assertEqual(len(warnings), 9)
+
+    def test_api_helper_encrypted_rpc_success_and_locked_failure(self):
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        received = []
+        state = {'locked': False}
+        expected_value = self.value
+        expected_key = self.key
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                received.append(self.path)
+                if self.headers.get('X-Ductor-Secrets-Token') != 'synthetic-rpc-token':
+                    self.send_response(403)
+                    payload = {'error': 'forbidden'}
+                elif state['locked']:
+                    self.send_response(423)
+                    payload = {'error': 'SECRETS_LOCKED'}
+                elif self.path == '/secrets/' + expected_key:
+                    self.send_response(200)
+                    payload = {'value': expected_value}
+                else:
+                    self.send_response(404)
+                    payload = {'error': 'SECRET_NOT_SET'}
+                self.end_headers()
+                self.wfile.write(json.dumps(payload).encode())
+
+            def log_message(self, *_args):
+                pass
+
+        server = HTTPServer(('127.0.0.1', 0), Handler)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            self.store.unlink()
+            (self.home / 'secrets.env.enc').write_text('synthetic-encrypted-envelope')
+            result = self.run_login('claude-api')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(received, [])
+            env = dict(self.env, DUCTOR_SECRETS_TOKEN='synthetic-rpc-token',
+                       DUCTOR_SECRETS_VAULT_FILE=str(self.store),
+                       DUCTOR_INTERAGENT_HOST='127.0.0.1',
+                       DUCTOR_INTERAGENT_PORT=str(server.server_port))
+            helper = self.slot / 'api-key-helper.sh'
+            result = subprocess.run([str(helper)], env=env, capture_output=True, text=True,
+                                    timeout=15, check=False)
+            self.assertEqual(result.returncode, 0)
+            self.assertTrue(result.stdout == self.value, 'helper must return the RPC value')
+            self.assertEqual(result.stderr, '')
+            state['locked'] = True
+            result = subprocess.run([str(helper)], env=env, capture_output=True, text=True,
+                                    timeout=15, check=False)
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(result.stdout, '')
+            self.assertIn(self.key, result.stderr)
+            self.assertTrue(self.value not in result.stderr)
+            self.assertNotIn('Traceback', result.stderr)
+            self.assertEqual(received, ['/secrets/' + self.key] * 2)
+        finally:
+            server.shutdown()
+            worker.join(timeout=5)
+            server.server_close()
+
+
 if __name__ == '__main__':
     unittest.main()

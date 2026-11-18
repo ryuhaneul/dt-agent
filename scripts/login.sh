@@ -4,6 +4,7 @@
 # Usage:
 #   ./scripts/login.sh                        # login to Claude Code default slot (same as claude)
 #   ./scripts/login.sh claude                 # login to Claude Code default slot
+#   ./scripts/login.sh claude-api [KEY_NAME]  # configure the API key slot
 #   ./scripts/login.sh claude <name>          # login to extra Claude slot (e.g. alt, work)
 #   ./scripts/login.sh claude --list          # show configured Claude slots + auth state
 #   ./scripts/login.sh claude --repair        # re-share settings/skills/plugins from default slot to every alt slot
@@ -47,6 +48,15 @@ say_err() { say "$@" >&2; }
 
 login_text_en() {
     case "$1" in
+        warn_api_unverified) printf '%s' $'Warning: the encrypted store prevents checking key names. Calls through this slot fail if {1} is missing or the store is locked.' ;;
+        state_api_key) printf '%s' $'API key' ;;
+        h_login_api) printf '%s' $'configure the Claude API key slot' ;;
+        err_api_reserved) printf '%s' $'API key slots are managed with ./scripts/login.sh claude-api [KEY_NAME].' ;;
+        err_api_key_name) printf '%s' $'Invalid key name; use uppercase letters, digits and underscores, starting with a letter or underscore.' ;;
+        err_api_oauth) printf '%s' $'This is an OAuth slot. Clean it up with ./scripts/logout.sh claude --remove claude-api before retrying.' ;;
+        warn_api_settings) printf '%s' $'Warning: default settings.json is missing or invalid; creating API key settings only.' ;;
+        err_api_secret) printf '%s' $'Key {1} is unavailable. Set it with /secret set {1} and retry.' ;;
+        ok_api) printf '%s' $'OK: slot claude-api uses key {1}; priority {2}.' ;;
         err_slot_name) printf '%s' $'Invalid Claude slot name; slots is reserved.' ;;
         slots_title) printf '%s' $'=== Claude Code Slots ===' ;;
         no_slots) printf '%s' $'  (no slots found — run ./scripts/login.sh claude to create the default)' ;;
@@ -108,6 +118,15 @@ login_text_en() {
 
 login_text_de() {
     case "$1" in
+        warn_api_unverified) printf '%s' $'Warnung: Im verschlüsselten Speicher lassen sich Schlüsselnamen nicht prüfen. Aufrufe über diesen Slot schlagen fehl, wenn {1} fehlt oder der Speicher gesperrt ist.' ;;
+        state_api_key) printf '%s' $'API-Schlüssel' ;;
+        h_login_api) printf '%s' $'Claude-API-Schlüssel-Slot einrichten' ;;
+        err_api_reserved) printf '%s' $'API-Schlüssel-Slots werden mit ./scripts/login.sh claude-api [KEY_NAME] verwaltet.' ;;
+        err_api_key_name) printf '%s' $'Ungültiger Schlüsselname; nur Großbuchstaben, Ziffern und Unterstriche, beginnend mit Buchstabe oder Unterstrich.' ;;
+        err_api_oauth) printf '%s' $'Dies ist ein OAuth-Slot. Zuerst mit ./scripts/logout.sh claude --remove claude-api bereinigen.' ;;
+        warn_api_settings) printf '%s' $'Warnung: Standard-settings.json fehlt oder ist ungültig; nur API-Schlüssel-Einstellungen werden erstellt.' ;;
+        err_api_secret) printf '%s' $'Schlüssel {1} nicht verfügbar. Mit /secret set {1} setzen und erneut versuchen.' ;;
+        ok_api) printf '%s' $'OK: Slot claude-api verwendet Schlüssel {1}; Priorität {2}.' ;;
         err_slot_name) printf '%s' $'Ungültiger Claude-Slotname; slots ist reserviert.' ;;
         slots_title) printf '%s' $'=== Claude-Code-Slots ===' ;;
         no_slots) printf '%s' $'  (keine Slots gefunden — führe ./scripts/login.sh claude aus, um den Standard-Slot anzulegen)' ;;
@@ -169,6 +188,15 @@ login_text_de() {
 
 login_text_es() {
     case "$1" in
+        warn_api_unverified) printf '%s' $'Aviso: no se pueden comprobar nombres de claves en el almacén cifrado. Las llamadas de este slot fallarán si falta {1} o el almacén está bloqueado.' ;;
+        state_api_key) printf '%s' $'Clave de API' ;;
+        h_login_api) printf '%s' $'configurar el slot de clave de API de Claude' ;;
+        err_api_reserved) printf '%s' $'Los slots de clave de API se gestionan con ./scripts/login.sh claude-api [KEY_NAME].' ;;
+        err_api_key_name) printf '%s' $'Nombre de clave no válido; usa mayúsculas, dígitos y guiones bajos, comenzando con letra o guion bajo.' ;;
+        err_api_oauth) printf '%s' $'Este es un slot OAuth. Límpialo con ./scripts/logout.sh claude --remove claude-api antes de reintentar.' ;;
+        warn_api_settings) printf '%s' $'Aviso: falta settings.json predeterminado o no es válido; se crean solo los ajustes de clave de API.' ;;
+        err_api_secret) printf '%s' $'La clave {1} no está disponible. Configúrala con /secret set {1} y reintenta.' ;;
+        ok_api) printf '%s' $'OK: el slot claude-api usa la clave {1}; prioridad {2}.' ;;
         err_slot_name) printf '%s' $'Nombre de slot Claude no válido; slots está reservado.' ;;
         slots_title) printf '%s' $'=== Slots de Claude Code ===' ;;
         no_slots) printf '%s' $'  (no se encontraron slots — ejecuta ./scripts/login.sh claude para crear el predeterminado)' ;;
@@ -230,6 +258,15 @@ login_text_es() {
 
 login_text_fr() {
     case "$1" in
+        warn_api_unverified) printf '%s' $'Attention : impossible de vérifier les noms de clés du stockage chiffré. Les appels de ce slot échouent si {1} manque ou si le stockage est verrouillé.' ;;
+        state_api_key) printf '%s' $'Clé API' ;;
+        h_login_api) printf '%s' $'configurer le slot de clé API Claude' ;;
+        err_api_reserved) printf '%s' $'Les slots de clé API se gèrent avec ./scripts/login.sh claude-api [KEY_NAME].' ;;
+        err_api_key_name) printf '%s' $'Nom de clé invalide ; majuscules, chiffres et traits de soulignement, commençant par une lettre ou un trait de soulignement.' ;;
+        err_api_oauth) printf '%s' $'Ce slot utilise OAuth. Nettoie-le avec ./scripts/logout.sh claude --remove claude-api avant de réessayer.' ;;
+        warn_api_settings) printf '%s' $'Attention : settings.json par défaut absent ou invalide ; seuls les réglages de clé API sont créés.' ;;
+        err_api_secret) printf '%s' $'Clé {1} indisponible. Configure-la avec /secret set {1} puis réessaie.' ;;
+        ok_api) printf '%s' $'OK : le slot claude-api utilise la clé {1} ; priorité {2}.' ;;
         err_slot_name) printf '%s' $'Nom de slot Claude invalide ; slots est réservé.' ;;
         slots_title) printf '%s' $'=== Slots Claude Code ===' ;;
         no_slots) printf '%s' $'  (aucun slot trouvé — lance ./scripts/login.sh claude pour créer celui par défaut)' ;;
@@ -291,6 +328,15 @@ login_text_fr() {
 
 login_text_id() {
     case "$1" in
+        warn_api_unverified) printf '%s' $'Peringatan: nama kunci di penyimpanan terenkripsi tidak dapat diperiksa. Panggilan melalui slot ini gagal jika {1} tidak ada atau penyimpanan terkunci.' ;;
+        state_api_key) printf '%s' $'Kunci API' ;;
+        h_login_api) printf '%s' $'konfigurasi slot kunci API Claude' ;;
+        err_api_reserved) printf '%s' $'Slot kunci API dikelola dengan ./scripts/login.sh claude-api [KEY_NAME].' ;;
+        err_api_key_name) printf '%s' $'Nama kunci tidak valid; gunakan huruf besar, angka dan garis bawah, diawali huruf atau garis bawah.' ;;
+        err_api_oauth) printf '%s' $'Ini slot OAuth. Bersihkan dengan ./scripts/logout.sh claude --remove claude-api sebelum mencoba lagi.' ;;
+        warn_api_settings) printf '%s' $'Peringatan: settings.json default tidak ada atau tidak valid; hanya pengaturan kunci API yang dibuat.' ;;
+        err_api_secret) printf '%s' $'Kunci {1} tidak tersedia. Atur dengan /secret set {1} lalu coba lagi.' ;;
+        ok_api) printf '%s' $'OK: slot claude-api memakai kunci {1}; prioritas {2}.' ;;
         err_slot_name) printf '%s' $'Nama slot Claude tidak valid; slots dicadangkan.' ;;
         slots_title) printf '%s' $'=== Slot Claude Code ===' ;;
         no_slots) printf '%s' $'  (slot tidak ditemukan — jalankan ./scripts/login.sh claude untuk membuat slot default)' ;;
@@ -352,6 +398,15 @@ login_text_id() {
 
 login_text_nl() {
     case "$1" in
+        warn_api_unverified) printf '%s' $'Waarschuwing: sleutelnamen in de versleutelde opslag kunnen niet worden gecontroleerd. Aanroepen via dit slot mislukken als {1} ontbreekt of de opslag is vergrendeld.' ;;
+        state_api_key) printf '%s' $'API-sleutel' ;;
+        h_login_api) printf '%s' $'Claude-slot voor API-sleutel instellen' ;;
+        err_api_reserved) printf '%s' $'API-sleutelslots worden beheerd met ./scripts/login.sh claude-api [KEY_NAME].' ;;
+        err_api_key_name) printf '%s' $'Ongeldige sleutelnaam; gebruik hoofdletters, cijfers en underscores, beginnend met een letter of underscore.' ;;
+        err_api_oauth) printf '%s' $'Dit is een OAuth-slot. Ruim het eerst op met ./scripts/logout.sh claude --remove claude-api.' ;;
+        warn_api_settings) printf '%s' $'Waarschuwing: standaard settings.json ontbreekt of is ongeldig; alleen API-sleutelinstellingen worden gemaakt.' ;;
+        err_api_secret) printf '%s' $'Sleutel {1} is niet beschikbaar. Stel deze in met /secret set {1} en probeer opnieuw.' ;;
+        ok_api) printf '%s' $'OK: slot claude-api gebruikt sleutel {1}; prioriteit {2}.' ;;
         err_slot_name) printf '%s' $'Ongeldige Claude-slotnaam; slots is gereserveerd.' ;;
         slots_title) printf '%s' $'=== Claude Code-slots ===' ;;
         no_slots) printf '%s' $'  (geen slots gevonden — voer ./scripts/login.sh claude uit om de standaard aan te maken)' ;;
@@ -413,6 +468,15 @@ login_text_nl() {
 
 login_text_pt() {
     case "$1" in
+        warn_api_unverified) printf '%s' $'Aviso: não é possível verificar nomes de chaves no armazenamento criptografado. Chamadas por este slot falham se {1} estiver ausente ou o armazenamento estiver bloqueado.' ;;
+        state_api_key) printf '%s' $'Chave de API' ;;
+        h_login_api) printf '%s' $'configurar o slot de chave de API Claude' ;;
+        err_api_reserved) printf '%s' $'Slots de chave de API são gerenciados com ./scripts/login.sh claude-api [KEY_NAME].' ;;
+        err_api_key_name) printf '%s' $'Nome de chave inválido; use maiúsculas, dígitos e sublinhados, começando com letra ou sublinhado.' ;;
+        err_api_oauth) printf '%s' $'Este é um slot OAuth. Limpe-o com ./scripts/logout.sh claude --remove claude-api antes de tentar novamente.' ;;
+        warn_api_settings) printf '%s' $'Aviso: settings.json padrão ausente ou inválido; apenas os ajustes de chave de API serão criados.' ;;
+        err_api_secret) printf '%s' $'Chave {1} indisponível. Configure com /secret set {1} e tente novamente.' ;;
+        ok_api) printf '%s' $'OK: o slot claude-api usa a chave {1}; prioridade {2}.' ;;
         err_slot_name) printf '%s' $'Nome de slot Claude inválido; slots é reservado.' ;;
         slots_title) printf '%s' $'=== Slots do Claude Code ===' ;;
         no_slots) printf '%s' $'  (nenhum slot encontrado — execute ./scripts/login.sh claude para criar o padrão)' ;;
@@ -474,6 +538,15 @@ login_text_pt() {
 
 login_text_ru() {
     case "$1" in
+        warn_api_unverified) printf '%s' $'Предупреждение: имена ключей в зашифрованном хранилище нельзя проверить. Вызов через этот слот завершится ошибкой, если {1} отсутствует или хранилище заблокировано.' ;;
+        state_api_key) printf '%s' $'Ключ API' ;;
+        h_login_api) printf '%s' $'настроить слот API-ключа Claude' ;;
+        err_api_reserved) printf '%s' $'Слоты API-ключей управляются через ./scripts/login.sh claude-api [KEY_NAME].' ;;
+        err_api_key_name) printf '%s' $'Недопустимое имя ключа: заглавные буквы, цифры и подчёркивания; начало — буква или подчёркивание.' ;;
+        err_api_oauth) printf '%s' $'Это слот OAuth. Сначала очисти его: ./scripts/logout.sh claude --remove claude-api.' ;;
+        warn_api_settings) printf '%s' $'Предупреждение: основной settings.json отсутствует или неверен; создаются только настройки API-ключа.' ;;
+        err_api_secret) printf '%s' $'Ключ {1} недоступен. Задай его через /secret set {1} и повтори.' ;;
+        ok_api) printf '%s' $'OK: слот claude-api использует ключ {1}; приоритет {2}.' ;;
         err_slot_name) printf '%s' $'Недопустимое имя слота Claude; slots зарезервировано.' ;;
         slots_title) printf '%s' $'=== Слоты Claude Code ===' ;;
         no_slots) printf '%s' $'  (слоты не найдены — запусти ./scripts/login.sh claude, чтобы создать слот по умолчанию)' ;;
@@ -537,6 +610,15 @@ login_text_ru() {
 
 login_text_ko() {
     case "$1" in
+        warn_api_unverified) printf '%s' $'경고: 암호화 저장소라 키 이름을 확인하지 못했어요. {1} 키가 없거나 저장소가 잠겨 있으면 이 슬롯 호출이 실패해요.' ;;
+        state_api_key) printf '%s' $'API 키' ;;
+        h_login_api) printf '%s' $'Claude API 키 슬롯 설정' ;;
+        err_api_reserved) printf '%s' $'API 키 슬롯은 ./scripts/login.sh claude-api [KEY_NAME] 으로 관리하세요.' ;;
+        err_api_key_name) printf '%s' $'잘못된 키 이름이에요. 영문 대문자·숫자·밑줄을 쓰고, 문자나 밑줄로 시작하세요.' ;;
+        err_api_oauth) printf '%s' $'OAuth 슬롯이에요. ./scripts/logout.sh claude --remove claude-api 로 정리한 뒤 다시 시도하세요.' ;;
+        warn_api_settings) printf '%s' $'경고: 기본 settings.json이 없거나 올바르지 않아 API 키 설정만 만들어요.' ;;
+        err_api_secret) printf '%s' $'{1} 키를 확인할 수 없어요. /secret set {1} 으로 설정한 뒤 다시 시도하세요.' ;;
+        ok_api) printf '%s' $'OK: claude-api 슬롯이 {1} 키를 사용해요. 우선순위 {2}.' ;;
         err_slot_name) printf '%s' $'잘못된 Claude 슬롯 이름입니다. slots는 예약어입니다.' ;;
         slots_title) printf '%s' $'=== Claude Code 슬롯 ===' ;;
         no_slots) printf '%s' $'  (슬롯이 없어요 — ./scripts/login.sh claude 를 실행해 기본 슬롯을 만드세요)' ;;
@@ -604,6 +686,7 @@ show_help() {
     say usage
     printf '%s# %s\n' "  ./scripts/login.sh                        " "$(say h_login_default)"
     printf '%s# %s\n' "  ./scripts/login.sh claude                 " "$(say h_login_claude)"
+    printf '%s# %s\n' "  ./scripts/login.sh claude-api [KEY_NAME]  " "$(say h_login_api)"
     printf '%s# %s\n' "  ./scripts/login.sh claude <name>          " "$(say h_login_claude_slot)"
     printf '%s# %s\n' "  ./scripts/login.sh claude --list          " "$(say h_login_list)"
     printf '%s# %s\n' "  ./scripts/login.sh claude --repair        " "$(say h_repair)"
@@ -679,10 +762,29 @@ ensure_slot_dir() {
     ln -s "../_shared-projects" "$projects_link" || return 1
 }
 
+slot_is_api_key() {
+    python3 - "$1/settings.json" <<'PYAPI'
+import json
+import sys
+from pathlib import Path
+settings = Path(sys.argv[1])
+if settings.is_symlink() or not settings.is_file():
+    sys.exit(1)
+try:
+    data = json.loads(settings.read_text(encoding="utf-8"))
+except (OSError, ValueError, RecursionError):
+    sys.exit(1)
+helper = data.get("apiKeyHelper") if isinstance(data, dict) else None
+sys.exit(0 if isinstance(helper, str) and helper else 1)
+PYAPI
+}
+
 slot_auth_state() {
-    # $1: slot dir; echoes "authenticated" or "not authenticated"
+    # $1: slot dir; echoes "api_key", "authenticated" or "not authenticated"
     local dir="$1"
-    if [ -f "${dir}/credentials.json" ] || [ -f "${dir}/.credentials.json" ]; then
+    if slot_is_api_key "$dir"; then
+        echo "api_key"
+    elif [ -f "${dir}/credentials.json" ] || [ -f "${dir}/.credentials.json" ]; then
         echo "authenticated"
     else
         echo "not authenticated"
@@ -692,6 +794,7 @@ slot_auth_state() {
 slot_state_label() {
     # $1: the internal state from slot_auth_state; the internal value is never translated.
     case "$1" in
+        api_key) say state_api_key ;;
         authenticated) say state_auth ;;
         *) say state_not ;;
     esac
@@ -702,6 +805,7 @@ resolve_claude_slot_name() {
     # Empty / "default" / "claude" → "claude". Otherwise → "claude-<name>".
     local name="${1:-}" slot
     case "$name" in
+        api|claude-api) say_err err_api_reserved; return 1 ;;
         ""|default|claude)  slot="claude" ;;
         claude-*)           slot="$name" ;;
         *)                  slot="claude-$name" ;;
@@ -748,13 +852,13 @@ list_authenticated_claude_slots() {
     [ -d "$AUTH_DIR_HOST" ] || return 0
     local dir
     if [ -d "${AUTH_DIR_HOST}/claude" ] && \
-       [ "$(slot_auth_state "${AUTH_DIR_HOST}/claude")" = "authenticated" ]; then
+       [ "$(slot_auth_state "${AUTH_DIR_HOST}/claude")" != "not authenticated" ]; then
         echo "claude"
     fi
     for dir in "${AUTH_DIR_HOST}"/claude-*; do
         [ -d "$dir" ] || continue
         [ "${dir##*/}" != "claude-slots" ] || continue
-        if [ "$(slot_auth_state "$dir")" = "authenticated" ]; then
+        if [ "$(slot_auth_state "$dir")" != "not authenticated" ]; then
             basename "$dir"
         fi
     done | sort
@@ -904,6 +1008,140 @@ _link_alt_to_default() {
     ln -s "$target" "$link" || return 1
 }
 
+write_api_slot_helper() {
+    local slot="$1" key_name="$2"
+    python3 - "${AUTH_DIR_HOST}/${slot}/api-key-helper.sh" "$key_name" <<'PYHELPER'
+import os
+import sys
+import tempfile
+from pathlib import Path
+path = Path(sys.argv[1])
+key_name = sys.argv[2]
+script = '''#!/bin/sh
+# dt-agent api-key slot; key name: KEY_NAME
+exec python3 -I -c 'import sys
+sys.path.insert(0, "/ductor/workspace/tools")
+from _secrets import store_secrets
+try:
+    value = store_secrets(sys.argv[1]).get(sys.argv[1], "")
+except Exception:
+    sys.exit("api key " + sys.argv[1] + " is unavailable")
+sys.stdout.write(value) if value else sys.exit("api key " + sys.argv[1] + " is not set in secrets.env")' 'KEY_NAME'
+'''.replace("KEY_NAME", key_name)
+fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".api-key-helper.")
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        os.fchmod(stream.fileno(), 0o700)
+        stream.write(script)
+    os.replace(temporary, path)
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
+PYHELPER
+}
+
+write_api_slot_settings() {
+    # Without a helper argument, preserve the current API slot helper during repair.
+    local slot="$1" helper="${2:-}"
+    MSG_WARNING="$(host_template login warn_api_settings)" python3 - \
+        "${AUTH_DIR_HOST}/claude/settings.json" "${AUTH_DIR_HOST}/${slot}/settings.json" "$helper" <<'PYSETTINGS'
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+source, destination = map(Path, sys.argv[1:3])
+helper = sys.argv[3]
+if not helper:
+    helper = json.loads(destination.read_text(encoding="utf-8"))["apiKeyHelper"]
+try:
+    data = json.loads(source.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError
+except (OSError, ValueError, RecursionError):
+    data = {}
+    print(os.environ["MSG_WARNING"], file=sys.stderr)
+data["apiKeyHelper"] = helper
+fd, temporary = tempfile.mkstemp(dir=destination.parent, prefix=".settings.json.")
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        os.fchmod(stream.fileno(), 0o644)
+        json.dump(data, stream, indent=2, ensure_ascii=False)
+        stream.write("\n")
+    os.replace(temporary, destination)
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
+PYSETTINGS
+}
+
+register_api_slot() {
+    python3 - "${DUCTOR_HOME_HOST}/config/config.json" <<'PYREGISTER'
+import fcntl
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+path = Path(sys.argv[1])
+with (path.parent / ".config.json.lock").open("a") as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    with path.open(encoding="utf-8") as stream:
+        data = json.load(stream)
+    accounts = list(data.get("claude_accounts") or [])
+    updated = list(accounts) if accounts else ["claude", "claude-api"]
+    if "claude-api" not in updated:
+        updated.append("claude-api")
+    if updated != accounts:
+        data["claude_accounts"] = updated
+        fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".config.json.")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                os.fchmod(stream.fileno(), path.stat().st_mode & 0o777)
+                json.dump(data, stream, indent=2, ensure_ascii=False)
+                stream.write("\n")
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+    print(updated.index("claude-api") + 1)
+PYREGISTER
+}
+
+login_claude_api() {
+    local key_name="${1-ANTHROPIC_CREDIT_API_KEY}"
+    if [ $# -gt 1 ] || [[ ! "$key_name" =~ ^[A-Z_][A-Z0-9_]*$ ]]; then
+        say_err err_api_key_name
+        return 1
+    fi
+    ensure_container
+    local slot="claude-api" dir="${AUTH_DIR_HOST}/claude-api"
+    if [ -f "$dir/.credentials.json" ] || [ -f "$dir/credentials.json" ]; then
+        say_err err_api_oauth
+        return 1
+    fi
+    ensure_shared_projects || return 1
+    ensure_slot_dir "$slot" || return 1
+    write_api_slot_helper "$slot" "$key_name" || return 1
+    write_api_slot_settings "$slot" "/ductor/.cli-auth/claude-api/api-key-helper.sh" || return 1
+    share_slot_from_default "$slot" || return 1
+    # Plaintext: inspect names only. Encrypted: defer verification to the helper;
+    # docker compose exec has no process-owned vault credentials, even when unlocked.
+    local key_status=0
+    dc exec -T "$SERVICE" python3 -I -c \
+        'import sys; sys.path.insert(0, "/ductor/workspace/tools"); from _secrets import _encrypted, secret_keys; sys.exit(2 if _encrypted() else 0 if sys.argv[1] in secret_keys() else 1)' \
+        "$key_name" >/dev/null 2>&1 || key_status=$?
+    if [ "$key_status" -eq 2 ]; then
+        say_err warn_api_unverified "$key_name"
+    elif [ "$key_status" -ne 0 ]; then
+        say_err err_api_secret "$key_name"
+        return 1
+    fi
+    local position
+    position="$(register_api_slot)" || return 1
+    say ok_api "$key_name" "$position"
+}
+
 share_slot_from_default() {
     # $1: alt slot name (e.g. "claude-main").
     # For every non-credential entry under the default slot, ensure this alt
@@ -914,13 +1152,21 @@ share_slot_from_default() {
 
     local default_dir="${AUTH_DIR_HOST}/claude"
     local alt_dir="${AUTH_DIR_HOST}/${slot}"
-    [ -d "$default_dir" ] || return 0
     [ -d "$alt_dir" ] || return 0
+    local api_key=0
+    if slot_is_api_key "$alt_dir"; then
+        api_key=1
+        write_api_slot_settings "$slot" || return 1
+    fi
+    [ -d "$default_dir" ] || return 0
 
     shopt -s dotglob nullglob
     local entry name
     for entry in "$default_dir"/*; do
         name="$(basename "$entry")"
+        if [ "$api_key" -eq 1 ] && [ "$name" = "settings.json" ]; then
+            continue
+        fi
         if _is_slot_credential "$name"; then
             continue
         fi
@@ -1061,6 +1307,10 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
         claude)
             shift
             login_claude_dispatch "$@"
+            ;;
+        claude-api)
+            shift
+            login_claude_api "$@"
             ;;
         codex)
             login_codex

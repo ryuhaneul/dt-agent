@@ -17,6 +17,7 @@ say_err() { say "$@" >&2; }
 
 status_text_en() {
     case "$1" in
+        state_api_key) printf '%s' $'API key ({1})' ;;
         err_container) printf '%s' $'Error: container \'{1}\' not found. Run \'docker compose up -d\' first.' ;;
         h_container) printf '%s' $'=== Container Status ===' ;;
         h_auth) printf '%s' $'=== CLI Auth ===' ;;
@@ -28,6 +29,7 @@ status_text_en() {
 
 status_text_de() {
     case "$1" in
+        state_api_key) printf '%s' $'API-Schlüssel ({1})' ;;
         err_container) printf '%s' $'Fehler: Container \'{1}\' nicht gefunden. Starte zuerst \'docker compose up -d\'.' ;;
         h_container) printf '%s' $'=== Container-Status ===' ;;
         h_auth) printf '%s' $'=== CLI-Anmeldung ===' ;;
@@ -39,6 +41,7 @@ status_text_de() {
 
 status_text_es() {
     case "$1" in
+        state_api_key) printf '%s' $'Clave de API ({1})' ;;
         err_container) printf '%s' $'Error: no se encontró el contenedor \'{1}\'. Ejecuta primero \'docker compose up -d\'.' ;;
         h_container) printf '%s' $'=== Estado del contenedor ===' ;;
         h_auth) printf '%s' $'=== Autenticación de las CLI ===' ;;
@@ -50,6 +53,7 @@ status_text_es() {
 
 status_text_fr() {
     case "$1" in
+        state_api_key) printf '%s' $'Clé API ({1})' ;;
         err_container) printf '%s' $'Erreur : conteneur \'{1}\' introuvable. Lance d\'abord \'docker compose up -d\'.' ;;
         h_container) printf '%s' $'=== État du conteneur ===' ;;
         h_auth) printf '%s' $'=== Connexion des CLI ===' ;;
@@ -61,6 +65,7 @@ status_text_fr() {
 
 status_text_id() {
     case "$1" in
+        state_api_key) printf '%s' $'Kunci API ({1})' ;;
         err_container) printf '%s' $'Kesalahan: kontainer \'{1}\' tidak ditemukan. Jalankan \'docker compose up -d\' terlebih dahulu.' ;;
         h_container) printf '%s' $'=== Status kontainer ===' ;;
         h_auth) printf '%s' $'=== Autentikasi CLI ===' ;;
@@ -72,6 +77,7 @@ status_text_id() {
 
 status_text_nl() {
     case "$1" in
+        state_api_key) printf '%s' $'API-sleutel ({1})' ;;
         err_container) printf '%s' $'Fout: container \'{1}\' niet gevonden. Voer eerst \'docker compose up -d\' uit.' ;;
         h_container) printf '%s' $'=== Containerstatus ===' ;;
         h_auth) printf '%s' $'=== CLI-aanmelding ===' ;;
@@ -83,6 +89,7 @@ status_text_nl() {
 
 status_text_pt() {
     case "$1" in
+        state_api_key) printf '%s' $'Chave de API ({1})' ;;
         err_container) printf '%s' $'Erro: contêiner \'{1}\' não encontrado. Execute \'docker compose up -d\' primeiro.' ;;
         h_container) printf '%s' $'=== Estado do contêiner ===' ;;
         h_auth) printf '%s' $'=== Autenticação das CLIs ===' ;;
@@ -94,6 +101,7 @@ status_text_pt() {
 
 status_text_ru() {
     case "$1" in
+        state_api_key) printf '%s' $'Ключ API ({1})' ;;
         err_container) printf '%s' $'Ошибка: контейнер \'{1}\' не найден. Сначала выполни \'docker compose up -d\'.' ;;
         h_container) printf '%s' $'=== Состояние контейнера ===' ;;
         h_auth) printf '%s' $'=== Вход в CLI ===' ;;
@@ -107,6 +115,7 @@ status_text_ru() {
 
 status_text_ko() {
     case "$1" in
+        state_api_key) printf '%s' $'API 키 ({1})' ;;
         err_container) printf '%s' $'오류: \'{1}\' 컨테이너를 찾을 수 없어요. 먼저 \'docker compose up -d\'를 실행하세요.' ;;
         h_container) printf '%s' $'=== 컨테이너 상태 ===' ;;
         h_auth) printf '%s' $'=== CLI 인증 ===' ;;
@@ -139,18 +148,43 @@ docker compose ps 2>/dev/null || docker ps --filter "name=$CONTAINER" --format "
 
 echo ""
 say h_auth
-while IFS= read -r slot; do
+while IFS=$'\t' read -r slot kind key_name; do
     printf 'Claude (%s): ' "$slot"
-    docker exec -e "CLAUDE_CONFIG_DIR=/ductor/.cli-auth/$slot" "$CONTAINER" claude auth status 2>/dev/null && echo "" || say state_not
+    if [ "$kind" = "api_key" ]; then
+        say state_api_key "$key_name"
+    else
+        docker exec -e "CLAUDE_CONFIG_DIR=/ductor/.cli-auth/$slot" "$CONTAINER" claude auth status 2>/dev/null && echo "" || say state_not
+    fi
 done < <(docker exec "$CONTAINER" python3 -c '
 import json
+import re
+from pathlib import Path
 try:
     with open("/ductor/config/config.json") as file:
         accounts = json.load(file).get("claude_accounts") or ["claude"]
 except FileNotFoundError:
     accounts = ["claude"]
 for slot in accounts:
-    print(slot)
+    folder = Path("/ductor/.cli-auth") / slot
+    settings = folder / "settings.json"
+    api_key = False
+    if not settings.is_symlink() and settings.is_file():
+        try:
+            data = json.loads(settings.read_text(encoding="utf-8"))
+            helper = data.get("apiKeyHelper") if isinstance(data, dict) else None
+            api_key = isinstance(helper, str) and bool(helper)
+        except (OSError, ValueError, RecursionError):
+            pass
+    key_name = "<KEY_NAME>"
+    if api_key:
+        try:
+            lines = (folder / "api-key-helper.sh").read_text(encoding="utf-8").splitlines()
+            match = re.fullmatch(r"# dt-agent api-key slot; key name: (.+)", lines[1])
+            if match:
+                key_name = match.group(1)
+        except (OSError, ValueError, IndexError):
+            pass
+    print(slot, "api_key" if api_key else "oauth", key_name, sep="\t")
 ')
 echo -n "Codex:  "
 probe_state "$(docker exec "$CONTAINER" sh -c '[ -f /ductor/.cli-auth/codex/auth.json ] && echo "authenticated" || echo "not authenticated"')"
