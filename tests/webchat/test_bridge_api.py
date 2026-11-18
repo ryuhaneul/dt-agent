@@ -445,7 +445,9 @@ async def test_korean_system_name_metadata_does_not_mark_custom_names(conversati
     await h.runtime.history.append(
         "unknown", Entry(role="bot", source="import", text="unmapped", imported=True, seq=-1)
     )
-    turns = SimpleNamespace(active_turn_id=lambda _tid: None, busy=lambda _tid: False)
+    turns = SimpleNamespace(
+        active_turn_id=lambda _tid: None, busy=lambda _tid: False, snapshot=lambda _tid: []
+    )
     topics = {item["tid"]: item for item in await WebTopics(h.bot, h.runtime, turns).list()}
     assert topics["-123"]["name"] == "일반"
     assert topics["-123"]["name_key"] == "topic.general"
@@ -606,27 +608,30 @@ async def test_streaming_uses_same_lock_key_context_and_mirror_ids(conversation)
     await ws.close()
 
 
-async def test_queued_turn_conflict_abort_and_stop_are_topic_scoped(conversation):
+async def test_queued_turns_survive_topic_abort_and_stop(conversation):
     h = conversation
     lock = h.pool.get(h.key.lock_key)
-    await lock.acquire()
     ws = await h.client.ws_connect(f"{_PREFIX}/events", headers=headers())
-    try:
-        assert (await post_message(h)).status == 202
-        await receive_until(ws, lambda event: event.get("phase") == "queued")
-        response = await post_message(h)
-        assert response.status == 409
-        assert await response.json() == {"error": "web_turn_running"}
+    async with lock:
+        first = await post_message(h, text="first")
+        second = await post_message(h, text="second")
+        assert first.status == second.status == 202
+        last_id = (await second.json())["turn_id"]
         response = await h.client.post(f"{_PREFIX}/topics/-123.7/abort", headers=headers())
         assert response.status == 200
         assert await response.json() == {"killed": 0}
+        response = await post_message(h, text=" /STOP ")
+        assert response.status == 202
+        assert await response.json() == {"killed": 0}
         assert not h.calls
-    finally:
-        lock.release()
-    response = await post_message(h, text=" /STOP ")
-    assert response.status == 202
-    assert await response.json() == {"killed": 0}
-    assert not h.calls
+        topic = (await (await h.client.get(f"{_PREFIX}/topics", headers=headers())).json())[
+            "topics"
+        ][0]
+        assert [item["text"] for item in topic["turns"]] == ["first", "second"]
+    await receive_until(
+        ws, lambda event: event.get("turn_id") == last_id and event.get("phase") == "done"
+    )
+    assert [call[1] for call in h.calls] == ["first", "second"]
     h.bot._orch.abort.assert_not_awaited()
     assert h.bot._orch._process_registry.kill_by_chat_topic.await_args_list[0].args == (-123, 7)
     await ws.close()
@@ -2321,7 +2326,7 @@ async def test_response_button_named_turn_reaches_named_session_and_keeps_reply_
 
     def submit(self, tid, text, **kwargs):
         result = original(self, tid, text, **kwargs)
-        work.append(self._tasks[tid])
+        work.append(self._tasks[result])
         return result
 
     monkeypatch.setattr(WebTurns, "submit", submit)
@@ -2406,7 +2411,7 @@ async def test_response_button_waits_for_telegram_busy_and_rejects_web_busy(
 
     def submit(self, tid, text, **kwargs):
         turn_id = original(self, tid, text, **kwargs)
-        tasks.append(self._tasks[tid])
+        tasks.append(self._tasks[turn_id])
         return turn_id
 
     monkeypatch.setattr(WebTurns, "submit", submit)
@@ -3294,7 +3299,7 @@ async def test_busy_selector_returns_prompt_conflict_without_blocking_topic(
 
     def submit(self, *args, **kwargs):
         turn_id = original_submit(self, *args, **kwargs)
-        tasks.append(self._tasks["-123.7"])
+        tasks.append(self._tasks[turn_id])
         return turn_id
 
     async def handle(*args, **kwargs):
@@ -3326,9 +3331,8 @@ async def test_busy_selector_returns_prompt_conflict_without_blocking_topic(
         assert await h.runtime.history.metadata("-123.7") == before
         assert h.runtime.history._metadata_path("-123.7").read_bytes() == original_bytes
         followup = await asyncio.wait_for(post_message(h, text="Follow-up"), 1)
-        assert followup.status == (202 if source == "telegram" else 409)
-        if source == "web":
-            assert await followup.json() == {"error": "web_turn_running"}
+        assert followup.status == 202
+        assert (await followup.json())["turn_id"]
         assert lock.locked()
         print(f"{source} busy selector response: {elapsed:.6f}s; follow-up={followup.status}")
     finally:
@@ -4440,3 +4444,293 @@ async def test_corrupt_credentials_status_is_auth_failure(bridge):
     response = await client.get(f"{_PREFIX}/auth/state", headers=headers())
     assert response.status == 403
     assert await response.json() == {"error": "invalid"}
+
+
+async def test_web_queue_fifo_cancel_middle_and_reconnect(conversation):
+    h = conversation
+    entered, release = asyncio.Event(), asyncio.Event()
+    executed = []
+
+    async def handle(key, text, **callbacks):
+        executed.append(text)
+        dispatch = SimpleNamespace(
+            key=key, text=text, transport_override=None, counts_as_activity=True
+        )
+        await h.recorder.begin(dispatch)
+        await callbacks["on_text_delta"]("partial " + text)
+        if text == "active":
+            entered.set()
+            await release.wait()
+        result = OrchestratorResult(text="answer " + text)
+        await h.recorder.finish(dispatch, result, status="ok")
+        return result
+
+    h.bot._orch.handle_message_streaming.side_effect = handle
+    ws = await h.client.ws_connect(f"{_PREFIX}/events", headers=headers())
+    active = (await (await post_message(h, text="active")).json())["turn_id"]
+    await asyncio.wait_for(entered.wait(), 3)
+    waiting = []
+    for text in ["queue one", "queue two", "queue three"]:
+        response = await post_message(h, text=text)
+        assert response.status == 202
+        waiting.append((await response.json())["turn_id"])
+    topic = (await (await h.client.get(f"{_PREFIX}/topics", headers=headers())).json())["topics"][0]
+    assert [item["turn_id"] for item in topic["turns"]] == [active, *waiting]
+    assert [item["phase"] for item in topic["turns"]] == ["started", "queued", "queued", "queued"]
+    queued_user_id = topic["turns"][2]["user_entry_id"]
+    path = f"{_PREFIX}/topics/-123.7/turns/{waiting[1]}/cancel"
+    for _ in range(2):
+        response = await h.client.post(path, headers=headers())
+        assert response.status == 200
+        assert await response.json() == {"turn_id": waiting[1], "phase": "cancelled"}
+    records = [
+        entry for entry in await h.runtime.history.read("-123.7") if entry.turn_id == waiting[1]
+    ]
+    assert len(records) == 1
+    assert (records[0].id, records[0].role, records[0].status) == (
+        queued_user_id,
+        "user",
+        "cancelled",
+    )
+    assert records[0].text == "queue two"
+    mirrored = [
+        item for item in await h.runtime.outbox.pending() if item.history_id == queued_user_id
+    ]
+    assert len(mirrored) == 2
+    assert "queue two" in mirrored[0].text
+    assert mirrored[1].text == "<i>[Message cancelled.]</i>"
+    await ws.close()
+    ws = await h.client.ws_connect(f"{_PREFIX}/events", headers=headers())
+    restored = (await (await h.client.get(f"{_PREFIX}/topics", headers=headers())).json())[
+        "topics"
+    ][0]
+    assert [item["turn_id"] for item in restored["turns"]] == [active, waiting[0], waiting[2]]
+    history = await (
+        await h.client.get(f"{_PREFIX}/topics/-123.7/messages", headers=headers())
+    ).json()
+    assert (
+        sum(
+            entry["id"] == queued_user_id and entry["status"] == "cancelled"
+            for entry in history["entries"]
+        )
+        == 1
+    )
+    release.set()
+    await receive_until(
+        ws,
+        lambda event: (
+            event.get("type") == "turn"
+            and event.get("turn_id") == waiting[2]
+            and event.get("phase") == "done"
+        ),
+    )
+    assert executed == ["active", "queue one", "queue three"]
+    finished = await h.client.post(
+        f"{_PREFIX}/topics/-123.7/turns/{waiting[2]}/cancel", headers=headers()
+    )
+    assert finished.status == 409
+    assert await finished.json() == {"error": "turn_started"}
+    await ws.close()
+
+
+@pytest.mark.parametrize("cancel_first", [True, False])
+async def test_web_queue_start_cancel_race_has_one_winner(conversation, cancel_first):
+    h = conversation
+    turns = WebTurns(h.bot, h.runtime)
+    lock = h.pool.get(h.key.lock_key)
+    await lock.acquire()
+    queue = h.runtime.events.subscribe()
+    entered, finish = asyncio.Event(), asyncio.Event()
+    original = h.bot._orch.handle_message_streaming.side_effect
+
+    async def handle(*args, **kwargs):
+        entered.set()
+        await finish.wait()
+        return await original(*args, **kwargs)
+
+    h.bot._orch.handle_message_streaming.side_effect = handle
+    turn_id = turns.submit("-123.7", "race")
+    task = turns._tasks[turn_id]
+    try:
+        while True:
+            event = await asyncio.wait_for(queue.get(), 3)
+            if event.get("turn_id") == turn_id and event.get("phase") == "queued":
+                break
+        if cancel_first:
+            cancel = asyncio.create_task(turns.cancel("-123.7", turn_id))
+            lock.release()
+        else:
+            lock.release()
+            cancel = asyncio.create_task(turns.cancel("-123.7", turn_id))
+        result = await asyncio.wait_for(cancel, 3)
+        assert result == ("cancelled" if cancel_first else "turn_started")
+        assert entered.is_set() is (not cancel_first)
+        finish.set()
+        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 3)
+        records = [
+            entry for entry in await h.runtime.history.read("-123.7") if entry.turn_id == turn_id
+        ]
+        assert bool([entry for entry in records if entry.status == "cancelled"]) is cancel_first
+        assert bool([entry for entry in records if entry.role == "bot"]) is (not cancel_first)
+    finally:
+        if lock.locked():
+            lock.release()
+        finish.set()
+        await turns.stop()
+        h.runtime.events.unsubscribe(queue)
+
+
+async def test_web_queue_cancel_before_preparation_and_wrong_topic(conversation):
+    h = conversation
+    turns = WebTurns(h.bot, h.runtime)
+    turn_id = turns.submit("-123.7", "cancel immediately")
+    assert await turns.cancel("-123.8", turn_id) == "unknown_turn"
+    assert await turns.cancel("-123.7", turn_id) == "cancelled"
+    assert await turns.cancel("-123.7", turn_id) == "cancelled"
+    assert not turns.busy("-123.7")
+    h.bot._orch.handle_message_streaming.assert_not_awaited()
+    assert len(await h.runtime.history.read("-123.7")) == 1
+    assert len(await h.runtime.outbox.pending()) == 2
+    assert not turns._turns
+
+
+async def test_web_queue_cancel_api_guards_and_started_turn(conversation):
+    h = conversation
+    await h.bot._orch._sessions.resolve_session(SessionKey.telegram(-123, 8))
+    entered, finish = asyncio.Event(), asyncio.Event()
+    original = h.bot._orch.handle_message_streaming.side_effect
+
+    async def handle(*args, **kwargs):
+        entered.set()
+        await finish.wait()
+        return await original(*args, **kwargs)
+
+    h.bot._orch.handle_message_streaming.side_effect = handle
+    turn_id = (await (await post_message(h)).json())["turn_id"]
+    await asyncio.wait_for(entered.wait(), 3)
+    try:
+        for tid, identity, auth, status, error in [
+            ("-123.7", turn_id, {}, 403, "forbidden"),
+            ("-123.8", turn_id, headers(), 404, "unknown_turn"),
+            ("-123.7", "missing", headers(), 404, "unknown_turn"),
+            ("-123.7", turn_id, headers(), 409, "turn_started"),
+        ]:
+            response = await h.client.post(
+                f"{_PREFIX}/topics/{tid}/turns/{identity}/cancel", headers=auth
+            )
+            assert response.status == status
+            assert await response.json() == {"error": error}
+            assert "WWW-Authenticate" not in response.headers
+    finally:
+        finish.set()
+
+
+async def test_web_queue_topic_delete_discards_all_waiters(conversation, monkeypatch):
+    h = conversation
+    lock = h.pool.get(h.key.lock_key)
+    await lock.acquire()
+    aborted = asyncio.Event()
+    original = WebTurns.abort
+
+    async def abort(self, tid, *, deleting=False):
+        result = await original(self, tid, deleting=deleting)
+        if deleting:
+            aborted.set()
+        return result
+
+    monkeypatch.setattr(WebTurns, "abort", abort)
+    for i in range(3):
+        assert (await post_message(h, text=f"waiting {i}")).status == 202
+    topic = (await (await h.client.get(f"{_PREFIX}/topics", headers=headers())).json())["topics"][0]
+    deletion = asyncio.create_task(
+        h.client.delete(
+            f"{_PREFIX}/topics/-123.7", json={"confirm_name": topic["name"]}, headers=headers()
+        )
+    )
+    try:
+        await asyncio.wait_for(aborted.wait(), 3)
+        h.bot._orch.handle_message_streaming.assert_not_awaited()
+    finally:
+        lock.release()
+    response = await asyncio.wait_for(deletion, 3)
+    assert response.status == 200
+    assert await h.runtime.outbox.pending() == []
+    assert await h.runtime.history.read("-123.7") == []
+
+
+async def test_web_queue_abort_stops_active_but_keeps_waiting_turn(conversation):
+    h = conversation
+    entered = asyncio.Event()
+    waiting = asyncio.Event()
+    executed = []
+
+    async def handle(key, text, **callbacks):
+        executed.append(text)
+        dispatch = SimpleNamespace(
+            key=key, text=text, transport_override=None, counts_as_activity=True
+        )
+        await h.recorder.begin(dispatch)
+        await callbacks["on_text_delta"]("partial " + text)
+        if text == "active":
+            entered.set()
+            await waiting.wait()
+        result = OrchestratorResult(text="answer " + text)
+        await h.recorder.finish(dispatch, result, status="ok")
+        return result
+
+    h.bot._orch.handle_message_streaming.side_effect = handle
+    ws = await h.client.ws_connect(f"{_PREFIX}/events", headers=headers())
+    active = (await (await post_message(h, text="active")).json())["turn_id"]
+    await asyncio.wait_for(entered.wait(), 3)
+    queued = (await (await post_message(h, text="waiting")).json())["turn_id"]
+    response = await h.client.post(f"{_PREFIX}/topics/-123.7/abort", headers=headers())
+    assert response.status == 200
+    await receive_until(
+        ws, lambda event: event.get("turn_id") == queued and event.get("phase") == "done"
+    )
+    assert executed == ["active", "waiting"]
+    entries = await h.runtime.history.read("-123.7")
+    assert any(
+        entry.turn_id == active
+        and entry.role == "bot"
+        and entry.status == "aborted"
+        and entry.text == "partial active"
+        for entry in entries
+    )
+    assert any(
+        entry.turn_id == queued and entry.role == "bot" and entry.status == "ok"
+        for entry in entries
+    )
+    assert not any(entry.status == "cancelled" for entry in entries)
+    await ws.close()
+
+
+async def test_web_queue_cancel_write_failure_can_retry_without_duplicates(
+    conversation, monkeypatch
+):
+    h = conversation
+    lock = h.pool.get(h.key.lock_key)
+    await lock.acquire()
+    original = h.runtime.outbox.enqueue
+    failures = []
+
+    async def enqueue(**kwargs):
+        if kwargs.get("text") == "<i>[Message cancelled.]</i>" and not failures:
+            failures.append(True)
+            raise OSError("test unavailable")
+        return await original(**kwargs)
+
+    monkeypatch.setattr(h.runtime.outbox, "enqueue", enqueue)
+    turn_id = (await (await post_message(h, text="cancel me")).json())["turn_id"]
+    path = f"{_PREFIX}/topics/-123.7/turns/{turn_id}/cancel"
+    try:
+        first = await h.client.post(path, headers=headers())
+        assert first.status == 503
+        assert await first.json() == {"error": "generic"}
+        second = await h.client.post(path, headers=headers())
+        assert second.status == 200
+        assert len(await h.runtime.history.read("-123.7")) == 1
+        assert len(await h.runtime.outbox.pending()) == 2
+        h.bot._orch.handle_message_streaming.assert_not_awaited()
+    finally:
+        lock.release()

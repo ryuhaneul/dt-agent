@@ -194,6 +194,7 @@ class WebTopics:
                     "imported_count": imported_count,
                     "created_at": session.created_at if session else saved.get("created_at"),
                     "turn_id": self.turns.active_turn_id(tid),
+                    "turns": self.turns.snapshot(tid),
                     "busy": False
                     if key is None
                     else self.turns.busy(tid)

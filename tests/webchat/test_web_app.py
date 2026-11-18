@@ -1295,3 +1295,23 @@ async def test_preauth_only_logout_reaches_auth_and_discards_material(
     finally:
         await client.close()
         await auth.close()
+
+
+async def test_turn_cancel_relay_requires_session_csrf_and_client(site):
+    client, fake = site
+    path = "/api/topics/-123.4/turns/turn-id/cancel"
+    denied = await client.post(path, headers=CLIENT)
+    assert denied.status == 403
+    assert "WWW-Authenticate" not in denied.headers
+    session_headers, _ = await login(client)
+    for auth in [
+        CLIENT,
+        {"X-Dtw-Csrf": session_headers["X-Dtw-Csrf"]},
+        {**session_headers, "X-Dtw-Csrf": "wrong"},
+    ]:
+        response = await client.post(path, headers=auth)
+        assert response.status == 403
+        assert "WWW-Authenticate" not in response.headers
+    response = await client.post(path, headers=session_headers)
+    assert response.status == 200
+    assert fake.calls[-1][:2] == ("POST", "/topics/-123.4/turns/turn-id/cancel")

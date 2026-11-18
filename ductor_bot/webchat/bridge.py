@@ -371,6 +371,19 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
             except WebCommandBusyError:
                 return _error("web_turn_running", 409)
 
+    async def cancel_turn(request: web.Request) -> web.Response:
+        tid, turn_id = request.match_info["tid"], request.match_info["turn_id"]
+        async with control_gate(tid):
+            if tid in turns.blocked or await topics.lookup(tid) is None:
+                return _error("unknown_topic", 404)
+            try:
+                result = await turns.cancel(tid, turn_id)
+            except (OSError, LockTimeoutError):
+                return _error("generic", 503)
+            if result != "cancelled":
+                return _error(result, 404 if result == "unknown_turn" else 409)
+            return web.json_response({"turn_id": turn_id, "phase": "cancelled"})
+
     async def dispatch_text(  # noqa: C901 -- preserve existing command/message ingress
         tid: str,
         text: str,
@@ -442,7 +455,7 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
             if accept is not None:
                 await accept()
             return web.json_response(command)
-        if turns.busy(tid):
+        if turns.busy(tid) and accept is not None:
             raise WebCommandBusyError
         if accept is not None:
             await accept()
@@ -751,6 +764,7 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
     app.router.add_get(f"{_PREFIX}/topics/{{tid}}/messages", messages)
     app.router.add_post(f"{_PREFIX}/topics/{{tid}}/messages", send_or_abort)
     app.router.add_post(f"{_PREFIX}/topics/{{tid}}/abort", send_or_abort)
+    app.router.add_post(f"{_PREFIX}/topics/{{tid}}/turns/{{turn_id}}/cancel", cancel_turn)
     app.router.add_post(f"{_PREFIX}/topics/{{tid}}/buttons", buttons)
     app.router.add_post(f"{_PREFIX}/topics/{{tid}}/callbacks", callbacks)
     app.router.add_get(f"{_PREFIX}/search", search)

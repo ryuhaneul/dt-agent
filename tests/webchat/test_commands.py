@@ -515,7 +515,7 @@ async def test_stop_all_cancels_waiting_web_turn_before_killing(commands):
     queue = h.runtime.events.subscribe()
     try:
         h.turns.submit("1.7", "waiting prompt")
-        task = h.turns._tasks["1.7"]
+        task = h.turns._tasks[h.turns.active_turn_id("1.7")]
         while True:
             event = await asyncio.wait_for(queue.get(), 2)
             if event.get("type") == "turn" and event.get("phase") == "queued":
@@ -558,11 +558,11 @@ async def test_stop_all_keeps_running_turn_until_existing_registry_kill(commands
     h.orch.handle_message_streaming = AsyncMock(side_effect=running)
     h.turns.submit("1.7", "running prompt")
     await asyncio.wait_for(started.wait(), 2)
-    task = h.turns._tasks["1.7"]
+    task = h.turns._tasks[h.turns.active_turn_id("1.7")]
 
     async def kill_active():
         assert not task.done()
-        assert "1.7" in h.turns._started
+        assert h.turns.active_turn_id("1.7") in h.turns._started
         finished.set()
         return 3
 

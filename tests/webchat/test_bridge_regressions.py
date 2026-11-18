@@ -103,7 +103,7 @@ async def test_aborted_partial_reply_is_persisted(tmp_path):
     orch.handle_message_streaming = MethodType(Orchestrator.handle_message_streaming, orch)
     turns = WebTurns(bot, runtime)
     turn_id = turns.submit("-123.7", "hello")
-    task = turns._tasks["-123.7"]
+    task = turns._tasks[turn_id]
     await asyncio.wait_for(started.wait(), 2)
     await turns.abort("-123.7")
     await asyncio.wait_for(task, 2)
@@ -333,7 +333,9 @@ async def test_rejected_put_does_not_commit_personal_draft(tmp_path, monkeypatch
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ["abort", "shutdown"])
-async def test_next_preparing_turn_does_not_inherit_completed_state(tmp_path, monkeypatch, operation):
+async def test_next_preparing_turn_does_not_inherit_completed_state(
+    tmp_path, monkeypatch, operation
+):
     """Stop and shutdown cancel a replacement turn before provider startup."""
     _, bot, runtime = harness(tmp_path)
     tid = "-123.7"
@@ -410,7 +412,7 @@ async def test_next_preparing_turn_does_not_inherit_completed_state(tmp_path, mo
     finish_first.set()
     assert (await asyncio.wait_for(second_request, 2)).status == 202
     await asyncio.wait_for(second_ready.wait(), 2)
-    second = turns._tasks[tid]
+    second = turns._tasks[turns.active_turn_id(tid)]
     stopping = None
     try:
         if operation == "abort":

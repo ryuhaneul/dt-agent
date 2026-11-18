@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Literal
 
 from ductor_bot.chat_log.history import Entry
 from ductor_bot.chat_log.ids import from_tid, history_filename, new_id, to_tid
@@ -33,6 +34,16 @@ def user_mirror_fields(text: str, strings: TranslationStore) -> tuple[str, str]:
     return mirror_text, "web_user_text"
 
 
+@dataclass
+class _QueuedTurn:
+    tid: str
+    text: str
+    identity: ChatLogTurn
+    phase: str = "queued"
+    prepared: asyncio.Event = field(default_factory=asyncio.Event)
+    cancellation: asyncio.Task[None] | None = None
+
+
 class WebTurns:
     def __init__(self, bot: TelegramBot, runtime: ChatLogRuntime) -> None:
         self.bot = bot
@@ -41,15 +52,33 @@ class WebTurns:
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._started: set[str] = set()
         self._settled: set[str] = set()
-        self._turn_ids: dict[str, str] = {}
+        self._turns: dict[str, _QueuedTurn] = {}
+        self._queues: dict[str, list[str]] = {}
+        self._fifo_locks: dict[str, asyncio.Lock] = {}
         self._strings = TranslationStore(bot.config.language)
 
     def busy(self, tid: str) -> bool:
-        task = self._tasks.get(tid)
-        return task is not None and not task.done()
+        return bool(self.snapshot(tid))
 
     def active_turn_id(self, tid: str) -> str | None:
-        return self._turn_ids.get(tid) if self.busy(tid) else None
+        queued = self.snapshot(tid)
+        running = next((turn for turn in queued if turn["phase"] == "started"), None)
+        return (running or queued[0])["turn_id"] if queued else None
+
+    def snapshot(self, tid: str) -> list[dict[str, str]]:
+        return [
+            {
+                "turn_id": turn_id,
+                "phase": state.phase,
+                "text": state.text,
+                "user_entry_id": state.identity["user_entry_id"],
+            }
+            for turn_id in self._queues.get(tid, [])
+            if (state := self._turns.get(turn_id)) is not None
+            and state.phase != "cancelled"
+            and (task := self._tasks.get(turn_id)) is not None
+            and not task.done()
+        ]
 
     def _publish(self, tid: str, turn_id: str, phase: str) -> None:
         if tid not in self.blocked:
@@ -63,31 +92,122 @@ class WebTurns:
             "user_entry_id": new_id(),
             "reply_entry_id": new_id(),
         }
-        work = (
-            self._run(tid, text, turn)
-            if session_name is None
-            else self._run(tid, text, turn, session_name=session_name)
-        )
+        queue = self._queues.setdefault(tid, [])
+        self._fifo_locks.setdefault(tid, asyncio.Lock())
+        turn_id = turn["turn_id"]
+        state = _QueuedTurn(tid, text, turn)
+        self._turns[turn_id] = state
+        work = self._run(tid, text, turn, session_name=session_name)
         task = asyncio.create_task(work, name="webchat-turn")
-        self._started.discard(tid)
-        self._settled.discard(tid)
-        self._tasks[tid] = task
-        self._turn_ids[tid] = turn["turn_id"]
-        task.add_done_callback(lambda completed: self._finished(tid, completed))
-        return turn["turn_id"]
+        self._tasks[turn_id] = task
+        queue.append(turn_id)
+        task.add_done_callback(lambda completed: self._finished(turn_id, completed))
+        return turn_id
 
-    def _finished(self, tid: str, task: asyncio.Task[None]) -> None:
+    def _finished(self, turn_id: str, task: asyncio.Task[None]) -> None:
         if not task.cancelled() and (error := task.exception()) is not None:
-            logger.warning(
-                "Web turn failed: session=%s reason=%s",
-                from_tid(tid).storage_key,
-                type(error).__name__,
+            logger.warning("Web turn failed: reason=%s", type(error).__name__)
+        state = self._turns.get(turn_id)
+        self._tasks.pop(turn_id, None)
+        self._started.discard(turn_id)
+        self._settled.discard(turn_id)
+        if state is not None:
+            queue = self._queues.get(state.tid, [])
+            if turn_id in queue:
+                queue.remove(turn_id)
+            if not queue:
+                self._queues.pop(state.tid, None)
+                self._fifo_locks.pop(state.tid, None)
+            if state.phase != "cancelled":
+                self._turns.pop(turn_id, None)
+
+    async def _recorded_phase(self, tid: str, turn_id: str) -> str | None:
+        before = None
+        while True:
+            entries, more = await self.runtime.history.read_page(tid, before=before, limit=200)
+            for entry in entries:
+                if entry.turn_id == turn_id:
+                    return "cancelled" if entry.status == "cancelled" else "turn_started"
+            if not more or not entries:
+                return None
+            before = entries[0].seq
+
+    async def cancel(
+        self, tid: str, turn_id: str
+    ) -> Literal["cancelled", "turn_started", "unknown_turn"]:
+        state = self._turns.get(turn_id)
+        if state is None:
+            phase = await self._recorded_phase(tid, turn_id)
+            return (
+                "cancelled" if phase == "cancelled" else "turn_started" if phase else "unknown_turn"
             )
-        if self._tasks.get(tid) is task:
-            self._tasks.pop(tid, None)
-            self._turn_ids.pop(tid, None)
-            self._started.discard(tid)
-            self._settled.discard(tid)
+        if state.tid != tid:
+            return "unknown_turn"
+        task = self._tasks.get(turn_id)
+        if state.phase != "cancelled":
+            if state.phase != "queued" or task is None or task.done():
+                return "turn_started"
+            # Claim cancellation without yielding, mutually exclusive with started below.
+            state.phase = "cancelled"
+        if state.cancellation is None or (
+            state.cancellation.done()
+            and (state.cancellation.cancelled() or state.cancellation.exception() is not None)
+        ):
+            state.cancellation = asyncio.create_task(
+                self._finish_cancel(state), name="webchat-cancel"
+            )
+            state.cancellation.add_done_callback(self._cancel_finished)
+        # A disconnected request must not interrupt the history/outbox write sequence.
+        await asyncio.shield(state.cancellation)
+        return "cancelled"
+
+    @staticmethod
+    def _cancel_finished(task: asyncio.Task[None]) -> None:
+        if not task.cancelled() and (error := task.exception()) is not None:
+            logger.warning("Web turn cancellation failed: reason=%s", type(error).__name__)
+
+    async def _finish_cancel(self, state: _QueuedTurn) -> None:
+        await state.prepared.wait()
+        turn = state.identity
+        task = self._tasks.get(turn["turn_id"])
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        key = from_tid(state.tid)
+        async with self.runtime.outbox.delivery_lock:
+            if state.tid in self.blocked:
+                self._turns.pop(turn["turn_id"], None)
+                return
+            if await self.runtime.outbox.mirror_state(turn["user_entry_id"]) is None:
+                await self.runtime.outbox.enqueue(
+                    kind="user_mirror",
+                    chat_id=key.chat_id,
+                    topic_id=key.topic_id,
+                    text=self._strings.chat("chat_log.mirror_user", text=state.text),
+                    history_id=turn["user_entry_id"],
+                )
+            if await self.runtime.history.get_entry(state.tid, turn["user_entry_id"]) is None:
+                await self.runtime.history.append(
+                    key,
+                    Entry(
+                        role="user",
+                        source="web",
+                        text=state.text,
+                        id=turn["user_entry_id"],
+                        turn_id=turn["turn_id"],
+                        status="cancelled",
+                    ),
+                )
+            await self.runtime.outbox.enqueue(
+                kind="user_mirror",
+                chat_id=key.chat_id,
+                topic_id=key.topic_id,
+                text=self._strings.chat("notice.queue_cancelled"),
+                history_id=turn["user_entry_id"],
+            )
+        self.runtime.drainer.wake()
+        self._publish(state.tid, turn["turn_id"], "cancelled")
+        self._turns.pop(turn["turn_id"], None)
 
     async def _status(self, tid: str, reply_id: str, *, aborted: bool = False) -> str | None:
         try:
@@ -196,10 +316,18 @@ class WebTurns:
                         to_tid(key), result._chat_log_entry_id, rows
                     )
 
-    async def _run(  # noqa: C901, PLR0915 -- existing turn lifecycle and named target
-        self, tid: str, text: str, turn: ChatLogTurn, *, session_name: str | None = None
+    async def _run(  # noqa: C901, PLR0912, PLR0915 -- turn lifecycle, FIFO admission and named target
+        self,
+        tid: str,
+        text: str,
+        turn: ChatLogTurn,
+        *,
+        session_name: str | None = None,
     ) -> None:
         key = from_tid(tid)
+        state = self._turns[turn["turn_id"]]
+        fifo = self._fifo_locks[tid]
+        owns_fifo = False
         partial = ""
         status = "ok"
         try:
@@ -218,14 +346,21 @@ class WebTurns:
                     history_id=turn["user_entry_id"],
                 )
             self.runtime.drainer.wake()
+            state.prepared.set()
+            if state.phase == "cancelled":
+                return
             self._publish(tid, turn["turn_id"], "queued")
+            await fifo.acquire()
+            owns_fifo = True
             pool = self.bot._orch._lock_pool
             assert pool is not None
             lock = pool.get(key.lock_key)
             async with lock:
-                if tid in self.blocked:
+                if tid in self.blocked or state.phase == "cancelled":
                     return
-                self._started.add(tid)
+                # No await between cancellation check and the started transition.
+                state.phase = "started"
+                self._started.add(turn["turn_id"])
                 self._publish(tid, turn["turn_id"], "started")
 
                 async def delta(value: str) -> None:
@@ -277,7 +412,7 @@ class WebTurns:
                                     on_system_status=system_status,
                                 ),
                             )
-                    self._settled.add(tid)
+                    self._settled.add(turn["turn_id"])
                     registry = self.bot._orch._process_registry
                     aborted = registry.was_aborted(key.chat_id) or registry.was_aborted_topic(
                         key.chat_id, key.topic_id
@@ -294,7 +429,8 @@ class WebTurns:
                 await self._reply(key, tid, partial, turn, status, session_name=session_name)
         except asyncio.CancelledError:
             status = "aborted"
-            await self._reply(key, tid, partial, turn, status, session_name=session_name)
+            if state.phase == "started":
+                await self._reply(key, tid, partial, turn, status, session_name=session_name)
             raise
         except Exception as exc:
             status = "error"
@@ -302,25 +438,37 @@ class WebTurns:
                 "Web turn failed: session=%s reason=%s", key.storage_key, type(exc).__name__
             )
         finally:
-            self._started.discard(tid)
-            self._publish(tid, turn["turn_id"], "done" if status == "ok" else status)
+            state.prepared.set()
+            if owns_fifo:
+                fifo.release()
+            self._started.discard(turn["turn_id"])
+            if state.phase != "cancelled":
+                self._publish(tid, turn["turn_id"], "done" if status == "ok" else status)
 
     async def cancel_pending(self, chat_id: int) -> None:
-        """Cancel this chat's web turns still waiting for their session lock."""
+        """Cancel all queued web turns for a chat without touching its active turn."""
         pending = [
-            task
-            for tid, task in self._tasks.items()
-            if from_tid(tid).chat_id == chat_id and tid not in self._started and not task.done()
+            (state.tid, turn_id)
+            for turn_id, state in self._turns.items()
+            if from_tid(state.tid).chat_id == chat_id and state.phase == "queued"
         ]
-        for task in pending:
-            task.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
+        for tid, turn_id in pending:
+            await self.cancel(tid, turn_id)
 
     async def abort(self, tid: str, *, deleting: bool = False) -> int:
-        task = self._tasks.get(tid)
-        if task is not None and tid not in self._started:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+        active = next(
+            (turn_id for turn_id in self._queues.get(tid, []) if turn_id in self._started), None
+        )
+        task = self._tasks.get(active) if active else None
+        if deleting:
+            tasks = [
+                self._tasks[turn_id]
+                for turn_id in self._queues.get(tid, [])
+                if turn_id in self._tasks and turn_id != active
+            ]
+            for queued in tasks:
+                queued.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
         key = from_tid(tid)
         killed = await self.bot._orch._process_registry.kill_by_chat_topic(
             key.chat_id, key.topic_id
@@ -328,7 +476,7 @@ class WebTurns:
         if (
             task is not None
             and not task.done()
-            and (deleting or (killed == 0 and tid not in self._settled))
+            and (deleting or (killed == 0 and active not in self._settled))
         ):
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
@@ -336,7 +484,12 @@ class WebTurns:
 
     async def stop(self) -> None:
         tasks = list(self._tasks.items())
-        for tid, task in tasks:
-            if tid not in self._settled:
+        for turn_id, task in tasks:
+            state = self._turns.get(turn_id)
+            if turn_id not in self._settled and (state is None or state.cancellation is None):
                 task.cancel()
-        await asyncio.gather(*(task for _tid, task in tasks), return_exceptions=True)
+        await asyncio.gather(*(task for _turn_id, task in tasks), return_exceptions=True)
+        cancellations = [
+            state.cancellation for state in self._turns.values() if state.cancellation is not None
+        ]
+        await asyncio.gather(*cancellations, return_exceptions=True)
