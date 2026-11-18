@@ -109,6 +109,7 @@ class MasterKeyInput:
             "MASTER_KEY_TOO_SHORT": "too_short",
             "SECRETS_RATE_LIMITED": "rate_limited",
             "WEB_AUTH_MIGRATION_REQUIRED": "migration_required",
+            "SECRETS_FILE_SYMLINK": "file_symlink",
             "INVALID_MASTER_KEY": "wrong_key",
             "SECRETS_LOCKED": "locked",
             "MASTER_KEY_NOT_SET": "not_set",

@@ -204,7 +204,7 @@ export function initVault() {
     }
   }
   function failure(error) {
-    const key = { MASTER_KEY_INVALID:'wrong_key', MASTER_KEY_MISMATCH:'mismatch', MASTER_KEY_TOO_SHORT:'too_short', SECRETS_RATE_LIMITED:'rate_limited', WEB_AUTH_MIGRATION_REQUIRED:'web_migration', SECRETS_LOCKED:'locked_notice', MASTER_KEY_NOT_SET:'reveal_requires_setup', KEY_INVALID:'invalid_name', SECRET_NOT_SET:'missing', VALUE_EMPTY:'invalid_value', VALUE_TOO_LONG:'invalid_value', VALUE_MULTILINE:'invalid_value', too_large:'too_large' }[error.code] || (error.code === 'bot_unreachable' ? 'error.bot_unreachable' : 'error.generic');
+    const key = { MASTER_KEY_INVALID:'wrong_key', MASTER_KEY_MISMATCH:'mismatch', MASTER_KEY_TOO_SHORT:'too_short', SECRETS_RATE_LIMITED:'rate_limited', WEB_AUTH_MIGRATION_REQUIRED:'web_migration', SECRETS_FILE_SYMLINK:'file_symlink', SECRETS_LOCKED:'locked_notice', MASTER_KEY_NOT_SET:'reveal_requires_setup', KEY_INVALID:'invalid_name', SECRET_NOT_SET:'missing', VALUE_EMPTY:'invalid_value', VALUE_TOO_LONG:'invalid_value', VALUE_MULTILINE:'invalid_value', too_large:'too_large' }[error.code] || (error.code === 'bot_unreachable' ? 'error.bot_unreachable' : 'error.generic');
     if (error.code === 'SECRETS_RATE_LIMITED') lockedUntil = performance.now() + (error.retryAfter || 1) * 1000;
     showNotice(key, { seconds: error.retryAfter || 1 }); notice.focus();
   }

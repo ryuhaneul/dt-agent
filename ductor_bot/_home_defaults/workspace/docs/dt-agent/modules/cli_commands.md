@@ -19,7 +19,7 @@ are implemented in `chat_log/cli.py` and `webchat/cli.py`.
 | `ductor webchat reset-totp` / `clear-credentials` | Reset enrollment or remove password/TOTP credentials and revoke sessions |
 | `ductor webchat check-config [--json]` | Validate history/web settings; exit 1 for validation errors, 0 otherwise |
 
-Standalone web-credential edits return `SECRETS_LOCKED` if an encrypted tool-store marker is present; see [web authentication](webchat.md#authentication) for the supported maintenance paths.
+After web-credential migration, `set-password`, `reset-totp` and `clear-credentials` work even while the tool vault is locked, without modifying its ciphertext; see [web authentication](webchat.md#authentication).
 
 History/web CLI usage errors exit 2. Manual prune works even when recording is off;
 use `--dry-run` before deleting data. Credential changes take effect without a bot

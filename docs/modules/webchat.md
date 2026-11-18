@@ -79,9 +79,11 @@ and stays logged in. Resetting TOTP and recovering a forgotten password still re
 `ductor webchat set-password` does not need the old password: it writes a new hash and
 **discards TOTP**, so the next login must enroll it again. `reset-totp` deletes the seed without
 asking for the password. `clear-credentials` removes new credentials and legacy entries.
-These standalone edits refuse `SECRETS_LOCKED` when an encrypted store marker is present;
-they do not decrypt or rewrite an encrypted store outside its owning process. Do not remove
-the marker or create a plaintext copy to bypass that refusal. Authenticated web password change
+After migration, these standalone edits work even while the tool vault is locked: they update
+only web credentials and session state, without decrypting or rewriting the tool store.
+Before migration they also clean up the relevant legacy entries through the existing writer;
+an operation that actually needs an unavailable encrypted store still fails closed.
+Authenticated web password change
 decrypts the seed with the current password and atomically reencrypts it under the new password.
 Credential maintenance and TOTP enrollment rotate a
 persistent nonce in `webchat/auth_state.json` (0600), revoking prior sessions even

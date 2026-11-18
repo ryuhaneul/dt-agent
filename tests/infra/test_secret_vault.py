@@ -445,3 +445,47 @@ async def test_invalid_secret_encoding_is_value_free(vault: SecretVault) -> None
     assert "suffix" not in str(error.value)
     assert await vault.list_keys() == []
     assert vault.encrypted_path.read_bytes() == before
+
+
+@pytest.mark.parametrize("placement", ["file", "parent", "ancestor", "dangling"])
+async def test_setup_rejects_symlink_paths_without_touching_source(tmp_path: Path, placement):
+    original = tmp_path / "original/nested/secrets.env"
+    original.parent.mkdir(parents=True)
+    original.write_text("TOKEN=synthetic-symlink-value\n")
+    before = original.read_bytes(), original.stat().st_mtime_ns
+    link = tmp_path / "linked"
+    if placement in {"file", "dangling"}:
+        link.symlink_to(original if placement == "file" else tmp_path / "missing.env")
+        path = link
+    elif placement == "parent":
+        link.symlink_to(original.parent, target_is_directory=True)
+        path = link / "secrets.env"
+    else:
+        link.symlink_to(original.parent.parent, target_is_directory=True)
+        path = link / "nested/secrets.env"
+    vault = SecretVault(path)
+    with pytest.raises(VaultError, match=r"^SECRETS_FILE_SYMLINK$"):
+        await vault.setup(MASTER)
+    assert (await vault.status()).state is VaultState.UNCONFIGURED
+    assert original.read_bytes() == before[0]
+    assert original.stat().st_mtime_ns == before[1]
+    assert link.is_symlink()
+    assert not vault.encrypted_path.exists()
+    assert not path.with_name(path.name + ".lock").exists()
+    assert vault._key is None
+    assert vault._text is None
+
+
+async def test_regular_file_setup_still_removes_plaintext_and_unlocks(tmp_path: Path):
+    path = tmp_path / "regular/secrets.env"
+    path.parent.mkdir()
+    path.write_text("TOKEN=synthetic-regular-value\n")
+    vault = SecretVault(path)
+    await vault.setup(MASTER)
+    assert not path.exists()
+    assert vault.encrypted_path.is_file()
+    assert b"synthetic-regular-value" not in vault.encrypted_path.read_bytes()
+    await vault.lock()
+    await vault.unlock(MASTER)
+    assert await vault.get("TOKEN") == "synthetic-regular-value"
+    await vault.lock()

@@ -389,3 +389,21 @@ async def test_failure_code_never_echoes_key_or_retains_context(mk, monkeypatch,
     assert not mk.input._pending
     assert KEY not in caplog.text
     assert all(KEY not in text for text in mk.texts())
+
+
+async def test_setup_symlink_error_is_explained_and_source_preserved(mk):
+    original = mk.path.with_name("original.env")
+    original.write_text("TOKEN=synthetic-symlink-value\n")
+    mk.path.unlink(missing_ok=True)
+    mk.path.symlink_to(original)
+    before = original.read_bytes()
+    await mk.command("/masterkey setup")
+    await enter(mk, KEY)
+    await enter(mk, KEY, mid=12)
+    assert "SECRETS_FILE_SYMLINK" in mk.texts()[-1]
+    assert "symbolic link" in mk.texts()[-1]
+    assert "synthetic-symlink-value" not in mk.texts()[-1]
+    assert original.read_bytes() == before
+    assert mk.path.is_symlink()
+    assert (await mk.vault.status()).state is VaultState.UNCONFIGURED
+    assert not mk.input._masterkey._keys

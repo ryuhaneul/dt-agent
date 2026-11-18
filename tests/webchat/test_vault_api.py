@@ -453,3 +453,18 @@ async def test_automatic_expiry_emits_ws_event_without_a_status_request(h):
         assert (await h.vault.status()).state is VaultState.LOCKED
     finally:
         await socket.close()
+
+
+async def test_web_setup_reports_symlink_without_migrating_source(h):
+    original = h.path.with_name("original.env")
+    original.write_text("TOKEN=synthetic-symlink-value\n")
+    h.path.unlink(missing_ok=True)
+    h.path.symlink_to(original)
+    before = original.read_bytes()
+    assert await post(h, "/masterkey/setup", {"master_key": KEY, "confirm_key": KEY}, 400) == {
+        "error": "SECRETS_FILE_SYMLINK"
+    }
+    assert original.read_bytes() == before
+    assert h.path.is_symlink()
+    assert not h.vault.encrypted_path.exists()
+    assert (await h.vault.status()).state is VaultState.UNCONFIGURED
