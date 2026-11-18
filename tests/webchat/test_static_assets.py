@@ -2706,6 +2706,77 @@ AUTOLINK_SPEC_CASES = [
         "[http://bad_host.test/a_(b)](https://example.test/out)",
         [["https://example.test/out", "http://bad_host.test/a_(b)"]],
     ],
+    [
+        "r5 minimum 1",
+        "https://example.test/a&copy;&amp;",
+        [["https://example.test/a", "https://example.test/a"]],
+    ],
+    [
+        "r5 minimum 2",
+        "https://example.test/a&one;&two;",
+        [["https://example.test/a", "https://example.test/a"]],
+    ],
+    [
+        "r5 minimum 3",
+        "https://example.test/a\u00a0b",
+        [["https://example.test/a%C2%A0b", "https://example.test/a\u00a0b"]],
+    ],
+    [
+        "r5 minimum 4",
+        "https://example.test/a\u2003b",
+        [["https://example.test/a%E2%80%83b", "https://example.test/a\u2003b"]],
+    ],
+    [
+        "r5 minimum 5",
+        "https://example.test/a\u000bb",
+        [["https://example.test/a%0Bb", "https://example.test/a\u000bb"]],
+    ],
+    ["r5 minimum 6", '[a](https://example.test/a "title")', [["https://example.test/a", "a"]]],
+    ["r5 minimum 7", "[a]( https://example.test/a )", [["https://example.test/a", "a"]]],
+    ["r5 minimum 8", "[a](https://example.test/a\n)", [["https://example.test/a", "a"]]],
+    ["r5 minimum 9", "[&copy;](https://example.test/a)", [["https://example.test/a", "\u00a9"]]],
+    ["r5 minimum 10", "[&AMP;](https://example.test/a)", [["https://example.test/a", "&"]]],
+    [
+        "r5 minimum 11",
+        "[a](https://example.test/a&copy;b)",
+        [["https://example.test/a%C2%A9b", "a"]],
+    ],
+    [
+        "r5 minimum 12",
+        "[<https://example.test/inner>](https://example.test/outer)",
+        [["https://example.test/inner", "https://example.test/inner"]],
+    ],
+    [
+        "r5 minimum 13",
+        "[a <https://example.test/inner> b](https://example.test/outer)",
+        [["https://example.test/inner", "https://example.test/inner"]],
+    ],
+    ["r5 minimum 14", "    https://example.test/a", []],
+    ["r5 minimum 15", "`start\nhttps://example.test/a\nend`", []],
+    [
+        "r5 minimum 16",
+        "_https://example.test/a_b",
+        [["https://example.test/a_b", "https://example.test/a_b"]],
+    ],
+    ["r5 minimum 17", "_http://x/x_y", [["http://x/x_y", "http://x/x_y"]]],
+    ["r5 minimum 18", "[x](https://example.test/a&AMP;b)", [["https://example.test/a&b", "x"]]],
+    ["r5 minimum 19", "__https://a.b_c.d/a*", []],
+    [
+        "r5 minimum 20",
+        "__https://example.test/a*",
+        [["https://example.test/a", "https://example.test/a"]],
+    ],
+    [
+        "r5 minimum 21",
+        "__https://example.test/a_b*",
+        [["https://example.test/a_b", "https://example.test/a_b"]],
+    ],
+    [
+        "r5 minimum 22",
+        "[**a *b* c**](https://example.test/a)",
+        [["https://example.test/a", "a b c"]],
+    ],
+    ["r5 minimum 23", "[x](http://[::1]:8080/a)", [["http://%5B::1%5D:8080/a", "x"]]],
 ]
 
 
@@ -2775,13 +2846,20 @@ def test_autolink_spec_fixed_table():
         assert parsed.visible == text
 
 
-def test_autolink_cmark_differential(tmp_path):  # noqa: C901 - independent grammar and three spec adaptations
+@pytest.mark.parametrize(
+    "seeds",
+    [
+        [0x62165D0, 0x94A137D, 0xD15EA5E4],
+        [0xC0DEC501, 0xC0DEC502, 0xC0DEC503],
+    ],
+)
+def test_autolink_cmark_differential(tmp_path, seeds):  # noqa: C901 - independent grammar and three spec adaptations
     import random
 
     cmarkgfm = pytest.importorskip("cmarkgfm", reason="Optional test-only cmark-gfm oracle")
     reference = cmarkgfm.github_flavored_markdown_to_html
     cases = []
-    for seed in [0x62165D0, 0x94A137D, 0xD15EA5E4]:
+    for seed in seeds:
         rng = random.Random(seed)  # noqa: S311 - reproducible differential inputs
 
         def url(*, markdown=False, rng=rng):
@@ -2929,7 +3007,7 @@ def test_autolink_cmark_differential(tmp_path):  # noqa: C901 - independent gram
             {
                 "cases": len(cases),
                 "per_seed": 4000,
-                "seeds": [0x62165D0, 0x94A137D, 0xD15EA5E4],
+                "seeds": seeds,
                 "unapproved_mismatches": len(failures),
                 "spec_difference_cases": {
                     number: sum(number in case["differences"] for case in cases)
@@ -2941,6 +3019,20 @@ def test_autolink_cmark_differential(tmp_path):  # noqa: C901 - independent gram
     )
     assert len(cases) == 12000
     assert not failures, (len(failures), str(report), failures[:2])
+
+
+def test_autolink_cmark_named_entities():
+    from html.entities import html5
+
+    cmarkgfm = pytest.importorskip("cmarkgfm", reason="Optional test-only cmark-gfm oracle")
+    inputs = [
+        f"[&{name}](https://example.test/a&{name}b)" for name in sorted(html5) if name.endswith(";")
+    ]
+    rendered = render_autolink_inputs(inputs)
+    assert len(inputs) == 2125
+    for text, output in zip(inputs, rendered, strict=True):
+        expected = AutolinkMarkup(cmarkgfm.github_flavored_markdown_to_html(text)).http_links()
+        assert AutolinkMarkup(output).links == expected, text
 
 
 def test_secret_dialog_password_and_accessible_shell(markup):
