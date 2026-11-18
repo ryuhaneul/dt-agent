@@ -21,7 +21,16 @@ if TYPE_CHECKING:
 PREFIX = "_masterkey:"
 STAGES = frozenset(
     PREFIX + stage
-    for stage in ("setup", "setup-confirm", "unlock", "current", "new", "new-confirm", "ttl")
+    for stage in (
+        "setup",
+        "setup-confirm",
+        "unlock",
+        "current",
+        "new",
+        "new-confirm",
+        "ttl",
+        "ttl-key",
+    )
 )
 
 
@@ -33,6 +42,7 @@ def text(name: str, **kwargs: object) -> str:
 class _Keys:
     current: str = ""
     new: str = ""
+    ttl_seconds: int | None = None
 
 
 class MasterKeyInput:
@@ -74,7 +84,10 @@ class MasterKeyInput:
     async def _notify(self, name: str) -> None:
         # Security-state alerts deliberately bypass startup_targets lifecycle opt-outs.
         for user_id in tuple(self._owner._allowed_users):
-            await self._owner._send(user_id, text(name))
+            message = text(name)
+            if self._vault is not None and self._vault.configuration_error:
+                message += "\n" + text("invalid_config")
+            await self._owner._send(user_id, message)
 
     async def close(self, budget_seconds: float) -> None:
         if self._vault is not None:
@@ -111,6 +124,8 @@ class MasterKeyInput:
             "WEB_AUTH_MIGRATION_REQUIRED": "migration_required",
             "SECRETS_FILE_SYMLINK": "file_symlink",
             "INVALID_MASTER_KEY": "wrong_key",
+            "MASTER_KEY_REQUIRED": "prompt_ttl_key",
+            "INVALID_VAULT_CONFIG": "invalid_config",
             "SECRETS_LOCKED": "locked",
             "MASTER_KEY_NOT_SET": "not_set",
             "MASTER_KEY_ALREADY_SET": "already_set",
@@ -173,7 +188,7 @@ class MasterKeyInput:
             await self._owner._send(chat_id, text("locked"))
         elif action == "ttl":
             if len(parts) == 3:
-                await self.ttl(chat_id, parts[2])
+                await self.ttl(chat_id, user_id, parts[2])
             else:
                 await self._owner._send(chat_id, text("choose_ttl"), keyboard=self.keyboard())
         elif action == "setup":
@@ -204,7 +219,7 @@ class MasterKeyInput:
             return
         stage = pending.key.removeprefix(PREFIX)
         if stage == "ttl":
-            await self.ttl(chat_id, value or "")
+            await self.ttl(chat_id, user_id, value or "")
             return
         if value is None:
             await self._owner._send(chat_id, text("not_text"))
@@ -216,7 +231,7 @@ class MasterKeyInput:
         except VaultError as exc:
             await self.error(chat_id, exc)
 
-    async def _key_value(
+    async def _key_value(  # noqa: C901
         self, chat_id: int, user_id: int, stage: str, keys: _Keys, value: str
     ) -> None:
         if not value.encode("utf-8"):
@@ -246,11 +261,14 @@ class MasterKeyInput:
             await self._owner._send(
                 chat_id, text("setup_done" if stage == "setup-confirm" else "changed")
             )
+        elif stage == "ttl-key" and keys.ttl_seconds is not None:
+            await vault.set_ttl(keys.ttl_seconds, value)
+            await self._owner._send(chat_id, text("ttl_saved"))
         elif stage == "unlock":
             await vault.unlock(value)
             await self._owner._send(chat_id, text("unlocked"))
 
-    async def ttl(self, chat_id: int, value: str) -> None:
+    async def ttl(self, chat_id: int, user_id: int, value: str) -> None:
         if not value.isascii() or not value.isdecimal() or len(value) > 8:
             await self._owner._send(chat_id, text("invalid_ttl"))
             return
@@ -261,7 +279,10 @@ class MasterKeyInput:
                 return
             await vault.set_ttl(int(value) * 60)
         except VaultError as exc:
-            await self.error(chat_id, exc)
+            if exc.code == "MASTER_KEY_REQUIRED":
+                await self._stage(chat_id, user_id, "ttl-key", _Keys(ttl_seconds=int(value) * 60))
+            else:
+                await self.error(chat_id, exc)
         else:
             await self._owner._send(chat_id, text("ttl_saved"))
 
@@ -271,7 +292,7 @@ class MasterKeyInput:
         if value == "custom":
             await self._stage(chat_id, user_id, "ttl")
         else:
-            await self.ttl(chat_id, value)
+            await self.ttl(chat_id, user_id, value)
 
     @staticmethod
     def keyboard() -> InlineKeyboardMarkup:

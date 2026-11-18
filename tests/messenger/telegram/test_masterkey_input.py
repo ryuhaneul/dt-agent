@@ -167,6 +167,7 @@ async def test_ttl_buttons_custom_direct_and_unlimited(mk):
     await mk.command("/masterkey ttl 1")
     assert (await mk.vault.status()).state is VaultState.LOCKED
     await mk.command("/masterkey ttl 0")
+    await enter(mk, KEY)
     await mk.command("/masterkey unlock")
     await enter(mk, KEY)
     mk.clock.now += 100000
@@ -343,7 +344,8 @@ async def test_app_security_alert_ignores_startup_target_opt_out(tmp_path, monke
         await asyncio.gather(*bot._secret_input._masterkey._notifications)
         assert fake.sent[-1][0].chat.id == OTHER
         await bot._on_callback_query(callback("mk:ttl:0", user=OTHER))
-        assert (await runtime.vault.status()).ttl_seconds == 0
+        assert (await runtime.vault.status()).ttl_seconds == 60
+        assert any(p.key.endswith("ttl-key") for p in bot._secret_input._pending.values())
     finally:
         await bot._secret_input.close()
         await stop_secret_runtime(runtime)
@@ -407,3 +409,52 @@ async def test_setup_symlink_error_is_explained_and_source_preserved(mk):
     assert mk.path.is_symlink()
     assert (await mk.vault.status()).state is VaultState.UNCONFIGURED
     assert not mk.input._masterkey._keys
+
+
+async def test_ttl_extension_force_reply_never_reaches_history(mk, monkeypatch, caplog):
+    await setup(mk)
+    await mk.vault.set_ttl(60)
+    await mk.command("/masterkey ttl 2")
+    assert "extend" in mk.texts()[-1]
+    assert (await mk.vault.status()).ttl_seconds == 60
+    journal = UpdateJournal(mk.home / "ttl-journal.json", clock=mk.clock)
+    observed = MagicMock(wraps=journal)
+    dp = PollingDispatcher(journal=observed, secret_input=mk.input)
+    history = AsyncMock()
+    router = Router()
+    async def ordinary(event, **data):
+        await history(event, **data)
+
+    router.message.register(ordinary)
+    dp.include_router(router)
+    await listen(
+        dp, mk, [update(message(KEY, mid=80, reply=mk.prompt()))], monkeypatch, process=True
+    )
+    await drain_deletions(mk.input)
+    observed.record_pending.assert_not_called()
+    history.assert_not_awaited()
+    assert (await mk.vault.status()).ttl_seconds == 120
+    assert KEY not in caplog.text
+    assert KEY not in mk.state.read_text()
+    assert journal.is_handled(80)
+    await mk.input.handle_callback(callback("mk:ttl:0"))
+    assert (await mk.vault.status()).ttl_seconds == 120
+    await enter(mk, "synthetic-wrong-master", mid=81)
+    assert "incorrect" in mk.texts()[-1]
+    await mk.command("/masterkey unlock")
+    await enter(mk, KEY, mid=82)
+    assert "SECRETS_RATE_LIMITED" in mk.texts()[-1]
+
+
+async def test_invalid_config_startup_alert_includes_recovery(mk):
+    await setup(mk)
+    await mk.vault.lock()
+    mk.vault.configuration_error = "INVALID_VAULT_CONFIG"
+    before = len(mk.bot.sent)
+    await mk.input.start()
+    assert len(mk.bot.sent[before:]) == 2
+    assert all("INVALID_VAULT_CONFIG" in msg.text for msg, _ in mk.bot.sent[before:])
+    assert all("config/secret_vault.json" in msg.text for msg, _ in mk.bot.sent[before:])
+    await mk.command("/masterkey unlock")
+    await enter(mk, KEY)
+    assert "INVALID_VAULT_CONFIG" in mk.texts()[-1]

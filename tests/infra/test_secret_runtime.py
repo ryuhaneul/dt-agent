@@ -25,7 +25,7 @@ from ductor_bot.infra.secret_runtime import (
     vault_list_keys,
     vault_set_secret,
 )
-from ductor_bot.infra.secret_vault import VaultError, VaultState
+from ductor_bot.infra.secret_vault import SecretVault, VaultError, VaultState
 from ductor_bot.infra.task_runner import TaskRunOptions, run_oneshot_task
 
 
@@ -74,12 +74,44 @@ async def test_ttl_save_failure_does_not_change_memory(
 @pytest.mark.parametrize(
     "settings", ["[]", "{}", '{"ttl_seconds": true}', '{"ttl_seconds": -1}', "bad"]
 )
-def test_bad_ttl_configuration_fails_closed(tmp_path: Path, settings: str) -> None:
+async def test_bad_ttl_configuration_fails_closed(tmp_path: Path, settings: str, caplog) -> None:
+    source = SecretVault(tmp_path / "secrets.env")
+    await source.setup("synthetic-master-key")
+    await source.lock()
+    ciphertext = source.encrypted_path.read_bytes()
     folder = tmp_path / "config"
     folder.mkdir()
-    (folder / "secret_vault.json").write_text(settings)
-    with pytest.raises(VaultError, match="INVALID_VAULT_CONFIG"):
-        SecretRuntime(tmp_path)
+    path = folder / "secret_vault.json"
+    path.write_text(settings)
+    instance = SecretRuntime(tmp_path)
+    assert (await instance.vault.status()).state is VaultState.LOCKED
+    assert instance.vault.configuration_error == "INVALID_VAULT_CONFIG"
+    for operation in (
+        instance.vault.unlock("synthetic-master-key"),
+        instance.vault.set_ttl(60),
+        instance.vault.set("TOKEN", "synthetic-value"),
+    ):
+        with pytest.raises(VaultError, match="INVALID_VAULT_CONFIG"):
+            await operation
+    assert path.read_text() == settings
+    assert source.encrypted_path.read_bytes() == ciphertext
+    assert "INVALID_VAULT_CONFIG" in caplog.text
+    assert "synthetic-master-key" not in caplog.text
+    assert "ttl_seconds" not in caplog.text
+
+
+async def test_bad_settings_preserve_unconfigured_plaintext_behavior(tmp_path: Path):
+    folder = tmp_path / "config"
+    folder.mkdir()
+    (folder / "secret_vault.json").write_text("synthetic-bad-settings-canary")
+    instance = SecretRuntime(tmp_path)
+    assert (await instance.vault.status()).state is VaultState.UNCONFIGURED
+    await instance.vault.set("TOKEN", "synthetic-value")
+    assert await instance.vault.get("TOKEN") == "synthetic-value"
+    for operation in (instance.vault.setup("synthetic-master-key"), instance.vault.set_ttl(60)):
+        with pytest.raises(VaultError, match="INVALID_VAULT_CONFIG"):
+            await operation
+    assert not instance.vault.encrypted_path.exists()
 
 
 @pytest.mark.parametrize(

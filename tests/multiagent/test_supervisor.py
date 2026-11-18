@@ -396,10 +396,24 @@ class TestStopAll:
         assert not supervisor._bus.has_async_result_handler("main")
         assert not supervisor._bus.has_async_result_handler("sub1")
 
-    async def test_cancellation_unblocks_start(self, supervisor: AgentSupervisor) -> None:
+    @pytest.mark.parametrize("invalid_vault_settings", [False, True])
+    async def test_cancellation_unblocks_start(
+        self, supervisor: AgentSupervisor, invalid_vault_settings: bool
+    ) -> None:
         """Cancelling the supervisor.start() task (simulating SIGINT handler)
         must not hang — CancelledError must propagate from _main_done.wait()
         so the finally block in run_telegram() can call stop_all()."""
+        if invalid_vault_settings:
+            from ductor_bot.infra.secret_vault import SecretVault
+
+            home = supervisor._main_paths.ductor_home
+            source = SecretVault(home / "secrets.env")
+            await source.setup("synthetic-supervisor-master")
+            await source.lock()
+            settings = home / "config/secret_vault.json"
+            settings.parent.mkdir(parents=True, exist_ok=True)
+            settings.write_text("synthetic-invalid-settings-canary")
+
         main_stack = MagicMock()
         main_stack.shutdown = AsyncMock()
         main_stack.bot = MagicMock()
@@ -437,6 +451,15 @@ class TestStopAll:
             # Let start() reach _main_done.wait()
             await asyncio.sleep(0.05)
             assert not task.done()
+            if invalid_vault_settings:
+                from ductor_bot.infra.secret_vault import VaultError, VaultState
+
+                runtime = supervisor._secret_runtime
+                assert runtime is not None
+                assert (await runtime.vault.status()).state is VaultState.LOCKED
+                with pytest.raises(VaultError, match="INVALID_VAULT_CONFIG"):
+                    await runtime.vault.unlock("synthetic-supervisor-master")
+
 
             # Simulate SIGINT: cancel the task (same as _request_shutdown)
             task.cancel()

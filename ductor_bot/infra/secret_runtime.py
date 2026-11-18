@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import secrets
 from collections.abc import Callable
 from pathlib import Path
@@ -20,6 +21,7 @@ from ductor_bot.infra.secret_vault import SecretVault, VaultError
 TOKEN_ENV = "DUCTOR_SECRETS_TOKEN"  # noqa: S105
 VAULT_FILE_ENV = "DUCTOR_SECRETS_VAULT_FILE"
 TOKEN_HEADER = "X-Ductor-Secrets-Token"  # noqa: S105
+logger = logging.getLogger(__name__)
 _current: SecretRuntime | None = None
 
 
@@ -31,17 +33,28 @@ class SecretRuntime:
         self.interagent_port = interagent_port
         self._settings_path = home / "config" / "secret_vault.json"
         ttl = 0
+        configuration_error = None
         try:
             settings = json.loads(self._settings_path.read_bytes())
             ttl = settings["ttl_seconds"]
         except FileNotFoundError:
             pass
         except (OSError, ValueError, KeyError, TypeError):
-            raise VaultError("INVALID_VAULT_CONFIG") from None
+            configuration_error = "INVALID_VAULT_CONFIG"
         if type(ttl) is not int or ttl < 0:
-            raise VaultError("INVALID_VAULT_CONFIG")
+            configuration_error = "INVALID_VAULT_CONFIG"
+        if configuration_error:
+            ttl = 0
+            logger.warning(
+                "INVALID_VAULT_CONFIG: repair or delete config/secret_vault.json and restart"
+            )
         self.token = secrets.token_urlsafe(32)
-        self.vault = SecretVault(store_path(home), ttl_seconds=ttl, persist_ttl=self._save_ttl)
+        self.vault = SecretVault(
+            store_path(home),
+            ttl_seconds=ttl,
+            persist_ttl=self._save_ttl,
+            configuration_error=configuration_error,
+        )
 
     def _save_ttl(self, ttl_seconds: int) -> None:
         try:

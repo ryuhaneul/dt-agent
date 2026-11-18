@@ -368,3 +368,6 @@ missing = "Secret not found."
 invalid_value = "The secret value has an unsupported format."
 too_large = "Request exceeds 64 KiB."
 duplicate = "This key name already exists."
+
+ttl_key_required = "Confirm the master key to extend expiry or disable automatic locking."
+invalid_config = "INVALID_VAULT_CONFIG: Vault settings are invalid. Repair or delete config/secret_vault.json and restart the bot."

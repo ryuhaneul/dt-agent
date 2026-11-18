@@ -437,7 +437,7 @@ help. Do not put keys in the command or ordinary conversation.
 | `/masterkey unlock` | ForceReply key; shared wrong-key backoff applies |
 | `/masterkey lock` | Drop unlocked material now |
 | `/masterkey change` | While unlocked: current key, new key and confirmation |
-| `/masterkey ttl [minutes]` | Buttons (15 min, 1 h, 8 h, 24 h, unlimited) or direct nonnegative whole minutes; 0 means unlimited |
+| `/masterkey ttl [minutes]` | Buttons (15 min, 1 h, 8 h, 24 h, unlimited) or direct nonnegative whole minutes; 0 means unlimited; extending a configured policy asks for the master key again |
 | `/masterkey cancel` | Cancel input and discard in-memory key context |
 
 Value/key messages are consumed before update-journal admission and ordinary middleware,

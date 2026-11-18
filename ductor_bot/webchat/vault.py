@@ -53,6 +53,8 @@ async def _body(request: web.Request, action: str) -> dict[str, Any]:
         raise ValueError("bad_request")
     data = await request.json()
     fields = _FIELDS[action]
+    if action == "ttl" and isinstance(data, dict) and "master_key" in data:
+        fields = {**fields, "master_key": str}
     if not isinstance(data, dict) or set(data) != set(fields):
         raise ValueError("bad_request")
     if any(type(data[field]) is not expected for field, expected in fields.items()):
@@ -79,7 +81,7 @@ async def _operate(vault: SecretVault, action: str, data: dict[str, Any]) -> dic
         _confirm(data["new_key"], data["confirm_key"])
         await vault.change_key(data["current_key"], data["new_key"])
     elif action == "ttl":
-        await vault.set_ttl(data["ttl_seconds"])
+        await vault.set_ttl(data["ttl_seconds"], data.get("master_key"))
     elif action == "set":
         await vault.set(data["key"], data["value"])
     elif action == "delete":
@@ -127,11 +129,13 @@ def register_vault_routes(  # noqa: C901
             if vault is None:
                 return _response({"error": "SECRETS_UNAVAILABLE"}, 503)
             if request.method == "GET":
-                result = (
+                result: dict[str, Any] = (
                     asdict(await vault.status())
                     if request.path.endswith("/status")
                     else {"keys": await vault.list_keys()}
                 )
+                if request.path.endswith("/status") and vault.configuration_error:
+                    result["reason"] = vault.configuration_error
             else:
                 result = await _operate(vault, request.match_info["action"], data)
             return _response(result)

@@ -767,3 +767,6 @@ custom = "Enter duration"
 private_only = "Use /masterkey in a private chat with the bot."
 main_only = "Use /masterkey with the main bot."
 locked_state = "Locked"
+
+prompt_ttl_key = "To extend expiry or disable automatic locking, reply with the master key within 2 minutes."
+invalid_config = "INVALID_VAULT_CONFIG: Vault settings are invalid. Repair or delete config/secret_vault.json and restart the bot."

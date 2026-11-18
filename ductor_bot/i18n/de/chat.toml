@@ -766,3 +766,6 @@ custom = "Dauer eingeben"
 private_only = "Verwende /masterkey im privaten Chat mit dem Bot."
 main_only = "Verwende /masterkey beim Hauptbot."
 locked_state = "Gesperrt"
+
+prompt_ttl_key = "Um die Ablaufzeit zu verlängern oder die automatische Sperre auszuschalten, antworte innerhalb von 2 Minuten mit dem Hauptschlüssel."
+invalid_config = "INVALID_VAULT_CONFIG: Die Tresoreinstellungen sind ungültig. Korrigiere oder lösche config/secret_vault.json und starte den Bot neu."

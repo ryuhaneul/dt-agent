@@ -368,3 +368,6 @@ missing = "Geheimnis nicht gefunden."
 invalid_value = "Nicht unterstütztes Format des Geheimniswerts."
 too_large = "Die Anfrage überschreitet 64 KiB."
 duplicate = "Dieser Schlüsselname existiert bereits."
+
+ttl_key_required = "Bestätige den Hauptschlüssel, um die Ablaufzeit zu verlängern oder die automatische Sperre auszuschalten."
+invalid_config = "INVALID_VAULT_CONFIG: Die Tresoreinstellungen sind ungültig. Korrigiere oder lösche config/secret_vault.json und starte den Bot neu."

@@ -243,14 +243,14 @@ async def test_ttl_changes_recalculate_from_unlock_and_unlimited(vault: SecretVa
     clock.now += 30
     await vault.set_ttl(80)
     assert (await vault.status()).remaining_seconds == 50
-    await vault.set_ttl(0)
+    await vault.set_ttl(0, MASTER)
     clock.now += 1000
     assert (await vault.status()).state is VaultState.UNLOCKED
     assert (await vault.status()).remaining_seconds is None
     assert vault._expiry_task is None
     await vault.set_ttl(10)
     assert (await vault.status()).state is VaultState.LOCKED
-    await vault.set_ttl(0)
+    await vault.set_ttl(0, MASTER)
     assert (await vault.status()).state is VaultState.LOCKED
     await vault.unlock(MASTER)
     assert (await vault.status()).state is VaultState.UNLOCKED
@@ -509,3 +509,40 @@ async def test_setup_allows_parent_symlinks_without_leaving_plaintext(tmp_path: 
     await restarted.unlock(MASTER)
     assert await restarted.get("TOKEN") == "synthetic-parent-link-value"
     await restarted.lock()
+
+
+async def test_ttl_extension_requires_key_and_shares_backoff(vault: SecretVault):
+    clock = Clock()
+    vault._clock = clock
+    await vault.setup(MASTER)
+    await vault.set_ttl(60)
+    unlocked_at = vault._unlocked_at
+    for longer in (120, 0):
+        with pytest.raises(VaultError, match="MASTER_KEY_REQUIRED"):
+            await vault.set_ttl(longer)
+    assert vault._failures == 0
+    assert (await vault.status()).ttl_seconds == 60
+    with pytest.raises(VaultError, match="INVALID_MASTER_KEY"):
+        await vault.set_ttl(120, "synthetic-wrong-key")
+    assert (await vault.status()).ttl_seconds == 60
+    with pytest.raises(VaultError, match="SECRETS_RATE_LIMITED"):
+        await vault.reveal("TOKEN", MASTER)
+    clock.now += 2
+    await vault.set_ttl(120, MASTER)
+    assert vault._unlocked_at == unlocked_at
+    assert (await vault.status()).remaining_seconds == 118
+    await vault.set_ttl(30)
+    await vault.set_ttl(30)
+    await vault.lock()
+    await vault.set_ttl(0, MASTER)
+    assert (await vault.status()).state is VaultState.LOCKED
+    await vault.set_ttl(10)
+    assert (await vault.status()).ttl_seconds == 10
+
+
+async def test_unconfigured_ttl_changes_need_no_key(vault: SecretVault):
+    await vault.set_ttl(60)
+    await vault.set_ttl(120)
+    await vault.set_ttl(0)
+    assert (await vault.status()).state is VaultState.UNCONFIGURED
+    assert (await vault.status()).ttl_seconds == 0

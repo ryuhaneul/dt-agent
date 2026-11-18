@@ -765,3 +765,6 @@ custom = "Masukkan durasi"
 private_only = "Gunakan /masterkey dalam chat pribadi dengan bot."
 main_only = "Gunakan /masterkey dengan bot utama."
 locked_state = "Terkunci"
+
+prompt_ttl_key = "Untuk memperpanjang durasi atau menonaktifkan penguncian otomatis, balas dengan kunci utama dalam 2 menit."
+invalid_config = "INVALID_VAULT_CONFIG: Pengaturan penyimpanan tidak valid. Perbaiki atau hapus config/secret_vault.json lalu mulai ulang bot."

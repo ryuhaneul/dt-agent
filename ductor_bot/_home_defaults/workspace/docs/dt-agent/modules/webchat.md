@@ -206,7 +206,7 @@ Browser prefix `/api` and bridge prefix `/webchat/v1` share these resources:
 | `POST /masterkey/unlock` | `{master_key}` |
 | `POST /masterkey/lock` | `{}` |
 | `POST /masterkey/change` | `{current_key, new_key, confirm_key}` |
-| `POST /masterkey/ttl` | `{ttl_seconds}` (0 = unlimited) |
+| `POST /masterkey/ttl` | `{ttl_seconds, master_key?}` (0 = unlimited); key required to extend a configured finite TTL or switch it to unlimited |
 | `GET /secrets/keys` | `{keys: [names]}`; no values |
 | `POST /secrets/set` | `{key, value}` |
 | `POST /secrets/delete` | `{key}` |
@@ -219,7 +219,12 @@ Shared backoff returns 429 `SECRETS_RATE_LIMITED` with `retry_after`; locked ope
 409 `WEB_AUTH_MIGRATION_REQUIRED`. `MASTER_KEY_TOO_SHORT` and `MASTER_KEY_MISMATCH` use 400.
 The existing WebSocket forwards only `{type: "secrets_changed"}` invalidations for setup,
 unlock, lock/expiry, TTL, key change and secret writes; open clients requery status/names.
-No value is included in these events.
+No value is included in these events. The expiry form adds a password field with
+`autocomplete=off` only when extending a configured policy; reducing it needs no key.
+`MASTER_KEY_REQUIRED` reports missing confirmation without counting a failed key attempt.
+Malformed vault settings keep the bot running but block a configured vault with
+`INVALID_VAULT_CONFIG`; status then adds `reason` with that code. Repair or delete
+`config/secret_vault.json` and restart to recover; leave the encrypted store intact.
 
 ## Bridge contracts
 

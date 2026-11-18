@@ -368,3 +368,6 @@ missing = "시크릿을 찾을 수 없어요."
 invalid_value = "지원하지 않는 시크릿 값 형식이에요."
 too_large = "요청 크기가 64KiB를 초과했어요."
 duplicate = "이미 있는 키 이름이에요."
+
+ttl_key_required = "만료 시간을 늘리거나 자동 잠금을 끄려면 마스터키를 확인하세요."
+invalid_config = "INVALID_VAULT_CONFIG: 저장소 설정이 손상됐어요. config/secret_vault.json을 수정하거나 삭제한 뒤 봇을 재시작하세요."

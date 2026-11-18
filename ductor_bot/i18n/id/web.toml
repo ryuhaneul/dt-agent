@@ -368,3 +368,6 @@ missing = "Rahasia tidak ditemukan."
 invalid_value = "Format nilai tidak didukung."
 too_large = "Permintaan melebihi 64 KiB."
 duplicate = "Nama kunci ini sudah ada."
+
+ttl_key_required = "Konfirmasikan kunci utama untuk memperpanjang durasi atau menonaktifkan penguncian otomatis."
+invalid_config = "INVALID_VAULT_CONFIG: Pengaturan penyimpanan tidak valid. Perbaiki atau hapus config/secret_vault.json lalu mulai ulang bot."

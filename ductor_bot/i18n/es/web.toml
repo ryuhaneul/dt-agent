@@ -368,3 +368,6 @@ missing = "Secreto no encontrado."
 invalid_value = "Formato del valor no compatible."
 too_large = "La solicitud supera 64 KiB."
 duplicate = "Este nombre de clave ya existe."
+
+ttl_key_required = "Confirma la clave maestra para ampliar la duración o desactivar el bloqueo automático."
+invalid_config = "INVALID_VAULT_CONFIG: La configuración del almacén no es válida. Corrige o elimina config/secret_vault.json y reinicia el bot."

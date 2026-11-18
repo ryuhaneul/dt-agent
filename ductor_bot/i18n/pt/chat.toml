@@ -768,3 +768,6 @@ custom = "Digitar duração"
 private_only = "Use /masterkey em uma conversa privada com o bot."
 main_only = "Use /masterkey com o bot principal."
 locked_state = "Bloqueado"
+
+prompt_ttl_key = "Para estender o prazo ou desativar o bloqueio automático, responda com a chave mestra em 2 minutos."
+invalid_config = "INVALID_VAULT_CONFIG: As configurações do cofre são inválidas. Corrija ou exclua config/secret_vault.json e reinicie o bot."

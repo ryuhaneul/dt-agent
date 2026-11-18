@@ -765,3 +765,6 @@ custom = "직접 입력"
 private_only = "봇과의 1:1 대화에서 /masterkey를 사용하세요."
 main_only = "메인 봇에서 /masterkey를 사용하세요."
 locked_state = "잠김"
+
+prompt_ttl_key = "만료 시간을 늘리거나 자동 잠금을 끄려면 2분 안에 마스터키를 답장하세요."
+invalid_config = "INVALID_VAULT_CONFIG: 저장소 설정이 손상됐어요. config/secret_vault.json을 수정하거나 삭제한 뒤 봇을 재시작하세요."

@@ -770,3 +770,6 @@ custom = "Ввести срок"
 private_only = "Используй /masterkey в личном чате с ботом."
 main_only = "Используй /masterkey у основного бота."
 locked_state = "Заблокировано"
+
+prompt_ttl_key = "Чтобы продлить срок или отключить автоблокировку, ответь мастер-ключом в течение 2 минут."
+invalid_config = "INVALID_VAULT_CONFIG: Настройки хранилища повреждены. Исправь или удали config/secret_vault.json и перезапусти бота."

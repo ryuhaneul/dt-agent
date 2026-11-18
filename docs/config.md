@@ -126,6 +126,18 @@ This is not a guarantee of Python memory zeroization or forensic erasure of old 
 TTL is saved separately in `config/secret_vault.json`: `ttl_seconds: 0` (default) means unlimited
 until manual lock or restart. Changing TTL recalculates the absolute deadline from the last
 successful unlock immediately; revealing a value or changing the key does not extend it.
+Once configured, increasing a finite TTL or changing it to unlimited requires the master key
+again. Reducing it (including unlimited to finite) or keeping it unchanged needs no key.
+Before setup, TTL changes need no key. Confirmation uses the shared wrong-key backoff and
+neither unlocks a locked vault nor resets the last-unlock time. Missing confirmation returns
+`MASTER_KEY_REQUIRED`; web APIs report a wrong key as `MASTER_KEY_INVALID`.
+
+If `config/secret_vault.json` is unreadable or invalid, the bot still starts. A configured
+vault stays locked and refuses unlock and changes with `INVALID_VAULT_CONFIG`; the startup
+security alert includes that code. Status adds `reason` only for this condition, and logs do
+not contain the settings contents. Repair or delete this settings file and restart the bot;
+never delete `secrets.env.enc`. An unconfigured plaintext store remains unconfigured and
+usable, but setup and TTL changes are refused until the settings are repaired and the bot restarts.
 
 A locked store read fails with `SECRETS_LOCKED` and
 `Secrets store is locked - ask the owner to enter the master key`. Stop the blocked work and

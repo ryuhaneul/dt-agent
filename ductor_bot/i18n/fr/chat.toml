@@ -770,3 +770,6 @@ custom = "Saisir une durée"
 private_only = "Utilise /masterkey dans un chat privé avec le bot."
 main_only = "Utilise /masterkey avec le bot principal."
 locked_state = "Verrouillé"
+
+prompt_ttl_key = "Pour prolonger le délai ou désactiver le verrouillage automatique, réponds avec la clé maîtresse sous 2 minutes."
+invalid_config = "INVALID_VAULT_CONFIG: Les paramètres du coffre sont invalides. Répare ou supprime config/secret_vault.json, puis redémarre le bot."

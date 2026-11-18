@@ -468,3 +468,46 @@ async def test_web_setup_reports_symlink_without_migrating_source(h):
     assert h.path.is_symlink()
     assert not h.vault.encrypted_path.exists()
     assert (await h.vault.status()).state is VaultState.UNCONFIGURED
+
+
+async def test_ttl_extension_requires_confirmation_and_shares_failure_limit(h):
+    await post(h, "/masterkey/setup", {"master_key": KEY, "confirm_key": KEY})
+    await post(h, "/masterkey/ttl", {"ttl_seconds": 60})
+    for longer in (120, 0):
+        assert await post(h, "/masterkey/ttl", {"ttl_seconds": longer}, 400) == {
+            "error": "MASTER_KEY_REQUIRED"
+        }
+    assert h.vault._failures == 0
+    assert await post(
+        h, "/masterkey/ttl", {"ttl_seconds": 120, "master_key": "wrong-key"}, 422
+    ) == {"error": "MASTER_KEY_INVALID"}
+    assert (await post(h, "/masterkey/unlock", {"master_key": KEY}, 429))[
+        "error"
+    ] == "SECRETS_RATE_LIMITED"
+    h.clock.now += 2
+    await post(h, "/masterkey/ttl", {"ttl_seconds": 120, "master_key": KEY})
+    await post(h, "/masterkey/ttl", {"ttl_seconds": 30})
+    await post(h, "/masterkey/lock", {})
+    await post(h, "/masterkey/ttl", {"ttl_seconds": 0, "master_key": KEY})
+    assert (await h.vault.status()).state is VaultState.LOCKED
+    assert (await h.vault.status()).ttl_seconds == 0
+
+
+async def test_unconfigured_ttl_does_not_require_master_key(h):
+    for duration in (60, 120, 0):
+        await post(h, "/masterkey/ttl", {"ttl_seconds": duration})
+    assert (await h.vault.status()).state is VaultState.UNCONFIGURED
+
+
+async def test_invalid_config_status_reports_reason_and_blocks_unlock(h):
+    await post(h, "/masterkey/setup", {"master_key": KEY, "confirm_key": KEY})
+    await post(h, "/masterkey/lock", {})
+    h.vault.configuration_error = "INVALID_VAULT_CONFIG"
+    response = await h.client.get("/api/masterkey/status", headers=h.headers)
+    assert response.status == 200
+    status = await response.json()
+    assert status["state"] == "locked"
+    assert status["reason"] == "INVALID_VAULT_CONFIG"
+    assert await post(h, "/masterkey/unlock", {"master_key": KEY}, 400) == {
+        "error": "INVALID_VAULT_CONFIG"
+    }

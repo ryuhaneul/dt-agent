@@ -119,8 +119,12 @@ class InternalAgentAPI:
         if not self._secrets_authorized(request):
             return self._secret_response({"error": "forbidden"}, 403)
         assert self._secret_runtime is not None
-        state = await self._secret_runtime.vault.status()
-        return self._secret_response(asdict(state))
+        vault = self._secret_runtime.vault
+        state = await vault.status()
+        result = asdict(state)
+        if vault.configuration_error:
+            result["reason"] = vault.configuration_error
+        return self._secret_response(result)
 
     async def _handle_secret_keys(self, request: web.Request) -> web.Response:
         if not self._secrets_authorized(request):

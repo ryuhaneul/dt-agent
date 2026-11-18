@@ -368,3 +368,6 @@ missing = "Secret introuvable."
 invalid_value = "Format de valeur non pris en charge."
 too_large = "La requête dépasse 64 Kio."
 duplicate = "Ce nom de clé existe déjà."
+
+ttl_key_required = "Confirme la clé maîtresse pour prolonger le délai ou désactiver le verrouillage automatique."
+invalid_config = "INVALID_VAULT_CONFIG: Les paramètres du coffre sont invalides. Répare ou supprime config/secret_vault.json, puis redémarre le bot."

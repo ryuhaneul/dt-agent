@@ -194,6 +194,7 @@ class SecretVault:
         ttl_seconds: int = 0,
         clock: Callable[[], float] = time.monotonic,
         persist_ttl: Callable[[int], None] | None = None,
+        configuration_error: str | None = None,
     ) -> None:
         self._validate_ttl(ttl_seconds)
         self.plaintext_path = plaintext_path
@@ -203,6 +204,7 @@ class SecretVault:
         self._clock = clock
         self._ttl_seconds = ttl_seconds
         self._persist_ttl = persist_ttl
+        self.configuration_error = configuration_error
         self._key: bytes | None = None
         self._salt: bytes | None = None
         self._text: str | None = None
@@ -262,7 +264,12 @@ class SecretVault:
             if self._expiry_callback is not None:
                 self._expiry_callback()
 
+    def _check_configuration(self) -> None:
+        if self.configuration_error is not None:
+            raise VaultError(self.configuration_error)
+
     def _require_unlocked(self) -> None:
+        self._check_configuration()
         self._expire()
         if self._key is None:
             raise VaultError("SECRETS_LOCKED" if self._configured else "MASTER_KEY_NOT_SET")
@@ -349,6 +356,7 @@ class SecretVault:
     async def setup(self, master_key: str) -> None:
         """Encrypt existing plaintext before removing it; failures preserve the source."""
         async with self._mutex:
+            self._check_configuration()
             if self._configured:
                 raise VaultError("MASTER_KEY_ALREADY_SET")
             _validate_master_key(master_key)
@@ -370,6 +378,7 @@ class SecretVault:
             self._expire()
             if not self._configured:
                 raise VaultError("MASTER_KEY_NOT_SET")
+            self._check_configuration()
             key, salt, text = await self._authenticate(master_key)
             self._key, self._salt, self._text = key, salt, text
             self._values = _parse_text(text)
@@ -398,11 +407,20 @@ class SecretVault:
             self._expire()
             self._notify_change()
 
-    async def set_ttl(self, ttl_seconds: int) -> None:
+    async def set_ttl(self, ttl_seconds: int, master_key: str | None = None) -> None:
         """Recalculate expiry immediately against the last successful unlock."""
         async with self._mutex:
             self._validate_ttl(ttl_seconds)
+            self._check_configuration()
             self._expire()
+            increases = self._ttl_seconds != 0 and (
+                ttl_seconds == 0 or ttl_seconds > self._ttl_seconds
+            )
+            if self._configured and increases:
+                if master_key is None:
+                    raise VaultError("MASTER_KEY_REQUIRED")
+                await self._authenticate(master_key)
+                self._expire()
             if self._persist_ttl is not None:
                 await self._worker(self._persist_ttl, ttl_seconds)
             self._ttl_seconds = ttl_seconds

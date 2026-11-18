@@ -368,3 +368,6 @@ missing = "Geheim niet gevonden."
 invalid_value = "Niet ondersteund waardeformaat."
 too_large = "Het verzoek overschrijdt 64 KiB."
 duplicate = "Deze sleutelnaam bestaat al."
+
+ttl_key_required = "Bevestig de hoofdsleutel om de duur te verlengen of automatisch vergrendelen uit te schakelen."
+invalid_config = "INVALID_VAULT_CONFIG: De kluisinstellingen zijn ongeldig. Herstel of verwijder config/secret_vault.json en herstart de bot."

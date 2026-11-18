@@ -148,13 +148,22 @@ export function initVault() {
     if (view === 'delete') { fields += `<p class="vault-delete-question">${esc(text('delete_confirm'))}</p>`; submit = text('delete'); }
     if (view === 'ttl') {
       const choices = durations.includes(status.ttl_seconds) ? durations : [status.ttl_seconds, ...durations];
-      fields += `<div class="vault-form-group"><label for="vaultTtl">${esc(text('auto_lock'))}</label><select class="field" id="vaultTtl">${choices.map(value => `<option value="${value}"${value === status.ttl_seconds ? ' selected' : ''}>${esc(duration(value))}</option>`).join('')}</select></div><label class="vault-check"><input id="vaultUnlimited" type="checkbox"${status.ttl_seconds === 0 ? ' checked' : ''}>${esc(text('unlimited'))}</label>`;
+      fields += `<div class="vault-form-group"><label for="vaultTtl">${esc(text('auto_lock'))}</label><select class="field" id="vaultTtl">${choices.map(value => `<option value="${value}"${value === status.ttl_seconds ? ' selected' : ''}>${esc(duration(value))}</option>`).join('')}</select></div><label class="vault-check"><input id="vaultUnlimited" type="checkbox"${status.ttl_seconds === 0 ? ' checked' : ''}>${esc(text('unlimited'))}</label><div id="vaultTtlAuth"></div>`;
     }
     form.innerHTML = fields + `<div class="vault-actions">${button(t('common.cancel'), back)}<button class="btn btn-primary${view === 'delete' ? ' vault-delete-submit' : ''}" id="vaultSubmit" type="submit">${esc(submit)}</button></div>`;
     form.prepend(notice); content.append(form);
     if (view === 'ttl') {
       $('vaultTtl').disabled = $('vaultUnlimited').checked;
-      $('vaultUnlimited').addEventListener('change', event => { $('vaultTtl').disabled = event.target.checked; if (event.target.checked) $('vaultTtl').value = '0'; });
+      const updateTtlAuth = () => {
+        const value = $('vaultUnlimited').checked ? 0 : Number($('vaultTtl').value);
+        const needsKey = status.state !== 'unconfigured' && status.ttl_seconds !== 0 && (value === 0 || value > status.ttl_seconds);
+        const group = $('vaultTtlAuth');
+        if (needsKey && !group.firstChild) group.innerHTML = field('vaultTtlKey', 'current_key');
+        else if (!needsKey) { group.querySelectorAll('input').forEach(input => { input.value = ''; }); group.replaceChildren(); }
+      };
+      $('vaultUnlimited').addEventListener('change', event => { $('vaultTtl').disabled = event.target.checked; if (event.target.checked) $('vaultTtl').value = '0'; updateTtlAuth(); });
+      $('vaultTtl').addEventListener('change', updateTtlAuth);
+      updateTtlAuth();
     }
     form.addEventListener('submit', submitForm);
   }
@@ -195,6 +204,7 @@ export function initVault() {
         keys = result.keys;
       } else if (current.state === 'locked') keys = [];
       if (dialog.open && isList()) render();
+      if (current.reason === 'INVALID_VAULT_CONFIG' && dialog.open) showNotice('invalid_config');
       tick();
     } catch (error) {
       if (sequence === refreshSequence && authenticated && generation === authEpoch) {
@@ -204,7 +214,7 @@ export function initVault() {
     }
   }
   function failure(error) {
-    const key = { MASTER_KEY_INVALID:'wrong_key', MASTER_KEY_MISMATCH:'mismatch', MASTER_KEY_TOO_SHORT:'too_short', SECRETS_RATE_LIMITED:'rate_limited', WEB_AUTH_MIGRATION_REQUIRED:'web_migration', SECRETS_FILE_SYMLINK:'file_symlink', SECRETS_LOCKED:'locked_notice', MASTER_KEY_NOT_SET:'reveal_requires_setup', KEY_INVALID:'invalid_name', SECRET_NOT_SET:'missing', VALUE_EMPTY:'invalid_value', VALUE_TOO_LONG:'invalid_value', VALUE_MULTILINE:'invalid_value', too_large:'too_large' }[error.code] || (error.code === 'bot_unreachable' ? 'error.bot_unreachable' : 'error.generic');
+    const key = { MASTER_KEY_INVALID:'wrong_key', MASTER_KEY_REQUIRED:'ttl_key_required', INVALID_VAULT_CONFIG:'invalid_config', MASTER_KEY_MISMATCH:'mismatch', MASTER_KEY_TOO_SHORT:'too_short', SECRETS_RATE_LIMITED:'rate_limited', WEB_AUTH_MIGRATION_REQUIRED:'web_migration', SECRETS_FILE_SYMLINK:'file_symlink', SECRETS_LOCKED:'locked_notice', MASTER_KEY_NOT_SET:'reveal_requires_setup', KEY_INVALID:'invalid_name', SECRET_NOT_SET:'missing', VALUE_EMPTY:'invalid_value', VALUE_TOO_LONG:'invalid_value', VALUE_MULTILINE:'invalid_value', too_large:'too_large' }[error.code] || (error.code === 'bot_unreachable' ? 'error.bot_unreachable' : 'error.generic');
     if (error.code === 'SECRETS_RATE_LIMITED') lockedUntil = performance.now() + (error.retryAfter || 1) * 1000;
     showNotice(key, { seconds: error.retryAfter || 1 }); notice.focus();
   }
@@ -219,7 +229,10 @@ export function initVault() {
     if (operation === 'change') body = { current_key: $('vaultCurrentKey').value, new_key: $('vaultMasterKey').value, confirm_key: $('vaultConfirmKey').value };
     if (['setup', 'change'].includes(operation) && (body.master_key ?? body.new_key) !== body.confirm_key) { clearInputs(); showNotice('mismatch'); return; }
     if (operation === 'add' && keys.includes($('vaultKeyName').value)) { clearInputs(); showNotice('duplicate'); return; }
-    if (operation === 'ttl') body.ttl_seconds = $('vaultUnlimited').checked ? 0 : Number($('vaultTtl').value);
+    if (operation === 'ttl') {
+      body.ttl_seconds = $('vaultUnlimited').checked ? 0 : Number($('vaultTtl').value);
+      if ($('vaultTtlKey')) body.master_key = $('vaultTtlKey').value;
+    }
     if (['add', 'edit'].includes(operation)) body = { key: operation === 'add' ? $('vaultKeyName').value : selected, value: $('vaultSecretValue').value };
     if (['delete', 'verify'].includes(operation)) body.key = selected;
     path = ['add', 'edit', 'delete', 'verify'].includes(operation) ? `/secrets/${{ add:'set', edit:'set', delete:'delete', verify:'reveal' }[operation]}` : `/masterkey/${operation}`;

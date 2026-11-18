@@ -766,3 +766,6 @@ custom = "Duur invoeren"
 private_only = "Gebruik /masterkey in een privéchat met de bot."
 main_only = "Gebruik /masterkey bij de hoofdbot."
 locked_state = "Vergrendeld"
+
+prompt_ttl_key = "Om de duur te verlengen of automatisch vergrendelen uit te schakelen, antwoord je binnen 2 minuten met de hoofdsleutel."
+invalid_config = "INVALID_VAULT_CONFIG: De kluisinstellingen zijn ongeldig. Herstel of verwijder config/secret_vault.json en herstart de bot."

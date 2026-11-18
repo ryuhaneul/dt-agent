@@ -770,3 +770,6 @@ custom = "Introducir duración"
 private_only = "Usa /masterkey en un chat privado con el bot."
 main_only = "Usa /masterkey con el bot principal."
 locked_state = "Bloqueado"
+
+prompt_ttl_key = "Para ampliar la duración o desactivar el bloqueo automático, responde con la clave maestra en 2 minutos."
+invalid_config = "INVALID_VAULT_CONFIG: La configuración del almacén no es válida. Corrige o elimina config/secret_vault.json y reinicia el bot."
