@@ -20,7 +20,7 @@ from urllib.parse import quote
 
 from ductor_bot.infra.atomic_io import atomic_text_save, complete_write
 from ductor_bot.infra.env_secrets import load_env_secrets
-from ductor_bot.infra.secret_store import set_secret
+from ductor_bot.infra.secret_store import LEGACY_WEB_AUTH_KEYS, set_secret
 from ductor_bot.webchat.credentials import (
     CredentialsError,
     CredentialStore,
@@ -31,8 +31,7 @@ from ductor_bot.webchat.credentials import (
     encrypt_seed,
 )
 
-PASSWORD_KEY = "DT_WEBCHAT_PASSWORD_HASH"  # noqa: S105
-TOTP_KEY = "DT_WEBCHAT_TOTP_SEED"
+PASSWORD_KEY, TOTP_KEY = LEGACY_WEB_AUTH_KEYS
 MIN_PASSWORD_LENGTH = 12
 _HASH = re.compile(r"scrypt:32768:8:1:([0-9a-f]{32}):([0-9a-f]{64})")
 _WINDOW = 900
@@ -452,6 +451,33 @@ class BridgeAuth:
         self._discard_all_preauth()
         return {"ok": True}
 
+    async def _migrate_legacy(
+        self,
+        pre: _Preauth,
+        password_hash: str,
+        seed: str,
+        expected_seed: str | None,
+    ) -> bool:
+        if self.store.with_name(self.store.name + ".enc").exists():
+            logger.warning("Webchat credential migration skipped: encrypted legacy store")
+            return False
+        if pre.seed_key is None or pre.seed_salt is None:
+            logger.warning("Webchat credential migration deferred")
+            return False
+        try:
+            record = encrypt_seed(seed, pre.seed_key, pre.seed_salt)
+            await complete_write(
+                self.credential_store.migrate_legacy,
+                self.store,
+                WebCredentials(password_hash, record),
+                expected_seed,
+            )
+        except (CredentialsError, OSError, ValueError):
+            logger.warning("Webchat credential migration deferred")
+            return False
+        self._discard_all_preauth()
+        return True
+
     async def _dispatch_legacy(  # noqa: C901, PLR0912, PLR0915
         self, action: str, data: dict[str, object], pre: _Preauth | None, ip: str, now: float
     ) -> dict[str, object]:
@@ -530,9 +556,11 @@ class BridgeAuth:
             raise AuthError
         if not self._verify_code(candidate, code, setup=action == "setup/confirm"):
             raise AuthError
-        if action == "setup/confirm":
-            await asyncio.to_thread(set_secret, self.store, TOTP_KEY, candidate)
-            rotate_credential_nonce(self.state_path)
+        migrated = await self._migrate_legacy(pre, values.get(PASSWORD_KEY, ""), candidate, seed)
+        if action == "setup/confirm" and not migrated:
+            if not self.store.with_name(self.store.name + ".enc").exists():
+                await asyncio.to_thread(set_secret, self.store, TOTP_KEY, candidate)
+                rotate_credential_nonce(self.state_path)
             self._discard_all_preauth()
         self._discard_preauth(str(data["preauth"]))
         return {"ok": True}

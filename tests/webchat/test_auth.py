@@ -25,6 +25,7 @@ from ductor_bot.webchat.auth import (
     totp_code,
     verify_password,
 )
+from ductor_bot.webchat.credentials import CredentialStore, decrypt_seed
 from ductor_bot.workspace.paths import DuctorPaths
 
 _PASSWORD = "sample-password-123"
@@ -222,8 +223,12 @@ async def test_setup_new_paste_confirm_and_read_only_state(service):
         "setup/confirm",
         {"preauth": first["preauth"], "code": totp_code(_SEED, clock.wall // 30), "client_ip": _IP},
     ) == {"ok": True}
-    assert load_env_secrets(instance.store)[TOTP_KEY] == _SEED
-    assert stat.S_IMODE(instance.store.stat().st_mode) == 0o600
+    saved = instance.credential_store.load()
+    assert saved is not None
+    assert saved.totp is not None
+    assert decrypt_seed(saved.totp, _PASSWORD)[0] == _SEED
+    assert TOTP_KEY not in load_env_secrets(instance.store)
+    assert stat.S_IMODE(instance.credential_store.path.stat().st_mode) == 0o600
     for action in ("setup/begin", "setup/confirm"):
         await invalid(
             instance, action, {"preauth": first["preauth"], "mode": "new"}, "totp_configured"
@@ -274,7 +279,10 @@ def test_cli_set_reset_and_clear(cli_home, capsys):
     set_secret(store, "OTHER_KEY", "other-test-value")
     with patch.object(cli.getpass, "getpass", side_effect=[_PASSWORD, _PASSWORD]):
         cli.cmd_webchat(["webchat", "set-password"])
-    assert verify_password(_PASSWORD, load_env_secrets(store)[PASSWORD_KEY])
+    saved = CredentialStore(cli_home.webchat_dir / "credentials.json").load()
+    assert saved is not None
+    assert verify_password(_PASSWORD, saved.password_hash)
+    assert saved.totp is None
     state_path = cli_home.webchat_dir / "auth_state.json"
     password_nonce = json.loads(state_path.read_text())["credential_nonce"]
     set_secret(store, TOTP_KEY, _SEED)
@@ -401,9 +409,9 @@ async def test_review_totp_replay_survives_restart(service):
     set_secret(instance.store, TOTP_KEY, _SEED)
     pre = await password_login(service)
     data = {"preauth": pre["preauth"], "code": totp_code(_SEED, clock.wall // 30), "client_ip": _IP}
-    before = instance.store.read_bytes()
     await instance.handle("totp", data)
-    assert instance.store.read_bytes() == before
+    assert load_env_secrets(instance.store) == {}
+    assert instance.credential_store.path.is_file()
     assert "DT_WEBCHAT_TOTP_LAST_USED" not in load_env_secrets(instance.store)
     state_path = instance.store.parent / "webchat" / "auth_state.json"
     assert state_path.is_file()
@@ -526,7 +534,6 @@ async def test_runtime_state_ignores_legacy_secret_value(service):
     instance, clock = service
     set_secret(instance.store, TOTP_KEY, _SEED)
     set_secret(instance.store, "DT_WEBCHAT_TOTP_LAST_USED", "legacy-value")
-    before = instance.store.read_bytes()
     pre = await password_login(service)
     assert (
         await instance.handle(
@@ -538,7 +545,8 @@ async def test_runtime_state_ignores_legacy_secret_value(service):
             },
         )
     )["ok"]
-    assert instance.store.read_bytes() == before
+    assert load_env_secrets(instance.store) == {"DT_WEBCHAT_TOTP_LAST_USED": "legacy-value"}
+    assert instance.credential_store.path.is_file()
 
 
 async def test_review_preauth_rejected_after_password_change(service):

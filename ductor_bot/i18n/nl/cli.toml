@@ -98,6 +98,10 @@ prune_preview = "Voorbeeld: {entries} geschiedenisitems in {files} bestanden, {o
 prune_summary = "Verwijderd: {entries} geschiedenisitems in {files} bestanden, {outbox} voltooide wachtrijitems en {backups} back-ups; {bytes} bytes. fouten: {failures}."
 
 [webchat]
+totp_reenroll_required = "TOTP moet bij de volgende aanmelding opnieuw worden ingesteld."
+credentials_status = "Aanmeldgegevens: {storage}; wachtwoord: {password_configured}; TOTP: {totp_configured}; migratie vereist: {migration_required}."
+credentials_failed = "De webaanmeldgegevens konden niet worden bijgewerkt."
+vault_locked = "Deze opdracht kan de versleutelde geheimenopslag niet bewerken."
 usage = "Gebruik: ductor webchat set-password | reset-totp | clear-credentials | check-config [--json]"
 password_prompt = "Wachtwoord: "
 password_confirm = "Bevestig wachtwoord: "

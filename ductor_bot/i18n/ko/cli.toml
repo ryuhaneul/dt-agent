@@ -98,6 +98,10 @@ prune_preview = "정리 미리보기: 기록 {files}개 파일의 {entries}개 �
 prune_summary = "정리 완료: 기록 {files}개 파일의 {entries}개 항목, 완료된 큐 {outbox}개, 백업 {backups}개, 총 {bytes}바이트를 삭제했어요. 실패: {failures}."
 
 [webchat]
+totp_reenroll_required = "다음 로그인 때 TOTP를 다시 등록해야 해요."
+credentials_status = "인증 저장소: {storage}; 비밀번호: {password_configured}; TOTP: {totp_configured}; 이행 필요: {migration_required}."
+credentials_failed = "웹 인증 정보를 갱신하지 못했어요."
+vault_locked = "이 명령으로 암호화된 시크릿 저장소를 직접 수정할 수 없어요."
 usage = "사용법: ductor webchat set-password | reset-totp | clear-credentials | check-config [--json]"
 password_prompt = "비밀번호: "
 password_confirm = "비밀번호 확인: "

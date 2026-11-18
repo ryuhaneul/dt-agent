@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import contextlib
 import hashlib
 import json
 import secrets
@@ -14,6 +15,9 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from ductor_bot.infra.atomic_io import atomic_text_save
+from ductor_bot.infra.env_secrets import _parse_dotenv, clear_cache
+from ductor_bot.infra.file_lock import exclusive_file_lock
+from ductor_bot.infra.secret_store import LEGACY_WEB_AUTH_KEYS, _delete_secrets_locked
 
 _AAD = b"dt-agent:webchat:totp:v1"
 
@@ -131,3 +135,37 @@ class CredentialStore:
             atomic_text_save(self.path, credential_bytes(credentials).decode("ascii") + "\n")
         except OSError:
             raise CredentialsError from None
+
+    def verify(self, credentials: WebCredentials) -> None:
+        """Confirm that an atomic write can be read back without losing fields."""
+        if self.load() != credentials:
+            raise CredentialsError
+
+    def migrate_legacy(
+        self,
+        legacy_path: Path,
+        credentials: WebCredentials,
+        expected_seed: str | None,
+    ) -> None:
+        """Verify a new copy before atomic removal of both legacy authentication keys."""
+        with exclusive_file_lock(legacy_path):
+            if legacy_path.with_name(legacy_path.name + ".enc").exists():
+                raise CredentialsError
+            if self.path.exists():
+                raise CredentialsError
+            values = _parse_dotenv(legacy_path)
+            password_key, seed_key = LEGACY_WEB_AUTH_KEYS
+            if (
+                values.get(password_key) != credentials.password_hash
+                or values.get(seed_key) != expected_seed
+            ):
+                raise CredentialsError
+            try:
+                self.save(credentials)
+                self.verify(credentials)
+                _delete_secrets_locked(legacy_path, LEGACY_WEB_AUTH_KEYS)
+            except (OSError, ValueError, CredentialsError):
+                with contextlib.suppress(OSError):
+                    self.path.unlink(missing_ok=True)
+                raise CredentialsError from None
+            clear_cache()

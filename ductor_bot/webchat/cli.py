@@ -2,29 +2,93 @@
 
 from __future__ import annotations
 
+import contextlib
 import getpass
 import json
+from pathlib import Path
 
 from rich.console import Console
 
 from ductor_bot.chat_log.settings import validate_chat_log
 from ductor_bot.config import AgentConfig
 from ductor_bot.i18n import init, t_rich
-from ductor_bot.infra.secret_store import delete_secret, set_secret, store_path
-from ductor_bot.webchat.auth import (
-    MIN_PASSWORD_LENGTH,
-    PASSWORD_KEY,
-    TOTP_KEY,
-    hash_password,
-    rotate_credential_nonce,
+from ductor_bot.infra.atomic_io import atomic_bytes_save
+from ductor_bot.infra.env_secrets import _parse_dotenv, clear_cache
+from ductor_bot.infra.file_lock import exclusive_file_lock
+from ductor_bot.infra.secret_store import (
+    LEGACY_WEB_AUTH_KEYS,
+    _delete_secrets_locked,
+    list_keys,
+    store_path,
 )
+from ductor_bot.webchat.auth import MIN_PASSWORD_LENGTH, hash_password, rotate_credential_nonce
+from ductor_bot.webchat.credentials import CredentialsError, CredentialStore, WebCredentials
 from ductor_bot.webchat.settings import validate_webchat
 from ductor_bot.workspace.paths import resolve_paths
 
 _console = Console()
 
 
-def cmd_webchat(args: list[str]) -> None:
+def _credential_report(
+    store: CredentialStore, legacy_path: Path
+) -> tuple[dict[str, object], list[str]]:
+    encrypted_legacy = legacy_path.with_name(legacy_path.name + ".enc").exists()
+    legacy = {} if encrypted_legacy else _parse_dotenv(legacy_path)
+    names = [] if encrypted_legacy else list_keys(legacy_path) if legacy_path.exists() else []
+    migration_required = any(
+        name.removeprefix("export ").strip() in LEGACY_WEB_AUTH_KEYS for name in names
+    )
+    errors: list[str] = []
+    try:
+        current = store.load()
+    except CredentialsError:
+        current = None
+        errors.append("credentials_invalid")
+    if current is not None:
+        storage = "encrypted"
+        password_configured, totp_configured = bool(current.password_hash), current.totp is not None
+    else:
+        storage = "encrypted" if errors else "legacy" if migration_required else "unconfigured"
+        password_configured, totp_configured = (
+            bool(legacy.get(key)) for key in LEGACY_WEB_AUTH_KEYS
+        )
+    return {
+        "storage": storage,
+        "password_configured": password_configured,
+        "totp_configured": totp_configured,
+        "migration_required": migration_required,
+    }, errors
+
+
+def _edit_credentials(
+    command: str, store: CredentialStore, legacy_path: Path, encoded: str = ""
+) -> None:
+    with exclusive_file_lock(legacy_path):
+        if legacy_path.with_name(legacy_path.name + ".enc").exists():
+            raise ValueError("SECRETS_LOCKED")
+        before = store.path.read_bytes() if store.path.exists() else None
+        try:
+            if command == "set-password":
+                store.save(WebCredentials(encoded, None))
+            elif command == "reset-totp":
+                current = store.load()
+                if current is not None:
+                    store.save(WebCredentials(current.password_hash, None))
+            else:
+                store.path.unlink(missing_ok=True)
+            keys = LEGACY_WEB_AUTH_KEYS[-1:] if command == "reset-totp" else LEGACY_WEB_AUTH_KEYS
+            _delete_secrets_locked(legacy_path, keys)
+        except (OSError, ValueError, CredentialsError):
+            if before is None:
+                with contextlib.suppress(OSError):
+                    store.path.unlink(missing_ok=True)
+            else:
+                atomic_bytes_save(store.path, before)
+            raise
+        clear_cache()
+
+
+def cmd_webchat(args: list[str]) -> None:  # noqa: C901, PLR0912
     if "webchat" in args:
         args = args[args.index("webchat") + 1 :]
     if args not in (
@@ -44,8 +108,15 @@ def cmd_webchat(args: list[str]) -> None:
     )
     config = AgentConfig.model_validate(raw)
     init(config.language)
+    path = store_path(paths.ductor_home)
+    store = CredentialStore(paths.webchat_dir / "credentials.json")
     if args[0] == "check-config":
-        errors = list(dict.fromkeys([*validate_chat_log(config), *validate_webchat(config)]))
+        credentials, credential_errors = _credential_report(store, path)
+        errors = list(
+            dict.fromkeys(
+                [*validate_chat_log(config), *validate_webchat(config), *credential_errors]
+            )
+        )
         if "--json" in args:
             print(
                 json.dumps(
@@ -53,6 +124,7 @@ def cmd_webchat(args: list[str]) -> None:
                         "errors": errors,
                         "chat_log": {"enabled": config.chat_log.enabled},
                         "webchat": config.webchat.model_dump(mode="json"),
+                        "credentials": credentials,
                     }
                 )
             )
@@ -62,10 +134,11 @@ def cmd_webchat(args: list[str]) -> None:
                 if errors
                 else t_rich("webchat.config_ok")
             )
+            _console.print(t_rich("webchat.credentials_status", **credentials))
         if errors:
             raise SystemExit(1)
         return
-    path = store_path(paths.ductor_home)
+    encoded = ""
     if args[0] == "set-password":
         password = getpass.getpass(t_rich("webchat.password_prompt"))
         confirmation = getpass.getpass(t_rich("webchat.password_confirm"))
@@ -75,16 +148,30 @@ def cmd_webchat(args: list[str]) -> None:
         if password != confirmation:
             _console.print(t_rich("webchat.password_mismatch"))
             raise SystemExit(1)
-        set_secret(path, PASSWORD_KEY, hash_password(password))
+        try:
+            encoded = hash_password(password)
+        except UnicodeError:
+            _console.print(t_rich("webchat.credentials_failed"))
+            raise SystemExit(1) from None
+    try:
+        _edit_credentials(args[0], store, path, encoded)
+        if args[0] == "clear-credentials":
+            (paths.webchat_dir / "auth_state.json").unlink(missing_ok=True)
         rotate_credential_nonce(paths.webchat_dir / "auth_state.json")
-        _console.print(t_rich("webchat.password_saved"))
-    elif args[0] == "reset-totp":
-        delete_secret(path, TOTP_KEY)
-        rotate_credential_nonce(paths.webchat_dir / "auth_state.json")
-        _console.print(t_rich("webchat.totp_reset"))
-    else:
-        delete_secret(path, PASSWORD_KEY)
-        delete_secret(path, TOTP_KEY)
-        (paths.webchat_dir / "auth_state.json").unlink(missing_ok=True)
-        rotate_credential_nonce(paths.webchat_dir / "auth_state.json")
-        _console.print(t_rich("webchat.credentials_cleared"))
+    except (OSError, CredentialsError, ValueError) as exc:
+        locked = isinstance(exc, ValueError) and str(exc) == "SECRETS_LOCKED"
+        code, reason = (
+            ("SECRETS_LOCKED", "vault_locked")
+            if locked
+            else ("CREDENTIALS_UNAVAILABLE", "credentials_failed")
+        )
+        _console.print(f"{code}: " + t_rich(f"webchat.{reason}"))
+        raise SystemExit(1) from None
+    key = {
+        "set-password": "password_saved",
+        "reset-totp": "totp_reset",
+        "clear-credentials": "credentials_cleared",
+    }[args[0]]
+    _console.print(t_rich(f"webchat.{key}"))
+    if args[0] == "set-password":
+        _console.print(t_rich("webchat.totp_reenroll_required"))

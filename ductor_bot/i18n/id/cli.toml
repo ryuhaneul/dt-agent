@@ -98,6 +98,10 @@ prune_preview = "Pratinjau: {entries} entri riwayat dalam {files} berkas, {outbo
 prune_summary = "Dihapus: {entries} entri riwayat dalam {files} berkas, {outbox} item antrean selesai, dan {backups} cadangan; {bytes} byte. kegagalan: {failures}."
 
 [webchat]
+totp_reenroll_required = "TOTP harus didaftarkan ulang saat masuk berikutnya."
+credentials_status = "Kredensial: {storage}; kata sandi: {password_configured}; TOTP: {totp_configured}; perlu migrasi: {migration_required}."
+credentials_failed = "Tidak dapat memperbarui kredensial web."
+vault_locked = "Perintah ini tidak dapat mengubah penyimpanan rahasia terenkripsi."
 usage = "Penggunaan: ductor webchat set-password | reset-totp | clear-credentials | check-config [--json]"
 password_prompt = "Kata sandi: "
 password_confirm = "Konfirmasi kata sandi: "

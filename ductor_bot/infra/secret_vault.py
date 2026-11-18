@@ -23,6 +23,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from ductor_bot.infra.atomic_io import atomic_bytes_save, complete_write
 from ductor_bot.infra.file_lock import exclusive_file_lock
 from ductor_bot.infra.secret_store import (
+    LEGACY_WEB_AUTH_KEYS,
     delete_secret,
     set_secret,
     validate_key,
@@ -298,6 +299,13 @@ class SecretVault:
             if self.encrypted_path.exists():
                 raise VaultError("MASTER_KEY_ALREADY_SET")
             text = _read_plain(self.plaintext_path)
+            legacy_names = {
+                line.strip().removeprefix("export ").partition("=")[0].strip()
+                for line in text.splitlines()
+                if "=" in line and not line.lstrip().startswith("#")
+            }
+            if any(key in legacy_names for key in LEGACY_WEB_AUTH_KEYS):
+                raise VaultError("WEB_AUTH_MIGRATION_REQUIRED")
             salt = secrets.token_bytes(16)
             key = _derive(master_key, salt)
             _write_encrypted(self.encrypted_path, text, key, salt)

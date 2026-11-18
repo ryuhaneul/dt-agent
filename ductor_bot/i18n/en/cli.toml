@@ -98,6 +98,10 @@ prune_preview = "Dry run: {entries} history entries in {files} files; {outbox} c
 prune_summary = "Removed: {entries} history entries in {files} files; {outbox} completed queue items; {backups} backups; {bytes} bytes. failures: {failures}."
 
 [webchat]
+totp_reenroll_required = "TOTP enrollment is required at the next login."
+credentials_status = "Credentials: {storage}; password: {password_configured}; TOTP: {totp_configured}; migration required: {migration_required}."
+credentials_failed = "Could not update web credentials."
+vault_locked = "The encrypted secrets store cannot be edited by this command."
 usage = "Usage: ductor webchat set-password | reset-totp | clear-credentials | check-config [--json]"
 password_prompt = "Password: "
 password_confirm = "Confirm password: "

@@ -98,6 +98,10 @@ prune_preview = "Aperçu : {entries} entrées d’historique dans {files} fichie
 prune_summary = "Supprimés : {entries} entrées d’historique dans {files} fichiers, {outbox} éléments terminés de la file et {backups} sauvegardes ; {bytes} octets. échecs: {failures}."
 
 [webchat]
+totp_reenroll_required = "Une nouvelle inscription TOTP sera nécessaire à la prochaine connexion."
+credentials_status = "Identifiants : {storage} ; mot de passe : {password_configured} ; TOTP : {totp_configured} ; migration nécessaire : {migration_required}."
+credentials_failed = "Impossible de mettre à jour les identifiants web."
+vault_locked = "Cette commande ne peut pas modifier le stockage de secrets chiffré."
 usage = "Utilisation : ductor webchat set-password | reset-totp | clear-credentials | check-config [--json]"
 password_prompt = "Mot de passe : "
 password_confirm = "Confirmer le mot de passe : "

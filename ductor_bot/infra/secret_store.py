@@ -15,6 +15,7 @@ from ductor_bot.infra.env_secrets import (
 )
 from ductor_bot.infra.file_lock import exclusive_file_lock
 
+LEGACY_WEB_AUTH_KEYS = ("DT_WEBCHAT_PASSWORD_HASH", "DT_WEBCHAT_TOTP_SEED")
 _KEY_PATTERN = re.compile(r"[A-Z][A-Z0-9_]{0,55}")
 _LINE_BOUNDARIES = "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
 
@@ -111,3 +112,22 @@ def delete_secret(path: Path, key: str) -> bool:
         atomic_text_save(target, "".join(updated))
         target.chmod(0o600)
         return True
+
+
+def _delete_secrets_locked(path: Path, keys: tuple[str, ...]) -> bool:
+    """Batch deletion for a caller already holding this store's companion lock."""
+    if path.with_name(path.name + ".enc").exists():
+        raise ValueError("SECRETS_LOCKED")
+    lines = _read_lines(path)
+    # Old web auth used the dotenv parser, so its exported entries also need removal.
+    updated = [
+        line
+        for line in lines
+        if (_line_key(line) or "").removeprefix("export ").strip() not in keys
+    ]
+    if updated == lines:
+        return False
+    target = path.resolve() if path.is_symlink() else path
+    # atomic_text_save's private temporary file already has mode 0600.
+    atomic_text_save(target, "".join(updated))
+    return True
