@@ -1288,10 +1288,12 @@ class AgentSupervisor:
                 self._internal_api.stop(), budget.remaining(), label="internal api stop"
             )
 
-        if self._secret_runtime is not None:
+        # Cleanup also handles shutdown before the optional runtime has been attached.
+        secret_runtime = getattr(self, "_secret_runtime", None)
+        if secret_runtime is not None:
             from ductor_bot.infra.secret_runtime import stop_secret_runtime
 
-            await stop_secret_runtime(self._secret_runtime)
+            await stop_secret_runtime(secret_runtime)
             self._secret_runtime = None
 
         logger.info("AgentSupervisor stopped (all agents shut down)")

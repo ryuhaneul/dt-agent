@@ -102,6 +102,13 @@ Existing environment values take precedence. Store values are never injected int
 run. Do not read or source the store directly, copy plaintext out of it, or print values.
 Use `python3 tools/secret_tools/secret_status.py` for value-free state, TTL and remaining time.
 
+Never print, log, mirror or persist secret values or master/derived keys in chat, memory,
+task files, scripts, results or temporary files. Use values only inside the consuming process;
+name inventories and status tools must not fetch values. Never bulk-source credential files,
+including `.env`. Never ask for or accept a master key in conversation, prompts or tool arguments:
+only the owner uses the private `/masterkey` flow or webchat modal. Add or change tool values
+through `/secret set KEY` in the main bot's private chat or the webchat secret modal.
+
 #### Master-key lifecycle
 
 The main bot owns one vault for interactive, sub-agent, task, cron and webhook tool access.
