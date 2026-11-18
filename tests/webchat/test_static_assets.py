@@ -1573,7 +1573,7 @@ for (const outcome of ['authenticated', 'anonymous', 'bridge-down', 'network-err
   await module.link(async name=>{
     const exports=name==='./router.js'?['initRouter','renderRoute']
       :name==='./auth.js'?['initAuth','notify']
-      :[{'./cli-login.js':'initCliLogin','./account.js':'initAccount','./manage.js':'initManage','./files.js':'initFiles',
+      :[{'./vault.js':'initVault','./cli-login.js':'initCliLogin','./account.js':'initAccount','./manage.js':'initManage','./files.js':'initFiles',
           './topics.js':'initTopics','./chat.js':'initChat','./i18n.js':'loadI18n','./theme.js':'initTheme'}[name]];
     const stub=new vm.SyntheticModule(exports,function(){
       for(const key of exports)this.setExport(key,key==='initAuth'?async()=>{

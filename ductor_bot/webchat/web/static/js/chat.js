@@ -359,7 +359,10 @@ export async function handleEvent(event) {
       return;
     }
     case 'telegram': telegram = event; renderStatus(); break;
+    case 'secrets_changed':
+      document.dispatchEvent(new CustomEvent('vault-refresh')); break;
     case 'bridge':
+      if (event.up) document.dispatchEvent(new CustomEvent('vault-refresh'));
       botUp = event.up; renderStatus();
       if (event.up) await resync();
       break;

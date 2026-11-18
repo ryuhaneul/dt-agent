@@ -1,3 +1,4 @@
+import { initVault } from './vault.js';
 import { initCliLogin } from './cli-login.js';
 import { initAccount } from './account.js';
 import { initManage } from './manage.js';
@@ -20,6 +21,7 @@ async function start() {
     initFiles();
     initCliLogin();
     initAccount();
+    initVault();
     await initAuth();
   } catch { notify('error.bot_unreachable'); }
   finally {
