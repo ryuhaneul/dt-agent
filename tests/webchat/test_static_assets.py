@@ -880,12 +880,13 @@ async function load(filename){
 }
 async function flush(){for(let i=0;i<10;i++){await new Promise(setImmediate);await Promise.all(pending.splice(0));}}
 async function runTimer(delay){const entry=[...timers].find(([,value])=>value.delay===delay);assert.ok(entry,`timer ${delay}`);timers.delete(entry[0]);entry[1].callback();await flush();}
+await load(path.join(staticDir,'js/vendor/micromark-gfm.js'));
 const chat=await load(path.join(staticDir,'js/chat.js'));await chat.evaluate();
 const topics=modules.get(path.join(staticDir,'js/topics.js')).namespace;
 const api=modules.get(path.join(staticDir,'js/api.js')).namespace;
 await modules.get(path.join(staticDir,'js/i18n.js')).namespace.loadI18n();api.setCsrf('fake-csrf');
 const markdown=modules.get(path.join(staticDir,'js/md.js')).namespace;
-assert.equal(markdown.md('# Title\n## Sub\n- **bold**\n- `code`\n<script>x</script>\n[x](javascript:x)'),'<h1>Title</h1><h2>Sub</h2><ul><li><b>bold</b></li><li><code>code</code></li></ul><p>&lt;script&gt;x&lt;/script&gt;</p><p>[x](javascript:x)</p>');
+assert.equal(markdown.md('# Title\n## Sub\n- **bold**\n- `code`\n<script>x</script>\n[x](javascript:x)'),'<h1>Title</h1>\n<h2>Sub</h2>\n<ul>\n<li><strong>bold</strong></li>\n<li><code>code</code></li>\n</ul>\n&lt;script&gt;x&lt;/script&gt;\n<p>x</p>');
 const dedup=new Map();chat.namespace.mergeEntries(dedup,[makeEntry(2),makeEntry(-1)]);
 assert.deepEqual(Array.from(chat.namespace.mergeEntries(dedup,[makeEntry(2,{text:'updated'})]),e=>e.seq),[-1,2]);assert.equal(dedup.size,2);
 // Session start: three groups, real snapshots and exact unread count after stored seq.
@@ -925,7 +926,7 @@ await chat.namespace.handleEvent({type:'system_status',tid:'1.2',turn_id:'turn1'
 await chat.namespace.handleEvent({type:'delta',tid:'1.2',turn_id:'turn1',text:'**Hello** <img>'});
 await chat.namespace.handleEvent({type:'tool',tid:'1.2',turn_id:'turn1',name:'Read <script>'});
 assert.equal(frames.size,1,'delta and tool updates share one animation frame');
-assert.ok(!thread.innerHTML.includes('<b>Hello</b>'),'stream rendering waits for the frame');
+assert.ok(!thread.innerHTML.includes('<strong>Hello</strong>'),'stream rendering waits for the frame');
 const historyPrefix=thread.innerHTML.split('<div class="msg bot" id="streamMsg"')[0];
 const streamFrame=frames.values().next().value;frames.clear();streamFrame();
 assert.equal(thread.innerHTML.split('<div class="msg bot" id="streamMsg"')[0],historyPrefix,'stream updates preserve history markup');
@@ -933,6 +934,7 @@ assert.ok(thread.innerHTML.includes('<b>Hello</b> &lt;img&gt;'));assert.ok(threa
 assert.ok(thread.innerHTML.includes(`[${strings['stream.label_thinking']}] x2`));
 assert.ok(thread.innerHTML.indexOf(strings['stream.label_thinking'])<thread.innerHTML.indexOf('<b>Hello</b>'));
 assert.ok(thread.innerHTML.indexOf('<b>Hello</b>')<thread.innerHTML.indexOf('[TOOL: Read &lt;script&gt;]'));
+assert.ok(thread.innerHTML.includes('<strong>Hello</strong> &lt;img&gt;'));assert.ok(thread.innerHTML.includes('Read &lt;script&gt;'));
 for(let i=0;i<100;i++)await chat.namespace.handleEvent({type:'delta',tid:'1.2',turn_id:'turn1',text:' x'});
 assert.equal(frames.size,1,'a delta burst queues only one frame');
 chat.namespace.renderThread();assert.equal(frames.size,0,'a full render cancels pending stream work');
@@ -1366,7 +1368,7 @@ router.go('files');await flush();const editor=get('#ed');const persona=fileButto
 const original=editor.value;editor.value='# Draft\n- **bold**\n<script>x</script>';editor.emit('input');assert.equal(persona.hasAttribute('data-dirty'),true);assert.equal(persona.attributes['data-dirty'],'');
 await files.namespace.openFile('BEHAVIOR.md');await flush();await files.namespace.openFile('PERSONA.md');await flush();assert.ok(editor.value.includes('# Draft'));
 editor.value=original;editor.emit('input');assert.equal(persona.hasAttribute('data-dirty'),false);
-editor.value='# Draft\n- **bold**\n<script>x</script>';editor.emit('input');router.go('preview');await flush();assert.ok(get('#prev').innerHTML.includes('<b>bold</b>'));assert.ok(get('#prev').innerHTML.includes('&lt;script&gt;'));assert.ok(!get('#prev').innerHTML.includes('<script>'));
+editor.value='# Draft\n- **bold**\n<script>x</script>';editor.emit('input');router.go('preview');await flush();assert.ok(get('#prev').innerHTML.includes('<strong>bold</strong>'));assert.ok(get('#prev').innerHTML.includes('&lt;script&gt;'));assert.ok(!get('#prev').innerHTML.includes('<script>'));
 get('#tPrev').emit('keydown',{key:'ArrowLeft'});await flush();assert.equal(location.hash,'#edit');assert.equal(get('#tEdit').attributes['aria-selected'],'true');assert.equal(document.activeElement,get('#tEdit'));
 // Review opens a native modal; cancel restores the original save button and draft.
 get('#fileSave').focus();get('#fileSave').emit('click');await flush();assert.equal(diffDialog.open,true);assert.ok(get('#diffBox').innerHTML.includes('&lt;script&gt;'));assert.equal(saved.length,0);
@@ -1801,28 +1803,29 @@ def test_command_autocomplete_client_contract():
 MARKDOWN_RENDER_TESTS = r"""
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-const source=fs.readFileSync(0,'utf8');
-const {md}=await import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
+import {pathToFileURL} from 'node:url';
+const {md}=await import(pathToFileURL(fs.readFileSync(0,'utf8')));
+const compact=text=>text.replace(/>\n(?=<)/g,'>');
 assert.equal(md('# Title\n## Sub\n- **bold**\n- `code`\n[x](https://example.com)'),
- '<h1>Title</h1><h2>Sub</h2><ul><li><b>bold</b></li><li><code>code</code></li></ul><p>[x](https://example.com)</p>');
+ '<h1>Title</h1>\n<h2>Sub</h2>\n<ul>\n<li><strong>bold</strong></li>\n<li><code>code</code>\n<a href="https://example.com" target="_blank" rel="noopener noreferrer">x</a></li>\n</ul>');
 const table=md('| Left | Center | Right |\n| :--- | :---: | ---: |\n| **A** | `B` | <img onerror="x"> |');
-assert.ok(table.startsWith('<div class="table-scroll" tabindex="0"><table>'));
-assert.ok(table.endsWith('</tbody></table></div>'));
+assert.ok(table.startsWith('<div class="table-scroll" tabindex="0"><table><colgroup><col span="3"></colgroup>'));
+assert.ok(compact(table).endsWith('</tbody></table></div>'));
 for(const align of ['left','center','right'])assert.ok(table.includes(`class="align-${align}"`));
-assert.ok(table.includes('<b>A</b>'));assert.ok(table.includes('<code>B</code>'));
+assert.ok(table.includes('<strong>A</strong>'));assert.ok(table.includes('<code>B</code>'));
 assert.ok(table.includes('&lt;img onerror=&quot;x&quot;&gt;'));assert.ok(!table.includes('<img'));
 assert.ok(md('a | b\n--- | ---\nx | y').includes('<table>'));
 assert.ok(!md('a | b\n---\nx | y').includes('<table>'));
 assert.ok(md('| a | b |\n| --- | --- |\n| x\\|y | z |').includes('<td>x|y</td>'));
-assert.ok(md('| a | b |\n| --- | --- |\n| x |').includes('<td>x</td><td></td>'));
+assert.ok(compact(md('| a | b |\n| --- | --- |\n| x |')).includes('<td>x</td><td></td>'));
 assert.equal(md('```html\n<script>alert("x")</script>\n**bold** [button:keep]\n```'),
- '<pre tabindex="0"><code>&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;\n**bold** [button:keep]\n</code></pre>');
-assert.ok(md('a | b\n--- | ---\nx\n# After').includes('<td>x</td><td></td></tr></tbody></table></div><h1>After</h1>'));
-assert.ok(md('a | b\n--- | ---\n```js\nconst value = \"a|b\";\n```').includes('<pre tabindex=\"0\"><code>const value = &quot;a|b&quot;;\n</code></pre>'));
-assert.equal(md('~~~js\nconst x = 1;\n~~~'),'<pre tabindex="0"><code>const x = 1;\n</code></pre>');
-assert.equal(md('```\n<svg onload=x>'),'<pre tabindex="0"><code>&lt;svg onload=x&gt;</code></pre>');
+ '<pre tabindex="0"><code class="language-html">&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;\n**bold** [button:keep]\n</code></pre>');
+assert.ok(compact(md('a | b\n--- | ---\nx\n# After')).includes('<td>x</td><td></td></tr></tbody></table></div><h1>After</h1>'));
+assert.ok(md('a | b\n--- | ---\n```js\nconst value = "a|b";\n```').includes('<pre tabindex="0"><code class="language-js">const value = &quot;a|b&quot;;\n</code></pre>'));
+assert.equal(md('~~~js\nconst x = 1;\n~~~'),'<pre tabindex="0"><code class="language-js">const x = 1;\n</code></pre>');
+assert.equal(md('```\n<svg onload=x>'),'<pre tabindex="0"><code>&lt;svg onload=x&gt;\n</code></pre>\n');
 assert.ok(!md('```"><img src=x>\nX\n```').includes('<img'));
-assert.equal(md('- item\n```\n- raw\n```\n# After'),'<ul><li>item</li></ul><pre tabindex="0"><code>- raw\n</code></pre><h1>After</h1>');
+assert.equal(md('- item\n```\n- raw\n```\n# After'),'<ul>\n<li>item</li>\n</ul>\n<pre tabindex="0"><code>- raw\n</code></pre>\n<h1>After</h1>');
 for(const payload of ['<script>alert(1)</script>','<svg onload="x">','[x](javascript:alert(1))','<a href="javascript:x">']){
  const html=md(payload+'\n\n| x |\n| --- |\n| '+payload+' |\n\n```\n'+payload+'\n```');
  assert.ok(!html.includes('<script'));assert.ok(!html.includes('<svg'));assert.ok(!html.includes('<a '));
@@ -1833,7 +1836,7 @@ for(const payload of ['<script>alert(1)</script>','<svg onload="x">','[x](javasc
 def test_markdown_tables_fences_escaping_and_existing_rules():
     result = subprocess.run(
         ["node", "--input-type=module", "-e", MARKDOWN_RENDER_TESTS],
-        input=(STATIC / "js/md.js").read_text(),
+        input=str(STATIC / "js/md.js"),
         capture_output=True,
         text=True,
         check=False,

@@ -1,0 +1,12 @@
+{
+  "name": "dt-agent-micromark-vendor",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "micromark": "4.0.3",
+    "micromark-extension-gfm": "3.0.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12"
+  }
+}
