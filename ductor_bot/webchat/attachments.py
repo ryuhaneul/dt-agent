@@ -28,6 +28,8 @@ class AttachmentMessage:
 
     text: str
     turn: ChatLogTurn
+    caption: str
+    files: tuple[dict[str, Any], ...]
 
 
 class AttachmentIndex:
@@ -200,4 +202,6 @@ class MessageAttachments:
                     transport="Web",
                 )
             )
-        return AttachmentMessage("\n\n".join(prompts), turn)
+        return AttachmentMessage(
+            "\n\n".join(prompts), turn, text, tuple(self._metadata(item) for item in sessions)
+        )

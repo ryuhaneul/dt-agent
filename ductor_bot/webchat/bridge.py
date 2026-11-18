@@ -558,7 +558,7 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
             return _error(exc.code, exc.status)
         except OSError:
             return _error("attachment_storage_unavailable", 503)
-        turn_id = turns.submit(tid, prepared.text, turn=prepared.turn)
+        turn_id = turns.submit(tid, prepared.text, turn=prepared.turn, attachments=prepared)
         return web.json_response({"turn_id": turn_id}, status=202)
 
     async def entry_attachments(request: web.Request) -> web.Response:

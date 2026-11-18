@@ -727,6 +727,7 @@ error = "No se pudo mostrar el uso"
 [chat_log]
 mirror_command = "Comando ejecutado: {text}"
 mirror_user = "🌐 Enviado desde la web\n{text}"
+mirror_attachment = "Adjuntado desde la web: {name} ({size})"
 mirror_aborted = "Respuesta detenida"
 
 [masterkey]

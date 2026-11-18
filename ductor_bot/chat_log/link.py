@@ -230,6 +230,8 @@ class OutboxDrainer:
                     raise
 
             text, keyboard, restart_screen = await self._mirror_content(item)
+            if item.kind == "user_mirror" and item.origin == "web_attachment":
+                keyboard["web_attachment_name"] = item.title or "attachment"
             if item.kind == "user_mirror" and item.origin == "web_user_text":
                 text = html.unescape(text)
                 keyboard["literal_text"] = True

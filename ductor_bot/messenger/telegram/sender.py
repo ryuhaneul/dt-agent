@@ -48,6 +48,7 @@ class SendRichOpts(BaseSendOpts):
     thread_id: int | None = None
     ia_task_id: str = ""
     skip_unavailable_files: bool = False
+    web_attachment_name: str | None = None
     literal_text: bool = False
     on_keyboard: Callable[[int, InlineKeyboardMarkup, str | None], Awaitable[None]] | None = None
 
@@ -142,6 +143,11 @@ class _TextKwargs(_MarkupKwargs, total=False):
 logger = logging.getLogger(__name__)
 
 _PHOTO_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"})
+# aiogram 3.31.0: methods/send_photo.py:34 (10 MB), send_document.py:24 (50 MB).
+# Use conservative decimal MB for multipart uploads to the default cloud Bot API.
+_WEB_PHOTO_BYTES = 10_000_000
+_WEB_DOCUMENT_BYTES = 50_000_000
+_WEB_PHOTO_MIMES = frozenset({"image/jpeg", "image/png", "image/webp", "image/gif"})
 _VIDEO_SUFFIXES = frozenset({".mp4"})
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a"})
 
@@ -164,16 +170,18 @@ def _select_telegram_upload_mode(path: Path, mime: str) -> str:
     return "document"
 
 
-async def _send_document(
+async def _send_document(  # noqa: PLR0913 -- document routing and display filename
     bot: Bot,
     chat_id: int,
     path: Path,
     thread_id: int | None,
     reply_markup: InlineKeyboardMarkup | None = None,
+    *,
+    filename: str | None = None,
 ) -> Message:
     kwargs: _DocumentKwargs = {
         "chat_id": chat_id,
-        "document": FSInputFile(path),
+        "document": FSInputFile(path, filename=filename),
         "message_thread_id": thread_id,
     }
     if reply_markup is not None:
@@ -189,11 +197,12 @@ async def _send_by_mode(  # noqa: PLR0913 -- upload routing and markup options
     upload_mode: str,
     thread_id: int | None,
     reply_markup: InlineKeyboardMarkup | None = None,
+    filename: str | None = None,
 ) -> Message:
     if upload_mode == "document":
-        return await _send_document(bot, chat_id, path, thread_id, reply_markup)
+        return await _send_document(bot, chat_id, path, thread_id, reply_markup, filename=filename)
 
-    input_file = FSInputFile(path)
+    input_file = FSInputFile(path, filename=filename)
     markup_kwargs: _MarkupKwargs = (
         {"reply_markup": reply_markup} if reply_markup is not None else {}
     )
@@ -220,14 +229,14 @@ async def _send_by_mode(  # noqa: PLR0913 -- upload routing and markup options
                 message_thread_id=thread_id,
                 **markup_kwargs,
             )
-        return await _send_document(bot, chat_id, path, thread_id, reply_markup)
+        return await _send_document(bot, chat_id, path, thread_id, reply_markup, filename=filename)
     except TelegramBadRequest:
         logger.info(
             "%s upload rejected, retrying as document: %s",
             upload_mode.capitalize(),
             path.name,
         )
-        return await _send_document(bot, chat_id, path, thread_id, reply_markup)
+        return await _send_document(bot, chat_id, path, thread_id, reply_markup, filename=filename)
 
 
 async def send_files_from_text(
@@ -533,13 +542,32 @@ async def _send_ia_file_chunk_outcome(
             )
             return _response_outcome(response)
         mime = guess_mime(path)
+        mode = _select_telegram_upload_mode(path, mime)
+        if opts.web_attachment_name is not None:
+            mode = "photo" if mime in _WEB_PHOTO_MIMES else "document"
+            size = (await asyncio.to_thread(path.stat)).st_size
+            limit = _WEB_PHOTO_BYTES if mode == "photo" else _WEB_DOCUMENT_BYTES
+            if size > limit:
+                response = await bot.send_message(
+                    chat_id=chat_id,
+                    text=t(
+                        "chat_log.mirror_attachment",
+                        name=opts.web_attachment_name,
+                        size=f"{size / 1_000_000:.1f} MB",
+                    ),
+                    parse_mode=None,
+                    message_thread_id=opts.thread_id,
+                    reply_markup=reply_markup,
+                )
+                return _response_outcome(response)
         response = await _send_by_mode(
             bot,
             chat_id,
             path,
-            upload_mode=_select_telegram_upload_mode(path, mime),
+            upload_mode=mode,
             thread_id=opts.thread_id,
             reply_markup=reply_markup,
+            filename=opts.web_attachment_name,
         )
         return _response_outcome(response)
     except Exception as exc:

@@ -727,6 +727,7 @@ error = "Échec de l’affichage de l’utilisation"
 [chat_log]
 mirror_command = "Commande exécutée : {text}"
 mirror_user = "🌐 Envoyé depuis le Web\n{text}"
+mirror_attachment = "Joint depuis le Web : {name} ({size})"
 mirror_aborted = "Réponse interrompue"
 
 [masterkey]
