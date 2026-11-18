@@ -551,12 +551,45 @@ export function initChat() {
   secretDialog = initSecret();
   document.addEventListener('language-changed', () => { renderThread(); renderStatus(); resizeComposer(); });
   const thread = document.querySelector('#thread'), input = document.querySelector('#msgIn');
+  let pagination = null, topRequest = null;
+  function cancelTop() { topRequest = null; }
+  function loadOlder(tid) {
+    if (pagination) return pagination;
+    const height = thread.scrollHeight, generation = epoch;
+    loading = true;
+    pagination = (async () => {
+      try {
+        await loadHistory(tid, { older: true });
+        if (!active || generation !== epoch || getTopic()?.tid !== tid) return;
+        const previousTop = thread.scrollTop;
+        renderThread();
+        thread.scrollTop = topRequest?.tid === tid ? 0 : thread.scrollHeight - height + previousTop;
+        updateThreadNavigation();
+      } finally { loading = false; pagination = null; }
+    })();
+    return pagination;
+  }
+  for (const type of ['wheel', 'touchmove', 'pointerdown']) thread.addEventListener(type, cancelTop, { passive: true });
+  thread.addEventListener('keydown', event => {
+    if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) cancelTop();
+  });
   for (const [id, toBottom] of [['threadTop', false], ['threadBottom', true]]) {
-    document.querySelector(`#${id}`).addEventListener('click', () => {
-      // Use the normal scroll listener for history pagination and read tracking.
+    document.querySelector(`#${id}`).addEventListener('click', async () => {
+      cancelTop();
+      const topic = getTopic();
+      if (!topic) return;
       thread.focus({ preventScroll: true });
-      thread.scrollTop = toBottom ? thread.scrollHeight : 0;
-      updateThreadNavigation();
+      if (toBottom) { thread.scrollTop = thread.scrollHeight; updateThreadNavigation(); return; }
+      const request = { tid: topic.tid }, generation = epoch;
+      topRequest = request;
+      try {
+        while (topRequest === request && active && generation === epoch && getTopic()?.tid === topic.tid) {
+          if (pagination) await pagination;
+          else if (history(topic.tid).hasMore) await loadOlder(topic.tid);
+          else { thread.scrollTop = 0; break; }
+        }
+      } catch (error) { if (active && generation === epoch) errorNotice(error); }
+      finally { if (topRequest === request) cancelTop(); updateThreadNavigation(); }
     });
   }
   new ResizeObserver(updateThreadNavigation).observe(thread);
@@ -589,13 +622,12 @@ export function initChat() {
       const entries = sorted(topic.tid); if (entries.length && visibleChat()) markSeen(topic.tid, entries.at(-1).seq);
     }
     if (thread.scrollTop > 0 || !history(topic.tid).hasMore) return;
-    const height = thread.scrollHeight; loading = true;
-    try {
-      await loadHistory(topic.tid, { older: true });
-      if (getTopic()?.tid === topic.tid) { renderThread(); thread.scrollTop = thread.scrollHeight - height; updateThreadNavigation(); }
-    } catch (error) { errorNotice(error); } finally { loading = false; }
+    if (topRequest) return;
+    try { await loadOlder(topic.tid); }
+    catch (error) { errorNotice(error); }
   });
   document.addEventListener('topic-selected', async event => {
+    cancelTop();
     const { topic, seq } = event.detail, generation = epoch, selected = ++selection;
     input.value = drafts.get(topic.tid) || ''; renderThread(); resizeComposer();
     try {
@@ -613,6 +645,7 @@ export function initChat() {
   });
   document.addEventListener('visibilitychange', () => { if (active && !document.hidden) void resync(); });
   document.addEventListener('auth-change', event => {
+    cancelTop();
     active = event.detail.authenticated; ++epoch;
     cancelStreamRender();
     stopEvents?.(); stopEvents = null;

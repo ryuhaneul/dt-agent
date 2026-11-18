@@ -305,6 +305,7 @@ ids.botBadge.label = new Element();
 const document = new Element(); document.documentElement = new Element(); document.body = new Element();
 document.querySelector = selector => {
   if (selector === '#otp input') return ids.otp.children[0];
+  if (selector === '#otp2 input') return ids.otp2.children[0];
   if (selector.startsWith('#')) return ids[selector.slice(1)];
   if (selector === '.seed') return seed;
   if (selector.startsWith('[data-setup-mode=')) return modeButtons.find(button => selector.includes(button.dataset.setupMode));
@@ -412,6 +413,7 @@ authenticated=false; configured=false; api.namespace.setCsrf(null);
 await auth.namespace.initAuth();
 ids.pw.value='good-password'; await ids.pwForm.emit('submit');
 assert.equal(flags.routes.at(-1),'setup'); assert.equal(ids.qr.children.length,1);
+assert.equal(document.activeElement,ids.otp2.children[0]);
 assert.equal(seed.textContent,'JBSW Y3DP EHPK 3PXP');
 await modeButtons[1].emit('click'); ids.seedIn.value='JBSWY3DPEHPK3PXP';
 await ids.otp2.children[0].emit('paste',{clipboardData:{getData:()=>'123456'}});
@@ -1177,6 +1179,20 @@ document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:fals
 document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));await flush();topics.selectTopic('1.2');await flush();
 assert.ok(thread.innerHTML.indexOf('Middle pending')<thread.innerHTML.indexOf('First pending &lt;script&gt;'));
 queueContract=false;document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:false}}));
+
+// One Top action exhausts all older pages; manual scrolling may cancel its intent.
+historyA.splice(0,historyA.length,...Array.from({length:600},(_,index)=>makeEntry(index+1)));
+topicRows[0].turns=[];topicRows[0].busy=false;
+document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));await flush();topics.selectTopic('1.2');await flush();
+await document.querySelector('#threadTop').emit('click');await flush();
+assert.equal((thread.innerHTML.match(/data-entry-seq=/g)||[]).length,600);assert.equal(thread.scrollTop,0);
+document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:false}}));
+document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));await flush();topics.selectTopic('1.2');await flush();
+let finishOlder;historyHold=new Promise(resolve=>finishOlder=resolve);
+document.querySelector('#threadTop').emit('click');await new Promise(setImmediate);
+thread.scrollTop=123;thread.emit('wheel');finishOlder();historyHold=null;await flush();
+assert.equal((thread.innerHTML.match(/data-entry-seq=/g)||[]).length,200);assert.equal(thread.scrollTop,123);
+document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:false}}));
 
 // No topic means no send target: keep the composer hidden rather than accepting a lost draft.
 topicRows=[];document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));await flush();assert.equal(document.querySelector('.composer').hidden,true);assert.equal(send.disabled,true);document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:false}}));
