@@ -1742,48 +1742,6 @@ const source=fs.readFileSync(0,'utf8');
 const {md}=await import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
 assert.equal(md('# Title\n## Sub\n- **bold**\n- `code`\n[x](https://example.com)'),
  '<h1>Title</h1><h2>Sub</h2><ul><li><b>bold</b></li><li><code>code</code></li></ul><p><a href="https://example.com" target="_blank" rel="noopener noreferrer">x</a></p>');
-const anchor=(url,label=url)=>`<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`;
-const linkCases=[
- ['query with non-http syntax','https://example.test/search?q=[guide](draft)',anchor('https://example.test/search?q=[guide](draft)')],
- ['path with non-http syntax','https://example.test/design[preview](draft)',anchor('https://example.test/design[preview](draft)')],
- ['IPv6 with non-http syntax','http://[::1]:8080/design[preview](draft)',anchor('http://[::1]:8080/design[preview](draft)')],
- ['earlier URL owns http syntax','https://example.test/a[link](https://example.test/b)',anchor('https://example.test/a[link](https://example.test/b)')],
- ['non-http Markdown stays text','[guide](draft)','[guide](draft)'],
-
- ['adjacent Markdown','https://example.test/a][link](https://example.test/b)',anchor('https://example.test/a')+']'+anchor('https://example.test/b','link')],
- ['adjacent bare','https://example.test/a]https://example.test/b',anchor('https://example.test/a')+']'+anchor('https://example.test/b')],
- ['URL label','[https://example.test/a](https://example.test/b)',anchor('https://example.test/b','https://example.test/a')],
- ['consecutive Markdown','[a](https://example.test/a)[b](https://example.test/b)',anchor('https://example.test/a','a')+anchor('https://example.test/b','b')],
- ['mixed links','https://example.test/a [b](https://example.test/b) https://example.test/c',anchor('https://example.test/a')+' '+anchor('https://example.test/b','b')+' '+anchor('https://example.test/c')],
- ['Korean suffix','https://x.com/a.html에서',anchor('https://x.com/a.html')+'에서'],
- ['Korean Markdown','[한글](https://x.com/한글)',anchor('https://x.com/한글','한글')],
- ['balanced parentheses','시안 (https://x.com/a_(b)). 다음','시안 ('+anchor('https://x.com/a_(b)')+'). 다음'],
- ['Markdown parentheses','[시안](https://x.com/a_(b))',anchor('https://x.com/a_(b)','시안')],
- ['bold URL','**https://x.com/a**','<b>'+anchor('https://x.com/a')+'</b>'],
- ['inline code','`https://x.com/a` ``[시안](https://x.com/a)``','<code>https://x.com/a</code> <code>[시안](https://x.com/a)</code>'],
- ['unclosed bracket','https://example.test/design[unfinished',anchor('https://example.test/design')+'[unfinished'],
- ['unmatched bracket','https://example.test/design]tail',anchor('https://example.test/design')+']tail'],
- ['escaped HTML','https://x.com/?a=1&b=2<img src=x>',anchor('https://x.com/?a=1&amp;b=2')+'&lt;img src=x&gt;'],
-];
-for(const url of ['https://x.com/a.html','http://x.com/?a=1&b=2','HTTPS://x.com/a','https://x.com/%ED%95%9C','https://x.com/?a&']){
- linkCases.push(['bare '+url,url+' 에서',anchor(url.replaceAll('&','&amp;'))+' 에서']);
-}
-for(const url of ['http://[::1]:8080/design','https://[2001:db8::1]/preview',
- 'http://[::ffff:192.0.2.128]:8080/design','https://[2001:db8:85a3::8a2e:370:7334]/preview',
- 'https://example.test/design?filter[status]=ready','https://example.test/design[preview]',
- 'https://example.test/design?filter[status][value]=ready']){
- linkCases.push(['bracket '+url,url,anchor(url)],['bracket Markdown '+url,'[시안]('+url+')',anchor(url,'시안')],
-  ['surrounding brackets '+url,'['+url+']','['+anchor(url)+']']);
- for(const suffix of ['].',']).','에서'])linkCases.push(['bracket suffix '+url+suffix,url+suffix,anchor(url)+suffix]);
-}
-for(const suffix of ['.',',','!','?',':',';','。','\uff01','\uff1f','…',').', '}.']){
- linkCases.push(['punctuation '+suffix,'https://x.com/a'+suffix,anchor('https://x.com/a')+suffix]);
-}
-for(const payload of ['[x](javascript:alert(1))','[x](data:text/html,test)','[x](vbscript:x)','[x](//x.com)','[x](https://)']){
- linkCases.push(['blocked '+payload,payload,payload]);
-}
-for(const [name,input,expected] of linkCases)assert.equal(md(input),'<p>'+expected+'</p>',name);
-for(const fence of ['```','~~~'])assert.equal(md(fence+'\nhttps://x.com/a [시안](https://x.com/b)\n'+fence),'<pre tabindex="0"><code>https://x.com/a [시안](https://x.com/b)\n</code></pre>');
 const table=md('| Left | Center | Right |\n| :--- | :---: | ---: |\n| **A** | `B` | <img onerror="x"> |');
 assert.ok(table.startsWith('<div class="table-scroll" tabindex="0"><table>'));
 assert.ok(table.endsWith('</tbody></table></div>'));
@@ -1857,172 +1815,1132 @@ console.log(JSON.stringify(payloads.map(md)));
                 assert attrs["rel"] == "noopener noreferrer"
 
 
-GENERATED_LINK_REGRESSIONS = [
-    {
-        "text": "case 2: "
-        "`code`[HTTPS://[::ffff:192.0.2.128]/a_(b)489?q=[guide](draft)](HTTPS://[2001:db8::1]/design[preview](draft)616?a=1&b=2)). "
-        "https://example.test/design[preview](draft)168?q=(draft))[guide](HTTPS://[2001:db8::1]/a_(b)95?q=(draft))], "
-        "`code`[guide](HTTPS://[::ffff:192.0.2.128]/a[b(c)]670?q=[guide](draft)/한글)). [label "
-        '<tag> " &](https://[::1]:8080/a_(b)202?q=(draft)/한글); `HTTPS://[::1]:8080/a[b(c)]270 '
-        '[guide](https://example.test/a_(b)189?q=[guide](draft)) <svg onload="x">`; '
-        "https://[::ffff:192.0.2.128]/a[b(c)]281?filter[status]=ready], ",
-        "visible": "case 2: codeHTTPS://[::ffff:192.0.2.128]/a_(b)489?q=[guide](draft)). "
-        "https://example.test/design[preview](draft)168?q=(draft))guide], codeguide). label "
-        '<tag> " &; HTTPS://[::1]:8080/a[b(c)]270 '
-        '[guide](https://example.test/a_(b)189?q=[guide](draft)) <svg onload="x">; '
-        "https://[::ffff:192.0.2.128]/a[b(c)]281?filter[status]=ready], ",
-        "links": [
+AUTOLINK_SPEC_CASES = [
+    [
+        "bare https://example.test/a",
+        "https://example.test/a",
+        [["https://example.test/a", "https://example.test/a"]],
+    ],
+    [
+        "bare http://example.test/a",
+        "http://example.test/a",
+        [["http://example.test/a", "http://example.test/a"]],
+    ],
+    [
+        "bare HTTPS://example.test/A",
+        "HTTPS://example.test/A",
+        [["HTTPS://example.test/A", "HTTPS://example.test/A"]],
+    ],
+    [
+        "bare https://example.test/?a=1&b=2",
+        "https://example.test/?a=1&b=2",
+        [["https://example.test/?a=1&b=2", "https://example.test/?a=1&b=2"]],
+    ],
+    [
+        "bare https://example.test/%ED%95%9C%EA%B8%80",
+        "https://example.test/%ED%95%9C%EA%B8%80",
+        [["https://example.test/%ED%95%9C%EA%B8%80", "https://example.test/%ED%95%9C%EA%B8%80"]],
+    ],
+    [
+        "bare https://example.test/#section",
+        "https://example.test/#section",
+        [["https://example.test/#section", "https://example.test/#section"]],
+    ],
+    [
+        "markdown https://example.test/a",
+        "[시안](https://example.test/a)",
+        [["https://example.test/a", "시안"]],
+    ],
+    [
+        "markdown http://example.test/a",
+        "[시안](http://example.test/a)",
+        [["http://example.test/a", "시안"]],
+    ],
+    [
+        "markdown https://example.test/a_(b)",
+        "[시안](https://example.test/a_(b))",
+        [["https://example.test/a_(b)", "시안"]],
+    ],
+    [
+        "markdown https://example.test/한글",
+        "[시안](https://example.test/한글)",
+        [["https://example.test/%ED%95%9C%EA%B8%80", "시안"]],
+    ],
+    [
+        "markdown https://example.test/?a=1&b=2",
+        "[시안](https://example.test/?a=1&b=2)",
+        [["https://example.test/?a=1&b=2", "시안"]],
+    ],
+    [
+        "punctuation .",
+        "https://example.test/a.",
+        [["https://example.test/a", "https://example.test/a"]],
+    ],
+    [
+        "punctuation ,",
+        "https://example.test/a,",
+        [["https://example.test/a", "https://example.test/a"]],
+    ],
+    [
+        "punctuation !",
+        "https://example.test/a!",
+        [["https://example.test/a", "https://example.test/a"]],
+    ],
+    [
+        "punctuation :",
+        "https://example.test/a:",
+        [["https://example.test/a", "https://example.test/a"]],
+    ],
+    [
+        "punctuation ?",
+        "https://example.test/a?",
+        [["https://example.test/a", "https://example.test/a"]],
+    ],
+    [
+        "punctuation ;",
+        "https://example.test/a;",
+        [["https://example.test/a", "https://example.test/a"]],
+    ],
+    [
+        "punctuation )",
+        "https://example.test/a)",
+        [["https://example.test/a", "https://example.test/a"]],
+    ],
+    [
+        "punctuation }",
+        "https://example.test/a}",
+        [["https://example.test/a%7D", "https://example.test/a}"]],
+    ],
+    [
+        "punctuation ).",
+        "https://example.test/a).",
+        [["https://example.test/a", "https://example.test/a"]],
+    ],
+    [
+        "punctuation }.",
+        "https://example.test/a}.",
+        [["https://example.test/a%7D", "https://example.test/a}"]],
+    ],
+    [
+        "punctuation 。",
+        "https://example.test/a。",
+        [["https://example.test/a%E3%80%82", "https://example.test/a。"]],
+    ],
+    [
+        "punctuation \uff01",
+        "https://example.test/a\uff01",
+        [["https://example.test/a%EF%BC%81", "https://example.test/a\uff01"]],
+    ],
+    [
+        "punctuation \uff1f",
+        "https://example.test/a\uff1f",
+        [["https://example.test/a%EF%BC%9F", "https://example.test/a\uff1f"]],
+    ],
+    [
+        "punctuation 、",
+        "https://example.test/a、",
+        [["https://example.test/a%E3%80%81", "https://example.test/a、"]],
+    ],
+    [
+        "punctuation …",
+        "https://example.test/a…",
+        [["https://example.test/a%E2%80%A6", "https://example.test/a…"]],
+    ],
+    [
+        "Korean 에서",
+        "https://example.test/a에서",
+        [["https://example.test/a", "https://example.test/a"]],
+    ],
+    [
+        "Korean 를",
+        "https://example.test/a를",
+        [["https://example.test/a", "https://example.test/a"]],
+    ],
+    [
+        "Korean 로",
+        "https://example.test/a로",
+        [["https://example.test/a", "https://example.test/a"]],
+    ],
+    [
+        "Korean 은",
+        "https://example.test/a은",
+        [["https://example.test/a", "https://example.test/a"]],
+    ],
+    [
+        "Korean 입니다",
+        "https://example.test/a입니다",
+        [["https://example.test/a", "https://example.test/a"]],
+    ],
+    [
+        "Korean ㄱ",
+        "https://example.test/aㄱ",
+        [["https://example.test/a", "https://example.test/a"]],
+    ],
+    [
+        "Korean ᄀ",
+        "https://example.test/aᄀ",
+        [["https://example.test/a%E1%84%80", "https://example.test/aᄀ"]],
+    ],
+    ["bracket URL http://[::1]:8080/design", "http://[::1]:8080/design", []],
+    [
+        "bracket Markdown http://[::1]:8080/design",
+        "[시안](http://[::1]:8080/design)",
+        [["http://%5B::1%5D:8080/design", "시안"]],
+    ],
+    ["bracket wrapper http://[::1]:8080/design", "[http://[::1]:8080/design]", []],
+    ["bracket boundary ] http://[::1]:8080/design", "http://[::1]:8080/design]", []],
+    ["bracket boundary  ]. http://[::1]:8080/design", "http://[::1]:8080/design ].", []],
+    ["bracket boundary ]. http://[::1]:8080/design", "http://[::1]:8080/design].", []],
+    ["bracket boundary ]). http://[::1]:8080/design", "http://[::1]:8080/design]).", []],
+    ["bracket boundary ]tail http://[::1]:8080/design", "http://[::1]:8080/design]tail", []],
+    ["bracket boundary 에서 http://[::1]:8080/design", "http://[::1]:8080/design에서", []],
+    ["bracket URL https://[2001:db8::1]/preview", "https://[2001:db8::1]/preview", []],
+    [
+        "bracket Markdown https://[2001:db8::1]/preview",
+        "[시안](https://[2001:db8::1]/preview)",
+        [["https://%5B2001:db8::1%5D/preview", "시안"]],
+    ],
+    ["bracket wrapper https://[2001:db8::1]/preview", "[https://[2001:db8::1]/preview]", []],
+    ["bracket boundary ] https://[2001:db8::1]/preview", "https://[2001:db8::1]/preview]", []],
+    ["bracket boundary  ]. https://[2001:db8::1]/preview", "https://[2001:db8::1]/preview ].", []],
+    ["bracket boundary ]. https://[2001:db8::1]/preview", "https://[2001:db8::1]/preview].", []],
+    ["bracket boundary ]). https://[2001:db8::1]/preview", "https://[2001:db8::1]/preview]).", []],
+    [
+        "bracket boundary ]tail https://[2001:db8::1]/preview",
+        "https://[2001:db8::1]/preview]tail",
+        [],
+    ],
+    [
+        "bracket boundary 에서 https://[2001:db8::1]/preview",
+        "https://[2001:db8::1]/preview에서",
+        [],
+    ],
+    [
+        "bracket URL https://example.test/design?filter[status]=ready",
+        "https://example.test/design?filter[status]=ready",
+        [
             [
-                "HTTPS://[2001:db8::1]/design[preview](draft)616?a=1&b=2",
-                "HTTPS://[::ffff:192.0.2.128]/a_(b)489?q=[guide](draft)",
-            ],
-            [
-                "https://example.test/design[preview](draft)168?q=(draft)",
-                "https://example.test/design[preview](draft)168?q=(draft)",
-            ],
-            ["HTTPS://[2001:db8::1]/a_(b)95?q=(draft)", "guide"],
-            ["HTTPS://[::ffff:192.0.2.128]/a[b(c)]670?q=[guide](draft)/한글", "guide"],
-            ["https://[::1]:8080/a_(b)202?q=(draft)/한글", 'label <tag> " &'],
-            [
-                "https://[::ffff:192.0.2.128]/a[b(c)]281?filter[status]=ready",
-                "https://[::ffff:192.0.2.128]/a[b(c)]281?filter[status]=ready",
-            ],
+                "https://example.test/design?filter%5Bstatus%5D=ready",
+                "https://example.test/design?filter[status]=ready",
+            ]
         ],
-    }
+    ],
+    [
+        "bracket Markdown https://example.test/design?filter[status]=ready",
+        "[시안](https://example.test/design?filter[status]=ready)",
+        [["https://example.test/design?filter%5Bstatus%5D=ready", "시안"]],
+    ],
+    [
+        "bracket wrapper https://example.test/design?filter[status]=ready",
+        "[https://example.test/design?filter[status]=ready]",
+        [],
+    ],
+    [
+        "bracket boundary ] https://example.test/design?filter[status]=ready",
+        "https://example.test/design?filter[status]=ready]",
+        [
+            [
+                "https://example.test/design?filter%5Bstatus%5D=ready",
+                "https://example.test/design?filter[status]=ready",
+            ]
+        ],
+    ],
+    [
+        "bracket boundary  ]. https://example.test/design?filter[status]=ready",
+        "https://example.test/design?filter[status]=ready ].",
+        [
+            [
+                "https://example.test/design?filter%5Bstatus%5D=ready",
+                "https://example.test/design?filter[status]=ready",
+            ]
+        ],
+    ],
+    [
+        "bracket boundary ]. https://example.test/design?filter[status]=ready",
+        "https://example.test/design?filter[status]=ready].",
+        [
+            [
+                "https://example.test/design?filter%5Bstatus%5D=ready",
+                "https://example.test/design?filter[status]=ready",
+            ]
+        ],
+    ],
+    [
+        "bracket boundary ]). https://example.test/design?filter[status]=ready",
+        "https://example.test/design?filter[status]=ready]).",
+        [
+            [
+                "https://example.test/design?filter%5Bstatus%5D=ready",
+                "https://example.test/design?filter[status]=ready",
+            ]
+        ],
+    ],
+    [
+        "bracket boundary ]tail https://example.test/design?filter[status]=ready",
+        "https://example.test/design?filter[status]=ready]tail",
+        [
+            [
+                "https://example.test/design?filter%5Bstatus%5D=ready%5Dtail",
+                "https://example.test/design?filter[status]=ready]tail",
+            ]
+        ],
+    ],
+    [
+        "bracket boundary 에서 https://example.test/design?filter[status]=ready",
+        "https://example.test/design?filter[status]=ready에서",
+        [
+            [
+                "https://example.test/design?filter%5Bstatus%5D=ready",
+                "https://example.test/design?filter[status]=ready",
+            ]
+        ],
+    ],
+    [
+        "bracket URL https://example.test/design?filter[status][value]=ready",
+        "https://example.test/design?filter[status][value]=ready",
+        [
+            [
+                "https://example.test/design?filter%5Bstatus%5D%5Bvalue%5D=ready",
+                "https://example.test/design?filter[status][value]=ready",
+            ]
+        ],
+    ],
+    [
+        "bracket Markdown https://example.test/design?filter[status][value]=ready",
+        "[시안](https://example.test/design?filter[status][value]=ready)",
+        [["https://example.test/design?filter%5Bstatus%5D%5Bvalue%5D=ready", "시안"]],
+    ],
+    [
+        "bracket wrapper https://example.test/design?filter[status][value]=ready",
+        "[https://example.test/design?filter[status][value]=ready]",
+        [],
+    ],
+    [
+        "bracket boundary ] https://example.test/design?filter[status][value]=ready",
+        "https://example.test/design?filter[status][value]=ready]",
+        [
+            [
+                "https://example.test/design?filter%5Bstatus%5D%5Bvalue%5D=ready",
+                "https://example.test/design?filter[status][value]=ready",
+            ]
+        ],
+    ],
+    [
+        "bracket boundary  ]. https://example.test/design?filter[status][value]=ready",
+        "https://example.test/design?filter[status][value]=ready ].",
+        [
+            [
+                "https://example.test/design?filter%5Bstatus%5D%5Bvalue%5D=ready",
+                "https://example.test/design?filter[status][value]=ready",
+            ]
+        ],
+    ],
+    [
+        "bracket boundary ]. https://example.test/design?filter[status][value]=ready",
+        "https://example.test/design?filter[status][value]=ready].",
+        [
+            [
+                "https://example.test/design?filter%5Bstatus%5D%5Bvalue%5D=ready",
+                "https://example.test/design?filter[status][value]=ready",
+            ]
+        ],
+    ],
+    [
+        "bracket boundary ]). https://example.test/design?filter[status][value]=ready",
+        "https://example.test/design?filter[status][value]=ready]).",
+        [
+            [
+                "https://example.test/design?filter%5Bstatus%5D%5Bvalue%5D=ready",
+                "https://example.test/design?filter[status][value]=ready",
+            ]
+        ],
+    ],
+    [
+        "bracket boundary ]tail https://example.test/design?filter[status][value]=ready",
+        "https://example.test/design?filter[status][value]=ready]tail",
+        [
+            [
+                "https://example.test/design?filter%5Bstatus%5D%5Bvalue%5D=ready%5Dtail",
+                "https://example.test/design?filter[status][value]=ready]tail",
+            ]
+        ],
+    ],
+    [
+        "bracket boundary 에서 https://example.test/design?filter[status][value]=ready",
+        "https://example.test/design?filter[status][value]=ready에서",
+        [
+            [
+                "https://example.test/design?filter%5Bstatus%5D%5Bvalue%5D=ready",
+                "https://example.test/design?filter[status][value]=ready",
+            ]
+        ],
+    ],
+    [
+        "bracket URL https://example.test/design[preview]",
+        "https://example.test/design[preview]",
+        [["https://example.test/design%5Bpreview%5D", "https://example.test/design[preview]"]],
+    ],
+    [
+        "bracket Markdown https://example.test/design[preview]",
+        "[시안](https://example.test/design[preview])",
+        [["https://example.test/design%5Bpreview%5D", "시안"]],
+    ],
+    [
+        "bracket wrapper https://example.test/design[preview]",
+        "[https://example.test/design[preview]]",
+        [],
+    ],
+    [
+        "bracket boundary ] https://example.test/design[preview]",
+        "https://example.test/design[preview]]",
+        [["https://example.test/design%5Bpreview%5D", "https://example.test/design[preview]"]],
+    ],
+    [
+        "bracket boundary  ]. https://example.test/design[preview]",
+        "https://example.test/design[preview] ].",
+        [["https://example.test/design%5Bpreview%5D", "https://example.test/design[preview]"]],
+    ],
+    [
+        "bracket boundary ]. https://example.test/design[preview]",
+        "https://example.test/design[preview]].",
+        [["https://example.test/design%5Bpreview%5D", "https://example.test/design[preview]"]],
+    ],
+    [
+        "bracket boundary ]). https://example.test/design[preview]",
+        "https://example.test/design[preview]]).",
+        [["https://example.test/design%5Bpreview%5D", "https://example.test/design[preview]"]],
+    ],
+    [
+        "bracket boundary ]tail https://example.test/design[preview]",
+        "https://example.test/design[preview]]tail",
+        [
+            [
+                "https://example.test/design%5Bpreview%5D%5Dtail",
+                "https://example.test/design[preview]]tail",
+            ]
+        ],
+    ],
+    [
+        "bracket boundary 에서 https://example.test/design[preview]",
+        "https://example.test/design[preview]에서",
+        [["https://example.test/design%5Bpreview%5D", "https://example.test/design[preview]"]],
+    ],
+    [
+        "Markdown after unmatched closing bracket",
+        "https://example.test/a][link](https://example.test/b)",
+        [
+            [
+                "https://example.test/a%5D%5Blink%5D(https://example.test/b)",
+                "https://example.test/a][link](https://example.test/b)",
+            ]
+        ],
+    ],
+    [
+        "unclosed bracket",
+        "https://example.test/design[unfinished",
+        [["https://example.test/design%5Bunfinished", "https://example.test/design[unfinished"]],
+    ],
+    [
+        "nested bracket",
+        "https://example.test/design?filter[outer[inner]]=ready",
+        [
+            [
+                "https://example.test/design?filter%5Bouter%5Binner%5D%5D=ready",
+                "https://example.test/design?filter[outer[inner]]=ready",
+            ]
+        ],
+    ],
+    [
+        "balanced parens",
+        "시안 (https://example.test/a_(b)).",
+        [["https://example.test/a_(b)", "https://example.test/a_(b)"]],
+    ],
+    ["bold", "**https://example.test/a**", [["https://example.test/a", "https://example.test/a"]]],
+    ["inline code", "`https://example.test/a` ``[x](https://example.test/b)``", []],
+    ["fenced code ```", "```js\nhttps://example.test/a [x](https://example.test/b)\n```", []],
+    ["fenced code ~~~", "~~~js\nhttps://example.test/a [x](https://example.test/b)\n~~~", []],
+    [
+        "table and list",
+        (
+            "- [x](https://example.test/a)\n"
+            "| **Name** | `code` |\n"
+            "| --- | --- |\n"
+            "| https://example.test/b | y |"
+        ),
+        [["https://example.test/a", "x"], ["https://example.test/b", "https://example.test/b"]],
+    ],
+    ['blocked "javascript:window.__xss=1"', "[x](javascript:window.__xss=1)", []],
+    ['blocked "JaVaScRiPt:alert(1)"', "[x](JaVaScRiPt:alert(1))", []],
+    [
+        'blocked "data:text/html,<script>window.__xss=1</script>"',
+        "[x](data:text/html,<script>window.__xss=1</script>)",
+        [],
+    ],
+    ['blocked "DaTa:text/html,test"', "[x](DaTa:text/html,test)", []],
+    ['blocked "vbscript:msgbox(1)"', "[x](vbscript:msgbox(1))", []],
+    ['blocked "VBSCRIPT:test"', "[x](VBSCRIPT:test)", []],
+    ['blocked "file:///etc/passwd"', "[x](file:///etc/passwd)", []],
+    ['blocked "//example.test/a"', "[x](//example.test/a)", []],
+    ['blocked "javascript&#58;alert(1)"', "[x](javascript&#58;alert(1))", []],
+    ['blocked "jav&#x61;script:alert(1)"', "[x](jav&#x61;script:alert(1))", []],
+    ['blocked "&#106;avascript:alert(1)"', "[x](&#106;avascript:alert(1))", []],
+    ['blocked "java\\tscript:alert(1)"', "[x](java\tscript:alert(1))", []],
+    ['blocked "java\\nscript:alert(1)"', "[x](java\nscript:alert(1))", []],
+    ['blocked " javascript:alert(1)"', "[x]( javascript:alert(1))", []],
+    ['blocked "https:javascript:alert(1)"', "[x](https:javascript:alert(1))", []],
+    ['blocked "https://"', "[x](https://)", [["https://", "x"]]],
+    [
+        'blocked "https://example.test/\\\\evil"',
+        "[x](https://example.test/\\evil)",
+        [["https://example.test/%5Cevil", "x"]],
+    ],
+    [
+        "query with non-http syntax",
+        "https://example.test/search?q=[guide](draft)",
+        [
+            [
+                "https://example.test/search?q=%5Bguide%5D(draft)",
+                "https://example.test/search?q=[guide](draft)",
+            ]
+        ],
+    ],
+    [
+        "path with non-http syntax",
+        "https://example.test/design[preview](draft)",
+        [
+            [
+                "https://example.test/design%5Bpreview%5D(draft)",
+                "https://example.test/design[preview](draft)",
+            ]
+        ],
+    ],
+    ["IPv6 with non-http syntax", "http://[::1]:8080/design[preview](draft)", []],
+    [
+        "earlier URL owns http syntax",
+        "https://example.test/a[link](https://example.test/b)",
+        [
+            [
+                "https://example.test/a%5Blink%5D(https://example.test/b)",
+                "https://example.test/a[link](https://example.test/b)",
+            ]
+        ],
+    ],
+    ["non-http Markdown stays text", "[guide](draft)", []],
+    [
+        "adjacent Markdown",
+        "https://example.test/a][link](https://example.test/b)",
+        [
+            [
+                "https://example.test/a%5D%5Blink%5D(https://example.test/b)",
+                "https://example.test/a][link](https://example.test/b)",
+            ]
+        ],
+    ],
+    [
+        "adjacent bare",
+        "https://example.test/a]https://example.test/b",
+        [
+            [
+                "https://example.test/a%5Dhttps://example.test/b",
+                "https://example.test/a]https://example.test/b",
+            ]
+        ],
+    ],
+    [
+        "URL label",
+        "[https://example.test/a](https://example.test/b)",
+        [["https://example.test/b", "https://example.test/a"]],
+    ],
+    [
+        "consecutive Markdown",
+        "[a](https://example.test/a)[b](https://example.test/b)",
+        [["https://example.test/a", "a"], ["https://example.test/b", "b"]],
+    ],
+    [
+        "mixed links",
+        "https://example.test/a [b](https://example.test/b) https://example.test/c",
+        [
+            ["https://example.test/a", "https://example.test/a"],
+            ["https://example.test/b", "b"],
+            ["https://example.test/c", "https://example.test/c"],
+        ],
+    ],
+    [
+        "Korean suffix",
+        "https://x.com/a.html에서",
+        [["https://x.com/a.html", "https://x.com/a.html"]],
+    ],
+    [
+        "Korean Markdown",
+        "[한글](https://x.com/한글)",
+        [["https://x.com/%ED%95%9C%EA%B8%80", "한글"]],
+    ],
+    [
+        "balanced parentheses",
+        "시안 (https://x.com/a_(b)). 다음",
+        [["https://x.com/a_(b)", "https://x.com/a_(b)"]],
+    ],
+    ["Markdown parentheses", "[시안](https://x.com/a_(b))", [["https://x.com/a_(b)", "시안"]]],
+    ["bold URL", "**https://x.com/a**", [["https://x.com/a", "https://x.com/a"]]],
+    ["inline code", "`https://x.com/a` ``[시안](https://x.com/a)``", []],
+    [
+        "unclosed bracket",
+        "https://example.test/design[unfinished",
+        [["https://example.test/design%5Bunfinished", "https://example.test/design[unfinished"]],
+    ],
+    [
+        "unmatched bracket",
+        "https://example.test/design]tail",
+        [["https://example.test/design%5Dtail", "https://example.test/design]tail"]],
+    ],
+    [
+        "escaped HTML",
+        "https://x.com/?a=1&b=2<img src=x>",
+        [["https://x.com/?a=1&b=2", "https://x.com/?a=1&b=2"]],
+    ],
+    [
+        "bare https://x.com/a.html",
+        "https://x.com/a.html 에서",
+        [["https://x.com/a.html", "https://x.com/a.html"]],
+    ],
+    [
+        "bare http://x.com/?a=1&b=2",
+        "http://x.com/?a=1&b=2 에서",
+        [["http://x.com/?a=1&b=2", "http://x.com/?a=1&b=2"]],
+    ],
+    ["bare HTTPS://x.com/a", "HTTPS://x.com/a 에서", [["HTTPS://x.com/a", "HTTPS://x.com/a"]]],
+    [
+        "bare https://x.com/%ED%95%9C",
+        "https://x.com/%ED%95%9C 에서",
+        [["https://x.com/%ED%95%9C", "https://x.com/%ED%95%9C"]],
+    ],
+    [
+        "bare https://x.com/?a&",
+        "https://x.com/?a& 에서",
+        [["https://x.com/?a&", "https://x.com/?a&"]],
+    ],
+    ["bracket http://[::1]:8080/design", "http://[::1]:8080/design", []],
+    [
+        "bracket Markdown http://[::1]:8080/design",
+        "[시안](http://[::1]:8080/design)",
+        [["http://%5B::1%5D:8080/design", "시안"]],
+    ],
+    ["surrounding brackets http://[::1]:8080/design", "[http://[::1]:8080/design]", []],
+    ["bracket suffix http://[::1]:8080/design].", "http://[::1]:8080/design].", []],
+    ["bracket suffix http://[::1]:8080/design]).", "http://[::1]:8080/design]).", []],
+    ["bracket suffix http://[::1]:8080/design에서", "http://[::1]:8080/design에서", []],
+    ["bracket https://[2001:db8::1]/preview", "https://[2001:db8::1]/preview", []],
+    [
+        "bracket Markdown https://[2001:db8::1]/preview",
+        "[시안](https://[2001:db8::1]/preview)",
+        [["https://%5B2001:db8::1%5D/preview", "시안"]],
+    ],
+    ["surrounding brackets https://[2001:db8::1]/preview", "[https://[2001:db8::1]/preview]", []],
+    ["bracket suffix https://[2001:db8::1]/preview].", "https://[2001:db8::1]/preview].", []],
+    ["bracket suffix https://[2001:db8::1]/preview]).", "https://[2001:db8::1]/preview]).", []],
+    ["bracket suffix https://[2001:db8::1]/preview에서", "https://[2001:db8::1]/preview에서", []],
+    [
+        "bracket http://[::ffff:192.0.2.128]:8080/design",
+        "http://[::ffff:192.0.2.128]:8080/design",
+        [],
+    ],
+    [
+        "bracket Markdown http://[::ffff:192.0.2.128]:8080/design",
+        "[시안](http://[::ffff:192.0.2.128]:8080/design)",
+        [["http://%5B::ffff:192.0.2.128%5D:8080/design", "시안"]],
+    ],
+    [
+        "surrounding brackets http://[::ffff:192.0.2.128]:8080/design",
+        "[http://[::ffff:192.0.2.128]:8080/design]",
+        [],
+    ],
+    [
+        "bracket suffix http://[::ffff:192.0.2.128]:8080/design].",
+        "http://[::ffff:192.0.2.128]:8080/design].",
+        [],
+    ],
+    [
+        "bracket suffix http://[::ffff:192.0.2.128]:8080/design]).",
+        "http://[::ffff:192.0.2.128]:8080/design]).",
+        [],
+    ],
+    [
+        "bracket suffix http://[::ffff:192.0.2.128]:8080/design에서",
+        "http://[::ffff:192.0.2.128]:8080/design에서",
+        [],
+    ],
+    [
+        "bracket https://[2001:db8:85a3::8a2e:370:7334]/preview",
+        "https://[2001:db8:85a3::8a2e:370:7334]/preview",
+        [],
+    ],
+    [
+        "bracket Markdown https://[2001:db8:85a3::8a2e:370:7334]/preview",
+        "[시안](https://[2001:db8:85a3::8a2e:370:7334]/preview)",
+        [["https://%5B2001:db8:85a3::8a2e:370:7334%5D/preview", "시안"]],
+    ],
+    [
+        "surrounding brackets https://[2001:db8:85a3::8a2e:370:7334]/preview",
+        "[https://[2001:db8:85a3::8a2e:370:7334]/preview]",
+        [],
+    ],
+    [
+        "bracket suffix https://[2001:db8:85a3::8a2e:370:7334]/preview].",
+        "https://[2001:db8:85a3::8a2e:370:7334]/preview].",
+        [],
+    ],
+    [
+        "bracket suffix https://[2001:db8:85a3::8a2e:370:7334]/preview]).",
+        "https://[2001:db8:85a3::8a2e:370:7334]/preview]).",
+        [],
+    ],
+    [
+        "bracket suffix https://[2001:db8:85a3::8a2e:370:7334]/preview에서",
+        "https://[2001:db8:85a3::8a2e:370:7334]/preview에서",
+        [],
+    ],
+    [
+        "bracket https://example.test/design?filter[status]=ready",
+        "https://example.test/design?filter[status]=ready",
+        [
+            [
+                "https://example.test/design?filter%5Bstatus%5D=ready",
+                "https://example.test/design?filter[status]=ready",
+            ]
+        ],
+    ],
+    [
+        "bracket Markdown https://example.test/design?filter[status]=ready",
+        "[시안](https://example.test/design?filter[status]=ready)",
+        [["https://example.test/design?filter%5Bstatus%5D=ready", "시안"]],
+    ],
+    [
+        "surrounding brackets https://example.test/design?filter[status]=ready",
+        "[https://example.test/design?filter[status]=ready]",
+        [],
+    ],
+    [
+        "bracket suffix https://example.test/design?filter[status]=ready].",
+        "https://example.test/design?filter[status]=ready].",
+        [
+            [
+                "https://example.test/design?filter%5Bstatus%5D=ready",
+                "https://example.test/design?filter[status]=ready",
+            ]
+        ],
+    ],
+    [
+        "bracket suffix https://example.test/design?filter[status]=ready]).",
+        "https://example.test/design?filter[status]=ready]).",
+        [
+            [
+                "https://example.test/design?filter%5Bstatus%5D=ready",
+                "https://example.test/design?filter[status]=ready",
+            ]
+        ],
+    ],
+    [
+        "bracket suffix https://example.test/design?filter[status]=ready에서",
+        "https://example.test/design?filter[status]=ready에서",
+        [
+            [
+                "https://example.test/design?filter%5Bstatus%5D=ready",
+                "https://example.test/design?filter[status]=ready",
+            ]
+        ],
+    ],
+    [
+        "bracket https://example.test/design[preview]",
+        "https://example.test/design[preview]",
+        [["https://example.test/design%5Bpreview%5D", "https://example.test/design[preview]"]],
+    ],
+    [
+        "bracket Markdown https://example.test/design[preview]",
+        "[시안](https://example.test/design[preview])",
+        [["https://example.test/design%5Bpreview%5D", "시안"]],
+    ],
+    [
+        "surrounding brackets https://example.test/design[preview]",
+        "[https://example.test/design[preview]]",
+        [],
+    ],
+    [
+        "bracket suffix https://example.test/design[preview]].",
+        "https://example.test/design[preview]].",
+        [["https://example.test/design%5Bpreview%5D", "https://example.test/design[preview]"]],
+    ],
+    [
+        "bracket suffix https://example.test/design[preview]]).",
+        "https://example.test/design[preview]]).",
+        [["https://example.test/design%5Bpreview%5D", "https://example.test/design[preview]"]],
+    ],
+    [
+        "bracket suffix https://example.test/design[preview]에서",
+        "https://example.test/design[preview]에서",
+        [["https://example.test/design%5Bpreview%5D", "https://example.test/design[preview]"]],
+    ],
+    [
+        "bracket https://example.test/design?filter[status][value]=ready",
+        "https://example.test/design?filter[status][value]=ready",
+        [
+            [
+                "https://example.test/design?filter%5Bstatus%5D%5Bvalue%5D=ready",
+                "https://example.test/design?filter[status][value]=ready",
+            ]
+        ],
+    ],
+    [
+        "bracket Markdown https://example.test/design?filter[status][value]=ready",
+        "[시안](https://example.test/design?filter[status][value]=ready)",
+        [["https://example.test/design?filter%5Bstatus%5D%5Bvalue%5D=ready", "시안"]],
+    ],
+    [
+        "surrounding brackets https://example.test/design?filter[status][value]=ready",
+        "[https://example.test/design?filter[status][value]=ready]",
+        [],
+    ],
+    [
+        "bracket suffix https://example.test/design?filter[status][value]=ready].",
+        "https://example.test/design?filter[status][value]=ready].",
+        [
+            [
+                "https://example.test/design?filter%5Bstatus%5D%5Bvalue%5D=ready",
+                "https://example.test/design?filter[status][value]=ready",
+            ]
+        ],
+    ],
+    [
+        "bracket suffix https://example.test/design?filter[status][value]=ready]).",
+        "https://example.test/design?filter[status][value]=ready]).",
+        [
+            [
+                "https://example.test/design?filter%5Bstatus%5D%5Bvalue%5D=ready",
+                "https://example.test/design?filter[status][value]=ready",
+            ]
+        ],
+    ],
+    [
+        "bracket suffix https://example.test/design?filter[status][value]=ready에서",
+        "https://example.test/design?filter[status][value]=ready에서",
+        [
+            [
+                "https://example.test/design?filter%5Bstatus%5D%5Bvalue%5D=ready",
+                "https://example.test/design?filter[status][value]=ready",
+            ]
+        ],
+    ],
+    ["punctuation .", "https://x.com/a.", [["https://x.com/a", "https://x.com/a"]]],
+    ["punctuation ,", "https://x.com/a,", [["https://x.com/a", "https://x.com/a"]]],
+    ["punctuation !", "https://x.com/a!", [["https://x.com/a", "https://x.com/a"]]],
+    ["punctuation ?", "https://x.com/a?", [["https://x.com/a", "https://x.com/a"]]],
+    ["punctuation :", "https://x.com/a:", [["https://x.com/a", "https://x.com/a"]]],
+    ["punctuation ;", "https://x.com/a;", [["https://x.com/a", "https://x.com/a"]]],
+    ["punctuation 。", "https://x.com/a。", [["https://x.com/a%E3%80%82", "https://x.com/a。"]]],
+    [
+        "punctuation \uff01",
+        "https://x.com/a\uff01",
+        [["https://x.com/a%EF%BC%81", "https://x.com/a\uff01"]],
+    ],
+    [
+        "punctuation \uff1f",
+        "https://x.com/a\uff1f",
+        [["https://x.com/a%EF%BC%9F", "https://x.com/a\uff1f"]],
+    ],
+    ["punctuation …", "https://x.com/a…", [["https://x.com/a%E2%80%A6", "https://x.com/a…"]]],
+    ["punctuation ).", "https://x.com/a).", [["https://x.com/a", "https://x.com/a"]]],
+    ["punctuation }.", "https://x.com/a}.", [["https://x.com/a%7D", "https://x.com/a}"]]],
+    ["blocked [x](javascript:alert(1))", "[x](javascript:alert(1))", []],
+    ["blocked [x](data:text/html,test)", "[x](data:text/html,test)", []],
+    ["blocked [x](vbscript:x)", "[x](vbscript:x)", []],
+    ["blocked [x](//x.com)", "[x](//x.com)", []],
+    ["blocked [x](https://)", "[x](https://)", [["https://", "x"]]],
+    [
+        "r4 https://example.test/a(b",
+        "https://example.test/a(b",
+        [["https://example.test/a(b", "https://example.test/a(b"]],
+    ],
+    [
+        "r4 https://example.test/search?re=[(]",
+        "https://example.test/search?re=[(]",
+        [["https://example.test/search?re=%5B(%5D", "https://example.test/search?re=[(]"]],
+    ],
+    [
+        "r4 https://example.test/a[(b]c)",
+        "https://example.test/a[(b]c)",
+        [["https://example.test/a%5B(b%5Dc)", "https://example.test/a[(b]c)"]],
+    ],
+    ["r4 [https://example.test/a](draft)", "[https://example.test/a](draft)", []],
+    [
+        "r4 [guide](draft?url=https://example.test/a)",
+        "[guide](draft?url=https://example.test/a)",
+        [],
+    ],
+    ["r4 [**https://example.test/a**](draft)", "[**https://example.test/a**](draft)", []],
+    [
+        "r4 [**label** `code`](https://example.test/한글)",
+        "[**label** `code`](https://example.test/한글)",
+        [["https://example.test/%ED%95%9C%EA%B8%80", "label code"]],
+    ],
+    [
+        "r4 https://example.test/a&copy;",
+        "https://example.test/a&copy;",
+        [["https://example.test/a", "https://example.test/a"]],
+    ],
+    [
+        "r4 https://example.test/a&#39;",
+        "https://example.test/a&#39;",
+        [["https://example.test/a&#39", "https://example.test/a&#39"]],
+    ],
+    [
+        "nested relative link deactivates outer",
+        "[https://x.test/a?q=[guide](draft)](https://example.test/out)[next](https://example.test/next)",
+        [
+            [
+                "https://example.test/out)%5Bnext%5D(https://example.test/next",
+                "https://example.test/out)[next](https://example.test/next",
+            ]
+        ],
+    ],
+    [
+        "intraword underscore label",
+        "[http://bad_host.test/a_(b)](https://example.test/out)",
+        [["https://example.test/out", "http://bad_host.test/a_(b)"]],
+    ],
 ]
 
 
-def test_markdown_generated_link_invariants():  # noqa: C901 - generated grammar and HTML invariants
-    import random
-    from urllib.parse import urlsplit
+class AutolinkMarkup(HTMLParser):
+    def __init__(self, rendered):
+        super().__init__()
+        self.links = []
+        self.in_link = False
+        self.visible = ""
+        self.feed(rendered)
 
-    rng = random.Random(0x62165D0)  # noqa: S311 - reproducible test data
+    def handle_starttag(self, tag, attrs):
+        if tag == "a":
+            self.links.append([dict(attrs).get("href", ""), ""])
+            self.in_link = True
 
-    def url():
-        scheme = rng.choice(["http", "https", "HTTPS"])
-        host = rng.choice(["example.test", "[::1]:8080", "[2001:db8::1]", "[::ffff:192.0.2.128]"])
-        path = rng.choice(
-            ["/design", "/a_(b)", "/design[preview](draft)", "/a[b(c)]", "/%ED%95%9C"]
-        )
-        query = rng.choice(
-            ["", "?q=[guide](draft)", "?filter[status]=ready", "?a=1&b=2", "?q=(draft)"]
-        )
-        return f"{scheme}://{host}{path}{rng.randrange(1000)}{query}"
+    def handle_endtag(self, tag):
+        if tag == "a":
+            self.in_link = False
 
-    def markdown():
-        destination = url() + rng.choice(["", "/한글"])
-        label = rng.choice(["guide", "한글", 'label <tag> " &', url()])
-        return f"[{label}]({destination})", label, [[destination, label]]
+    def handle_data(self, data):
+        self.visible += data
+        if self.in_link:
+            self.links[-1][1] += data
 
-    def fragment():
-        first, second = url(), url()
-        choice = rng.randrange(10)
-        if choice == 0:
-            return first, first, [[first, first]]
-        if choice == 1:
-            return markdown()
-        if choice == 2:
-            text = f"[guide]({rng.choice(['draft', 'javascript:alert(1)', 'data:text/html,test', 'vbscript:test'])})"
-            return text, text, []
-        if choice == 3:
-            ticks = rng.choice(["`", "``"])
-            body = f'{first} [guide]({second}) <svg onload="x">'
-            return ticks + body + ticks, body, []
-        if choice == 4:
-            # The earlier bare URL owns the balanced Markdown-looking suffix.
-            combined = first + f"[guide]({second})"
-            return combined, combined, [[combined, combined]]
-        if choice == 5:
-            closer = rng.choice([")[", "]["])
-            text = first + closer + f"guide]({second})"
-            return text, first + closer[0] + "guide", [[first, first], [second, "guide"]]
-        if choice == 6:
-            left, left_text, left_links = markdown()
-            right, right_text, right_links = markdown()
-            return left + right, left_text + right_text, left_links + right_links
-        if choice == 7:
-            text = rng.choice(
-                ['<img src=x onerror="alert(1)">', '<script>"x"</script>', "plain < > \" ' &"]
-            )
-            return text, text, []
-        if choice == 8:
-            return first + "`code`", first + "code", [[first, first]]
-        source, label, links = markdown()
-        return "`code`" + source, "code" + label, links
+    def http_links(self):
+        return [row for row in self.links if re.match(r"https?://", row[0], re.IGNORECASE)]
 
-    cases = list(GENERATED_LINK_REGRESSIONS)
-    for index in range(5000):
-        if index % 10 == 0:
-            body = f'{url()} [guide]({url()}) <img src=x onerror="alert(1)">'
-            cases.append({"text": f"```txt\n{body}\n```", "visible": body + "\n", "links": []})
-            continue
-        source = visible = f"case {index}: "
-        links = []
-        for _ in range(rng.randrange(2, 8)):
-            part, shown, anchors = fragment()
-            separator = rng.choice([" ", " 에서 ", "], ", "). ", "; ", "。 ", "\t"])
-            source += part + separator
-            visible += shown + separator
-            links.extend(anchors)
-        cases.append({"text": source, "visible": visible, "links": links})
 
+def render_autolink_inputs(inputs):
     script = """
 import fs from 'node:fs';
-const {source,cases}=JSON.parse(fs.readFileSync(0,'utf8'));
+const {source,inputs}=JSON.parse(fs.readFileSync(0,'utf8'));
 const {md}=await import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
-console.log(JSON.stringify(cases.map(row=>md(row.text))));
+console.log(JSON.stringify(inputs.map(md)));
 """
     result = subprocess.run(
         ["node", "--input-type=module", "-e", script],
-        input=json.dumps({"source": (STATIC / "js/md.js").read_text(), "cases": cases}),
+        input=json.dumps({"source": (STATIC / "js/md.js").read_text(), "inputs": inputs}),
         capture_output=True,
         text=True,
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+    return json.loads(result.stdout)
 
-    class Parsed(HTMLParser):
-        def __init__(self, rendered):
-            super().__init__()
-            self.links = []
-            self.visible = ""
-            self.in_link = False
-            self.feed(rendered)
 
-        def handle_starttag(self, tag, attrs):
-            attrs = dict(attrs)
-            assert tag in {"p", "a", "code", "pre"}, (tag, attrs)
+def test_autolink_spec_fixed_table():
+    # Frozen cmark-gfm expectations plus only the three documented differences.
+    rendered = render_autolink_inputs([row[1] for row in AUTOLINK_SPEC_CASES])
+    for (name, text, expected), output in zip(AUTOLINK_SPEC_CASES, rendered, strict=True):
+        parsed = AutolinkMarkup(output)
+        assert parsed.links == expected, (name, text, parsed.links, expected)
+        for tag, attrs in Markup(output).tags:
             if tag == "a":
-                assert not self.in_link
-                assert set(attrs) == {"href", "target", "rel"}, attrs
+                assert set(attrs) == {"href", "target", "rel"}
                 assert attrs["target"] == "_blank"
                 assert attrs["rel"] == "noopener noreferrer"
-                assert urlsplit(attrs["href"]).scheme in {"http", "https"}
-                self.links.append([attrs["href"], ""])
-                self.in_link = True
-            else:
-                assert attrs == ({"tabindex": "0"} if tag == "pre" else {})
+                assert re.match(r"https?://", attrs["href"], re.IGNORECASE)
+    for text in [
+        "[https://example.test/a](draft)",
+        "[guide](draft?url=https://example.test/a)",
+        "[**https://example.test/a** `code`](draft)",
+    ]:
+        parsed = AutolinkMarkup(render_autolink_inputs([text])[0])
+        assert parsed.links == []
+        assert parsed.visible == text
 
-        def handle_endtag(self, tag):
+
+def test_autolink_cmark_differential(tmp_path):  # noqa: C901 - independent grammar and three spec adaptations
+    import random
+
+    cmarkgfm = pytest.importorskip("cmarkgfm", reason="Optional test-only cmark-gfm oracle")
+    reference = cmarkgfm.github_flavored_markdown_to_html
+    cases = []
+    for seed in [0x62165D0, 0x94A137D, 0xD15EA5E4]:
+        rng = random.Random(seed)  # noqa: S311 - reproducible differential inputs
+
+        def url(*, markdown=False, rng=rng):
+            host = rng.choice(
+                ["example.test", "x.test", "localhost", "bad_host.test", "[::1]:8080"]
+            )
+            paths = ["/a", "/a_(b)", "/a[b(c)]", "/%ED%95%9C", "/café", "/emoji😀"]
+            if not markdown:
+                paths += [
+                    "/a(b",
+                    "/a[(b]c)",
+                    "/search?re=[(]",
+                    "/a[unfinished",
+                    "/a]tail",
+                    '/a"b',
+                    "/a>b",
+                    "/a`code`",
+                ]
+            return (
+                rng.choice(["http", "https", "HTTPS"])
+                + "://"
+                + host
+                + rng.choice(paths)
+                + rng.choice(
+                    [
+                        "",
+                        "?q=[guide](draft)",
+                        "?filter[status]=ready",
+                        "?a=1&b=2",
+                        "?q=(draft)",
+                        "?q=%28test%29",
+                    ]
+                )
+            )
+
+        def atom(rng=rng, url=url):  # noqa: C901 - grammar variants and spec differences
+            choice = rng.randrange(8)
+            if choice in {0, 1, 2}:
+                text = url()
+                if choice == 1:
+                    text += "[label](https://example.test/next)"
+                text += rng.choice(
+                    [
+                        "",
+                        "]",
+                        "]).",
+                        "!",
+                        "?",
+                        "*",
+                        "_",
+                        "~",
+                        ";",
+                        "&copy;",
+                        "&#39;",
+                        "。",
+                        "}",
+                        "에서",
+                        "ㄱ",
+                    ]
+                )
+                adapted, differences = text, []
+                anchors = AutolinkMarkup(reference(text)).http_links()
+                if anchors and re.match(r"https?://", anchors[0][1], re.IGNORECASE):
+                    label = anchors[0][1]
+                    cut = re.search(r"[\u3131-\u3163\uac00-\ud7a3]", label)
+                    prefix = label[: cut.start()] if cut else label
+                    if cut:
+                        differences.append(2)
+                    while prefix.endswith("]") and prefix.count("]") > prefix.count("["):
+                        prefix = prefix[:-1]
+                        if 1 not in differences:
+                            differences.append(1)
+                    if prefix != label:
+                        # Insert a boundary only where the spec deliberately differs.
+                        adapted = text.replace(label, prefix + " " + label[len(prefix) :], 1)
+                return text, adapted, differences
+            if choice == 3:
+                label = rng.choice(
+                    [
+                        "guide",
+                        "**bold** _em_ ~~strike~~ `code`",
+                        "한글",
+                        url(markdown=True),
+                        "&amp; &lt; &#65;",
+                    ]
+                )
+                text = f"[{label}]({url(markdown=True)})"
+                if rng.choice([False, True]):
+                    text += "[next](https://example.test/next)"
+                return text, text, []
+            if choice == 4:
+                text = f"[**{url(markdown=True)}** `code`]({rng.choice(['draft', 'javascript:alert(1)', 'data:text/html,test'])})"
+                return text, "```\n" + text + "\n```", [3]
+            if choice == 5:
+                ticks = rng.choice(["`", "``", "```"])
+                text = ticks + " " + url() + " [guide](draft) " + ticks
+                return text, text, []
+            if choice == 6:
+                text = f"**[guide]({url(markdown=True)})**"
+                return text, text, []
+            text = "```txt\n" + url() + " [x](https://example.test/code)\n```"
+            return text, text, []
+
+        for index in range(4000):
+            fragments = [atom() for _ in range(rng.randrange(1, 5))]
+            text = "\n\n".join(part[0] for part in fragments)
+            adapted = "\n\n".join(part[1] for part in fragments)
+            differences = sorted({number for part in fragments for number in part[2]})
+            cases.append(
+                {
+                    "seed": seed,
+                    "index": index,
+                    "text": text,
+                    "adapted": adapted,
+                    "differences": differences,
+                }
+            )
+
+    actual = render_autolink_inputs([case["text"] for case in cases])
+    failures = []
+    for case, output in zip(cases, actual, strict=True):
+        # Render the same input too: the adapted reference may differ only by 1-3.
+        original = AutolinkMarkup(reference(case["text"])).http_links()
+        expected = AutolinkMarkup(reference(case["adapted"])).http_links()
+        if not case["differences"]:
+            assert expected == original
+        assert set(case["differences"]) <= {1, 2, 3}
+        parsed = AutolinkMarkup(output)
+        if parsed.links != expected:
+            failures.append(
+                {**case, "original": original, "expected": expected, "actual": parsed.links}
+            )
+        for tag, attrs in Markup(output).tags:
+            assert tag not in {"script", "img", "svg", "iframe", "style"}
+            assert not any(name.startswith("on") or name == "style" for name in attrs)
             if tag == "a":
-                self.in_link = False
-
-        def handle_data(self, data):
-            self.visible += data
-            if self.in_link:
-                self.links[-1][1] += data
-
-    rendered_cases = json.loads(result.stdout)
-    assert len(rendered_cases) == len(cases) == 5000 + len(GENERATED_LINK_REGRESSIONS)
-    for index, (case, rendered) in enumerate(zip(cases, rendered_cases, strict=True)):
-        parsed = Parsed(rendered)
-        assert parsed.links == case["links"], (index, case["text"], parsed.links, case["links"])
-        assert parsed.visible == case["visible"], (
-            index,
-            case["text"],
-            parsed.visible,
-            case["visible"],
+                assert re.match(r"https?://", attrs["href"], re.IGNORECASE)
+                assert set(attrs) == {"href", "target", "rel"}
+                assert attrs["target"] == "_blank"
+                assert attrs["rel"] == "noopener noreferrer"
+    report = tmp_path / "differential-failures.json"
+    report.write_text(json.dumps(failures, ensure_ascii=False, indent=2))
+    (tmp_path / "differential-summary.json").write_text(
+        json.dumps(
+            {
+                "cases": len(cases),
+                "per_seed": 4000,
+                "seeds": [0x62165D0, 0x94A137D, 0xD15EA5E4],
+                "unapproved_mismatches": len(failures),
+                "spec_difference_cases": {
+                    number: sum(number in case["differences"] for case in cases)
+                    for number in [1, 2, 3]
+                },
+            },
+            indent=2,
         )
+    )
+    assert len(cases) == 12000
+    assert not failures, (len(failures), str(report), failures[:2])
 
 
 def test_secret_dialog_password_and_accessible_shell(markup):

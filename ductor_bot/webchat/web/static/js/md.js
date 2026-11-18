@@ -3,79 +3,137 @@ export function esc(value) {
   return String(value).replace(/[&<>"']/g, character =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
 }
+function uri(value) {
+  // cmark preserves percent escapes while UTF-8 escaping URI delimiters and text.
+  return encodeURI(value).replace(/%25/g, '%');
+}
+function decoded(value) {
+  const entities = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+  return value.replace(/\\([!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~])|&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos);/gi,
+    (raw, escaped, entity) => {
+      if (escaped) return escaped;
+      if (entity[0] !== '#') return entities[entity];
+      const number = entity[1].toLowerCase() === 'x' ? parseInt(entity.slice(2), 16) : Number(entity.slice(1));
+      return number > 0 && number <= 0x10ffff && !(number >= 0xd800 && number <= 0xdfff)
+        ? String.fromCodePoint(number) : '\ufffd';
+    });
+}
 function link(url, label) {
-  // Input has already passed through esc(); never decode it into HTML again.
-  if (!/^https?:\/\//i.test(url) || /[\s\\]|&(?:lt|gt|quot|#39);/i.test(url)) return null;
+  if (!/^https?:\/\//i.test(url)) return null;
   try {
-    const parsed = new URL(url);
-    if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname) return null;
+    return `<a href="${esc(uri(url))}" target="_blank" rel="noopener noreferrer">${label}</a>`;
   } catch { return null; }
-  return `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`;
 }
-function urlEnd(text, start, limit, markdown = false) {
-  const openings = [], pairs = { ']': '[', ')': '(', '}': '{' };
+function bareEnd(text, start) {
   let end = start;
-  for (; end < limit; end++) {
-    const character = text[end];
-    if (/[\s<>"'`]/.test(character) || /^(?:&lt;|&gt;|&quot;|&#39;)/.test(text.slice(end, end + 6))
-      || (!markdown && /[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]/.test(character))) break;
-    if ('([{'.includes(character)) openings.push({ character, index: end });
-    else if (Object.hasOwn(pairs, character)) {
-      if (openings.at(-1)?.character !== pairs[character]) break;
-      openings.pop();
-    }
+  while (end < text.length && !/[\s<\u3131-\u3163\uac00-\ud7a3]/.test(text[end])) end++;
+  let body = text.slice(start, end);
+  let round = [...body].filter(c => c === ')').length - [...body].filter(c => c === '(').length;
+  let square = [...body].filter(c => c === ']').length - [...body].filter(c => c === '[').length;
+  while (body) {
+    const last = body.at(-1);
+    if (/[?!.,:*_~'"]/.test(last)) body = body.slice(0, -1);
+    else if (last === ')' && round > 0) { body = body.slice(0, -1); round--; }
+    else if (last === ']' && square > 0) { body = body.slice(0, -1); square--; }
+    else if (last === ';') body = body.replace(/&[a-z]+;$/i, '').replace(/;$/, '');
+    else break;
   }
-  if (openings.length) end = openings[0].index;
-  if (!markdown) {
-    while (end > start && (/[.,!?:。！？、…]/.test(text[end - 1])
-      || (text[end - 1] === ';' && !text.slice(start, end).endsWith('&amp;')))) end--;
-  }
-  return end;
+  return start + body.length;
 }
-function markdownStart(text, start, limit) {
-  let depth = 1;
-  for (let index = start + 1; index < limit; index++) {
-    if (text[index] === '[') depth++;
-    else if (text[index] === ']' && --depth === 0) {
-      if (index > start + 1 && text[index + 1] === '(' && /^https?:\/\//i.test(text.slice(index + 2, index + 10))) {
-        return { label: text.slice(start + 1, index), url: index + 2 };
-      }
-      break;
+function codeAt(text, start) {
+  const ticks = /^`+/.exec(text.slice(start))[0];
+  let cursor = start + ticks.length;
+  while (cursor < text.length) {
+    const next = text.indexOf('`', cursor);
+    if (next < 0) break;
+    const run = /^`+/.exec(text.slice(next))[0];
+    if (run.length === ticks.length) {
+      let body = text.slice(start + ticks.length, next).replace(/\n/g, ' ');
+      if (body.startsWith(' ') && body.endsWith(' ') && /\S/.test(body)) body = body.slice(1, -1);
+      return { end: next + run.length, body };
     }
+    cursor = next + run.length;
   }
   return null;
 }
-function inline(value) {
-  const text = esc(value), code = /(`+)(.+?)\1/gy;
-  const http = /https?:\/\//giy;
-  let output = '', index = 0, boldEnd = -1;
-  // A token is considered only at the cursor; an earlier URL owns its entire body.
-  while (index < text.length) {
-    if (index === boldEnd) { output += '</b>'; boldEnd = -1; index += 2; continue; }
-    const limit = boldEnd < 0 ? text.length : boldEnd;
-    code.lastIndex = http.lastIndex = index;
-    const codeToken = text[index] === '`' ? code.exec(text) : null;
-    if (codeToken && code.lastIndex <= limit) {
-      output += `<code>${codeToken[2]}</code>`; index = code.lastIndex; continue;
+function bracketAt(text, start) {
+  let depth = 1;
+  for (let index = start + 1; index < text.length; index++) {
+    if (text[index] === '\\') { index++; continue; }
+    if (text[index] === '`') { const code = codeAt(text, index); if (code) { index = code.end - 1; continue; } }
+    if (text[index] === '[') depth++;
+    else if (text[index] === ']' && --depth === 0) return index;
+  }
+  return text.length;
+}
+function destinationAt(text, start) {
+  let index = start, depth = 0;
+  const angle = text[index] === '<';
+  if (angle) index++;
+  const beginning = index;
+  for (; index < text.length; index++) {
+    if (text[index] === '\\' && /[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/.test(text[index + 1] || '')) { index++; continue; }
+    if (angle) { if (text[index] === '>') break; if (/[\n<]/.test(text[index])) return null; }
+    else {
+      if (/\s/.test(text[index])) return null;
+      if (text[index] === '(') depth++;
+      if (text[index] === ')' && depth-- === 0) break;
     }
-    const markdownToken = text[index] === '[' ? markdownStart(text, index, limit) : null;
-    if (markdownToken) {
-      const end = urlEnd(text, markdownToken.url, limit, true);
-      if (text[end] === ')') {
-        output += link(text.slice(markdownToken.url, end), markdownToken.label) || text.slice(index, end + 1);
-        index = end + 1; continue;
+  }
+  const end = index + (angle ? 1 : 0);
+  return text[end] === ')' ? { url: decoded(text.slice(beginning, index)), end: end + 1 } : null;
+}
+function containsLink(text) {
+  for (let index = 0; index < text.length; index++) {
+    if (text[index] === '\\') { index++; continue; }
+    if (text[index] === '`') { const code = codeAt(text, index); if (code) { index = code.end - 1; continue; } }
+    if (text[index] === '[') {
+      const close = bracketAt(text, index);
+      if (text[close + 1] === '(' && destinationAt(text, close + 2)) return true;
+    }
+  }
+  return false;
+}
+function inline(text, autolinks = true, markdown = true) {
+  let output = '', index = 0;
+  const http = /https?:\/\//iy;
+  while (index < text.length) {
+    if (text[index] === '`') {
+      const code = codeAt(text, index);
+      if (code) { output += `<code>${esc(code.body)}</code>`; index = code.end; continue; }
+    }
+    const angle = /^<(https?:\/\/[^\s<>]*)>/i.exec(text.slice(index));
+    if (autolinks && angle) { output += link(angle[1], esc(angle[1])); index += angle[0].length; continue; }
+    if (markdown && text[index] === '[') {
+      const close = bracketAt(text, index), label = text.slice(index + 1, close);
+      const destination = text[close + 1] === '(' ? destinationAt(text, close + 2) : null;
+      if (destination && (!/^https?:\/\//i.test(destination.url) || !containsLink(label))) {
+        // Non-HTTP destinations are one opaque text token, including their label.
+        output += /^https?:\/\//i.test(destination.url)
+          ? link(destination.url, inline(label, false, false)) || esc(text.slice(index, destination.end))
+          : esc(text.slice(index, destination.end));
+        index = destination.end; continue;
+      }
+      output += '[' + inline(label, false, true) + (close < text.length ? ']' : '');
+      index = Math.min(close + 1, text.length); continue;
+    }
+    http.lastIndex = index;
+    if (autolinks && !/[a-z]/i.test(text[index - 1] || '') && http.test(text)) {
+      const host = /^[^\s/?#:]+/.exec(text.slice(http.lastIndex))?.[0] || '';
+      if (/^[\p{L}\p{N}]/u.test(host) && !host.split('.').slice(-2).some(part => part.includes('_'))) {
+        const end = bareEnd(text, index), url = text.slice(index, end);
+        output += link(url, esc(url)) || esc(url); index = end; continue;
       }
     }
-    if (http.test(text)) {
-      const end = urlEnd(text, index, limit), url = text.slice(index, end);
-      output += link(url, url) || url; index = end; continue;
+    const format = /^(\*\*|__|~~|\*|_)(?=\S)(.+?)\1/.exec(text.slice(index));
+    if (format && !(format[1].includes('_') && /[\p{L}\p{N}]/u.test(text[index - 1] || ''))) {
+      const tag = format[1].length === 1 ? 'em' : format[1] === '~~' ? 's' : 'b';
+      output += `<${tag}>${inline(format[2], autolinks, markdown)}</${tag}>`;
+      index += format[0].length; continue;
     }
-    // Keep the existing bold subset while code and link tokens remain indivisible.
-    if (boldEnd < 0 && text.startsWith('**', index)) {
-      const end = text.indexOf('**', index + 2);
-      if (end > index + 2) { output += '<b>'; boldEnd = end; index += 2; continue; }
-    }
-    output += text[index++];
+    const escaped = /^\\[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]|^&(?:#x[\da-f]+|#\d+|amp|lt|gt|quot|apos);/i.exec(text.slice(index));
+    if (escaped) { output += esc(decoded(escaped[0])); index += escaped[0].length; continue; }
+    output += esc(text[index++]);
   }
   return output;
 }
