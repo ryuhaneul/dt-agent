@@ -80,6 +80,9 @@ current = "{name} · Тема №{id}"
 last_active = "Последняя активность: {time}"
 
 [chat]
+queued = "В очереди"
+cancelled = "Отменено"
+cancel_queued = "Отменить сообщение в очереди"
 delegated_response = "Ответ на делегированную задачу"
 scroll_top = "Прокрутить вверх"
 scroll_bottom = "Прокрутить вниз"

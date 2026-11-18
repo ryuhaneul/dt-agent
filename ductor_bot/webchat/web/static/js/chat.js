@@ -25,6 +25,9 @@ function sorted(tid) { return mergeEntries(history(tid).entries, []); }
 function running(tid) {
   return [...turns.values()].find(turn => turn.tid === tid && ['queued', 'started'].includes(turn.phase));
 }
+function started(tid) {
+  return [...turns.values()].find(turn => turn.tid === tid && turn.phase === 'started');
+}
 function visibleChat() {
   return view === 'chat' && ['#chat', ''].includes(location.hash) && !document.hidden;
 }
@@ -119,6 +122,37 @@ async function chooseButton(entryId, value, kind) {
     if (active && generation === epoch) renderThread();
   }
 }
+function queueStatus(turnId, status = null) {
+  const turn = turns.get(turnId), cancelled = status === 'cancelled' || turn?.phase === 'cancelled';
+  if (!cancelled && turn?.phase !== 'queued') return '';
+  const label = t(cancelled ? 'chat.cancelled' : 'chat.queued');
+  const cancel = !cancelled ? `<button class="btn queue-cancel" type="button" data-cancel-turn="${esc(turnId)}" aria-label="${esc(t('chat.cancel_queued'))}"${turn.cancelling ? ' disabled' : ''}>${esc(t('common.cancel'))}</button>` : '';
+  return `<div class="queue-status${cancelled ? ' stopped' : ''}" role="status"><span>${esc(label)}</span>${cancel}</div>`;
+}
+function queuedMarkup(turn) {
+  return `<div class="msg me" data-queue-turn="${esc(turn.id)}"><div class="meta"><span class="tag">${esc(t('tag.web'))}</span><span class="tm">${esc(formatTime(turn.received))}</span></div><div class="bubble md">${md(turn.userText)}</div>${queueStatus(turn.id)}</div>`;
+}
+async function cancelQueued(turnId) {
+  const turn = turns.get(turnId), generation = epoch;
+  if (!active || !turn || turn.phase !== 'queued' || turn.cancelling || getTopic()?.read_only) return;
+  turn.cancelling = true; renderThread();
+  try {
+    await api(`/topics/${encodeURIComponent(turn.tid)}/turns/${encodeURIComponent(turnId)}/cancel`, { method: 'POST' });
+    if (!active || generation !== epoch) return;
+    turn.phase = 'cancelled';
+    await loadHistory(turn.tid);
+  } catch (error) {
+    if (!active || generation !== epoch) return;
+    if (error.status === 409 && error.code === 'turn_started') {
+      // The start won the server's atomic race; this message can no longer be cancelled.
+      if (turn.phase === 'queued') turn.phase = 'started';
+      await resync();
+    } else errorNotice(error);
+  } finally {
+    turn.cancelling = false;
+    if (active && generation === epoch) renderThread();
+  }
+}
 function entryMarkup(entry) {
   const time = esc(formatTime(entry.ts));
   const delegated = entry.role === 'event' && entry.kind === 'interagent';
@@ -130,7 +164,7 @@ function entryMarkup(entry) {
   }
   const turn = turns.get(entry.turn_id);
   const stopped = entry.status === 'aborted' || (entry.role === 'bot' && turn?.phase === 'aborted');
-  return `<div class="msg ${entry.role === 'user' ? 'me' : 'bot'}${entry.imported ? ' old' : ''}${entry.kind === 'command' ? ' command-message' : ''}" data-entry-seq="${entry.seq}"><div class="meta">${sourceTag(entry)}${delegated ? `<span class="tag">${esc(t('chat.delegated_response'))}</span>` : ''}<span class="tm">${time}</span>${delegated && entry.title ? `<span>${esc(entry.title)}</span>` : ''}</div><div class="bubble md">${entry.kind === 'command' ? esc(entry.text || '') : md(entry.text || '')}${responseButtons(entry)}</div>${stopped ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : ''}${mirror(entry)}</div>`;
+  return `<div class="msg ${entry.role === 'user' ? 'me' : 'bot'}${entry.imported ? ' old' : ''}${entry.kind === 'command' ? ' command-message' : ''}" data-entry-seq="${entry.seq}"><div class="meta">${sourceTag(entry)}${delegated ? `<span class="tag">${esc(t('chat.delegated_response'))}</span>` : ''}<span class="tm">${time}</span>${delegated && entry.title ? `<span>${esc(entry.title)}</span>` : ''}</div><div class="bubble md">${entry.kind === 'command' ? esc(entry.text || '') : md(entry.text || '')}${responseButtons(entry)}</div>${entry.role === 'user' ? queueStatus(entry.turn_id, entry.status) : ''}${stopped ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : ''}${mirror(entry)}</div>`;
 }
 function streamMarkup(turn) {
   const live = ['queued', 'started'].includes(turn.phase);
@@ -184,13 +218,10 @@ function renderHeader() {
   document.querySelector('#headerRename').hidden = !topic?.renamable;
   document.querySelector('#topicDelete').hidden = !topic?.deletable;
   document.querySelector('.composer').hidden = !topic || topic.read_only || topic.tid === 'unknown';
-  const turn = topic && running(topic.tid) && !document.querySelector('#msgIn').value.trimStart().startsWith('/');
-  const button = document.querySelector('#stopBtn');
-  button.className = `btn ${turn ? 'btn-danger' : 'btn-primary'}`;
-  button.querySelector('span').textContent = t(turn ? 'chat.stop' : 'chat.send');
-  button.querySelector('span').dataset.i18n = turn ? 'chat.stop' : 'chat.send';
-  button.querySelector('path').setAttribute('d', turn ? 'M7 7h10v10H7z' : 'M5 12h14M13 6l6 6-6 6');
-  button.disabled = !topic || (sending && !turn && !isControlCommand(document.querySelector('#msgIn').value));
+  const stop = document.querySelector('#stopBtn');
+  stop.hidden = !topic || !started(topic.tid);
+  stop.disabled = !topic || !started(topic.tid);
+  document.querySelector('#sendBtn').disabled = !topic || (sending && !isControlCommand(document.querySelector('#msgIn').value));
 }
 function updateThreadNavigation() {
   const thread = document.querySelector('#thread');
@@ -207,8 +238,20 @@ export function renderThread({ bottom = false, seq = null } = {}) {
   const nearBottom = thread.scrollHeight - thread.clientHeight - previousTop < 80;
   if (!topic) { thread.replaceChildren(); updateThreadNavigation(); return; }
   const entries = sorted(topic.tid);
+  const topicTurns = [...turns.values()].filter(turn => turn.tid === topic.tid);
+  const liveTurns = topicTurns.filter(turn => ['queued', 'started'].includes(turn.phase));
+  const received = liveTurns.map(turn => Date.parse(turn.received));
+  const boundary = received.length && received.every(Number.isFinite) ? Math.min(...received) : null;
+  const waiting = [], deferred = new Set();
   let html = '', previousDay = '';
   for (const entry of entries) {
+    const turn = turns.get(entry.turn_id);
+    if (entry.role === 'user' && boundary !== null && (
+      turn?.phase === 'queued' || (entry.status === 'cancelled' && Date.parse(entry.ts) >= boundary)
+    )) {
+      waiting.push({ received: turn?.received || entry.ts, markup: entryMarkup(entry) });
+      deferred.add(entry.turn_id); continue;
+    }
     const date = entry.ts && !Number.isNaN(Date.parse(entry.ts)) ? new Date(entry.ts) : null;
     const dayKey = `${date?.toLocaleDateString() || '—'}:${!!entry.imported}`;
     if (dayKey !== previousDay) {
@@ -219,9 +262,21 @@ export function renderThread({ bottom = false, seq = null } = {}) {
     }
     html += entryMarkup(entry);
   }
-  for (const turn of turns.values()) {
-    if (turn.tid === topic.tid && !entries.some(entry => entry.role === 'bot' && entry.turn_id === turn.id)) html += streamMarkup(turn);
+  for (const turn of topicTurns) {
+    const userExists = entries.some(entry => entry.role === 'user' && entry.turn_id === turn.id);
+    if (['queued', 'cancelled'].includes(turn.phase)) {
+      if (!deferred.has(turn.id) && !userExists && turn.userText !== undefined) {
+        waiting.push({ received: turn.received, markup: queuedMarkup(turn) });
+      }
+      continue;
+    }
+    if (!userExists && turn.userText !== undefined) html += queuedMarkup(turn);
+    if (!entries.some(entry => entry.role === 'bot' && entry.turn_id === turn.id)) html += streamMarkup(turn);
   }
+  // Receipt times preserve the position of cancellations across reconnects. Legacy snapshots
+  // without receipt times leave persisted messages in their original history sequence.
+  if (boundary !== null) waiting.sort((a, b) => Date.parse(a.received) - Date.parse(b.received));
+  html += waiting.map(item => item.markup).join('');
   if ((busy.get(topic.tid) ?? topic.busy) && !running(topic.tid)) html += `<div class="meta">${esc(t('chat.answering'))}<span class="typing" aria-hidden="true"><i></i><i></i><i></i></span></div>`;
   thread.innerHTML = html;
   if (seq !== null) {
@@ -241,8 +296,9 @@ async function loadHistory(tid, { older = false, target = null } = {}) {
     if (!active || generation !== epoch) return;
     mergeHistory(state, data.entries);
     for (const entry of data.entries) {
-      const turn = entry.role === 'bot' && turns.get(entry.turn_id);
-      if (turn) {
+      const turn = turns.get(entry.turn_id);
+      if (turn && entry.role === 'user' && entry.status === 'cancelled') turn.phase = 'cancelled';
+      if (turn && entry.role === 'bot') {
         turn.phase = entry.status === 'aborted' ? 'aborted' : entry.status === 'error' ? 'error' : 'done';
         turn.finished = entry.ts;
       }
@@ -309,12 +365,25 @@ async function resync() {
     if (!active || generation !== epoch) return;
     for (const item of getTopics()) {
       if (busySnapshot.get(item.tid) === busyVersions.get(item.tid)) busy.set(item.tid, item.busy);
-      if (versions.get(item.tid) === topicVersions.get(item.tid)) {
-        const turn = running(item.tid);
-        if (turn && turn.id !== item.turn_id) { turn.phase = 'done'; turn.finished = null; }
-        if (item.turn_id && !turns.has(item.turn_id)) {
-          turns.set(item.turn_id, { id: item.turn_id, tid: item.tid, phase: 'started', text: '' });
+      const stable = versions.get(item.tid) === topicVersions.get(item.tid);
+      const snapshot = item.turns ?? (item.turn_id ? [{ turn_id: item.turn_id, phase: 'started' }] : []);
+      const ids = new Set(snapshot.map(turn => turn.turn_id));
+      if (stable) {
+        for (const turn of turns.values()) {
+          if (turn.tid === item.tid && ['queued', 'started'].includes(turn.phase) && !ids.has(turn.id)) {
+            turn.phase = 'done'; turn.finished = null;
+          }
         }
+      }
+      for (const state of snapshot) {
+        const existing = turns.get(state.turn_id);
+        if (!existing && !stable) continue;
+        const turn = existing || { id: state.turn_id, tid: item.tid, text: '' };
+        if (stable) turn.phase = state.phase;
+        // Admission text/time are immutable, even when newer stream events won the phase race.
+        if (state.text !== undefined) turn.userText = state.text;
+        turn.received = state.received ?? turn.received;
+        turns.set(turn.id, turn);
       }
     }
     const topic = getTopic();
@@ -332,6 +401,8 @@ export async function handleEvent(event) {
       const state = history(tid), entry = event.entry;
       if (!state.entries.has(entry.id)) noteEntry(tid, entry);
       mergeHistory(state, [entry]);
+      const turn = turns.get(entry.turn_id);
+      if (turn && entry.role === 'user' && entry.status === 'cancelled') turn.phase = 'cancelled';
       if (!getTopics().some(item => item.tid === tid)) await refreshTopics();
       break;
     }
@@ -348,6 +419,7 @@ export async function handleEvent(event) {
     case 'turn': {
       const turn = turns.get(event.turn_id) || { id: event.turn_id, tid, text: '' };
       turn.phase = event.phase; turns.set(turn.id, turn);
+      if (event.phase === 'queued' && turn.userText === undefined) await resync();
       if (!['queued', 'started'].includes(event.phase)) {
         turn.finished = new Date().toISOString();
         if (topic?.tid === tid) await loadHistory(tid);
@@ -357,6 +429,7 @@ export async function handleEvent(event) {
     }
     case 'delta': {
       const turn = turns.get(event.turn_id) || { id: event.turn_id, tid, phase: 'started', text: '' };
+      if (turn.phase === 'queued') turn.phase = 'started';
       turn.text += event.text; turns.set(turn.id, turn);
       if (topic?.tid === tid) scheduleStreamRender(turn.id);
       return;
@@ -397,31 +470,36 @@ function resizeComposer() {
   input.style.height = 'auto';
   input.style.height = `${input.scrollHeight + input.offsetHeight - input.clientHeight}px`;
 }
-async function sendOrStop() {
+async function stopAnswer() {
+  const topic = getTopic(), generation = epoch;
+  if (!active || !topic || topic.read_only || !started(topic.tid)) return;
+  try { await api(`/topics/${encodeURIComponent(topic.tid)}/abort`, { method: 'POST' }); }
+  catch (error) { if (active && generation === epoch) errorNotice(error); }
+}
+async function sendMessage() {
   commandMenu?.close();
   const topic = getTopic(), input = document.querySelector('#msgIn');
-  if (!topic || topic.read_only) return;
-  const text = input.value, turn = running(topic.tid) && !text.trimStart().startsWith('/');
-  const control = turn || isControlCommand(text);
+  if (!active || !topic || topic.read_only) return;
+  const text = input.value, control = isControlCommand(text);
   if (sending && !control) return;
-  if (!turn && (!text.trim() || text.length > 32000)) return;
+  if (!text.trim() || text.length > 32000) return;
   if (!control) sending = true;
   renderHeader();
   const generation = epoch;
   try {
-    if (turn) await api(`/topics/${encodeURIComponent(topic.tid)}/abort`, { method: 'POST' });
-    else {
-      const result = await api(`/topics/${encodeURIComponent(topic.tid)}/messages`, {
-        method: 'POST', body: { text, client_id: crypto.randomUUID() },
-      });
-      if (!active || generation !== epoch) return;
-      if (result.turn_id && !turns.has(result.turn_id)) turns.set(result.turn_id, { id: result.turn_id, tid: topic.tid, phase: 'queued', text: '' });
-      if (result.secret && getTopic()?.tid === topic.tid) secretDialog.show(result, topic.tid);
-      drafts.delete(topic.tid);
-      if (getTopic()?.tid === topic.tid && input.value === text) { input.value = ''; resizeComposer(); }
+    const result = await api(`/topics/${encodeURIComponent(topic.tid)}/messages`, {
+      method: 'POST', body: { text, client_id: crypto.randomUUID() },
+    });
+    if (!active || generation !== epoch) return;
+    if (result.turn_id) {
+      const turn = turns.get(result.turn_id) || { id: result.turn_id, tid: topic.tid, phase: 'queued', text: '' };
+      turn.userText = text; turn.received ??= new Date().toISOString(); turns.set(turn.id, turn);
     }
+    if (result.secret && getTopic()?.tid === topic.tid) secretDialog.show(result, topic.tid);
+    drafts.delete(topic.tid);
+    if (getTopic()?.tid === topic.tid && input.value === text) { input.value = ''; resizeComposer(); }
   } catch (error) { if (active && generation === epoch) errorNotice(error); }
-  finally { if (!control) sending = false; if (active) { renderHeader(); renderThread({ bottom: true }); } }
+  finally { if (!control) sending = false; if (active && generation === epoch) { renderHeader(); renderThread({ bottom: true }); } }
 }
 export function initChat() {
   secretDialog = initSecret();
@@ -444,11 +522,14 @@ export function initChat() {
   input.addEventListener('keydown', event => {
     if (commandMenu.keydown(event)) return;
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && matchMedia('(pointer: fine)').matches) {
-      event.preventDefault(); if (!running(getTopic()?.tid) || input.value.trimStart().startsWith('/')) void sendOrStop();
+      event.preventDefault(); void sendMessage();
     }
   });
-  document.querySelector('#stopBtn').addEventListener('click', sendOrStop);
+  document.querySelector('#sendBtn').addEventListener('click', sendMessage);
+  document.querySelector('#stopBtn').addEventListener('click', stopAnswer);
   thread.addEventListener('click', event => {
+    const cancel = event.target.closest('[data-cancel-turn]');
+    if (cancel && !cancel.disabled) void cancelQueued(cancel.dataset.cancelTurn);
     const button = event.target.closest('[data-response-entry]');
     if (button && !button.disabled) void chooseButton(button.dataset.responseEntry, button.dataset.responseLabel, 'reply');
     const selector = event.target.closest('[data-callback-entry]');

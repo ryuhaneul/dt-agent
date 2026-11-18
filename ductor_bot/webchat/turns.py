@@ -199,6 +199,7 @@ class WebTurns:
                 "phase": state.phase,
                 "text": state.text,
                 "user_entry_id": state.identity["user_entry_id"],
+                "received": state.received,
             }
             for turn_id in self._queues.get(tid, [])
             if (state := self._turns.get(turn_id)) is not None

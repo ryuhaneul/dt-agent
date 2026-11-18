@@ -625,7 +625,7 @@ try {
   await page.locator('#q').fill('Message');await page.locator('#tlist [data-seq="2"]').waitFor();
   await page.locator('#tlist [data-seq="2"]').focus();await page.keyboard.press('Enter');
   await page.locator('[data-entry-seq="2"]').waitFor();
-  await page.locator('#msgIn').fill('Hello <script>');await page.locator('#stopBtn').click();
+  await page.locator('#msgIn').fill('Hello <script>');await page.locator('#sendBtn').click();
   await page.locator('#streamMsg .caret').waitFor();
   assert.ok((await page.locator('#streamMsg').textContent()).includes('<script>'));
   assert.equal(await page.locator('#streamMsg script').count(),0);
@@ -747,7 +747,7 @@ class Element {
   remove(){}
   close(){this.open=false;}
   focus(){document.activeElement=this;}
-  closest(selector){return (selector==='[data-tid]'&&this.dataset.tid)||(selector==='[data-response-entry]'&&this.dataset.responseEntry)||(selector==='[data-callback-entry]'&&this.dataset.callbackEntry)?this:null;}
+  closest(selector){return (selector==='[data-tid]'&&this.dataset.tid)||(selector==='[data-response-entry]'&&this.dataset.responseEntry)||(selector==='[data-callback-entry]'&&this.dataset.callbackEntry)||(selector==='[data-cancel-turn]'&&this.dataset.cancelTurn)?this:null;}
   querySelector(selector){
     if(selector.startsWith('[data-entry-seq=')){
       const seq=Number(selector.match(/"(-?\d+)"/)[1]);
@@ -782,6 +782,7 @@ class WebSocket extends Element{
 const storage=new Map(), calls=[], notices=[], routes=[];
 let topicsHold=null, failGet=null, slowCommandHold=null, buttonsHold=null, buttonsFailure=null, historyHold=null, callbackResult=null;
 let blockedStorage=false, session=true, coarse=false, failSend=null, turnNumber=0;
+let queueContract=false,cancelHold=null,cancelFailure=null;const queuedTexts=new Map();
 const localStorage={getItem:key=>{if(blockedStorage)throw Error('blocked');return storage.get(key)??null},setItem:(key,value)=>{if(blockedStorage)throw Error('blocked');storage.set(key,value)},removeItem:key=>storage.delete(key)};
 const makeEntry=(seq,extras={})=>({id:`e${seq}`,seq,ts:'2025-01-01T01:01:00Z',role:'bot',source:'telegram',kind:'message',text:`Entry ${seq}`,imported:seq<0,mirror:null,...extras});
 const historyA=Array.from({length:205},(_,index)=>makeEntry(index+1));
@@ -819,13 +820,24 @@ async function fetch(url,options={}){
       if(buttonsFailure)return response(buttonsFailure.status,{error:buttonsFailure.code});
       return response(202,{turn_id:'button-turn',entry_id:body.entry_id,answered:body.label});
     }
+    if(parsed.pathname.includes('/turns/')&&parsed.pathname.endsWith('/cancel')){
+      if(cancelHold)await cancelHold;
+      if(cancelFailure)return response(409,{error:cancelFailure});
+      const id=parsed.pathname.split('/').at(-2);
+      topicRows[0].turns=topicRows[0].turns.filter(turn=>turn.turn_id!==id);
+      historyA.push(makeEntry(400+historyA.length,{role:'user',source:'web',turn_id:id,text:queuedTexts.get(id),status:'cancelled',ts:new Date(1735693260000+Number(id.slice(4))*1000).toISOString()}));
+      return response(200,{turn_id:id,phase:'cancelled'});
+    }
     if(parsed.pathname.endsWith('/abort'))return response(200,{killed:1});
     if(parsed.pathname.endsWith('/messages')){
       if(body.text==='/usage'){await slowCommandHold;return response(200,{text:'Usage',buttons:null});}
       if(/^\/(stop|interrupt|stop_all)(@|\s|$)/i.test(body.text.trim()))return response(200,{text:'Stopped',buttons:null});
       if(failSend)return response(409,{error:failSend});
       assert.ok(body.text.trim());assert.ok(body.client_id);
-      return response(202,{turn_id:`turn${++turnNumber}`});
+      const id=`turn${++turnNumber}`;queuedTexts.set(id,body.text);
+      if(queueContract)topicRows[0].turns.push({turn_id:id,phase:'queued',text:body.text,user_entry_id:`user-${id}`,received:new Date(1735693260000+turnNumber*1000).toISOString()});
+      if(queueContract)await chat.namespace.handleEvent({type:'turn',tid:'1.2',turn_id:id,phase:'queued'});
+      return response(202,{turn_id:id});
     }
     if(parsed.pathname==='/api/topics'){
       const topic={...topicRows[0],tid:'1.4',topic_id:4,name:body.name,count:0};topicRows.push(topic);return response(201,{topic});
@@ -900,11 +912,11 @@ topics.selectTopic('unknown');await flush();assert.equal(document.querySelector(
 topics.selectTopic('1.3');await flush();assert.equal(document.querySelector('.composer').hidden,false);
 assert.ok(thread.innerHTML.includes('Imported &lt;script&gt;'));assert.ok(thread.innerHTML.includes(strings['chat.imported_day']));assert.equal(infoValues[2].textContent,'—');
 // Pointer-specific Enter, preserved drafts, duplicate-submit guard, web stop and terminal state.
-topics.selectTopic('1.2');await flush();const input=document.querySelector('#msgIn'),send=document.querySelector('#stopBtn');
+topics.selectTopic('1.2');await flush();const input=document.querySelector('#msgIn'),send=document.querySelector('#sendBtn'),stopButton=document.querySelector('#stopBtn');
 input.value='touch draft';coarse=true;input.emit('keydown',{key:'Enter',shiftKey:false,isComposing:false});await flush();assert.equal(turnNumber,0);
 coarse=false;input.emit('keydown',{key:'Enter',shiftKey:true});await flush();assert.equal(turnNumber,0);
 input.emit('keydown',{key:'Enter',shiftKey:false,isComposing:true});await flush();assert.equal(turnNumber,0);
-input.value='hello <script>';input.emit('input');input.emit('keydown',{key:'Enter',shiftKey:false,isComposing:false});await flush();assert.equal(turnNumber,1);assert.equal(input.value,'');assert.equal(send.className,'btn btn-danger');
+input.value='hello <script>';input.emit('input');input.emit('keydown',{key:'Enter',shiftKey:false,isComposing:false});await flush();assert.equal(turnNumber,1);assert.equal(input.value,'');assert.equal(stopButton.hidden,true);
 await chat.namespace.handleEvent({type:'turn',tid:'1.2',turn_id:'turn1',phase:'started'});
 await chat.namespace.handleEvent({type:'delta',tid:'1.2',turn_id:'turn1',text:'**Hello** <img>'});
 await chat.namespace.handleEvent({type:'tool',tid:'1.2',turn_id:'turn1',name:'Read <script>'});
@@ -933,18 +945,18 @@ for(const method of ['click','enter']){
     assert.equal(posts().length,guarded,'ordinary duplicate remains blocked after control completes');
   }
 }
-input.value='';input.emit('input');assert.equal(send.className,'btn btn-danger');assert.equal(send.disabled,false);
-const beforeAbort=posts().length;send.emit('click');await flush();assert.equal(posts().length,beforeAbort+1);assert.ok(posts().at(-1).url.endsWith('/abort'));
+input.value='';input.emit('input');assert.equal(stopButton.hidden,false);assert.equal(stopButton.disabled,false);
+const beforeAbort=posts().length;stopButton.emit('click');await flush();assert.equal(posts().length,beforeAbort+1);assert.ok(posts().at(-1).url.endsWith('/abort'));
 releaseCommand();slowCommandHold=null;await flush();
-send.emit('click');await flush();assert.ok(calls.some(call=>call.url==='/api/topics/1.2/abort'));assert.ok(!calls.some(call=>call.url==='/api/topics/1.3/abort'));
-await chat.namespace.handleEvent({type:'turn',tid:'1.2',turn_id:'turn1',phase:'aborted'});assert.equal(send.className,'btn btn-primary');assert.ok(thread.innerHTML.includes(strings['chat.stopped']));assert.ok(!thread.innerHTML.includes('class="caret"'));
+stopButton.emit('click');await flush();assert.ok(calls.some(call=>call.url==='/api/topics/1.2/abort'));assert.ok(!calls.some(call=>call.url==='/api/topics/1.3/abort'));
+await chat.namespace.handleEvent({type:'turn',tid:'1.2',turn_id:'turn1',phase:'aborted'});assert.equal(stopButton.hidden,true);assert.ok(thread.innerHTML.includes(strings['chat.stopped']));assert.ok(!thread.innerHTML.includes('class="caret"'));
 const final=makeEntry(206,{source:'web',turn_id:'turn1',status:'aborted',text:'Final',mirror:{state:'pending'}});historyA.push(final);
 await chat.namespace.handleEvent({type:'entry',tid:'1.2',entry:final});await chat.namespace.handleEvent({type:'entry',tid:'1.2',entry:final});
 assert.equal((thread.innerHTML.match(/data-entry-seq="206"/g)||[]).length,1);assert.ok(!thread.innerHTML.includes('data-turn="turn1"'));assert.ok(thread.innerHTML.includes(strings['chat.pending_mirror']));
 final.mirror={state:'sent'};await chat.namespace.handleEvent({type:'outbox',pending:0,item:{...queue[0],state:'sent'}});assert.ok(thread.innerHTML.includes(strings['chat.delivered']));assert.equal(document.querySelector('#pendingBadge').hidden,true);
 final.mirror={state:'failed'};await chat.namespace.handleEvent({type:'outbox',pending:0,item:{...queue[0],state:'failed'}});assert.ok(thread.innerHTML.includes(strings['chat.mirror_failed']));
 // Telegram busy displays metadata only, never a synthetic body or web stop action.
-await chat.namespace.handleEvent({type:'busy',tid:'1.2',busy:true,source:'telegram'});assert.ok(thread.innerHTML.includes(strings['chat.answering']));assert.equal(send.className,'btn btn-primary');
+await chat.namespace.handleEvent({type:'busy',tid:'1.2',busy:true,source:'telegram'});assert.ok(thread.innerHTML.includes(strings['chat.answering']));assert.equal(stopButton.hidden,true);
 // Reconnecting mid-response may deliver a delta before any turn event.
 await chat.namespace.handleEvent({type:'delta',tid:'1.2',turn_id:'reconnected',text:'Reconnected answer'});
 const reconnectFrame=frames.values().next().value;frames.clear();reconnectFrame();
@@ -1075,10 +1087,10 @@ blockedStorage=true;topics.selectTopic('1.3');await flush();blockedStorage=false
 // Topic creation hands off the created row for the next management chunk.
 document.querySelector('.tfoot button').emit('click');await flush();assert.equal(routes.at(-1),'manage');assert.equal(topics.getTopic().tid,'1.4');
 // Browser socket loss does not send an abort. Reconnect snapshots recover missed history.
-topics.selectTopic('1.2');await flush();input.value='finish offline';send.emit('click');await flush();assert.equal(send.className,'btn btn-danger');
+topics.selectTopic('1.2');await flush();input.value='finish offline';send.emit('click');await flush();assert.equal(stopButton.hidden,true);
 const aborts=calls.filter(call=>call.url.endsWith('/abort')).length;
 sockets[0].close();await flush();assert.equal(document.querySelector('#botBadge').className,'badge badge-down');assert.equal(calls.filter(call=>call.url.endsWith('/abort')).length,aborts);
-historyA.push(makeEntry(208,{text:'missed while offline',source:'web',turn_id:'turn2',status:'ok'}));await runTimer(2000);assert.equal(sockets.length,2);sockets[1].emit('open');await flush();assert.ok(thread.innerHTML.includes('missed while offline'));assert.equal(send.className,'btn btn-primary');
+historyA.push(makeEntry(208,{text:'missed while offline',source:'web',turn_id:'turn2',status:'ok'}));await runTimer(2000);assert.equal(sockets.length,2);sockets[1].emit('open');await flush();assert.ok(thread.innerHTML.includes('missed while offline'));assert.equal(stopButton.hidden,true);
 await chat.namespace.handleEvent({type:'bridge',up:false});assert.equal(document.querySelector('#botBadge').className,'badge badge-down');
 await chat.namespace.handleEvent({type:'bridge',up:true});await flush();assert.equal(document.querySelector('#botBadge').className,'badge badge-ok');
 // Auth rejection resets the session through the existing auth-required contract and stops sockets.
@@ -1097,16 +1109,16 @@ await chat.namespace.handleEvent({type:'telegram',state:'up'});
 await chat.namespace.handleEvent({type:'turn',tid:'1.3',turn_id:'unrelated-turn',phase:'started'});
 await chat.namespace.handleEvent({type:'busy',tid:'1.2',busy:false});
 releaseTopics();topicsHold=null;await flush();
-topics.selectTopic('1.2');await flush();assert.equal(send.className,'btn btn-danger');assert.ok(markup(216).includes('Model changed.'));
+topics.selectTopic('1.2');await flush();assert.equal(stopButton.hidden,false);assert.ok(markup(216).includes('Model changed.'));
 const restoredAborts=calls.filter(call=>call.url.endsWith('/abort')).length;
-send.emit('click');await flush();assert.equal(calls.filter(call=>call.url.endsWith('/abort')).length,restoredAborts+1);
+stopButton.emit('click');await flush();assert.equal(calls.filter(call=>call.url.endsWith('/abort')).length,restoredAborts+1);
 topicRows[0].turn_id=null;await chat.namespace.handleEvent({type:'bridge',up:true});await flush();
-assert.equal(send.className,'btn btn-primary');assert.ok(thread.innerHTML.includes(strings['chat.answering']));
+assert.equal(stopButton.hidden,true);assert.ok(thread.innerHTML.includes(strings['chat.answering']));
 // A newer turn in the same topic survives the older delayed snapshot.
 topicsHold=new Promise(resolve=>{releaseTopics=resolve});
 const syncing=chat.namespace.handleEvent({type:'bridge',up:true});await new Promise(setImmediate);
 await chat.namespace.handleEvent({type:'turn',tid:'1.2',turn_id:'newer-turn',phase:'started'});
-releaseTopics();topicsHold=null;await syncing;await flush();assert.equal(send.className,'btn btn-danger');
+releaseTopics();topicsHold=null;await syncing;await flush();assert.equal(stopButton.hidden,false);
 await chat.namespace.handleEvent({type:'turn',tid:'1.2',turn_id:'newer-turn',phase:'done'});
 topicRows[0].busy=false;document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:false}}));
 // Fresh authentication/history state restores persisted answered after restart.
@@ -1115,6 +1127,49 @@ document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:fals
 document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));await flush();topics.selectTopic('1.2');await flush();
 assert.ok(markup(211).includes('aria-pressed="true"'));assert.ok(markup(212).includes('aria-pressed="true"'));
 document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:false}}));
+
+// Queue three messages while answering; cancel only the middle one, including repeat clicks.
+queueContract=true;topicRows[0].turns=[{turn_id:'queue-active',phase:'started',text:'Original request',user_entry_id:'active-user',received:'2025-01-01T01:01:00Z'}];
+document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));await flush();topics.selectTopic('1.2');await flush();
+const queueStart=turnNumber;
+for(const [index,text] of ['First pending <script>','Middle pending','Last pending'].entries()){
+ input.value=text;input.emit('input');
+ if(index===1)send.emit('click');else input.emit('keydown',{key:'Enter',shiftKey:false,isComposing:false});
+ await flush();assert.equal(input.value,'');assert.equal(send.disabled,false);assert.equal(stopButton.hidden,false);
+}
+assert.equal(turnNumber,queueStart+3);
+await chat.namespace.handleEvent({type:'bridge',up:true});await flush();
+assert.equal((thread.innerHTML.match(/data-cancel-turn=/g)||[]).length,3);
+assert.ok(thread.innerHTML.includes('First pending &lt;script&gt;'));assert.ok(!thread.innerHTML.includes('<script>'));
+const queueIds=[1,2,3].map(offset=>`turn${queueStart+offset}`);
+const cancelPosts=()=>calls.filter(call=>call.url.includes('/turns/')&&call.url.endsWith('/cancel'));
+function clickCancel(id){const target=new Element();target.dataset.cancelTurn=id;thread.emit('click',{target});}
+let releaseCancel;cancelHold=new Promise(resolve=>releaseCancel=resolve);
+clickCancel(queueIds[1]);await new Promise(setImmediate);clickCancel(queueIds[1]);await new Promise(setImmediate);
+assert.equal(cancelPosts().length,1);assert.ok(thread.innerHTML.includes(`data-cancel-turn="${queueIds[1]}" aria-label="${strings['chat.cancel_queued']}" disabled`));
+releaseCancel();cancelHold=null;await flush();
+assert.equal((thread.innerHTML.match(/data-cancel-turn=/g)||[]).length,2);assert.ok(thread.innerHTML.includes(strings['chat.cancelled']));
+assert.ok(thread.innerHTML.indexOf('First pending &lt;script&gt;')<thread.innerHTML.indexOf('Middle pending'));
+assert.ok(thread.innerHTML.indexOf('Middle pending')<thread.innerHTML.indexOf('Last pending'));
+assert.ok(!thread.innerHTML.includes(`data-turn="${queueIds[1]}"`));
+// If start wins cancellation, 409 updates from the full snapshot and never claims cancellation.
+topicRows[0].turns=topicRows[0].turns.filter(turn=>turn.turn_id!=='queue-active');topicRows[0].turns[0].phase='started';
+cancelFailure='turn_started';const noticesBeforeRace=notices.length;clickCancel(queueIds[0]);await flush();cancelFailure=null;
+assert.equal(notices.length,noticesBeforeRace);assert.ok(!thread.innerHTML.includes(`data-cancel-turn="${queueIds[0]}"`));assert.equal(stopButton.hidden,false);
+// A fresh auth state restores the active turn and every waiting message from /topics.turns.
+document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:false}}));
+document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));await flush();topics.selectTopic('1.2');await flush();
+assert.ok(thread.innerHTML.includes('First pending &lt;script&gt;'));assert.ok(thread.innerHTML.includes('Last pending'));
+assert.ok(thread.innerHTML.indexOf('First pending &lt;script&gt;')<thread.innerHTML.indexOf('Middle pending'));
+assert.ok(thread.innerHTML.indexOf('Middle pending')<thread.innerHTML.indexOf('Last pending'));
+assert.ok(thread.innerHTML.includes(strings['chat.cancelled']));assert.equal((thread.innerHTML.match(/data-cancel-turn=/g)||[]).length,1);
+assert.ok(thread.innerHTML.includes(`data-turn="${queueIds[0]}"`));assert.equal(stopButton.hidden,false);
+// Legacy snapshots without received keep cancellation history in its recorded sequence.
+for(const turn of topicRows[0].turns)delete turn.received;
+document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:false}}));
+document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));await flush();topics.selectTopic('1.2');await flush();
+assert.ok(thread.innerHTML.indexOf('Middle pending')<thread.innerHTML.indexOf('First pending &lt;script&gt;'));
+queueContract=false;document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:false}}));
 
 // No topic means no send target: keep the composer hidden rather than accepting a lost draft.
 topicRows=[];document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));await flush();assert.equal(document.querySelector('.composer').hidden,true);assert.equal(send.disabled,true);document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:false}}));

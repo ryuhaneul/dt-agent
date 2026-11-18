@@ -1877,6 +1877,13 @@ async def test_topics_snapshot_exposes_active_web_turn(conversation, started):
         topic = next(item for item in (await response.json())["topics"] if item["tid"] == "-123.7")
         assert topic["busy"]
         assert topic["turn_id"] == turn_id
+        receipt = next(item for item in topic["turns"] if item["turn_id"] == turn_id)
+        events = [
+            json.loads(line)
+            for line in (h.paths.webchat_dir / "queue_journal.jsonl").read_text().splitlines()
+        ]
+        accepted = next(event for event in events if event["event"] == "accepted")
+        assert receipt["received"] == accepted["ts"]
     finally:
         if not started:
             lock.release()

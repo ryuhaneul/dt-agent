@@ -80,6 +80,9 @@ current = "{name} · Tema #{id}"
 last_active = "Última actividad: {time}"
 
 [chat]
+queued = "En espera"
+cancelled = "Cancelado"
+cancel_queued = "Cancelar mensaje en espera"
 delegated_response = "Respuesta delegada"
 scroll_top = "Ir al principio"
 scroll_bottom = "Ir al final"

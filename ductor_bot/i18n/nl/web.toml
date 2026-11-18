@@ -80,6 +80,9 @@ current = "{name} · Onderwerp #{id}"
 last_active = "Laatst actief: {time}"
 
 [chat]
+queued = "In wachtrij"
+cancelled = "Geannuleerd"
+cancel_queued = "Bericht in wachtrij annuleren"
 delegated_response = "Antwoord op gedelegeerde taak"
 scroll_top = "Naar boven scrollen"
 scroll_bottom = "Naar beneden scrollen"
