@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import getpass
 import hashlib
 import json
+import threading
 from collections.abc import AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,6 +22,7 @@ from ductor_bot.webchat import auth, cli, credentials
 from ductor_bot.webchat.auth import (
     PASSWORD_KEY,
     TOTP_KEY,
+    AuthError,
     BridgeAuth,
     hash_password,
     totp_code,
@@ -253,21 +256,38 @@ def test_cli_failure_rolls_back_new_store(
 
 
 @pytest.mark.parametrize("command", ["set-password", "reset-totp", "clear-credentials"])
-def test_cli_rejects_encrypted_legacy_writes(
-    cli_home: DuctorPaths, capsys: pytest.CaptureFixture[str], command: str
+async def test_cli_edits_credentials_while_tool_vault_is_locked(
+    cli_home: DuctorPaths, command: str
 ) -> None:
-    path = cli_home.ductor_home / "secrets.env.enc"
-    path.write_text("encrypted-format-canary")
-    with (
-        patch.object(getpass, "getpass", side_effect=[NEW_PASSWORD, NEW_PASSWORD]),
-        pytest.raises(SystemExit),
-    ):
+    store = seeded_new_store(cli_home)
+    before = store.load()
+    assert before is not None
+    legacy = cli_home.ductor_home / "secrets.env"
+    set_secret(legacy, "OTHER", "synthetic-tool-value")
+    vault = SecretVault(legacy)
+    await vault.setup("synthetic-master-key")
+    await vault.lock()
+    encrypted = vault.encrypted_path.read_bytes()
+    state = store.path.with_name("auth_state.json")
+    cli.rotate_credential_nonce(state)
+    nonce = json.loads(state.read_text())["credential_nonce"]
+    with patch.object(getpass, "getpass", side_effect=[NEW_PASSWORD, NEW_PASSWORD]):
         cli.cmd_webchat([command])
-    output = capsys.readouterr().out
-    assert "SECRETS_LOCKED" in output
-    assert "encrypted" in output
-    assert path.read_text() == "encrypted-format-canary"
-    assert not (cli_home.webchat_dir / "credentials.json").exists()
+    saved = store.load()
+    if command == "clear-credentials":
+        assert saved is None
+    else:
+        assert saved is not None
+        assert saved.totp is None
+        assert (
+            verify_password(NEW_PASSWORD, saved.password_hash)
+            if command == "set-password"
+            else saved.password_hash == before.password_hash
+        )
+    assert json.loads(state.read_text())["credential_nonce"] != nonce
+    assert vault.encrypted_path.read_bytes() == encrypted
+    assert not legacy.exists()
+    assert (await vault.status()).state is VaultState.LOCKED
 
 
 def test_check_config_reports_storage_and_corruption(
@@ -302,3 +322,135 @@ def test_check_config_reports_exported_legacy_keys(
     assert report["storage"] == "legacy"
     assert report["migration_required"]
     assert not report["password_configured"]
+
+
+@pytest.mark.parametrize("encrypted", [False, True])
+async def test_cli_reset_during_password_worker_rejects_old_generation(
+    cli_home: DuctorPaths, monkeypatch: pytest.MonkeyPatch, encrypted: bool
+) -> None:
+    path = cli_home.ductor_home / "secrets.env"
+    store = CredentialStore(cli_home.webchat_dir / "credentials.json")
+    if encrypted:
+        store = seeded_new_store(cli_home)
+    else:
+        set_secret(path, PASSWORD_KEY, hash_password(PASSWORD))
+        set_secret(path, TOTP_KEY, SEED)
+    instance = BridgeAuth(path, "example.com", cli_home.webchat_dir / "auth_state.json")
+    entered, release = threading.Event(), threading.Event()
+    verify = auth.verify_password
+
+    def blocked(password, encoded):
+        entered.set()
+        assert release.wait(5)
+        return verify(password, encoded)
+
+    monkeypatch.setattr(auth, "verify_password", blocked)
+    request = asyncio.create_task(
+        instance.handle("password", {"password": PASSWORD, "client_ip": IP})
+    )
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        await asyncio.to_thread(
+            cli._edit_credentials, "set-password", store, path, hash_password(NEW_PASSWORD)
+        )
+        release.set()
+        with pytest.raises(AuthError):
+            await request
+        assert not instance._preauth
+        assert not instance._preauth_timers
+        saved = store.load()
+        assert saved is not None
+        assert verify(NEW_PASSWORD, saved.password_hash)
+        assert saved.totp is None
+    finally:
+        release.set()
+        await instance.close()
+
+
+@pytest.mark.parametrize("encrypted", [False, True])
+async def test_cli_reset_before_enrollment_commit_rejects_stale_preauth(
+    cli_home: DuctorPaths, monkeypatch: pytest.MonkeyPatch, encrypted: bool
+) -> None:
+    path = cli_home.ductor_home / "secrets.env"
+    store = CredentialStore(cli_home.webchat_dir / "credentials.json")
+    if encrypted:
+        store.save(WebCredentials(hash_password(PASSWORD), None))
+    else:
+        set_secret(path, PASSWORD_KEY, hash_password(PASSWORD))
+    instance = BridgeAuth(path, "example.com", cli_home.webchat_dir / "auth_state.json")
+    try:
+        first = await instance.handle("password", {"password": PASSWORD, "client_ip": IP})
+        token = str(first["preauth"])
+        pre = instance._preauth[token]
+        await instance.handle("setup/begin", {"preauth": token, "mode": "paste", "secret": SEED})
+        complete = auth.complete_write
+
+        async def reset_before_commit(func, *args, **kwargs):
+            await asyncio.to_thread(
+                cli._edit_credentials, "set-password", store, path, hash_password(NEW_PASSWORD)
+            )
+            return await complete(func, *args, **kwargs)
+
+        monkeypatch.setattr(auth, "complete_write", reset_before_commit)
+        with pytest.raises(AuthError):
+            await instance.handle(
+                "setup/confirm",
+                {
+                    "preauth": token,
+                    "code": totp_code(SEED, int(auth.time.time() // 30)),
+                    "client_ip": IP,
+                },
+            )
+        saved = store.load()
+        assert saved is not None
+        assert verify_password(NEW_PASSWORD, saved.password_hash)
+        assert saved.totp is None
+        assert token not in instance._preauth
+        assert pre.seed is pre.seed_key is pre.seed_salt is None
+    finally:
+        await instance.close()
+
+
+@pytest.mark.parametrize("stage", ["encrypt", "create", "verify", "delete"])
+async def test_first_enrollment_failure_never_writes_plaintext_and_can_retry(
+    legacy: Service, monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    instance, clock = legacy
+    from ductor_bot.infra.secret_store import delete_secret
+
+    delete_secret(instance.store, TOTP_KEY)
+    before = instance.store.read_bytes()
+    first = await instance.handle("password", {"password": PASSWORD, "client_ip": IP})
+    token = str(first["preauth"])
+    await instance.handle("setup/begin", {"preauth": token, "mode": "paste", "secret": SEED})
+    failure = Mock(
+        side_effect=credentials.CredentialsError()
+        if stage == "encrypt"
+        else OSError("synthetic-sensitive-canary")
+    )
+    with monkeypatch.context() as scoped:
+        if stage == "encrypt":
+            scoped.setattr(auth, "encrypt_seed", failure)
+        elif stage == "create":
+            scoped.setattr(instance.credential_store, "save", failure)
+        elif stage == "verify":
+            scoped.setattr(instance.credential_store, "verify", failure)
+        else:
+            scoped.setattr(credentials, "_delete_secrets_locked", failure)
+        with pytest.raises(AuthError, match="credentials_unavailable"):
+            await instance.handle(
+                "setup/confirm",
+                {"preauth": token, "code": totp_code(SEED, clock.wall // 30), "client_ip": IP},
+            )
+    assert instance.store.read_bytes() == before
+    assert TOTP_KEY not in load_env_secrets(instance.store)
+    assert not instance.credential_store.path.exists()
+    assert await instance.handle(
+        "setup/confirm",
+        {"preauth": token, "code": totp_code(SEED, clock.wall // 30), "client_ip": IP},
+    ) == {"ok": True}
+    saved = instance.credential_store.load()
+    assert saved is not None
+    assert saved.totp is not None
+    assert decrypt_seed(saved.totp, PASSWORD)[0] == SEED
+    assert SEED not in instance.credential_store.path.read_text()

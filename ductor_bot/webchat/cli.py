@@ -63,9 +63,8 @@ def _credential_report(
 def _edit_credentials(
     command: str, store: CredentialStore, legacy_path: Path, encoded: str = ""
 ) -> None:
-    with exclusive_file_lock(legacy_path):
-        if legacy_path.with_name(legacy_path.name + ".enc").exists():
-            raise ValueError("SECRETS_LOCKED")
+    with exclusive_file_lock(store.path), exclusive_file_lock(legacy_path):
+        encrypted_legacy = legacy_path.with_name(legacy_path.name + ".enc").exists()
         before = store.path.read_bytes() if store.path.exists() else None
         try:
             if command == "set-password":
@@ -77,7 +76,12 @@ def _edit_credentials(
             else:
                 store.path.unlink(missing_ok=True)
             keys = LEGACY_WEB_AUTH_KEYS[-1:] if command == "reset-totp" else LEGACY_WEB_AUTH_KEYS
-            _delete_secrets_locked(legacy_path, keys)
+            # Setup refuses legacy web keys, so a configured vault needs no cleanup.
+            if not encrypted_legacy:
+                _delete_secrets_locked(legacy_path, keys)
+            if command == "clear-credentials":
+                store.path.with_name("auth_state.json").unlink(missing_ok=True)
+            rotate_credential_nonce(store.path.with_name("auth_state.json"))
         except (OSError, ValueError, CredentialsError):
             if before is None:
                 with contextlib.suppress(OSError):
@@ -88,7 +92,7 @@ def _edit_credentials(
         clear_cache()
 
 
-def cmd_webchat(args: list[str]) -> None:  # noqa: C901, PLR0912
+def cmd_webchat(args: list[str]) -> None:  # noqa: C901
     if "webchat" in args:
         args = args[args.index("webchat") + 1 :]
     if args not in (
@@ -155,9 +159,6 @@ def cmd_webchat(args: list[str]) -> None:  # noqa: C901, PLR0912
             raise SystemExit(1) from None
     try:
         _edit_credentials(args[0], store, path, encoded)
-        if args[0] == "clear-credentials":
-            (paths.webchat_dir / "auth_state.json").unlink(missing_ok=True)
-        rotate_credential_nonce(paths.webchat_dir / "auth_state.json")
     except (OSError, CredentialsError, ValueError) as exc:
         locked = isinstance(exc, ValueError) and str(exc) == "SECRETS_LOCKED"
         code, reason = (

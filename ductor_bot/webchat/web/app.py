@@ -46,6 +46,7 @@ _PUBLIC = frozenset(
         "/api/health",
         "/api/i18n",
         "/api/auth/state",
+        "/api/auth/logout",
         "/api/auth/password",
         "/api/auth/totp",
         "/api/auth/setup/begin",

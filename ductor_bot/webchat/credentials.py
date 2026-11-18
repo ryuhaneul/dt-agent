@@ -8,6 +8,7 @@ import contextlib
 import hashlib
 import json
 import secrets
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -146,9 +147,11 @@ class CredentialStore:
         legacy_path: Path,
         credentials: WebCredentials,
         expected_seed: str | None,
+        validate_generation: Callable[[], None],
     ) -> None:
         """Verify a new copy before atomic removal of both legacy authentication keys."""
-        with exclusive_file_lock(legacy_path):
+        with exclusive_file_lock(self.path), exclusive_file_lock(legacy_path):
+            validate_generation()
             if legacy_path.with_name(legacy_path.name + ".enc").exists():
                 raise CredentialsError
             if self.path.exists():

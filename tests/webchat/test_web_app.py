@@ -6,6 +6,7 @@ import asyncio
 import hmac
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from unittest.mock import patch
 
@@ -1219,3 +1220,78 @@ async def test_logout_releases_its_pending_authentication_context(site):
     assert len(calls) == 1
     assert calls[0][3] == {"preauth": "fake-preauth"}
     assert response.cookies["dtw_pre"]["max-age"] == "0"
+
+
+async def test_preauth_only_logout_reaches_auth_and_discards_material(
+    aiohttp_client, aiohttp_server, tmp_path
+):
+    from ductor_bot.webchat.auth import AuthError, BridgeAuth, hash_password, totp_code
+    from ductor_bot.webchat.credentials import WebCredentials, derive_seed_key, encrypt_seed
+
+    password_value = "synthetic-password-123"
+    seed = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+    auth = BridgeAuth(tmp_path / "secrets.env", "example.com", tmp_path / "auth_state.json")
+    salt = b"0123456789abcdef"
+    auth.credential_store.save(
+        WebCredentials(
+            hash_password(password_value),
+            encrypt_seed(seed, derive_seed_key(password_value, salt), salt),
+        )
+    )
+    fake = FakeBridge()
+
+    async def forward(request):
+        assert request.headers.get("X-Dtw-Bridge-Token") == "fake-bridge-token"
+        try:
+            return web.json_response(
+                await auth.handle(request.match_info["action"], await request.json())
+            )
+        except AuthError as exc:
+            return web.json_response(exc.payload, status=403)
+
+    bridge = web.Application()
+    bridge.router.add_post("/webchat/v1/auth/{action:password|totp|logout}", forward)
+    bridge.router.add_route("*", "/webchat/v1/{path:.*}", fake.handle)
+    server = await aiohttp_server(bridge)
+    client = await aiohttp_client(
+        create_app(
+            bridge_url=str(server.make_url("")),
+            bridge_token="fake-bridge-token",
+            public_origin=ORIGIN,
+            static_dir=tmp_path,
+        )
+    )
+    try:
+        response = await client.post(
+            "/api/auth/password",
+            json={"password": password_value},
+            headers={**CLIENT, "X-Real-IP": "198.51.100.7"},
+        )
+        assert response.status == 200
+        cookie = cookie_header(response, "dtw_pre")
+        token = response.cookies["dtw_pre"].value
+        pre = auth._preauth[token]
+        assert pre.seed == seed
+        assert pre.seed_key is not None
+        assert pre.seed_salt is not None
+        denied = await client.post("/api/auth/logout", json={}, headers={"Cookie": cookie})
+        assert denied.status == 403
+        assert token in auth._preauth
+        response = await client.post(
+            "/api/auth/logout", json={}, headers={**CLIENT, "Cookie": cookie}
+        )
+        assert response.status == 200
+        assert response.cookies["dtw_pre"]["max-age"] == "0"
+        assert response.cookies["dtw_session"]["max-age"] == "0"
+        assert token not in auth._preauth
+        assert token not in auth._preauth_timers
+        assert pre.seed is pre.seed_key is pre.seed_salt is None
+        response = await client.post(
+            "/api/auth/totp",
+            json={"code": totp_code(seed, int(time.time() // 30))},
+            headers={**CLIENT, "Cookie": cookie, "X-Real-IP": "198.51.100.7"},
+        )
+        assert response.status == 403
+    finally:
+        await client.close()
+        await auth.close()

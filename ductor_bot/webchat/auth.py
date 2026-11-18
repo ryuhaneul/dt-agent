@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import contextlib
 import hashlib
 import hmac
 import json
@@ -20,6 +21,7 @@ from urllib.parse import quote
 
 from ductor_bot.infra.atomic_io import atomic_text_save, complete_write
 from ductor_bot.infra.env_secrets import load_env_secrets
+from ductor_bot.infra.file_lock import exclusive_file_lock
 from ductor_bot.infra.secret_store import LEGACY_WEB_AUTH_KEYS, set_secret
 from ductor_bot.webchat.credentials import (
     CredentialsError,
@@ -244,9 +246,11 @@ class BridgeAuth:
         self._ip_locked.pop(ip, None)
 
     def _save_used(self, fingerprint: str, step: int, source: str) -> None:
-        state = _auth_state(self.state_path)
-        state.update({"seed_fingerprint": fingerprint, "last_step": step, "source": source})
-        _save_auth_state(self.state_path, state)
+        # Preserve a concurrent CLI nonce rotation while updating the TOTP high-water mark.
+        with exclusive_file_lock(self.credential_store.path):
+            state = _auth_state(self.state_path)
+            state.update({"seed_fingerprint": fingerprint, "last_step": step, "source": source})
+            _save_auth_state(self.state_path, state)
 
     def _load_used(self, fingerprint: str, step: int) -> tuple[int, str]:
         try:
@@ -294,7 +298,7 @@ class BridgeAuth:
             if pending.expires <= now:
                 self._discard_preauth(token)
 
-    async def handle(self, action: str, data: dict[str, object]) -> dict[str, object]:
+    async def handle(self, action: str, data: dict[str, object]) -> dict[str, object]:  # noqa: C901
         async with self._lock:
             now = time.monotonic()
             self._expire_preauth(now)
@@ -319,6 +323,9 @@ class BridgeAuth:
                     self._discard_preauth(token)
                 raise
             except AuthError as exc:
+                if pre is not None:
+                    with contextlib.suppress(AuthError):
+                        self._validate_preauth(pre)
                 if action in {
                     "password",
                     "totp",
@@ -334,24 +341,44 @@ class BridgeAuth:
     async def _dispatch(
         self, action: str, data: dict[str, object], pre: _Preauth | None, ip: str, now: float
     ) -> dict[str, object]:
-        current = self._read_new_credentials()
+        with exclusive_file_lock(self.credential_store.path):
+            snapshot = self.credentials()
+            current = self._read_new_credentials()
+            values = load_env_secrets(self.store) if current is None else {}
         if current is None:
-            return await self._dispatch_legacy(action, data, pre, ip, now)
-        return await self._dispatch_encrypted(action, data, pre, ip, current)
+            return await self._dispatch_legacy(action, data, pre, ip, now, snapshot, values)
+        return await self._dispatch_encrypted(action, data, pre, ip, current, snapshot)
 
-    async def _dispatch_encrypted(  # noqa: C901, PLR0912
+    def _assert_generation(self, snapshot: bytes) -> None:
+        if not hmac.compare_digest(snapshot, self.credentials()):
+            raise AuthError
+
+    def _save_credentials(self, credentials: WebCredentials, snapshot: bytes) -> None:
+        # CLI edits, migration and web writes share the credentials companion lock.
+        with exclusive_file_lock(self.credential_store.path):
+            self._assert_generation(snapshot)
+            self.credential_store.save(credentials)
+            rotate_credential_nonce(self.state_path)
+
+    def _save_legacy_password(self, encoded: str, snapshot: bytes) -> None:
+        with exclusive_file_lock(self.credential_store.path):
+            self._assert_generation(snapshot)
+            set_secret(self.store, PASSWORD_KEY, encoded)
+            rotate_credential_nonce(self.state_path)
+
+    async def _dispatch_encrypted(  # noqa: C901, PLR0912, PLR0913, PLR0917
         self,
         action: str,
         data: dict[str, object],
         pre: _Preauth | None,
         ip: str,
         current: WebCredentials,
+        snapshot: bytes,
     ) -> dict[str, object]:
         if action == "password-change":
-            return await self._change_encrypted_password(data, ip, current)
+            return await self._change_encrypted_password(data, ip, current, snapshot)
         if action == "password":
             password = data.get("password")
-            snapshot = self.credentials()
             if (
                 not isinstance(password, str)
                 or not ip
@@ -364,18 +391,18 @@ class BridgeAuth:
                 seed = None
                 salt = secrets.token_bytes(16)
                 key = await asyncio.to_thread(derive_seed_key, password, salt)
-            if not hmac.compare_digest(snapshot, self.credentials()):
-                raise AuthError
-            token = self._issue_preauth(
-                _Preauth(
-                    time.monotonic() + _PREAUTH_SECONDS,
-                    ip,
-                    snapshot,
-                    seed=seed,
-                    seed_key=key,
-                    seed_salt=salt,
+            with exclusive_file_lock(self.credential_store.path):
+                self._assert_generation(snapshot)
+                token = self._issue_preauth(
+                    _Preauth(
+                        time.monotonic() + _PREAUTH_SECONDS,
+                        ip,
+                        snapshot,
+                        seed=seed,
+                        seed_key=key,
+                        seed_salt=salt,
+                    )
                 )
-            )
             return {"preauth": token, "next": "totp" if current.totp else "setup"}
         if action.startswith("setup/") and current.totp is not None:
             raise AuthError("totp_configured")
@@ -409,9 +436,10 @@ class BridgeAuth:
                 raise AuthError
             record = encrypt_seed(candidate, pre.seed_key, pre.seed_salt)
             await complete_write(
-                self.credential_store.save, WebCredentials(current.password_hash, record)
+                self._save_credentials,
+                WebCredentials(current.password_hash, record),
+                pre.credentials,
             )
-            rotate_credential_nonce(self.state_path)
             self._discard_all_preauth()
         self._discard_preauth(str(data["preauth"]))
         return {"ok": True}
@@ -421,9 +449,9 @@ class BridgeAuth:
         data: dict[str, object],
         ip: str,
         current: WebCredentials,
+        snapshot: bytes,
     ) -> dict[str, object]:
         password = data.get("current_password")
-        snapshot = self.credentials()
         if (
             not data.get("client_ip")
             or not ip
@@ -444,10 +472,7 @@ class BridgeAuth:
         salt = secrets.token_bytes(16)
         key = await asyncio.to_thread(derive_seed_key, new, salt)
         record = encrypt_seed(seed, key, salt)
-        if not hmac.compare_digest(snapshot, self.credentials()):
-            raise AuthError
-        await complete_write(self.credential_store.save, WebCredentials(encoded, record))
-        rotate_credential_nonce(self.state_path)
+        await complete_write(self._save_credentials, WebCredentials(encoded, record), snapshot)
         self._discard_all_preauth()
         return {"ok": True}
 
@@ -471,6 +496,7 @@ class BridgeAuth:
                 self.store,
                 WebCredentials(password_hash, record),
                 expected_seed,
+                lambda: self._assert_generation(pre.credentials),
             )
         except (CredentialsError, OSError, ValueError):
             logger.warning("Webchat credential migration deferred")
@@ -478,10 +504,16 @@ class BridgeAuth:
         self._discard_all_preauth()
         return True
 
-    async def _dispatch_legacy(  # noqa: C901, PLR0912, PLR0915
-        self, action: str, data: dict[str, object], pre: _Preauth | None, ip: str, now: float
+    async def _dispatch_legacy(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917
+        self,
+        action: str,
+        data: dict[str, object],
+        pre: _Preauth | None,
+        ip: str,
+        now: float,
+        snapshot: bytes,
+        values: dict[str, str],
     ) -> dict[str, object]:
-        values = load_env_secrets(self.store)
         seed = values.get(TOTP_KEY)
         if action == "password-change":
             current = data.get("current_password")
@@ -503,8 +535,7 @@ class BridgeAuth:
             if not isinstance(new, str) or len(new) < MIN_PASSWORD_LENGTH:
                 raise AuthError("password_too_short")
             encoded = await asyncio.to_thread(hash_password, new)
-            await asyncio.to_thread(set_secret, self.store, PASSWORD_KEY, encoded)
-            rotate_credential_nonce(self.state_path)
+            await complete_write(self._save_legacy_password, encoded, snapshot)
             self._discard_all_preauth()
             return {"ok": True}
         if action == "password":
@@ -519,16 +550,18 @@ class BridgeAuth:
                 raise AuthError
             salt = secrets.token_bytes(16)
             key = await asyncio.to_thread(derive_seed_key, password, salt)
-            token = self._issue_preauth(
-                _Preauth(
-                    now + _PREAUTH_SECONDS,
-                    ip,
-                    self.credentials(),
-                    seed=seed,
-                    seed_key=key,
-                    seed_salt=salt,
+            with exclusive_file_lock(self.credential_store.path):
+                self._assert_generation(snapshot)
+                token = self._issue_preauth(
+                    _Preauth(
+                        now + _PREAUTH_SECONDS,
+                        ip,
+                        snapshot,
+                        seed=seed,
+                        seed_key=key,
+                        seed_salt=salt,
+                    )
                 )
-            )
             return {"preauth": token, "next": "totp" if seed else "setup"}
         if action.startswith("setup/") and seed:
             raise AuthError("totp_configured")
@@ -558,9 +591,6 @@ class BridgeAuth:
             raise AuthError
         migrated = await self._migrate_legacy(pre, values.get(PASSWORD_KEY, ""), candidate, seed)
         if action == "setup/confirm" and not migrated:
-            if not self.store.with_name(self.store.name + ".enc").exists():
-                await asyncio.to_thread(set_secret, self.store, TOTP_KEY, candidate)
-                rotate_credential_nonce(self.state_path)
-            self._discard_all_preauth()
+            raise AuthError("credentials_unavailable")
         self._discard_preauth(str(data["preauth"]))
         return {"ok": True}
