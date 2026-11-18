@@ -112,6 +112,7 @@ TEST_ALLOWED = {
     "tests/webchat/test_static_assets.py": "Korean system topic names replaced by the display language",
     "scripts/tests/test_home.py": "non-ASCII home path sample",
     "scripts/tests/test_login.py": "non-ASCII config value sample",
+    "scripts/tests/test_logout_status.py": "Korean API key slot label in host slot lists",
     "scripts/tests/test_onboard_preflight.py": "Korean preflight output",
     "scripts/tests/test_onboard_messages.py": "checks that only the Korean message file has Hangul",
 }
