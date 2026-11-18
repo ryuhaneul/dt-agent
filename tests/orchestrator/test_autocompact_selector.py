@@ -25,6 +25,7 @@ async def test_command_and_initial_buttons(orch):
         ["ac:topic:input"],
         ["ac:cancel"],
         ["ac:scope:global"],
+        ["ac:auto:list:0"],
     ]
     assert "automation" not in result.text.lower()
     orch._cli_service.execute.assert_not_called()

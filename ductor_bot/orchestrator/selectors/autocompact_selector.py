@@ -6,12 +6,18 @@ import asyncio
 import logging
 import time
 from contextlib import nullcontext
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ductor_bot.cli.autocompact import resolve_autocompact, validate_autocompact
 from ductor_bot.config import update_config_file_async
 from ductor_bot.i18n import t
 from ductor_bot.multiagent.registry import update_agent_fields
+from ductor_bot.orchestrator.selectors.autocompact_automation import (
+    automation_state,
+    automation_target,
+    automation_token,
+    save_automation,
+)
 from ductor_bot.orchestrator.selectors.models import Button, ButtonGrid, SelectorResponse
 
 if TYPE_CHECKING:
@@ -84,6 +90,7 @@ async def autocompact_selector_start(
             )
         ],
     ]
+    rows.append([Button(t("autocompact.automation"), "ac:auto:list:0")])
     return SelectorResponse(text, ButtonGrid(rows))
 
 
@@ -148,17 +155,20 @@ def _begin_input(
 
     asyncio.get_running_loop().call_later(INPUT_SECONDS, expire)
     return SelectorResponse(
-        t("autocompact.input_prompt", scope=t(f"autocompact.scope_{scope}")),
+        t("autocompact.input_prompt", scope=_input_scope(orch, scope)),
         ButtonGrid([[Button(t("autocompact.cancel"), "ac:cancel")]]),
     )
 
 
-async def handle_autocompact_callback(
+async def handle_autocompact_callback(  # noqa: PLR0911 -- selector action dispatch
     orch: Orchestrator, key: SessionKey, data: str, *, user_id: int | None = None
 ) -> SelectorResponse:
     if data == "ac:cancel":
         _clear_input(orch, key, user_id)
         return SelectorResponse(t("autocompact.cancelled"))
+    if data.startswith("ac:auto:"):
+        _clear_input(orch, key, user_id)
+        return await _automation_callback(orch, key, data, user_id=user_id)
     parts = data.split(":")
     if len(parts) != 3 or parts[0] != "ac":
         return SelectorResponse(t("autocompact.invalid_action"))
@@ -206,8 +216,157 @@ async def consume_autocompact_input(
                 ]
             ),
         )
-    result = await save_autocompact(orch, key, scope, value)
+    if scope.startswith("auto:"):
+        _, kind, token = scope.split(":")
+        result = await _save_automation_selection(orch, kind, token, value)
+    else:
+        result = await save_autocompact(orch, key, scope, value)
     # On a write error retain the pending input so the owner can retry or cancel.
     if result.buttons is not None:
         orch._autocompact_inputs.pop(identity, None)
     return result
+
+
+_AUTOMATION_PAGE_SIZE = 5
+
+
+def _input_scope(orch: Orchestrator, scope: str) -> str:
+    if not scope.startswith("auto:"):
+        return t(f"autocompact.scope_{scope}")
+    _, kind, token = scope.split(":")
+    item = automation_target(orch, kind, token)
+    return str(item["name"])[:120] if item else t("autocompact.automation")
+
+
+def _automation_value(item: dict[str, Any]) -> str:
+    value = format_autocompact(item["value"])
+    if item["value"] is None:
+        value += " → " + format_autocompact(item["effective_value"])
+    return value
+
+
+def automation_selector_start(
+    orch: Orchestrator, page: int = 0, *, note: str = ""
+) -> SelectorResponse:
+    items = automation_state(orch)["items"]
+    pages = max(1, (len(items) + _AUTOMATION_PAGE_SIZE - 1) // _AUTOMATION_PAGE_SIZE)
+    page = max(0, min(page, pages - 1))
+    lines = [t("autocompact.automation")]
+    if note:
+        lines.append(note)
+    rows: list[list[Button]] = []
+    start = page * _AUTOMATION_PAGE_SIZE
+    for index, item in enumerate(items[start : start + _AUTOMATION_PAGE_SIZE], start + 1):
+        state = t("autocompact.enabled" if item["enabled"] else "autocompact.disabled")
+        lines.append(
+            t(
+                "autocompact.automation_item",
+                number=index,
+                name=item["name"][:120],
+                kind=t("autocompact." + item["kind"]),
+                state=state,
+                schedule=item["schedule"][:120],
+                value=_automation_value(item),
+            )
+        )
+        rows.append(
+            [
+                Button(
+                    t("autocompact.change_item", number=index),
+                    f"ac:auto:{item['kind']}:{automation_token(item['id'])}:open",
+                )
+            ]
+        )
+    if not items:
+        lines.append(t("autocompact.automation_empty"))
+    lines.append(t("autocompact.task_hint"))
+    lines.append(t("autocompact.page", current=page + 1, total=pages))
+    nav = []
+    if page:
+        nav.append(Button(t("autocompact.previous"), f"ac:auto:list:{page - 1}"))
+    if page + 1 < pages:
+        nav.append(Button(t("autocompact.next"), f"ac:auto:list:{page + 1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([Button(t("autocompact.change_topic"), "ac:scope:topic")])
+    rows.append([Button(t("autocompact.cancel"), "ac:cancel")])
+    return SelectorResponse("\n\n".join(lines), ButtonGrid(rows))
+
+
+def _automation_detail(orch: Orchestrator, kind: str, token: str) -> SelectorResponse:
+    item = automation_target(orch, kind, token)
+    if item is None:
+        return automation_selector_start(orch, note=t("autocompact.list_changed"))
+    prefix = f"ac:auto:{kind}:{token}:"
+    modes = ["inherit", "default", "off"] if kind == "webhook" else ["default", "off"]
+    rows = [
+        [
+            Button(
+                ("✓ " if item["value"] == (None if mode == "inherit" else mode) else "")
+                + t("autocompact." + mode),
+                prefix + mode,
+            )
+            for mode in modes
+        ]
+    ]
+    rows += [
+        [Button(t("autocompact.input"), prefix + "input")],
+        [Button(t("autocompact.automation"), "ac:auto:list:0")],
+        [Button(t("autocompact.cancel"), "ac:cancel")],
+    ]
+    return SelectorResponse(
+        item["name"][:120]
+        + "\n\n"
+        + _automation_value(item)
+        + "\n\n"
+        + t("autocompact.memory_warning"),
+        ButtonGrid(rows),
+    )
+
+
+async def _save_automation_selection(
+    orch: Orchestrator, kind: str, token: str, value: AutocompactValue | None
+) -> SelectorResponse:
+    item = automation_target(orch, kind, token)
+    if item is None:
+        return automation_selector_start(orch, note=t("autocompact.list_changed"))
+    try:
+        if not save_automation(orch, kind, item["id"], value):
+            return automation_selector_start(orch, note=t("autocompact.list_changed"))
+    except (OSError, ValueError):
+        logger.warning("Automation autocompact save failed")
+        return SelectorResponse(t("autocompact.save_error"))
+    result = _automation_detail(orch, kind, token)
+    return SelectorResponse(
+        t("autocompact.saved", scope=item["name"][:120], value=format_autocompact(value))
+        + "\n\n"
+        + result.text,
+        result.buttons,
+    )
+
+
+async def _automation_callback(  # noqa: PLR0911 -- selector action dispatch
+    orch: Orchestrator, key: SessionKey, data: str, *, user_id: int | None
+) -> SelectorResponse:
+    parts = data.split(":")
+    if len(parts) == 4 and parts[2] == "list":
+        try:
+            page = int(parts[3])
+        except ValueError:
+            return SelectorResponse(t("autocompact.invalid_action"))
+        return automation_selector_start(orch, page)
+    if len(parts) != 5 or parts[2] not in {"cron", "webhook"}:
+        return SelectorResponse(t("autocompact.invalid_action"))
+    _, _, kind, token, action = parts
+    if action not in {"open", "input", "default", "off", "inherit"} or (
+        action == "inherit" and kind != "webhook"
+    ):
+        return SelectorResponse(t("autocompact.invalid_action"))
+    if automation_target(orch, kind, token) is None:
+        return automation_selector_start(orch, note=t("autocompact.list_changed"))
+    if action == "open":
+        return _automation_detail(orch, kind, token)
+    if action == "input":
+        return _begin_input(orch, key, f"auto:{kind}:{token}", user_id)
+    value = None if action == "inherit" else validate_autocompact(action)
+    return await _save_automation_selection(orch, kind, token, value)

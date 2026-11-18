@@ -480,6 +480,8 @@ def create_app(
         ("/topics/seen-all", ("POST",)),
         ("/topics/{tid}/seen", ("PUT",)),
         ("/topics/{tid}/autocompact", ("GET", "PUT")),
+        ("/topics/{tid}/autocompact/automations", ("GET",)),
+        ("/topics/{tid}/autocompact/automations/{kind}/{id}", ("PUT",)),
         ("/topics/{tid}", ("PATCH", "DELETE")),
         ("/topics/{tid}/messages", ("GET", "POST")),
         ("/topics/{tid}/abort", ("POST",)),

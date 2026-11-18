@@ -45,6 +45,10 @@ from ductor_bot.messenger.telegram.callbacks import (
     selector_fields,
     selector_rows,
 )
+from ductor_bot.orchestrator.selectors.autocompact_automation import (
+    automation_state,
+    save_automation,
+)
 from ductor_bot.orchestrator.selectors.autocompact_selector import save_autocompact
 from ductor_bot.text.response_format import stop_text
 from ductor_bot.webchat.auth import AuthError, BridgeAuth
@@ -380,6 +384,36 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
                 state = await _autocompact_state(bot._orch, key)
         if not saved:
             return web.json_response({"error": "generic", **state}, status=503)
+        return web.json_response(state)
+
+    async def automations(request: web.Request) -> web.Response:  # noqa: PLR0911
+        tid = request.match_info["tid"]
+        if tid == "unknown":
+            return _error("read_only", 409)
+        kind = request.match_info.get("kind", "")
+        item_id = request.match_info.get("id", "")
+        data = await _body(request) if request.method == "PUT" else {}
+        if request.method == "PUT":
+            if kind not in {"cron", "webhook"} or data.keys() != {"value"}:
+                return _error("bad_request", 400)
+            try:
+                if kind == "cron" or data["value"] is not None:
+                    validate_autocompact(data["value"])
+            except ValueError:
+                return _error("bad_request", 400)
+        async with topics.gate(tid):
+            if tid in turns.blocked or await topics.lookup(tid) is None:
+                return _error("unknown_topic", 404)
+            key = from_tid(tid)
+            async with input_lock(bot._sequential.get_lock(key.lock_key)):
+                try:
+                    if request.method == "PUT" and not save_automation(
+                        bot._orch, kind, item_id, data["value"]
+                    ):
+                        return _error("not_found", 404)
+                    state = automation_state(bot._orch)
+                except (OSError, ValueError, LockTimeoutError):
+                    return _error("generic", 503)
         return web.json_response(state)
 
     async def messages(request: web.Request) -> web.Response:
@@ -843,6 +877,10 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
     app.router.add_delete(f"{_PREFIX}/topics/{{tid}}", manage_topic)
     app.router.add_get(f"{_PREFIX}/topics/{{tid}}/autocompact", autocompact)
     app.router.add_put(f"{_PREFIX}/topics/{{tid}}/autocompact", autocompact)
+    app.router.add_get(f"{_PREFIX}/topics/{{tid}}/autocompact/automations", automations)
+    app.router.add_put(
+        f"{_PREFIX}/topics/{{tid}}/autocompact/automations/{{kind}}/{{id}}", automations
+    )
     app.router.add_get(f"{_PREFIX}/topics/{{tid}}/messages", messages)
     app.router.add_post(f"{_PREFIX}/topics/{{tid}}/messages", send_or_abort)
     app.router.add_post(f"{_PREFIX}/topics/{{tid}}/abort", send_or_abort)

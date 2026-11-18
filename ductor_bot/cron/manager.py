@@ -229,6 +229,19 @@ class CronManager:
         """Return a job by ID, or None."""
         return next((j for j in self._jobs if j.id == job_id), None)
 
+    def set_autocompact(self, job_id: str, value: AutocompactValue) -> bool:
+        """Change only the saved compaction value, preserving concurrent registry edits."""
+        concrete = validate_autocompact(value)
+
+        def mutate(jobs: list[dict[str, Any]]) -> bool:
+            raw = _raw_job(jobs, job_id)
+            if raw is None:
+                return False
+            raw["autocompact"] = concrete
+            return True
+
+        return bool(self._write(mutate))
+
     def set_enabled(self, job_id: str, *, enabled: bool) -> bool:
         """Set ``enabled`` for one job. Returns True if state changed."""
 

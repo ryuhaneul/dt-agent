@@ -336,3 +336,181 @@ async def test_first_save_failure_does_not_write_topic(api, monkeypatch):
     assert state["global_value"] == state["effective_value"] == "default"
     assert state["topic_value"] is None
     topic_save.assert_not_called()
+
+
+AUTO_PATH = PATH + "/automations"
+AUTO_BROWSER_PATH = BROWSER_PATH + "/automations"
+
+
+@pytest.fixture
+async def automation_api(api):
+    from tests.orchestrator.test_autocompact_automation import seed
+
+    seed(api.bot._orch)
+    return api
+
+
+async def test_automation_list_is_public_metadata_and_agent_local(automation_api):
+    h = automation_api
+    response = await h.client.get(AUTO_PATH, headers=headers())
+    assert response.status == 200
+    state = await response.json()
+    assert len(state["items"]) == 2
+    assert all(
+        set(item) == {"kind", "id", "name", "schedule", "enabled", "value", "effective_value"}
+        for item in state["items"]
+    )
+    assert "private" not in json.dumps(state)
+    h.bot._orch._config.autocompact = 400000
+    state = await (await h.client.get(AUTO_PATH, headers=headers())).json()
+    assert state["items"][1]["effective_value"] == 400000
+    # Same topic ID in a sub-agent still sees only that agent's registry.
+    subhome = h.paths.ductor_home / "agents" / "worker"
+    subpaths = DuctorPaths(ductor_home=subhome)
+    cfg = h.bot.config.model_copy(update={"ductor_home": str(subhome)})
+    h.bot._orch = Orchestrator(cfg, subpaths, agent_name="worker", lock_pool=h.pool)
+    await h.bot._orch._sessions.update_session(SessionData(chat_id=-123, topic_id=7))
+    response = await h.client.get(AUTO_PATH, headers=headers())
+    assert (await response.json())["items"] == []
+    response = await h.client.put(
+        AUTO_PATH + "/cron/job-0", json={"value": "off"}, headers=headers()
+    )
+    assert response.status == 404
+
+
+@pytest.mark.parametrize(
+    ("kind", "item_id", "value"),
+    [
+        ("cron", "job-0", 100000),
+        ("cron", "job-0", 1000000),
+        ("cron", "job-0", "default"),
+        ("cron", "job-0", "off"),
+        ("webhook", "hook", None),
+        ("webhook", "hook", 300000),
+    ],
+)
+async def test_automation_save_roundtrip_and_next_execution(
+    automation_api, kind, item_id, value, monkeypatch
+):
+    from ductor_bot.cli.param_resolver import TaskOverrides, resolve_cli_config
+    from ductor_bot.cron.execution import build_cmd
+
+    h = automation_api
+    h.bot._orch._config.autocompact = 500000
+    response = await h.client.put(
+        AUTO_PATH + f"/{kind}/{item_id}", json={"value": value}, headers=headers()
+    )
+    assert response.status == 200
+    state = await response.json()
+    item = next(item for item in state["items"] if item["kind"] == kind)
+    assert item["value"] == value
+    config = resolve_cli_config(
+        h.bot._orch._config, None, task_overrides=TaskOverrides(autocompact=item["value"])
+    )
+    monkeypatch.setattr(
+        "ductor_bot.cron.execution.claude_autocompact_flag_supported", lambda _: True
+    )
+    command = build_cmd(config, "hello")
+    expected = 500000 if value is None else value
+    assert command.env_overrides["DUCTOR_AUTOCOMPACT"] == str(expected)
+    assert ("--autocompact" in command.cmd) == isinstance(expected, int)
+    if isinstance(expected, int):
+        assert command.cmd[command.cmd.index("--autocompact") + 1] == str(expected)
+    assert (await h.bot._orch._sessions.get_active(h.key)).autocompact is None
+    readback = await (await h.client.get(AUTO_PATH, headers=headers())).json()
+    assert readback == state
+
+
+@pytest.mark.parametrize(
+    ("kind", "body"),
+    [
+        ("cron", {"value": None}),
+        ("cron", {"value": 99999}),
+        ("webhook", {"value": 1000001}),
+        ("cron", {"value": True}),
+        ("webhook", {"value": "inherit"}),
+        ("cron", {"value": "300000"}),
+        ("cron", {"value": 300000.0}),
+        ("cron", {}),
+        ("cron", {"value": "off", "extra": 1}),
+        ("task", {"value": "off"}),
+    ],
+)
+async def test_automation_invalid_body_does_not_write(automation_api, kind, body):
+    h = automation_api
+    before = (h.paths.cron_jobs_path.read_text(), h.paths.webhooks_path.read_text())
+    response = await h.client.put(AUTO_PATH + f"/{kind}/job-0", json=body, headers=headers())
+    assert response.status == 400
+    assert before == (h.paths.cron_jobs_path.read_text(), h.paths.webhooks_path.read_text())
+
+
+@pytest.mark.parametrize("kind", ["cron", "webhook"])
+async def test_automation_missing_item_returns_404(automation_api, kind):
+    response = await automation_api.client.put(
+        AUTO_PATH + f"/{kind}/missing", json={"value": "off"}, headers=headers()
+    )
+    assert response.status == 404
+
+
+@pytest.mark.parametrize(("method", "suffix"), [("get", ""), ("put", "/cron/job-0")])
+async def test_automation_bridge_requires_token(automation_api, method, suffix):
+    response = await getattr(automation_api.client, method)(
+        AUTO_PATH + suffix, json={"value": "off"}
+    )
+    assert response.status == 403
+    assert "WWW-Authenticate" not in response.headers
+
+
+@pytest.mark.parametrize(("method", "suffix"), [("get", ""), ("put", "/cron/job-0")])
+async def test_automation_browser_requires_session(site, method, suffix):
+    client, _ = site
+    response = await getattr(client, method)(
+        AUTO_BROWSER_PATH + suffix, json={"value": "off"}, headers={"X-Dtw-Client": "web"}
+    )
+    assert response.status == 403
+    assert "WWW-Authenticate" not in response.headers
+
+
+@pytest.mark.parametrize("missing", ["X-Dtw-Client", "X-Dtw-Csrf", "wrong-csrf"])
+async def test_automation_browser_requires_csrf_and_client(site, missing):
+    client, fake = site
+    auth, _ = await login(client)
+    if missing == "wrong-csrf":
+        auth["X-Dtw-Csrf"] = "bad"
+    else:
+        auth.pop(missing)
+    response = await client.put(
+        AUTO_BROWSER_PATH + "/cron/job-0", json={"value": "off"}, headers=auth
+    )
+    assert response.status == 403
+    assert "WWW-Authenticate" not in response.headers
+    assert not any("/automations" in call[1] for call in fake.calls)
+
+
+async def test_automation_browser_relay_forwards_authenticated_contract(site):
+    client, fake = site
+    auth, _ = await login(client)
+    assert (await client.get(AUTO_BROWSER_PATH, headers=auth)).status == 200
+    assert (
+        await client.put(AUTO_BROWSER_PATH + "/webhook/hook", json={"value": None}, headers=auth)
+    ).status == 200
+    calls = [(call[0], call[1], call[3]) for call in fake.calls if "/automations" in call[1]]
+    assert calls == [
+        ("GET", "/topics/-123.7/autocompact/automations", None),
+        ("PUT", "/topics/-123.7/autocompact/automations/webhook/hook", {"value": None}),
+    ]
+
+
+async def test_automation_save_error_is_safe_and_does_not_report_success(
+    automation_api, monkeypatch
+):
+    monkeypatch.setattr(
+        automation_api.bot._orch._cron_manager,
+        "set_autocompact",
+        lambda *_: (_ for _ in ()).throw(OSError("private-path")),
+    )
+    response = await automation_api.client.put(
+        AUTO_PATH + "/cron/job-0", json={"value": "off"}, headers=headers()
+    )
+    assert response.status == 503
+    assert await response.json() == {"error": "generic"}

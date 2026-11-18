@@ -143,3 +143,44 @@ def test_ac_namespaces_have_shared_selector_kind_and_lock():
     assert selector_button_data("ac:topic:input")
     assert _selector_data("ac:cancel")
     assert selector_callback_lock_key(key, "ac:global:off") == key.lock_key
+
+
+async def test_automation_input_is_authorized_isolated_and_never_leaks_to_cli(ac_bot):
+    from tests.orchestrator.test_autocompact_automation import callback, seed
+
+    bot = ac_bot
+    seed(bot._orch)
+    key = SessionKey(chat_id=-1001, topic_id=42)
+    data = callback("cron", "job-0", "input")
+    await selector_callback_response(bot, key, data, user_id=100)
+    normal = AsyncMock()
+    await _receive(bot, _message("400000", 21, user=999), normal)
+    await _receive(bot, _message("400000", 22, user=101), normal)
+    await _receive(bot, _message("400000", 23, topic=43), normal)
+    assert (key, 100) in bot._orch._autocompact_inputs
+    bot._send_command_response.assert_not_called()
+    await _receive(bot, _message("bad", 24), normal)
+    assert "100,000" in bot._send_command_response.call_args.args[1]
+    await _receive(bot, _message("300000", 25), normal)
+    assert bot._orch._cron_manager.get_job("job-0").autocompact == 300000
+    assert not bot._orch._autocompact_inputs
+    normal.assert_not_called()
+    bot._orch._cli_service.execute.assert_not_called()
+    assert await bot._orch._sessions.get_active(key) is None
+    await selector_callback_response(bot, key, data, user_id=100)
+    await _receive(bot, _message("/cancel", 26), normal)
+    assert not bot._orch._autocompact_inputs
+
+
+async def test_automation_callback_denies_disallowed_actor(ac_bot):
+    from tests.orchestrator.test_autocompact_automation import callback, seed
+
+    bot = ac_bot
+    seed(bot._orch)
+    bot._run_selector_callback = AsyncMock()
+    query = _make_callback_query(
+        callback("cron", "job-0", "off"), chat_id=-1001, user_id=999, topic_thread_id=42
+    )
+    await bot._on_callback_query(query)
+    bot._run_selector_callback.assert_not_called()
+    assert bot._orch._cron_manager.get_job("job-0").autocompact == "default"
