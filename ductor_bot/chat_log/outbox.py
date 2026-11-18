@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import logging
 import os
@@ -81,13 +82,14 @@ class OutboxItem:
     v: int = 1
 
     def view(self) -> dict[str, Any]:
+        text = html.unescape(self.text) if self.origin == "web_user_text" else self.text
         return {
             "id": self.id,
             "kind": self.kind,
             "origin": self.origin,
             "title": self.title,
             "tid": self.tid,
-            "preview": self.text[:80],
+            "preview": text[:80],
             "created": self.created,
             "state": self.state,
             "last_error": self.last_error,

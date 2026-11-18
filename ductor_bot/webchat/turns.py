@@ -25,6 +25,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def user_mirror_fields(text: str, strings: TranslationStore) -> tuple[str, str]:
+    """Return rollback-safe mirror text and its literal-delivery origin."""
+    mirror_text = strings.chat("chat_log.mirror_user", text=text)
+    # Older drainers parse file/button tags regardless of the item's origin.
+    mirror_text = html.escape(mirror_text).replace("[", "&#91;").replace("]", "&#93;")
+    return mirror_text, "web_user_text"
+
+
 class WebTurns:
     def __init__(self, bot: TelegramBot, runtime: ChatLogRuntime) -> None:
         self.bot = bot
@@ -200,15 +208,13 @@ class WebTurns:
             async with self.runtime.outbox.delivery_lock:
                 if tid in self.blocked:
                     return
-                mirror_text = self._strings.chat("chat_log.mirror_user", text=text)
-                # Older drainers parse file/button tags regardless of the item's origin.
-                mirror_text = html.escape(mirror_text).replace("[", "&#91;").replace("]", "&#93;")
+                mirror_text, origin = user_mirror_fields(text, self._strings)
                 await self.runtime.outbox.enqueue(
                     kind="user_mirror",
                     chat_id=key.chat_id,
                     topic_id=key.topic_id,
                     text=mirror_text,
-                    origin="web_user_text",
+                    origin=origin,
                     history_id=turn["user_entry_id"],
                 )
             self.runtime.drainer.wake()

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import html
 import importlib.util
-import subprocess
 import sys
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -67,9 +68,9 @@ def assert_no_media(raw):
 @pytest.mark.parametrize(
     "text",
     [
-        "<file:{secret}> [button:Go] [buttonurl:site|https://example.com] <b>& \"' 😀\n둘째 줄",
-        "&lt;file:private&gt; &#91;button:x&#93; **literal** `code`\n\n마지막 줄",
-        ("😀한글 &<> [button:x]\n" * 450) + "end",
+        "<file:{secret}> [button:Go] [buttonurl:site|https://example.com] <b>& \"' 😀\nsecond line",
+        "&lt;file:private&gt; &#91;button:x&#93; **literal** `code`\n\nlast line",
+        ("😀Unicode &<> [button:x]\n" * 450) + "end",
         "<file:{secret}> [button:x]",
     ],
 )
@@ -149,16 +150,13 @@ async def test_literal_origin_only_applies_to_web_user_mirrors(tmp_path, kind, o
     assert ops.send_text.await_args.args[2] == "[button:x] **rich**"
 
 
-def legacy_module(tmp_path, name, relative):
-    source = subprocess.check_output(
-        ["git", "show", f"ecede25:{relative}"], text=True, stderr=subprocess.PIPE
-    )
-    path = tmp_path / (name + ".py")
-    path.write_text(source)
-    spec = importlib.util.spec_from_file_location(name, path)
+def legacy_module(name, fixture):
+    path = Path(__file__).parent / "fixtures" / "ecede25" / (fixture + ".py.txt")
+    loader = SourceFileLoader(name, str(path))
+    spec = importlib.util.spec_from_loader(name, loader)
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
-    spec.loader.exec_module(module)
+    loader.exec_module(module)
     return module
 
 
@@ -171,15 +169,10 @@ async def test_ecede25_reader_drainer_sender_do_not_execute_or_drop_new_items(
     items = await queue_message(h, f"<file:{secret}> [button:x]\n<b>& 😀 &lt; &#91;")
     modules = []
     try:
-        for name, relative in [
-            ("outbox", "chat_log/outbox.py"),
-            ("link", "chat_log/link.py"),
-            ("sender", "messenger/telegram/sender.py"),
-            ("ops", "messenger/telegram/webchat_ops.py"),
-        ]:
-            modules.append(
-                legacy_module(tmp_path, "mirror_legacy_" + name, "ductor_bot/" + relative)
-            )
+        modules.extend(
+            legacy_module("mirror_legacy_" + name, name)
+            for name in ("outbox", "link", "sender", "ops")
+        )
         old_outbox, old_link, old_sender, old_ops = modules
         old_ops.SendRichOpts = old_sender.SendRichOpts
         old_ops.send_rich_progress_detailed = old_sender.send_rich_progress_detailed
@@ -203,3 +196,24 @@ async def test_ecede25_reader_drainer_sender_do_not_execute_or_drop_new_items(
     finally:
         for module in modules:
             sys.modules.pop(module.__name__, None)
+
+
+@pytest.mark.parametrize("origin", ["web_user_text", None, "web_attachment_text", "background"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "<file:private> [button:x] &lt; &#91; 😀",
+        "a" * 79 + "<file:private> [button:x] &lt; &#91; 😀",
+    ],
+)
+async def test_outbox_preview_decodes_web_user_text_before_truncation(tmp_path, origin, text):
+    hub = EventHub()
+    events = hub.subscribe()
+    outbox = Outbox(tmp_path / "outbox", hub)
+    stored = html.escape(text).replace("[", "&#91;").replace("]", "&#93;")
+    item = await outbox.enqueue(kind="user_mirror", chat_id=123, text=stored, origin=origin)
+    expected = text[:80] if origin == "web_user_text" else stored[:80]
+    assert item.view()["preview"] == expected
+    assert (await events.get())["item"]["preview"] == expected
+    assert (await outbox.views())[0]["preview"] == expected
+    assert (await Outbox(outbox.directory).pending())[0].text == stored
