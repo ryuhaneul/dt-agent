@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -378,3 +379,34 @@ def test_cron_and_webhook_tools_snapshot_edit_and_inheritance(tmp_path, monkeypa
     )
     assert edited.returncode == 0, edited.stderr
     assert json.loads(hooks_path.read_text())["hooks"][0]["autocompact"] is None
+
+
+@pytest.mark.parametrize("slots", [[], ["claude"]])
+async def test_oneshot_probe_runs_outside_event_loop(tmp_path, monkeypatch, slots):
+    loop_thread = threading.get_ident()
+    probe_threads = []
+
+    def probe(_cli):
+        probe_threads.append(threading.get_ident())
+        return True
+
+    monkeypatch.setattr("ductor_bot.cron.execution.which", lambda _: "/fake/claude")
+    monkeypatch.setattr("ductor_bot.cron.execution.claude_autocompact_flag_supported", probe)
+    monkeypatch.setattr("ductor_bot.cli.slot_rotation.make_registry", lambda **_: MagicMock())
+    execution = OneShotExecutionResult("success", "ok", b"", b"", 0, False)
+    monkeypatch.setattr(
+        "ductor_bot.cron.execution.execute_one_shot", AsyncMock(return_value=execution)
+    )
+
+    async def rotate(**kwargs):
+        _, result = await kwargs["attempt"]("claude")
+        return RotationResult(payload=result, slot="claude")
+
+    monkeypatch.setattr("ductor_bot.cli.slot_rotation.run_with_rotation", rotate)
+    await run_oneshot_task(
+        _config(tmp_path, claude_accounts=slots),
+        "hello",
+        TaskRunOptions(cwd=tmp_path, timeout_seconds=1, timeout_label="test", ductor_home=tmp_path),
+    )
+    assert len(probe_threads) == 1
+    assert probe_threads[0] != loop_thread

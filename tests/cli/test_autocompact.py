@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import stat
 import subprocess
+import threading
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -28,9 +29,9 @@ def _no_real_claude_probe(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         "ductor_bot.cli.claude_provider.claude_autocompact_flag_supported", lambda _: True
     )
-    autocompact.claude_autocompact_flag_supported.cache_clear()
+    autocompact._claude_autocompact_flag_supported.cache_clear()
     yield
-    autocompact.claude_autocompact_flag_supported.cache_clear()
+    autocompact._claude_autocompact_flag_supported.cache_clear()
 
 
 @pytest.mark.parametrize("value", ["default", "off", 100000, 300000, 1000000])
@@ -300,3 +301,62 @@ async def test_three_slot_rotation_same_settings_and_env(tmp_path, monkeypatch, 
 def test_settings_argument_redacted(arg):
     cmd = ["claude", arg, "secret"] if arg == "--settings" else ["claude", arg]
     assert "secret" not in " ".join(redact_cmd_for_log(cmd))
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        OSError("unavailable"),
+        subprocess.TimeoutExpired("fake-cli", 5),
+        subprocess.CalledProcessError(1, "fake-cli"),
+    ],
+)
+def test_probe_failure_is_retried_then_success_cached(monkeypatch, error):
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append(cmd)
+        assert kwargs["check"] is True
+        if len(calls) == 1:
+            raise error
+        return subprocess.CompletedProcess(cmd, 0, "--autocompact", "")
+
+    monkeypatch.setattr(autocompact.subprocess, "run", run)
+    assert autocompact.claude_autocompact_flag_supported("retry-cli") is False
+    assert autocompact.claude_autocompact_flag_supported("retry-cli") is True
+    assert autocompact.claude_autocompact_flag_supported("retry-cli") is True
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("mode", ["send", "stream", "stream_slot"])
+async def test_runtime_probe_runs_outside_event_loop(tmp_path, monkeypatch, mode):
+    loop_thread = threading.get_ident()
+    probe_threads = []
+
+    def probe(_cli):
+        probe_threads.append(threading.get_ident())
+        return True
+
+    async def oneshot(**_kwargs):
+        return CLIResponse(result="ok")
+
+    async def stream(**_kwargs):
+        yield ResultEvent(type="result", result="ok", is_error=False)
+
+    monkeypatch.setattr("ductor_bot.cli.claude_provider.claude_autocompact_flag_supported", probe)
+    monkeypatch.setattr("ductor_bot.cli.claude_provider.run_oneshot_subprocess", oneshot)
+    monkeypatch.setattr("ductor_bot.cli.claude_provider.run_streaming_subprocess", stream)
+    cli = ClaudeCodeCLI(
+        CLIConfig(
+            ductor_home=tmp_path,
+            autocompact=300000,
+            claude_accounts=["claude"] if mode == "stream_slot" else [],
+        )
+    )
+    if mode == "send":
+        await cli.send("hello")
+    else:
+        async for _ in cli.send_streaming("hello"):
+            pass
+    assert len(probe_threads) == 1
+    assert probe_threads[0] != loop_thread

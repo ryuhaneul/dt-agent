@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from unittest.mock import AsyncMock
 
 import pytest
 
+from ductor_bot.background import BackgroundObserver
 from ductor_bot.cli.param_resolver import TaskOverrides, resolve_cli_config
+from ductor_bot.cli.types import AgentResponse
 from ductor_bot.cron.execution import apply_autocompact_env, build_cmd
 from ductor_bot.cron.manager import CronJob, CronManager
+from ductor_bot.orchestrator.core import NamedSessionRequest
 from ductor_bot.orchestrator.selectors import autocompact_selector as ac
 from ductor_bot.orchestrator.selectors.autocompact_automation import (
     automation_state,
@@ -242,3 +247,62 @@ async def test_empty_list_and_malformed_callbacks_are_safe(orch):
         response = await ac.handle_autocompact_callback(orch, key, data, user_id=100)
         assert response.buttons is None
     assert not orch._autocompact_inputs
+
+
+@pytest.mark.parametrize("followup", [False, True])
+@pytest.mark.parametrize("value", [None, "default", "off", 300000])
+async def test_named_background_resolves_topic_at_execution(orch, monkeypatch, followup, value):
+    await _run_named_background_setting(orch, monkeypatch, followup, value)
+
+
+@pytest.mark.parametrize("followup", [False, True])
+@pytest.mark.parametrize("error", [OSError("disk"), ValueError("corrupt"), TypeError("bad")])
+async def test_named_background_lookup_failure_uses_recipient_global(
+    orch, monkeypatch, followup, error
+):
+    await _run_named_background_setting(orch, monkeypatch, followup, 300000, error)
+
+
+async def _run_named_background_setting(orch, monkeypatch, followup, value, error=None):
+    orch._agent_name = "recipient"
+    orch._config.autocompact = 400000
+    key = SessionKey.for_transport("sl", 42, 99)
+    await orch._sessions.set_autocompact(key, 200000)
+    # A similarly numbered topic on another transport must not supply the value.
+    await orch._sessions.set_autocompact(SessionKey.for_transport("tg", 42, 99), "off")
+    orch._cli_service.execute = AsyncMock(return_value=AgentResponse(result="ok", session_id="sid"))
+    observer = BackgroundObserver(
+        orch.paths, timeout_seconds=1, cli_service=orch._cli_service, config=orch._config
+    )
+    orch._observers.background = observer
+    admitted, release = asyncio.Event(), asyncio.Event()
+
+    async def wait_before_execution(_task):
+        admitted.set()
+        await release.wait()
+        return True
+
+    monkeypatch.setattr(observer, "_admit_session_task", wait_before_execution)
+    if followup:
+        named = orch._named_sessions.create(42, "claude", "opus", "first", key=key)
+        named.status = "idle"
+        orch.submit_named_followup_bg(42, named.name, "again", 2, None)
+    else:
+        orch.submit_named_session(
+            42, "first", NamedSessionRequest(message_id=1, thread_id=99, transport="sl")
+        )
+    task = observer.active_tasks()[0].asyncio_task
+    try:
+        await asyncio.wait_for(admitted.wait(), 2)
+        await orch._sessions.set_autocompact(key, value)
+        orch._config.autocompact = 500000
+        if error is not None:
+            monkeypatch.setattr(orch._sessions, "get_active", AsyncMock(side_effect=error))
+        release.set()
+        await asyncio.wait_for(task, 2)
+    finally:
+        await observer.shutdown()
+    request = orch._cli_service.execute.call_args.args[0]
+    assert request.autocompact == (500000 if error is not None or value is None else value)
+    assert request.transport == "sl"
+    assert request.topic_id == 99

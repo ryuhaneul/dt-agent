@@ -156,6 +156,9 @@ def test_followup_submission_carries_the_session_message_count(orch) -> None:
     captured = {}
 
     class FakeBackground:
+        def set_autocompact_resolver(self, resolver):
+            captured["resolver"] = resolver
+
         def submit(self, sub, _exec_config):
             captured["sub"] = sub
             return "task"

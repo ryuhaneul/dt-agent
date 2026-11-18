@@ -305,7 +305,9 @@ class ClaudeCodeCLI(BaseCLI):
             )
 
         try:
-            cmd = self._build_command(resume_session, continue_session, prompt_files=prompt_files)
+            cmd = await asyncio.to_thread(
+                self._build_command, resume_session, continue_session, prompt_files=prompt_files
+            )
             extra_env = self._slot_extra_env(slot_name or "claude")
             exec_cmd, use_cwd = cmd, str(self._working_dir)
             _log_cmd(exec_cmd)
@@ -569,8 +571,11 @@ class ClaudeCodeCLI(BaseCLI):
         prompt_files = self._write_prompt_files()
         usage_events: list[tuple[object, int]] = []
         try:
-            cmd = self._build_command_streaming(
-                resume_session, continue_session, prompt_files=prompt_files
+            cmd = await asyncio.to_thread(
+                self._build_command_streaming,
+                resume_session,
+                continue_session,
+                prompt_files=prompt_files,
             )
             extra_env = self._slot_extra_env(slot_name)
             exec_cmd, use_cwd = cmd, str(self._working_dir)
@@ -701,8 +706,11 @@ class ClaudeCodeCLI(BaseCLI):
         prompt_files = self._write_prompt_files()
         usage_events: list[tuple[object, int]] = []
         try:
-            cmd = self._build_command_streaming(
-                resume_session, continue_session, prompt_files=prompt_files
+            cmd = await asyncio.to_thread(
+                self._build_command_streaming,
+                resume_session,
+                continue_session,
+                prompt_files=prompt_files,
             )
             extra_env = self._slot_extra_env(slot_name or "claude")
             exec_cmd, use_cwd = cmd, str(self._working_dir)

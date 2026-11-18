@@ -135,21 +135,26 @@ def merge_claude_settings(
     return result
 
 
-@lru_cache(maxsize=8)
 def claude_autocompact_flag_supported(cli: str) -> bool:
-    """Probe --help only (never a model call); unknown/old CLIs use env/settings only."""
+    """Use env/settings when a help probe fails, allowing the next call to retry."""
     try:
-        result = subprocess.run(
-            [cli, "--help"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
+        return _claude_autocompact_flag_supported(cli)
     except (OSError, subprocess.SubprocessError):
         return False
-    return result.returncode == 0 and "--autocompact" in result.stdout + result.stderr
+
+
+@lru_cache(maxsize=8)
+def _claude_autocompact_flag_supported(cli: str) -> bool:
+    """Cache completed --help probes only; never invoke a model."""
+    result = subprocess.run(
+        [cli, "--help"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=True,
+    )
+    return "--autocompact" in result.stdout + result.stderr
 
 
 def codex_autocompact_args(value: AutocompactValue) -> list[str]:

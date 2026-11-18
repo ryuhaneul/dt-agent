@@ -6,6 +6,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from functools import partial
 from typing import TYPE_CHECKING, Literal
 
 from ductor_bot.background import (
@@ -48,6 +49,7 @@ from ductor_bot.orchestrator.commands import (
 from ductor_bot.orchestrator.directives import parse_directives
 from ductor_bot.orchestrator.flows import (
     StreamingCallbacks,
+    _topic_autocompact,
     heartbeat_flow,
     named_session_flow,
     named_session_streaming,
@@ -716,6 +718,8 @@ class Orchestrator:
         Called when the gates are connected and again before every named background submit, so
         it does not matter whether the observer existed before the gates were connected.
         """
+        if self._observers.background is not None:
+            self._observers.background.set_autocompact_resolver(partial(_topic_autocompact, self))
         if self._session_gates is not None and self._observers.background is not None:
             self._observers.background.set_session_gate(
                 self.reserve_interagent_session, self._named_sessions

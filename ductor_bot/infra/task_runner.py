@@ -150,7 +150,7 @@ async def run_oneshot_task(
     if exec_config.provider == "claude" and exec_config.claude_accounts:
         return await _run_claude_with_rotation(exec_config, prompt, options)
 
-    one_shot = build_cmd(exec_config, prompt, working_dir=options.cwd)
+    one_shot = await asyncio.to_thread(build_cmd, exec_config, prompt, working_dir=options.cwd)
     if one_shot is None:
         return TaskResult(
             status=f"error:cli_not_found_{exec_config.provider}",
@@ -219,7 +219,7 @@ async def _run_claude_with_rotation(  # noqa: C901 -- preserve real payloads for
     default_tz = _resolve_tz(exec_config.user_timezone)
 
     async def _attempt(slot: str | None) -> tuple[AttemptOutcome, OneShotExecutionResult | None]:
-        one_shot = build_cmd(exec_config, prompt, working_dir=options.cwd)
+        one_shot = await asyncio.to_thread(build_cmd, exec_config, prompt, working_dir=options.cwd)
         if one_shot is None:
             outcome = AttemptOutcome(
                 returncode=None,
