@@ -98,10 +98,16 @@
       <div data-view="chat" class="pane layout-3">
         <div class="pane-head chat-head">
           <button class="theme-btn only-m" type="button" aria-label="Topic list" data-route="list" data-i18n-attr="aria-label:chat.list"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"></path></svg></button>
-          <div class="grow"><h2 tabindex="-1">—</h2><div class="sub">—</div></div>
+          <div class="grow"><h2 id="chatTitle" tabindex="-1">—</h2><div class="sub">—</div></div>
           <div class="chat-head-actions"><button class="btn btn-sm" type="button" data-route="manage"><span data-i18n="topic.manage">Topic list</span></button><button class="btn btn-sm" type="button" id="headerRename" hidden data-i18n="topic.rename">Rename</button></div>
         </div>
-        <div class="thread scroll" id="thread"></div>
+        <div class="thread-wrap">
+          <div class="thread scroll" id="thread" tabindex="0" aria-labelledby="chatTitle"></div>
+          <div class="thread-nav">
+            <button class="btn btn-icon" type="button" id="threadTop" hidden aria-label="Scroll to top" data-i18n-attr="aria-label:chat.scroll_top" aria-controls="thread"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 5h14M12 19V8m-5 5 5-5 5 5"></path></svg></button>
+            <button class="btn btn-icon" type="button" id="threadBottom" hidden aria-label="Scroll to bottom" data-i18n-attr="aria-label:chat.scroll_bottom" aria-controls="thread"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 19h14M12 5v11m-5-5 5 5 5-5"></path></svg></button>
+          </div>
+        </div>
         <div class="composer">
           <section class="command-menu" id="commandMenu" aria-label="Commands" data-i18n-attr="aria-label:commands.title" hidden>
             <div class="command-menu-head"><span data-i18n="commands.title">Commands</span><span id="commandCount"></span></div>

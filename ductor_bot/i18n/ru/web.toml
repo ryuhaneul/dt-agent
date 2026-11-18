@@ -80,6 +80,8 @@ current = "{name} · Тема №{id}"
 last_active = "Последняя активность: {time}"
 
 [chat]
+scroll_top = "Прокрутить вверх"
+scroll_bottom = "Прокрутить вниз"
 list = "Список тем"
 back = "Вернуться в чат"
 input = "Сообщение"

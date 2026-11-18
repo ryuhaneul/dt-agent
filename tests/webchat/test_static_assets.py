@@ -846,6 +846,7 @@ async function fetch(url,options={}){
 const context=vm.createContext({document,window:document,CustomEvent,WebSocket,fetch,URL,TextEncoder,TextDecoder,localStorage,console,
   requestAnimationFrame:callback=>{frames.set(++frameId,callback);return frameId},
   cancelAnimationFrame:id=>frames.delete(id),
+  ResizeObserver:class {observe(){}},
   location:{href:'https://chat.example.com/#list',hash:'#list'},
   setTimeout:(callback,delay)=>{const id=++timerId;timers.set(id,{callback,delay});return id},
   clearTimeout:id=>timers.delete(id),

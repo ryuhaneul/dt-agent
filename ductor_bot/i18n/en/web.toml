@@ -80,6 +80,8 @@ current = "{name} · Topic #{id}"
 last_active = "Last active {time}"
 
 [chat]
+scroll_top = "Scroll to top"
+scroll_bottom = "Scroll to bottom"
 list = "Topic list"
 back = "Back to chat"
 input = "Message"

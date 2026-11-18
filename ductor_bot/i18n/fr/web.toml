@@ -80,6 +80,8 @@ current = "{name} · Sujet #{id}"
 last_active = "Dernière activité : {time}"
 
 [chat]
+scroll_top = "Aller en haut"
+scroll_bottom = "Aller en bas"
 list = "Liste des sujets"
 back = "Retour au chat"
 input = "Message"

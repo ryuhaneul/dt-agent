@@ -191,13 +191,20 @@ function renderHeader() {
   button.querySelector('path').setAttribute('d', turn ? 'M7 7h10v10H7z' : 'M5 12h14M13 6l6 6-6 6');
   button.disabled = !topic || (sending && !turn && !isControlCommand(document.querySelector('#msgIn').value));
 }
+function updateThreadNavigation() {
+  const thread = document.querySelector('#thread');
+  const top = document.querySelector('#threadTop'), bottom = document.querySelector('#threadBottom');
+  const hasTopic = !!getTopic();
+  top.hidden = !hasTopic || thread.scrollTop < 80;
+  bottom.hidden = !hasTopic || thread.scrollHeight - thread.clientHeight - thread.scrollTop < 80;
+}
 export function renderThread({ bottom = false, seq = null } = {}) {
   cancelStreamRender();
   const topic = getTopic(); renderHeader();
   const thread = document.querySelector('#thread');
   const previousTop = thread.scrollTop;
   const nearBottom = thread.scrollHeight - thread.clientHeight - previousTop < 80;
-  if (!topic) { thread.replaceChildren(); return; }
+  if (!topic) { thread.replaceChildren(); updateThreadNavigation(); return; }
   const entries = sorted(topic.tid);
   let html = '', previousDay = '';
   for (const entry of entries) {
@@ -220,6 +227,7 @@ export function renderThread({ bottom = false, seq = null } = {}) {
     thread.querySelector(`[data-entry-seq="${Number(seq)}"]`)?.scrollIntoView({ block: 'center' });
   } else if (bottom || nearBottom) thread.scrollTop = thread.scrollHeight;
   else thread.scrollTop = previousTop;
+  updateThreadNavigation();
   if (visibleChat() && (bottom || nearBottom) && entries.length) markSeen(topic.tid, entries.at(-1).seq);
 }
 async function loadHistory(tid, { older = false, target = null } = {}) {
@@ -413,6 +421,15 @@ export function initChat() {
   secretDialog = initSecret();
   document.addEventListener('language-changed', () => { renderThread(); renderStatus(); });
   const thread = document.querySelector('#thread'), input = document.querySelector('#msgIn');
+  for (const [id, toBottom] of [['threadTop', false], ['threadBottom', true]]) {
+    document.querySelector(`#${id}`).addEventListener('click', () => {
+      // Use the normal scroll listener for history pagination and read tracking.
+      thread.focus({ preventScroll: true });
+      thread.scrollTop = toBottom ? thread.scrollHeight : 0;
+      updateThreadNavigation();
+    });
+  }
+  new ResizeObserver(updateThreadNavigation).observe(thread);
   input.maxLength = 32000;
   commandMenu = initCommands(input, value => { if (getTopic()) drafts.set(getTopic().tid, value); });
   input.addEventListener('input', () => { if (getTopic()) drafts.set(getTopic().tid, input.value); renderHeader(); });
@@ -430,6 +447,7 @@ export function initChat() {
     if (selector && !selector.disabled) void chooseButton(selector.dataset.callbackEntry, selector.dataset.callbackData, 'selector');
   });
   thread.addEventListener('scroll', async () => {
+    updateThreadNavigation();
     const topic = getTopic();
     if (!topic || loading) return;
     if (thread.scrollHeight - thread.clientHeight - thread.scrollTop < 80) {
@@ -439,7 +457,7 @@ export function initChat() {
     const height = thread.scrollHeight; loading = true;
     try {
       await loadHistory(topic.tid, { older: true });
-      if (getTopic()?.tid === topic.tid) { renderThread(); thread.scrollTop = thread.scrollHeight - height; }
+      if (getTopic()?.tid === topic.tid) { renderThread(); thread.scrollTop = thread.scrollHeight - height; updateThreadNavigation(); }
     } catch (error) { errorNotice(error); } finally { loading = false; }
   });
   document.addEventListener('topic-selected', async event => {
@@ -466,7 +484,7 @@ export function initChat() {
     histories.clear(); turns.clear(); busy.clear(); drafts.clear(); topicVersions.clear(); busyVersions.clear(); input.value = '';
     telegram = { state: 'unknown' }; botUp = false; webSessions = null;
     pending = 0; outbox = []; renderStatus(); renderHeader();
-    if (!active) { thread.replaceChildren(); return; }
+    if (!active) { thread.replaceChildren(); updateThreadNavigation(); return; }
     stopEvents = connectEvents(event => { void handleEvent(event).catch(errorNotice); }, up => {
       if (!up) { botUp = false; renderStatus(); }
       if (up) void resync();

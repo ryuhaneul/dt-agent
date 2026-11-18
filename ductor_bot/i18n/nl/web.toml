@@ -80,6 +80,8 @@ current = "{name} · Onderwerp #{id}"
 last_active = "Laatst actief: {time}"
 
 [chat]
+scroll_top = "Naar boven scrollen"
+scroll_bottom = "Naar beneden scrollen"
 list = "Onderwerpenlijst"
 back = "Terug naar de chat"
 input = "Bericht"
