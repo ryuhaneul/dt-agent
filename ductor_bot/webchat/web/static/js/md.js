@@ -71,20 +71,22 @@ export function createMarkdownCache(scope) {
 }
 
 // Blank lines are an approximate streaming boundary. Definitions can affect
-// earlier text, so those messages switch permanently to complete rendering.
+// earlier text, so refresh their complete rendering at most once per second.
 // Every terminal state is always rendered from the complete source.
 export function createMarkdownStream(scope) {
-  const definitionStart = /^(?:[ \t]|>[ \t]?|[-+*][ \t]+|\d+[.)][ \t]+)*\[/;
+  const definitionStart = /^ {0,3}(?:\[\^(?:\\.|[^\]\\\n])+\]:|\[(?:\\.|[^\]\\\n])+\]:[ \t]*\S)/;
   let previous = '', output = '', scanned = 0, boundary = 0, complete = '', fence = null;
-  let full = false, finalized = false, tail = '';
+  let definitions = false, finalized = false, tail = '', revision = 0, lastRefresh = -Infinity;
   return {
+    get revision() { return revision; },
     get completeHTML() { return complete; },
     get tailHTML() { return tail; },
     render(value, final = false) {
       const text = String(value);
       if (text === previous && (!final || finalized)) return output;
       if (!text.startsWith(previous)) {
-        scanned = boundary = 0; complete = ''; fence = null; full = false;
+        scanned = boundary = 0; complete = ''; fence = null; definitions = false;
+        revision++;
       }
       if (final) {
         output = md(text, { scope }); finalized = true;
@@ -98,7 +100,7 @@ export function createMarkdownStream(scope) {
           } else if (marker && !(marker[1][0] === '`' && marker[2].includes('`'))) {
             fence = marker[1];
           } else {
-            if (definitionStart.test(line)) full = true;
+            if (definitionStart.test(line)) definitions = true;
             if (!line.trim()) {
               complete += md(text.slice(boundary, end + 1), { scope });
               boundary = end + 1;
@@ -106,9 +108,11 @@ export function createMarkdownStream(scope) {
           }
           scanned = end + 1;
         }
-        if (!fence && definitionStart.test(text.slice(scanned))) full = true;
-        if (full) {
-          complete = ''; tail = md(text, { scope });
+        if (!fence && definitionStart.test(text.slice(scanned))) definitions = true;
+        const now = definitions ? performance.now() : 0;
+        if (definitions && now - lastRefresh >= 1000) {
+          complete = md(text, { scope }); tail = ''; boundary = text.length;
+          lastRefresh = now; revision++;
         } else {
           while (text.length - boundary > 1024) {
             complete += md(text.slice(boundary, boundary + 1024), { scope });

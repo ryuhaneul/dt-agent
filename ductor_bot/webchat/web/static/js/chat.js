@@ -195,7 +195,7 @@ function streamContent(turn, live) {
   turn.markdownOffset = offset;
   turn.markdown.render(turn.text.slice(offset));
   turn.renderedActivityRevision = turn.activityRevision;
-  return html + `<div data-stream-complete data-length="${turn.markdown.completeHTML.length}">${turn.markdown.completeHTML}</div><div data-stream-tail>${turn.markdown.tailHTML}</div>`;
+  return html + `<div data-stream-complete data-length="${turn.markdown.completeHTML.length}" data-revision="${turn.markdown.revision}">${turn.markdown.completeHTML}</div><div data-stream-tail>${turn.markdown.tailHTML}</div>`;
 }
 
 function entryMarkup(entry) {
@@ -243,9 +243,10 @@ function scheduleStreamRender(turnId) {
         const complete = element.querySelector('[data-stream-complete]');
         const tail = element.querySelector('[data-stream-tail]');
         const length = Number(complete.dataset.length || 0);
-        if (turn.markdown.completeHTML.length < length) complete.innerHTML = turn.markdown.completeHTML;
+        if (Number(complete.dataset.revision) !== turn.markdown.revision || turn.markdown.completeHTML.length < length) complete.innerHTML = turn.markdown.completeHTML;
         else complete.insertAdjacentHTML('beforeend', turn.markdown.completeHTML.slice(length));
         complete.dataset.length = turn.markdown.completeHTML.length;
+        complete.dataset.revision = turn.markdown.revision;
         tail.innerHTML = turn.markdown.tailHTML;
       } else if (![...history(topic.tid).entries.values()].some(entry => entry.role === 'bot' && entry.turn_id === id)) {
         renderThread();

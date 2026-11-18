@@ -72,6 +72,7 @@ These run on the host in the repository checkout, not inside the agent container
 | `python3 scripts/webchat.py up/down/status` | Start/configure, stop or inspect web app and NPMplus/CrowdSec gateway; `down --purge` also deletes gateway volumes/state |
 | `scripts/rebuild.sh` | Rebuild images and recreate containers without pulling source |
 | `scripts/update.sh` | Fast-forward the checkout, rebuild and swap containers |
+| `scripts/vendor_micromark.sh` | Regenerate the pinned micromark/GFM browser bundle and bundled license notices (maintainer tool) |
 | `scripts/verify-clean-clone.sh` | Isolated verification of a committed ref (developer tool) |
 
 Details: [installation.md](installation.md).

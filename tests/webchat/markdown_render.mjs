@@ -38,7 +38,25 @@ if (checks) {
   const quoted=createMarkdownStream('quoted-definition');
   quoted.render('Visit [id].\n\n');
   const quotedSource='Visit [id].\n\n> [id]: https://example.test/';
-  assert.equal(quoted.render(quotedSource),md(quotedSource,{scope:'quoted-definition'}));
+  quoted.render(quotedSource);
+  assert.equal(quoted.render(quotedSource,true),md(quotedSource,{scope:'quoted-definition'}));
+  const nativePerformance=globalThis.performance;
+  let clock=0;
+  globalThis.performance={now:()=>clock};
+  try {
+    for(const source of ['[guide](https://example.test/guide)','- [ ] todo','- [x] done','text [brackets]','```md\n[r]: https://example.test/\n```']) {
+      const stream=createMarkdownStream('ordinary');stream.render(source);
+      assert.equal(stream.revision,0,'ordinary syntax or fenced code must not trigger a full refresh');
+    }
+    for(const prefix of ['[r]: https://example.test/','   [r]: <https://example.test/>','[^note]: body']) {
+      clock=0;const stream=createMarkdownStream('rate-limited');
+      stream.render(prefix);assert.equal(stream.revision,1);
+      let source=prefix;
+      for(clock=100;clock<1000;clock+=100){source+=' appended';stream.render(source);assert.equal(stream.revision,1);}
+      clock=1000;source+=' refresh';stream.render(source);assert.equal(stream.revision,2);
+      clock=1100;source+=' final';assert.equal(stream.render(source,true),md(source,{scope:'rate-limited'}));
+    }
+  } finally {globalThis.performance=nativePerformance;}
   process.stdout.write(JSON.stringify({checks:'passed'}));
   process.exit(0);
 }
