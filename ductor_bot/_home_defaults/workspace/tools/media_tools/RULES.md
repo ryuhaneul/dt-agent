@@ -1,6 +1,20 @@
 # Media File Tools
 
-Scripts for processing files received via any transport (Telegram, Matrix, API).
+Scripts for processing files received via any transport (Telegram, Matrix, API, web chat).
+
+## Incoming file prompts
+
+`[INCOMING FILE]` blocks identify the source (including Web for web chat), stored
+`Path`, MIME `Type` and `Original filename`. Use the stored path to inspect the
+file; the original filename is a display label. Resolve workspace-relative paths
+against the workspace before passing them to tools that require absolute paths.
+A web message can include several file blocks with an optional user caption.
+
+Web uploads live under `webchat_files/YYYY-MM-DD/` with random storage names;
+Telegram uploads remain under `telegram_files/`. Both use the same file-type
+routing below. Web images are preserved unless the user explicitly chose browser
+resizing/compression; do not assume that every incoming image was normalized to
+WebP. Thumbnail files are display previews, not the uploaded original.
 
 ## Common Commands
 

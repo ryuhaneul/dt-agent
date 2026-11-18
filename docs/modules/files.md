@@ -1,6 +1,6 @@
 # files/
 
-Shared transport-agnostic file helpers used by Telegram, Matrix, and direct API paths.
+Shared transport-agnostic file helpers used by Telegram, Matrix, direct API and web-chat paths.
 
 ## Files
 
@@ -52,7 +52,9 @@ Maps `file_access` to allowed roots:
 
 ### `build_media_prompt(info, workspace, transport=...)`
 
-Builds standardized `[INCOMING FILE]` prompt blocks for agent input.
+Builds standardized `[INCOMING FILE]` prompt blocks for agent input. The transport
+label includes Web for web-chat uploads; the block gives the stored path, MIME
+type and original display name. Web chat reuses this builder after upload completion.
 
 Current prompt behavior:
 
@@ -100,3 +102,12 @@ Applied across all transports:
 - Telegram uploads: `~/.ductor/workspace/telegram_files/YYYY-MM-DD/`
 - Matrix uploads: `~/.ductor/workspace/matrix_files/YYYY-MM-DD/`
 - API uploads: `~/.ductor/workspace/api_files/YYYY-MM-DD/`
+
+## Web-chat attachments
+
+Web chat stores uploads in `workspace/webchat_files/`, verifies complete-file
+SHA-256 and keeps per-message metadata outside the history format. Browser-side
+image processing is opt-in (Original, Resize, Compress, Resize + compress); web
+uploads do not invoke `process_image()` and Original preserves the uploaded bytes.
+Server thumbnails are separate display files. See [web-chat attachments](webchat.md#attachments)
+for upload limits, resumable chunks, message cards and authenticated downloads.

@@ -25,7 +25,8 @@ let settings={max_file_bytes:2*1024**3,max_files_per_message:10,chunk_bytes:1024
 let historyEnabled=false,dropAfterAck=false,holdPut=false,releasePut=null,settingsPuts=0;
 const putOffsets=[];
 const incoming='[INCOMING FILE]\nThe user sent you a file via Telegram.\nPath: telegram_files/2026-11-18/photo.png\nType: image/png\nOriginal filename: photo.png\n\nCheck tools/media_tools/CLAUDE.md for file handling instructions.\n\nUser message: 사진을 확인해 주세요.';
-const entries=[{id:'aaaaaaaaaaaa',seq:1,role:'user',source:'telegram',text:incoming,ts:'2026-11-18T10:00:00Z'}, {id:'bbbbbbbbbbbb',seq:2,role:'bot',source:'web',text:'작업 명세입니다. <file:/safe/report.pdf>',ts:'2026-11-18T10:01:00Z'}, {id:'cccccccccccc',seq:3,role:'user',source:'web',text:'<file:/outside/secret.txt>',ts:'2026-11-18T10:02:00Z'}, {id:'dddddddddddd',seq:4,role:'user',source:'web',text:'웹 첨부 본문',ts:'2026-11-18T10:03:00Z'}, {id:'eeeeeeeeeeee',seq:5,role:'user',source:'web',text:'',ts:'2026-11-18T10:04:00Z'}];
+const longName='project-'+ 'f'.repeat(220)+'report.pdf';
+const entries=[{id:'aaaaaaaaaaaa',seq:1,role:'user',source:'telegram',text:incoming,ts:'2026-11-18T10:00:00Z'}, {id:'bbbbbbbbbbbb',seq:2,role:'bot',source:'web',text:`작업 명세입니다. <file:/safe/${longName}>`,ts:'2026-11-18T10:01:00Z'}, {id:'cccccccccccc',seq:3,role:'user',source:'web',text:'<file:/outside/'+ 'p'.repeat(320)+'/secret.txt>',ts:'2026-11-18T10:02:00Z'}, {id:'dddddddddddd',seq:4,role:'user',source:'web',text:'웹 첨부 본문',ts:'2026-11-18T10:03:00Z'}, {id:'eeeeeeeeeeee',seq:5,role:'user',source:'web',text:'',ts:'2026-11-18T10:04:00Z'}];
 const cardMeta=(entry,id,name,mime,inline)=>{const base=`/api/topics/123.7/messages/${entry}/attachments/${id}`;return{id,name,mime,size:2048,path:name,inline_allowed:inline,download_url:base,original_url:inline?base+'?inline=1':null,preview_url:inline?base+'/preview':null};};
 const response=(route,data,status=200)=>route.fulfill({status,contentType:'application/json',body:JSON.stringify(data)});
 await page.routeWebSocket('**/api/ws',()=>{});
@@ -49,7 +50,7 @@ await page.route('**/api/**',async route=>{
   const attachmentPath=p.match(/^\/topics\/123\.7\/messages\/([^/]+)\/attachments(?:\/([a-f0-9]{32})(?:\/preview)?)?$/);
   if(attachmentPath){
     if(attachmentPath[2])return route.fulfill({contentType:attachmentPath[1]==='bbbbbbbbbbbb'?'application/pdf':'image/png',body:await fs.readFile(path.join(cfg.directory,'sample.png'))});
-    return response(route,{attachments:attachmentPath[1]==='aaaaaaaaaaaa'?[cardMeta(attachmentPath[1],'a'.repeat(32),'photo.png','image/png',true)]:attachmentPath[1]==='bbbbbbbbbbbb'?[cardMeta(attachmentPath[1],'b'.repeat(32),'report.pdf','application/pdf',false)]:attachmentPath[1]==='dddddddddddd'?[cardMeta(attachmentPath[1],'d'.repeat(32),'web-notes.txt','text/plain',false)]:attachmentPath[1]==='eeeeeeeeeeee'?[cardMeta(attachmentPath[1],'e'.repeat(32),'attachment-only.txt','text/plain',false)]:[]});
+    return response(route,{attachments:attachmentPath[1]==='aaaaaaaaaaaa'?[cardMeta(attachmentPath[1],'a'.repeat(32),'photo.png','image/png',true)]:attachmentPath[1]==='bbbbbbbbbbbb'?[cardMeta(attachmentPath[1],'b'.repeat(32),longName,'application/pdf',false)]:attachmentPath[1]==='dddddddddddd'?[cardMeta(attachmentPath[1],'d'.repeat(32),'web-notes.txt','text/plain',false)]:attachmentPath[1]==='eeeeeeeeeeee'?[cardMeta(attachmentPath[1],'e'.repeat(32),'attachment-only.txt','text/plain',false)]:[]});
   }
   if(p.endsWith('/messages') && method==='GET')return response(route,{entries:historyEnabled?entries:[],has_more:false});
   if(p.includes('/uploads')){
@@ -205,7 +206,7 @@ try{
     await page.locator('#attachmentMaxSize').fill('2048');await page.locator('#attachmentMaxCount').fill('10');await page.locator('#saveAttachmentLimits').click();await page.waitForFunction(()=>document.querySelector('#attachmentLimitsNotice').textContent.includes('저장'));await page.keyboard.press('Escape');
     results.checks.push('settings persist; maximum rejected before PUT; next selection uses new cap');
     historyEnabled=true;await reset();await page.waitForSelector('.message-attachment');await page.waitForFunction(()=>document.querySelectorAll('.message-attachment').length===4);
-    assert.equal(await page.locator('.attachment-filename').allTextContents().then(value=>value.sort()).then(value=>value.join(',')),'attachment-only.txt,photo.png,report.pdf,web-notes.txt');
+    assert.equal(await page.locator('.attachment-filename').allTextContents().then(value=>value.sort()).then(value=>value.join(',')),['attachment-only.txt','photo.png',longName,'web-notes.txt'].sort().join(','));
     assert(!await page.locator('#thread').innerText().then(value=>value.includes('[INCOMING FILE]')));assert(await page.locator('#thread').innerText().then(value=>value.includes('写真')||value.includes('사진을 확인해 주세요.')));
     assert.equal(await page.locator('.message-attachment').filter({hasText:'secret.txt'}).count(),0);assert(await page.locator('#thread').innerText().then(value=>value.includes('웹 첨부 본문')));
     for(const [width,height] of [[375,667],[768,960],[1280,720]]){
@@ -213,6 +214,13 @@ try{
       for(const theme of ['light','dark']){
         await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);await page.waitForTimeout(100);
         assert(await page.evaluate(()=>Math.max(document.documentElement.scrollWidth,document.body.scrollWidth)<=innerWidth));
+        await page.waitForFunction(()=>innerWidth>1180||getComputedStyle(document.querySelector('.info')).visibility==='hidden');
+        const bounds=await page.evaluate(()=>({viewport:innerWidth,bodyClass:document.body.className,info:{visibility:getComputedStyle(document.querySelector('.info')).visibility,left:document.querySelector('.info').getBoundingClientRect().left},elements:[...document.querySelectorAll('#thread .bubble,#thread .message-attachment,#thread .attachment-download')].map(node=>({kind:node.className,left:node.getBoundingClientRect().left,right:node.getBoundingClientRect().right,width:node.getBoundingClientRect().width,scroll:node.scrollWidth,containerRight:(node.closest('.bubble')||node).getBoundingClientRect().right}))}));
+        results.layouts??=[];results.layouts.push({width,theme,...bounds});
+        assert(bounds.elements.every(node=>node.left>=0&&node.right<=width+0.5&&node.right<=node.containerRight+0.5&&node.scroll<=Math.ceil(node.width)),JSON.stringify(bounds));
+        await page.locator('.message-attachment').filter({hasText:'photo.png'}).evaluate(node=>node.scrollIntoView({block:'start'}));
+        await page.screenshot({path:path.join(cfg.shots,`4b-photo-${width}-${theme}.png`)});
+        await page.locator('.message-attachment').filter({hasText:longName}).evaluate(node=>node.scrollIntoView({block:'center'}));
         await page.screenshot({path:path.join(cfg.shots,`4b-cards-${width}-${theme}.png`)});
         const trigger=page.locator('[data-open-attachment]').first();await trigger.click();await page.waitForSelector('#attachmentViewer[open]');
         await page.locator('#attachmentZoom').click();assert.equal(await page.locator('#attachmentZoom').getAttribute('aria-pressed'),'true');await page.locator('#attachmentZoom').click();
