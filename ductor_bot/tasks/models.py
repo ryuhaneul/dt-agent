@@ -58,7 +58,6 @@ class TaskSubmit:
     origin_session_id: str = ""
     autocompact: AutocompactValue = "default"
 
-
     def __post_init__(self) -> None:
         self.autocompact = validate_autocompact(self.autocompact)
 
@@ -208,7 +207,8 @@ class TaskEntry:
             notify_pending=d.get("notify_pending") is True,
             notify_attempts=_count(d.get("notify_attempts")),
             priority=normalise_priority(d.get("priority")),
-            autocompact=stored_autocompact(d.get("autocompact", "default"), d["task_id"]) or "default",
+            autocompact=stored_autocompact(d.get("autocompact", "default"), d["task_id"])
+            or "default",
         )
 
 

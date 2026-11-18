@@ -161,7 +161,8 @@ class CronJob:
             model=data.get("model"),
             reasoning_effort=data.get("reasoning_effort"),
             cli_parameters=data.get("cli_parameters", []),
-            autocompact=stored_autocompact(data.get("autocompact", "default"), data["id"]) or "default",
+            autocompact=stored_autocompact(data.get("autocompact", "default"), data["id"])
+            or "default",
             quiet_start=data.get("quiet_start"),
             quiet_end=data.get("quiet_end"),
             dependency=data.get("dependency"),

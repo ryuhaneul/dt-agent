@@ -806,3 +806,54 @@ async def test_autocompact_survives_automatic_shell_replacement(tmp_path, value,
         assert fresh.session_id == ""
         assert fresh.message_count == 0
         assert (await mgr.get_active(key)).autocompact == value
+
+
+@pytest.mark.parametrize(
+    "invalid", ["100000", "inherit", "bad", 99999, 1000001, True, 100000.0, {}, []]
+)
+async def test_corrupt_stored_autocompact_repairs_only_that_value(tmp_path, caplog, invalid):
+    import json
+    from dataclasses import asdict
+
+    manager = _make_manager(tmp_path)
+    records = {
+        "tg:1": asdict(
+            SessionData(
+                chat_id=1,
+                session_id="keep-bad",
+                message_count=7,
+                autocompact=300000,
+                activity_at="2026-11-01T00:00:00+00:00",
+                activity_turns=4,
+            )
+        ),
+        "tg:2": asdict(
+            SessionData(
+                chat_id=2,
+                session_id="keep-good",
+                provider="codex",
+                model="gpt-5.2-codex",
+                message_count=11,
+                autocompact="off",
+                activity_at="2026-11-02T00:00:00+00:00",
+                activity_turns=6,
+            )
+        ),
+    }
+    records["tg:1"]["autocompact"] = invalid
+    manager._path.write_text(json.dumps(records))
+    good = await manager.get_active(SessionKey(chat_id=2))
+    bad = await manager.get_active(SessionKey(chat_id=1))
+    assert asdict(good) == records["tg:2"]
+    assert asdict(bad) == {**records["tg:1"], "autocompact": None}
+    assert "tg:1" in caplog.text
+    assert "Invalid stored autocompact" in caplog.text
+    assert json.loads(manager._path.read_text()) == records
+    await manager.set_autocompact(SessionKey(chat_id=2), "off")
+    stored = json.loads(manager._path.read_text())
+    assert stored == {**records, "tg:1": {**records["tg:1"], "autocompact": None}}
+    # New input and direct construction remain strict.
+    with pytest.raises(ValueError, match=r"validation errors?"):
+        await manager.set_autocompact(SessionKey(chat_id=2), invalid)
+    with pytest.raises(ValueError, match=r"validation errors?"):
+        SessionData(chat_id=3, autocompact=invalid)

@@ -54,17 +54,28 @@ def build_cmd(
         command.cmd = merge_claude_settings(
             command.cmd, exec_config.autocompact, working_dir or Path(exec_config.working_dir)
         )
-        if exec_config.autocompact != "default" and claude_settings_use_file(exec_config.cli_parameters):
+        if exec_config.autocompact != "default" and claude_settings_use_file(
+            exec_config.cli_parameters
+        ):
             directory = Path(tempfile.mkdtemp(prefix="ductor_settings_"))
             try:
                 index = command.cmd.index("--settings") + 1
-                private = Path(write_private_temp_file(command.cmd[index], prefix="settings_", suffix=".json", directory=str(directory)))
+                private = Path(
+                    write_private_temp_file(
+                        command.cmd[index],
+                        prefix="settings_",
+                        suffix=".json",
+                        directory=str(directory),
+                    )
+                )
             except BaseException:
                 directory.rmdir()
                 raise
             command.cmd[index] = str(private)
             command.cleanup_paths.extend([private, directory])
-        if isinstance(exec_config.autocompact, int) and claude_autocompact_flag_supported(command.cmd[0]):
+        if isinstance(exec_config.autocompact, int) and claude_autocompact_flag_supported(
+            command.cmd[0]
+        ):
             command.cmd += ["--autocompact", str(exec_config.autocompact)]
     apply_autocompact_env(command, exec_config)
     return command

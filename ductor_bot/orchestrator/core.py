@@ -370,7 +370,12 @@ class Orchestrator:
         return self._command_registry.resolve(text.strip().lower()) is not None
 
     async def handle_message(
-        self, key: SessionKey, text: str, *, counts_as_activity: bool = True, autocompact: AutocompactValue | None = None
+        self,
+        key: SessionKey,
+        text: str,
+        *,
+        counts_as_activity: bool = True,
+        autocompact: AutocompactValue | None = None,
     ) -> OrchestratorResult:
         """Main entry point: route message to appropriate handler.
 

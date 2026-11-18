@@ -157,7 +157,12 @@ class WebhookObserver(BaseTaskObserver):
                         "(provider/model/effort/cli_parameters); use mode=cron_task",
                         hook_id,
                     )
-                result = await self._dispatch_wake(hook_id, hook.title, safe_prompt, autocompact=resolve_autocompact(hook.autocompact, self._config.autocompact))
+                result = await self._dispatch_wake(
+                    hook_id,
+                    hook.title,
+                    safe_prompt,
+                    autocompact=resolve_autocompact(hook.autocompact, self._config.autocompact),
+                )
             elif hook.mode == "cron_task":
                 # Build TaskOverrides from hook
                 overrides = TaskOverrides(
@@ -231,7 +236,11 @@ class WebhookObserver(BaseTaskObserver):
         results: list[str] = []
         for chat_id in self._config.allowed_user_ids:
             try:
-                text = await self._handle_wake(chat_id, prompt, **({"autocompact": autocompact} if autocompact is not None else {}))
+                text = await self._handle_wake(
+                    chat_id,
+                    prompt,
+                    **({"autocompact": autocompact} if autocompact is not None else {}),
+                )
                 if text:
                     results.append(text)
             except asyncio.CancelledError:

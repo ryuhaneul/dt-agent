@@ -825,6 +825,11 @@ class SessionManager:
                 # so SessionData picks it up (legacy entries lack it).
                 if "transport" not in v:
                     v["transport"] = parsed.transport
+                from ductor_bot.cli.autocompact import stored_autocompact
+
+                v["autocompact"] = stored_autocompact(
+                    v.get("autocompact"), parsed.storage_key, inherit=True
+                )
                 sd = SessionData(**v)
                 # Re-key under the canonical prefixed storage key
                 result[parsed.storage_key] = sd

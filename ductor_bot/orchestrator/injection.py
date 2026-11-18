@@ -158,7 +158,8 @@ async def _inject_prompt(  # noqa: PLR0913
         model_override=active.model if active else None,
         effort_override=(active.reasoning_effort or None) if active else None,
         autocompact=resolve_autocompact(
-            autocompact if autocompact is not None else (active.autocompact if active else None), orch._config.autocompact
+            autocompact if autocompact is not None else (active.autocompact if active else None),
+            orch._config.autocompact,
         ),
         session_kind="background" if isolated else "foreground",
         resume_session=resume_id,
@@ -615,9 +616,7 @@ async def _interagent_session_turn(  # noqa: PLR0913
     files_block = await build_appended_files_block(
         orch.paths, orch._config.append_system_prompt_files
     )
-    autocompact = await _topic_autocompact(
-        orch, SessionKey(transport=transport, chat_id=chat_id)
-    )
+    autocompact = await _topic_autocompact(orch, SessionKey(transport=transport, chat_id=chat_id))
     request = AgentRequest(
         prompt=prompt,
         received_context=current_input_context(orch._config.user_timezone),

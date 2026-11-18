@@ -90,7 +90,12 @@ def from_cron_result(  # noqa: PLR0913
             delivery=DeliveryMode.UNICAST,
             lock_mode=LockMode.REQUIRED,
             needs_injection=True,
-            metadata={"title": title, "job_id": job_id, "counts_as_activity": False, **({"autocompact": autocompact} if autocompact is not None else {})},
+            metadata={
+                "title": title,
+                "job_id": job_id,
+                "counts_as_activity": False,
+                **({"autocompact": autocompact} if autocompact is not None else {}),
+            },
         )
     if chat_id:
         return Envelope(

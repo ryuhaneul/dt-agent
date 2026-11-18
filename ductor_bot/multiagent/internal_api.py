@@ -500,7 +500,11 @@ class InternalAgentAPI:
                 )
 
         try:
-            autocompact = {"autocompact": validate_autocompact(data["autocompact"])} if "autocompact" in data else {}
+            autocompact = (
+                {"autocompact": validate_autocompact(data["autocompact"])}
+                if "autocompact" in data
+                else {}
+            )
             chat_id, topic_id = _parse_origin(data)
             resumed_id = self._task_hub.resume(
                 task_id,

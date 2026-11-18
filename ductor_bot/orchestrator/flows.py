@@ -145,9 +145,7 @@ async def _topic_autocompact(orch: Orchestrator, key: SessionKey) -> Autocompact
     except (OSError, ValueError, TypeError):
         logger.warning("Autocompact topic lookup failed; using the agent global value")
         return resolve_autocompact(None, orch._config.autocompact)
-    return resolve_autocompact(
-        session.autocompact if session else None, orch._config.autocompact
-    )
+    return resolve_autocompact(session.autocompact if session else None, orch._config.autocompact)
 
 
 async def _prepare_normal(

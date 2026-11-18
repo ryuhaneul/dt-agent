@@ -433,7 +433,9 @@ class TaskHub:
             msg = f"Task '{task_id}' is already running"
             raise ValueError(msg)
 
-        settings = {"autocompact": validate_autocompact(autocompact)} if autocompact is not None else {}
+        settings = (
+            {"autocompact": validate_autocompact(autocompact)} if autocompact is not None else {}
+        )
         routing: dict[str, object] = {"chat_id": chat_id, "thread_id": thread_id} if chat_id else {}
 
         # Reset to running — same entry, same folder, same task_id

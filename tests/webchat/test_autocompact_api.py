@@ -514,3 +514,191 @@ async def test_automation_save_error_is_safe_and_does_not_report_success(
     )
     assert response.status == 503
     assert await response.json() == {"error": "generic"}
+
+
+async def _sub_setting_fixture(api, *, absent=False):
+    previous = "default" if absent else 200000
+    paths = DuctorPaths(ductor_home=api.paths.ductor_home / "agents" / "worker")
+    paths.config_path.parent.mkdir(parents=True)
+    config = {"model": "opus", "unrelated": {"keep": True}}
+    worker = {"name": "worker", "transport": "headless", "custom": "keep"}
+    if not absent:
+        config["autocompact"] = worker["autocompact"] = previous
+    paths.config_path.write_text(json.dumps(config))
+    registry = api.paths.ductor_home / "agents.json"
+    registry.write_text(json.dumps([worker, {"name": "other", "autocompact": 900000}]))
+    cfg = api.bot.config.model_copy(
+        update={"ductor_home": str(paths.ductor_home), "autocompact": previous}
+    )
+    api.bot._orch = Orchestrator(cfg, paths, agent_name="worker", lock_pool=api.pool)
+    api.bot._orch._cli_service.execute = AsyncMock(return_value=AgentResponse(result="ok"))
+    await api.bot._orch._sessions.update_session(SessionData(chat_id=-123, topic_id=7))
+    return paths, registry, previous
+
+
+async def _change_sub_setting(api, transport):
+    if transport == "web":
+        response = await _put(api, {"global": 400000, "topic": 300000})
+        return response.status, await response.json()
+    from ductor_bot.orchestrator.selectors.autocompact_selector import save_autocompact
+
+    response = await save_autocompact(api.bot._orch, api.key, "global", 400000)
+    return (200 if response.buttons else 503), None
+
+
+@pytest.mark.parametrize("transport", ["selector", "web"])
+@pytest.mark.parametrize("absent", [False, True])
+@pytest.mark.parametrize(
+    "failure", ["config-before", "config-after", "agents-before", "agents-after"]
+)
+async def test_sub_global_failure_restores_files_runtime_and_cli(
+    api, monkeypatch, transport, absent, failure
+):
+    from ductor_bot.orchestrator.selectors import autocompact_selector as selector
+
+    paths, registry, previous = await _sub_setting_fixture(api, absent=absent)
+    before_config = json.loads(paths.config_path.read_text())
+    before_registry = json.loads(registry.read_text())
+    original_config, original_agent = (
+        selector.update_config_file_async,
+        selector.update_agent_fields,
+    )
+    order = []
+
+    async def config_write(path, **updates):
+        order.append("config")
+        assert api.bot._orch._config.autocompact == previous
+        if failure == "config-before":
+            raise OSError("synthetic-private-path")
+        await original_config(path, **updates)
+        if failure == "config-after":
+            raise OSError("synthetic-private-path")
+
+    def agent_write(*args, **updates):
+        order.append("agents")
+        assert api.bot._orch._config.autocompact == previous
+        if failure == "agents-before":
+            raise OSError("synthetic-private-path")
+        original_agent(*args, **updates)
+        if failure == "agents-after":
+            raise OSError("synthetic-private-path")
+
+    monkeypatch.setattr(selector, "update_config_file_async", config_write)
+    monkeypatch.setattr(selector, "update_agent_fields", agent_write)
+    status, body = await _change_sub_setting(api, transport)
+    assert status == 503
+    assert order == (["config"] if failure.startswith("config") else ["config", "agents"])
+    assert json.loads(paths.config_path.read_text()) == before_config
+    assert json.loads(registry.read_text()) == before_registry
+    assert api.bot._orch._config.autocompact == previous
+    assert api.bot._orch._cli_service._config.autocompact == previous
+    assert (await api.bot._orch._sessions.get_active(api.key)).autocompact is None
+    api.bot._orch._cli_service.execute.assert_not_called()
+    if transport == "web":
+        assert body["global_value"] == previous
+        assert body["topic_value"] is None
+
+
+@pytest.mark.parametrize("transport", ["selector", "web"])
+async def test_sub_global_success_updates_both_files_runtime_and_next_request(api, transport):
+    paths, registry, _ = await _sub_setting_fixture(api)
+    assert (await _change_sub_setting(api, transport))[0] == 200
+    assert json.loads(paths.config_path.read_text())["autocompact"] == 400000
+    assert json.loads(registry.read_text())[0]["autocompact"] == 400000
+    orch = api.bot._orch
+    assert orch._config.autocompact == orch._cli_service._config.autocompact == 400000
+    await orch.handle_message(api.key, "hello")
+    request = orch._cli_service.execute.await_args.args[0]
+    assert request.autocompact == (300000 if transport == "web" else 400000)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["config-missing", "config-invalid", "agents-missing", "agents-invalid", "agent-missing"],
+)
+async def test_sub_global_unreadable_initial_files_never_write(api, failure):
+    paths, registry, previous = await _sub_setting_fixture(api)
+    target = paths.config_path if failure.startswith("config") else registry
+    if failure.endswith("missing") and failure != "agent-missing":
+        target.unlink()
+    elif failure == "agent-missing":
+        registry.write_text('[{"name":"other"}]')
+    else:
+        target.write_text("{broken")
+    before = [
+        (path.read_bytes() if path.exists() else None) for path in (paths.config_path, registry)
+    ]
+    response = await _put(api, {"global": 400000})
+    assert response.status == 503
+    assert (await response.json())["global_value"] == previous
+    assert [
+        (path.read_bytes() if path.exists() else None) for path in (paths.config_path, registry)
+    ] == before
+
+
+@pytest.mark.parametrize("rollback_failure", ["config", "agents"])
+async def test_sub_global_persistent_rollback_error_logs_state_without_values(
+    api, monkeypatch, caplog, rollback_failure
+):
+    from ductor_bot.infra import json_store
+
+    paths, registry, _ = await _sub_setting_fixture(api)
+    original = json_store.atomic_text_save
+
+    def write(path, content):
+        data = json.loads(content)
+        value = data[0]["autocompact"] if path == registry else data["autocompact"]
+        label = "agents" if path == registry else "config"
+        if value == 200000 and label == rollback_failure:
+            raise OSError("synthetic-private-path")
+        original(path, content)
+        if path == registry and value == 400000:
+            raise OSError("synthetic-private-path")
+
+    monkeypatch.setattr(json_store, "atomic_text_save", write)
+    response = await _put(api, {"global": 400000})
+    assert response.status == 503
+    assert json.loads(paths.config_path.read_text())["autocompact"] == (
+        400000 if rollback_failure == "config" else 200000
+    )
+    assert json.loads(registry.read_text())[0]["autocompact"] == (
+        400000 if rollback_failure == "agents" else 200000
+    )
+    assert (
+        api.bot._orch._config.autocompact
+        == api.bot._orch._cli_service._config.autocompact
+        == 200000
+    )
+    assert f"file={rollback_failure} state=changed" in caplog.text
+    assert "400000" not in caplog.text
+    assert "200000" not in caplog.text
+    assert "synthetic-private-path" not in caplog.text
+
+
+async def test_sub_global_failure_restores_observed_runtime_update(api, monkeypatch):
+    from ductor_bot.orchestrator.selectors import autocompact_selector as selector
+
+    paths, registry, _ = await _sub_setting_fixture(api)
+    original = selector.update_config_file_async
+
+    async def config_write(path, **updates):
+        await original(path, **updates)
+        # The watcher can observe the first file before the second write completes.
+        api.bot._orch._config.autocompact = 400000
+        api.bot._orch._on_config_hot_reload(api.bot._orch._config, {"autocompact": 400000})
+
+    def registry_error(*_args, **_kwargs):
+        raise OSError("synthetic")
+
+    monkeypatch.setattr(selector, "update_config_file_async", config_write)
+    monkeypatch.setattr(selector, "update_agent_fields", registry_error)
+    response = await _put(api, {"global": 400000})
+    assert response.status == 503
+    assert (await response.json())["global_value"] == 200000
+    assert json.loads(paths.config_path.read_text())["autocompact"] == 200000
+    assert json.loads(registry.read_text())[0]["autocompact"] == 200000
+    assert (
+        api.bot._orch._config.autocompact
+        == api.bot._orch._cli_service._config.autocompact
+        == 200000
+    )

@@ -2234,7 +2234,9 @@ class TelegramBot:
             from_task_question(task_id, question, prompt_preview, chat_id, topic_id=thread_id)
         )
 
-    async def _handle_webhook_wake(self, chat_id: int, prompt: str, *, autocompact: AutocompactValue | None = None) -> str | None:
+    async def _handle_webhook_wake(
+        self, chat_id: int, prompt: str, *, autocompact: AutocompactValue | None = None
+    ) -> str | None:
         """Process webhook wake prompt via the message bus."""
         from ductor_bot.bus.envelope import LockMode
 
@@ -2242,7 +2244,9 @@ class TelegramBot:
         key = SessionKey(chat_id=chat_id)
         lock = self._lock_pool.get(key.lock_key)
         async with lock:
-            result = await self._orch.handle_message(key, prompt, **autocompact_override_kwargs(autocompact))
+            result = await self._orch.handle_message(
+                key, prompt, **autocompact_override_kwargs(autocompact)
+            )
 
         # Deliver result — lock already released, skip bus lock
         from ductor_bot.bus.adapters import from_webhook_wake
