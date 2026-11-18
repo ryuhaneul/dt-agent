@@ -202,7 +202,10 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
             listed = await topics.list()
         except LockTimeoutError:
             return _error("history_busy", 503)
-        cursors = await read_state.load()
+        try:
+            cursors = await read_state.load()
+        except OSError:
+            return _error("generic", 503)
         return web.json_response(
             {"topics": [{**topic, "seen": cursors.get(topic["tid"])} for topic in listed]}
         )
@@ -220,9 +223,11 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
             except LockTimeoutError:
                 return _error("history_busy", 503)
             updates = {tid: min(seq, latest.seq)} if latest is not None else {}
-            previous = await read_state.load()
-            cursors = await read_state.merge(updates)
-            if previous != cursors:
+            try:
+                cursors, changed = await read_state.merge(updates)
+            except OSError:
+                return _error("generic", 503)
+            if changed:
                 runtime.events.publish({"type": "seen", "seen": {tid: cursors[tid]}})
             return web.json_response({"seen": cursors.get(tid)})
 
@@ -240,9 +245,11 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
                         updates[tid] = latest.seq
             except LockTimeoutError:
                 return _error("history_busy", 503)
-            previous = await read_state.load()
-            cursors = await read_state.merge(updates)
-            if previous != cursors:
+            try:
+                cursors, changed = await read_state.merge(updates)
+            except OSError:
+                return _error("generic", 503)
+            if changed:
                 runtime.events.publish({"type": "seen", "seen": cursors, "all": True})
             return web.json_response({"seen": cursors})
 
@@ -256,7 +263,7 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
             return _error("telegram_unavailable", 503)
         return web.json_response({"topic": topic}, status=201)
 
-    async def manage_topic(request: web.Request) -> web.Response:  # noqa: PLR0911
+    async def manage_topic(request: web.Request) -> web.Response:  # noqa: C901, PLR0911 -- explicit storage and topic failure responses
         tid = request.match_info["tid"]
         if tid == "unknown":
             return _error("not_a_topic", 409)
@@ -276,8 +283,15 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
                 if data.get("confirm_name") != topic["name"]:
                     return _error("confirm_mismatch", 400)
                 async with read_state.lock:
+                    try:
+                        await read_state.load()
+                    except OSError:
+                        return _error("generic", 503)
                     result = await topics.delete(tid)
-                    await read_state.remove(tid)
+                    try:
+                        await read_state.remove(tid)
+                    except OSError:
+                        return _error("generic", 503)
                 return web.json_response(result)
             except TopicBusyError:
                 return _error("topic_busy", 409)

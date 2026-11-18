@@ -25,7 +25,10 @@ class ReadState:
             data = json.loads(self._path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return {}
-        except (OSError, ValueError):
+        except OSError:
+            logger.warning("Unable to read webchat read state")
+            raise
+        except ValueError:
             logger.warning("Unable to load webchat read state")
             return {}
         if not isinstance(data, dict):
@@ -45,15 +48,16 @@ class ReadState:
     async def load(self) -> dict[str, int]:
         return await asyncio.to_thread(self._load)
 
-    async def merge(self, updates: dict[str, int]) -> dict[str, int]:
+    async def merge(self, updates: dict[str, int]) -> tuple[dict[str, int], bool]:
         """Merge cursors while the caller holds lock, preserving unset versus negative."""
         values = await self.load()
         merged = dict(values)
         for tid, seq in updates.items():
             merged[tid] = max(values[tid], seq) if tid in values else seq
-        if merged != values:
+        changed = merged != values
+        if changed:
             await complete_write(atomic_json_save, self._path, merged)
-        return merged
+        return merged, changed
 
     async def remove(self, tid: str) -> None:
         """Remove a deleted topic while the caller holds lock."""

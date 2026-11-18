@@ -5,9 +5,9 @@ import { notify } from './auth.js';
 import { esc } from './md.js';
 
 let topics = [], selected = null, hits = [], query = '', searchTimer, revision = 0;
-let active = false, request = 0, readEpoch = 0, markingAll = false;
+let active = false, request = 0, readEpoch = 0, markingAll = false, migrationEpoch = null;
 let renaming = null, renameBusy = false, renameEpoch = 0;
-const unread = new Map(), seen = new Map(), latest = new Map(), migrated = new Set();
+const unread = new Map(), seen = new Map(), confirmed = new Map(), latest = new Map(), migrated = new Set();
 export function getTopics() { return topics; }
 export function getTopic() { return topics.find(topic => topic.tid === selected) || null; }
 export function formatTime(value, date = false) {
@@ -18,6 +18,8 @@ export function formatTime(value, date = false) {
 function storedSeen(tid) { return seen.get(tid) ?? null; }
 function mergeSeen(tid, seq) {
   if (!Number.isInteger(seq)) return;
+  const saved = confirmed.get(tid) ?? null;
+  confirmed.set(tid, saved === null ? seq : Math.max(saved, seq));
   const previous = storedSeen(tid);
   seen.set(tid, previous === null ? seq : Math.max(previous, seq));
 }
@@ -44,7 +46,7 @@ export function markSeen(tid, seq) {
     if (active && epoch === readEpoch) mergeSeen(tid, data.seen);
   }).catch(async error => {
     if (!active || epoch !== readEpoch) return;
-    if (storedSeen(tid) === value) seen.set(tid, previous);
+    if (storedSeen(tid) === value) seen.set(tid, confirmed.get(tid) ?? null);
     if (error.code !== 'auth_required') notify('error.generic');
     const topic = topics.find(item => item.tid === tid);
     if (topic) {
@@ -113,28 +115,43 @@ async function countUnread(topic, generation) {
   }
   if (storedSeen(topic.tid) === last) unread.set(topic.tid, count);
 }
+async function migrateSeen() {
+  const epoch = readEpoch;
+  if (!active || migrationEpoch === epoch) return;
+  migrationEpoch = epoch;
+  const pending = topics.filter(topic => !migrated.has(topic.tid)).map(topic => topic.tid);
+  try {
+    await Promise.all(Array.from({ length: Math.min(4, pending.length) }, async () => {
+      while (active && epoch === readEpoch && pending.length) {
+        const tid = pending.shift();
+        migrated.add(tid);
+        let legacy = null;
+        try {
+          const raw = localStorage.getItem(`dtw-seen:${tid}`);
+          if (raw !== null && Number.isInteger(Number(raw))) legacy = Number(raw);
+        } catch { /* Server cursors work when browser storage is blocked. */ }
+        if (legacy === null || (storedSeen(tid) !== null && legacy <= storedSeen(tid))) continue;
+        try {
+          const result = await api(`/topics/${encodeURIComponent(tid)}/seen`, { method: 'PUT', body: { seq: legacy } });
+          if (!active || epoch !== readEpoch) return;
+          await syncSeen({ [tid]: result.seen });
+          if (!active || epoch !== readEpoch) return;
+          try { localStorage.removeItem(`dtw-seen:${tid}`); } catch { /* Optional legacy cleanup. */ }
+        } catch (error) {
+          if (active && epoch === readEpoch && error.code !== 'auth_required') notify('error.generic');
+        }
+      }
+    }));
+  } finally {
+    if (migrationEpoch === epoch) migrationEpoch = null;
+  }
+}
 export async function refreshTopics() {
   const generation = ++revision;
   const data = await api('/topics');
   if (!active || generation !== revision) return;
   topics = data.topics;
-  const epoch = readEpoch;
-  await Promise.all(topics.map(async topic => {
-    mergeSeen(topic.tid, topic.seen);
-    if (migrated.has(topic.tid)) return;
-    migrated.add(topic.tid);
-    let legacy = null;
-    try {
-      const raw = localStorage.getItem(`dtw-seen:${topic.tid}`);
-      if (raw !== null && Number.isInteger(Number(raw))) legacy = Number(raw);
-    } catch { /* Server cursors work when browser storage is blocked. */ }
-    if (legacy === null || (storedSeen(topic.tid) !== null && legacy <= storedSeen(topic.tid))) return;
-    const result = await api(`/topics/${encodeURIComponent(topic.tid)}/seen`, { method: 'PUT', body: { seq: legacy } });
-    if (!active || epoch !== readEpoch) return;
-    mergeSeen(topic.tid, result.seen);
-    try { localStorage.removeItem(`dtw-seen:${topic.tid}`); } catch { /* Optional legacy cleanup. */ }
-  }));
-  if (!active || generation !== revision) return;
+  for (const topic of topics) mergeSeen(topic.tid, topic.seen);
   for (const topic of topics) {
     if (topic.name_key) topic.name = t(topic.name_key);
     topic.name ||= topic.tid === 'unknown' ? t('topic.unknown_name') : topic.topic_id === null
@@ -146,7 +163,7 @@ export async function refreshTopics() {
   renderTopics();
   document.dispatchEvent(new CustomEvent('topics-updated', { detail: topics }));
   await Promise.all(topics.map(topic => countUnread(topic, generation)));
-  if (active && generation === revision) renderTopics();
+  if (active && generation === revision) { renderTopics(); void migrateSeen(); }
 }
 export function noteEntry(tid, entry) {
   const topic = topics.find(item => item.tid === tid);
@@ -241,7 +258,7 @@ export function initTopics() {
       form.querySelectorAll('input, button').forEach(element => { element.disabled = false; });
       document.querySelector('#renameClose').disabled = false;
       ++revision; ++request; clearTimeout(searchTimer); topics = []; selected = null; hits = [];
-      query = ''; unread.clear(); seen.clear(); latest.clear(); migrated.clear(); document.querySelector('#q').value = ''; renderTopics();
+      query = ''; unread.clear(); seen.clear(); confirmed.clear(); latest.clear(); migrated.clear(); document.querySelector('#q').value = ''; renderTopics();
     }
   });
   document.querySelector('#tlist').addEventListener('click', event => {

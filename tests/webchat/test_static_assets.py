@@ -2064,6 +2064,7 @@ if(scenario==='unread'){
  const topics=await load('topics.js',{'./api.js':{api},'./i18n.js':{t:(key,args)=>key==='topic.unread'?`${args.n} unread`:key},'./router.js':{go:()=>{}},'./auth.js':{notify:()=>{throw Error('unexpected notice')}},'./md.js':{esc:value=>String(value)}});
  storage.set('dtw-seen:0','999');storage.set('dtw-seen:8','-5');
  topics.initTopics();document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));await topics.refreshTopics();
+ for(let i=0;i<4;i++)await new Promise(setImmediate);
  assert.equal(cursors.get('0'),100,'legacy state is capped by the server');assert.equal(cursors.get('8'),-5);
  assert.equal(storage.has('dtw-seen:0'),false);assert.equal(storage.has('dtw-seen:8'),false);
  assert.ok(get('tlist').innerHTML.includes('2 unread'));
@@ -2090,6 +2091,62 @@ if(scenario==='unread'){
  document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));await topics.refreshTopics();
  assert.ok(!get('tlist').innerHTML.includes('unread'));
 }
+if(scenario==='migration-failure'){
+ const rows=Array.from({length:9},(_,i)=>({tid:String(i),topic_id:null,name:i===0?null:'Topic '+i,name_key:i===0?'topic.general':null,group:'telegram',count:2,seen:null}));
+ const gates=[],cursors=new Map(),notices=[];let inFlight=0,maxFlight=0,updates=0;
+ const flush=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate)};
+ document.addEventListener('topics-updated',()=>updates++);
+ const api=async(url,options={})=>{
+  if(url==='/topics')return {topics:rows.map(row=>({...row,seen:cursors.get(row.tid)??null}))};
+  if(options.method==='PUT'){
+   assert.ok(updates>0,'migration starts after topics-updated');assert.ok(get('tlist').innerHTML.includes('topic.general'));
+   const tid=url.split('/')[2];inFlight++;maxFlight=Math.max(maxFlight,inFlight);
+   try{await new Promise((resolve,reject)=>gates.push({tid,resolve,reject}));cursors.set(tid,options.body.seq);return {seen:options.body.seq}}
+   finally{inFlight--}
+  }
+  return {entries:[{seq:-5},{seq:-2}],has_more:false};
+ };
+ const topics=await load('topics.js',{'./api.js':{api},'./i18n.js':{t:key=>key},'./router.js':{go:()=>{}},'./auth.js':{notify:key=>notices.push(key)},'./md.js':{esc:value=>String(value)}});
+ for(const row of rows)storage.set('dtw-seen:'+row.tid,'-5');
+ topics.initTopics();document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));
+ await topics.refreshTopics();assert.equal(topics.getTopic().tid,'0');assert.equal(topics.getTopic().name,'topic.general');
+ assert.equal(updates,1);assert.equal(inFlight,4,'refresh resolves while four migration requests are pending');
+ await topics.refreshTopics();assert.equal(inFlight,4,'overlapping list refresh cannot start another migration batch');
+ for(let index=0;index<rows.length;index++){
+  await flush();assert.ok(gates[index]);
+  if(index===0)gates[index].reject({code:'bot_unreachable'});else gates[index].resolve();
+  await flush();assert.ok(inFlight<=4);
+ }
+ assert.equal(maxFlight,4);assert.equal(inFlight,0);assert.equal(gates.length,9);assert.deepEqual(notices,['error.generic']);
+ assert.equal(storage.get('dtw-seen:0'),'-5','failed migration keeps its legacy cursor');
+ for(const row of rows.slice(1)){assert.equal(cursors.get(row.tid),-5);assert.equal(storage.has('dtw-seen:'+row.tid),false)}
+ await topics.refreshTopics();await flush();assert.equal(gates.length,9,'each migration is attempted once per session');
+ assert.equal(topics.getTopics().length,9);assert.ok(get('tlist').innerHTML.includes('Topic 8'));
+}
+if(scenario==='rollback-forward'||scenario==='rollback-reverse'){
+ const flush=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate)};
+ const pending=[],notices=[];let saved=-9;
+ const row={tid:'1.2',name:'Topic',group:'telegram',count:3};
+ const api=async(url,options={})=>{
+  if(url==='/topics')return {topics:[{...row,seen:saved}]};
+  if(options.method==='PUT')return await new Promise((resolve,reject)=>pending.push({resolve,reject}));
+  return {entries:[{seq:-9},{seq:-5},{seq:-2}],has_more:false};
+ };
+ const topics=await load('topics.js',{'./api.js':{api},'./i18n.js':{t:(key,args)=>key==='topic.unread'?`${args.n} unread`:key},'./router.js':{go:()=>{}},'./auth.js':{notify:key=>notices.push(key)},'./md.js':{esc:value=>String(value)}});
+ topics.initTopics();
+ for(const confirmed of [-9,null]){
+  saved=confirmed;pending.length=0;notices.length=0;
+  document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));await topics.refreshTopics();await flush();
+  topics.markSeen('1.2',-5);topics.markSeen('1.2',-2);assert.equal(pending.length,2);
+  const order=scenario==='rollback-forward'?[0,1]:[1,0];
+  for(const index of order){pending[index].reject({code:'bot_unreachable'});await flush()}
+  assert.equal(notices.length,2);
+  assert.ok(get('tlist').innerHTML.includes(`${confirmed===null?3:2} unread`),'both failures restore the confirmed cursor, including unset');
+  topics.markSeen('1.2',-2);assert.equal(pending.length,3,'the failed optimistic cursor is retried');
+  pending[2].resolve({seen:-2});await flush();
+  document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:false}}));
+ }
+}
 if(scenario==='topic-labels'){
  let lang='ko';
  const rows=[{tid:'-123',topic_id:null,name:'일반',name_key:'topic.general',group:'telegram',count:0},
@@ -2106,7 +2163,18 @@ console.log(`Header contract passed: ${scenario}`);
 
 
 @pytest.mark.parametrize(
-    "scenario", ["language", "menus", "rename", "rename-stale", "topic-labels", "unread"]
+    "scenario",
+    [
+        "language",
+        "menus",
+        "rename",
+        "rename-stale",
+        "topic-labels",
+        "unread",
+        "migration-failure",
+        "rollback-forward",
+        "rollback-reverse",
+    ],
 )
 def test_header_client_behavior(scenario):
     payload = {

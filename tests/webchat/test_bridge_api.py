@@ -3959,3 +3959,60 @@ async def test_seen_save_and_delete_are_serialized(conversation, monkeypatch):
         f"{_PREFIX}/topics/-123.7/seen", json={"seq": 1}, headers=headers()
     )
     assert response.status == 404
+
+
+@pytest.mark.parametrize("error_type", [PermissionError, OSError])
+@pytest.mark.parametrize(
+    ("method", "resource", "body"),
+    [
+        ("GET", "topics", None),
+        ("PUT", "topics/-123.7/seen", {"seq": 1}),
+        ("POST", "topics/seen-all", {}),
+        ("DELETE", "topics/-123.7", {"confirm_name": "Topic #7"}),
+    ],
+)
+async def test_seen_unreadable_file_returns_json_without_overwrite(
+    conversation, monkeypatch, caplog, *, error_type, method, resource, body
+):
+    h = conversation
+    await h.runtime.history.append("-123.7", Entry(role="bot", source="telegram", text="live"))
+    path = h.paths.webchat_dir / "read_state.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    original = b'{"-123.7": 9, "unknown": -3}'
+    path.write_bytes(original)
+    read_text = Path.read_text
+    writes = MagicMock()
+
+    def denied_read(target, *args, **kwargs):
+        if target == path:
+            raise error_type("private-error-detail")
+        return read_text(target, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", denied_read)
+    monkeypatch.setattr("ductor_bot.webchat.read_state.atomic_json_save", writes)
+    response = await h.client.request(method, f"{_PREFIX}/{resource}", json=body, headers=headers())
+    assert response.status == 503
+    assert await response.json() == {"error": "generic"}
+    assert path.read_bytes() == original
+    writes.assert_not_called()
+    h.runtime.ops.delete_topic.assert_not_awaited()
+    assert "private-error-detail" not in caplog.text
+
+
+@pytest.mark.parametrize("operation", ["merge", "remove"])
+async def test_seen_store_does_not_write_after_read_failure(tmp_path, monkeypatch, operation):
+    from ductor_bot.webchat.read_state import ReadState
+
+    path = tmp_path / "read_state.json"
+    original = b'{"-123.7": 9}'
+    path.write_bytes(original)
+    state = ReadState(path)
+    writes = MagicMock()
+    monkeypatch.setattr(state, "load", AsyncMock(side_effect=OSError("private-error-detail")))
+    monkeypatch.setattr("ductor_bot.webchat.read_state.atomic_json_save", writes)
+    async with state.lock:
+        action = state.merge({"-123.7": 1}) if operation == "merge" else state.remove("-123.7")
+        with pytest.raises(OSError, match="private-error-detail"):
+            await action
+    writes.assert_not_called()
+    assert path.read_bytes() == original
