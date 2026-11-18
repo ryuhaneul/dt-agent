@@ -4251,6 +4251,7 @@ async def test_deleted_topic_stays_deleted_after_journal_replay(conversation, mo
     assert len(pending) == 1
     await _deliver_topic_update(tg, journal, Update.model_validate(pending[0].update))
     await tg._record_topic_name(key, "Late automatic name")
+    assert tg._topic_names.get(100, 42) is None
     response = await h.client.get(f"{_PREFIX}/topics", headers=headers())
     assert all(row["tid"] != "100.42" for row in (await response.json())["topics"])
     assert await tg._orch._sessions.get_active(key) is None
@@ -4288,6 +4289,7 @@ async def test_unknown_telegram_edit_cannot_register_topic(conversation, monkeyp
     )
     journal.record_pending(event.update_id, event.model_dump(mode="json"), 100, 42)
     await _deliver_topic_update(tg, journal, event)
+    assert tg._topic_names.get(100, 42) == "Unknown edit"
     assert not (h.paths.webchat_dir / "topics.json").exists()
     assert await tg._orch._sessions.get_active(SessionKey.telegram(100, 42)) is None
 
@@ -4335,3 +4337,52 @@ async def test_unreadable_deleted_registry_is_empty_without_contents(conversatio
     path.mkdir(parents=True)
     assert WebTopics._read_deleted(path) == set()
     assert "corrupt or unreadable" in caplog.text
+
+
+@pytest.mark.parametrize("kind", ["created", "edited"])
+@pytest.mark.parametrize(
+    "content",
+    [
+        "{",
+        "{}",
+        "[{}]",
+        '[{"chat_id": 100, "topic_id": 42, "name": "Existing"}, {"name": "synthetic-sensitive"}]',
+    ],
+)
+async def test_telegram_title_cache_survives_corrupt_registry(
+    conversation, monkeypatch, caplog, kind, content
+):
+    from aiogram.types import ForumTopicCreated, ForumTopicEdited, Update
+
+    from ductor_bot.messenger.telegram.update_journal import UpdateJournal
+    from tests.messenger.telegram.test_topic_naming import message
+
+    h = conversation
+    tg = await _restart_topic_bot(h, monkeypatch)
+    if kind == "edited":
+        tg._topic_names.set(100, 42, "Previous name")
+    registry = h.paths.webchat_dir / "topics.json"
+    registry.parent.mkdir(parents=True, exist_ok=True)
+    registry.write_text(content)
+    original = registry.read_bytes()
+    queue = tg._chat_log_runtime.events.subscribe()
+    event = Update(
+        update_id=45006,
+        message=message(
+            text=None,
+            created=ForumTopicCreated(name="Fresh name", icon_color=0)
+            if kind == "created"
+            else None,
+            edited=ForumTopicEdited(name="Fresh name") if kind == "edited" else None,
+        ),
+    )
+    journal = UpdateJournal(h.paths.ductor_home / "topic-updates.json")
+    journal.record_pending(event.update_id, event.model_dump(mode="json"), 100, 42)
+    await _deliver_topic_update(tg, journal, event)
+    assert tg._topic_names.get(100, 42) == "Fresh name"
+    assert registry.read_bytes() == original
+    assert queue.empty()
+    assert "Topic title recording skipped:" in caplog.text
+    assert "synthetic-sensitive" not in caplog.text
+    assert "topics_registry_invalid" not in caplog.text
+    assert "Traceback" not in caplog.text

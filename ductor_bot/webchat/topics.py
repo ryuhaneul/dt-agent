@@ -277,11 +277,23 @@ class WebTopics:
             )
             if tid in runtime.recorder.blocked or key.lock_key in deleted:
                 return
-            entries = await asyncio.to_thread(WebTopics._read_registry, path)
-            saved = next(
-                (item for item in entries if (item["chat_id"], item["topic_id"]) == key.lock_key),
-                None,
-            )
+            bot._topic_names.set(key.chat_id, key.topic_id, name)
+            try:
+                entries = await asyncio.to_thread(WebTopics._read_registry, path)
+                saved = next(
+                    (
+                        item
+                        for item in entries
+                        if (item["chat_id"], item["topic_id"]) == key.lock_key
+                    ),
+                    None,
+                )
+                entries = [
+                    item for item in entries if (item["chat_id"], item["topic_id"]) != key.lock_key
+                ]
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                logger.warning("Topic title recording skipped: %s", type(exc).__name__)
+                return
             if (
                 existing_only
                 and saved is None
@@ -289,9 +301,6 @@ class WebTopics:
                 and tid not in runtime.history.tids()
             ):
                 return
-            entries = [
-                item for item in entries if (item["chat_id"], item["topic_id"]) != key.lock_key
-            ]
             entries.append(
                 {
                     "chat_id": key.chat_id,
@@ -304,7 +313,6 @@ class WebTopics:
                     else timestamp(),
                 }
             )
-            bot._topic_names.set(key.chat_id, key.topic_id, name)
             await bot._orch._sessions.set_topic_name(key, name)
             await complete_write(atomic_json_save, path, entries)
         runtime.events.publish({"type": "topics"})
