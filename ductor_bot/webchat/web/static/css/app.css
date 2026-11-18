@@ -467,3 +467,36 @@ dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(2px)}
 @media(max-width:700px){.ac-settings,.ac-automations,.ac-automation-editor{gap:16px}}
 
 .ac-automation-card h3,.ac-automation-card h4,.ac-automation-card p,.ac-automation-editor h3,.ac-automation-editor p{margin:0}
+
+/* Approved attachment variant C: compact cards and an image-local options menu. */
+.composer{display:flex;flex-direction:column;min-height:0;max-height:calc(100% - 90px)}
+.composer>.row,.composer>.line,.attach-status{flex:none}
+#attachmentWrap{flex:1 1 auto;min-height:0;max-height:30dvh;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;margin-bottom:10px}
+.attach-count{font-size:11px;color:var(--muted);margin-bottom:6px}
+.attach-tray{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;min-width:0}
+.attach-draft{border:1px solid var(--rule);border-radius:9px;background:var(--bg);min-width:0;overflow:hidden}
+.attach-top{display:flex;align-items:center;gap:8px;padding:10px;min-width:0}
+.attach-top>.grow{min-width:0;flex:1}
+.attach-thumb{width:46px;height:44px;object-fit:cover;border:1px solid var(--rule);border-radius:5px;flex:none}
+.attach-icon{display:grid;place-items:center;width:40px;height:42px;flex:none;color:var(--muted);font:10px var(--mono);border:1px solid var(--rule);border-radius:5px;background:var(--surface)}
+.attach-name{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px;font-weight:600}
+.attach-sub{display:block;font:10px var(--mono);color:var(--muted);overflow-wrap:anywhere;line-height:1.6}
+.attach-remove{min-height:30px;width:30px;padding:0;flex:none;border:0;background:transparent;align-self:flex-start;color:var(--muted);font-size:20px;cursor:pointer}
+.attach-processing{border-top:1px solid var(--rule);padding:7px 10px}
+.attach-chip{border:1px solid var(--rule);border-radius:6px;padding:4px 8px;min-height:30px;background:var(--surface);font:11px var(--sans);cursor:pointer}
+.attach-chip{max-width:100%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.attach-chip svg{width:10px;height:10px;margin-left:3px;vertical-align:middle}.attach-estimate{display:block;margin-top:4px;font-size:10px;color:var(--muted)}
+.attach-button{flex:none;width:44px;padding:0;min-height:46px}.attach-button svg{width:20px;height:20px}
+.attach-status{font-size:12px;color:var(--muted);margin-bottom:6px}
+.attach-popover{position:fixed;width:300px;max-width:calc(100vw - 24px);max-height:calc(100dvh - 24px);overflow:auto;z-index:70;border:1px solid var(--field-rule);background:var(--surface);border-radius:10px;padding:12px;box-shadow:0 10px 28px rgba(0,0,0,.18);font-size:12px}
+.attach-popover h3{font-size:13px;margin-bottom:9px}.attach-modes{display:flex;flex-wrap:wrap;gap:5px}
+.attach-modes button{background:var(--bg);border:1px solid var(--rule);border-radius:5px;min-height:32px;padding:5px 8px;cursor:pointer;font-size:11px}
+.attach-modes button[aria-pressed="true"]{color:var(--accent);border-color:var(--accent);background:var(--hover);font-weight:600}
+.attach-popover label{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px}
+.attach-popover select{border:1px solid var(--field-rule);background:var(--field);font:inherit;color:var(--fg);min-height:32px;border-radius:5px;padding:3px 6px}
+.attach-popover input{width:96px;accent-color:var(--accent)}.attach-popover output{font-family:var(--mono)}
+.attach-popover [data-estimate]{margin-top:10px;color:var(--muted);overflow-wrap:anywhere;min-height:20px}
+.attach-note{font-size:11px;color:var(--muted);margin-top:10px}.attach-actions{display:flex;justify-content:flex-end;gap:7px;margin-top:12px}
+.attach-drop{position:absolute;inset:8px;z-index:25;display:grid;place-items:center;border:2px dashed var(--accent);border-radius:10px;background:var(--surface);color:var(--accent);pointer-events:none}
+.composer textarea{max-height:40dvh}
+@media(max-width:1100px){.attach-tray{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:650px){.attach-tray{grid-template-columns:minmax(0,1fr)}.attach-top{padding:8px}.attach-thumb{width:40px;height:38px}.attach-processing{display:flex;align-items:center;gap:8px;padding:6px 8px}.attach-estimate{margin:0}.composer .row{gap:8px}.attach-button{width:40px}.composer .row>#stopBtn{padding-left:10px;padding-right:10px}}

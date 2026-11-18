@@ -115,7 +115,14 @@
             <div class="command-help" data-i18n="commands.help">↑↓ Move · Enter / Tab Select · Esc Close</div>
           </section>
           <div class="line" hidden><span class="pip"></span><span data-i18n="chat.telegram_down_line">Telegram disconnected — messages will send after recovery</span></div>
+          <section id="attachmentWrap" hidden aria-label="Attachments" data-i18n-attr="aria-label:attach.title">
+            <div id="attachmentCount" class="attach-count"></div><div id="attachmentTray" class="attach-tray"></div>
+          </section>
+          <div id="attachmentStatus" class="attach-status" role="status" hidden></div>
+          <div id="attachmentDrop" class="attach-drop" hidden><span data-i18n="attach.drop">Drop files here</span></div>
           <div class="row">
+            <input id="filePick" type="file" multiple hidden>
+            <button class="btn attach-button" type="button" id="attachBtn" aria-label="Attach files" data-i18n-attr="aria-label:attach.add"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m8 12 6-6a4 4 0 0 1 6 6L10 22a6 6 0 0 1-8-8L12 4a2 2 0 0 1 4 4L6 18"/></svg></button>
             <label class="sr-only" for="msgIn"><span data-i18n="topic.group_search">Messages</span></label>
             <textarea id="msgIn" rows="1" class="field" role="combobox" aria-autocomplete="list" aria-controls="commandList" aria-expanded="false" maxlength="32000" placeholder="Enter a message" data-i18n-attr="placeholder:chat.placeholder"></textarea>
             <button class="btn btn-danger" type="button" id="stopBtn" hidden><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 7h10v10H7z"></path></svg><span data-i18n="chat.stop">Stop</span></button>
@@ -282,4 +289,5 @@
 <div class="toast-stack" id="toasts" aria-live="polite"></div>
 
 <div id="errorMessages" hidden><span data-i18n="error.bot_unreachable">Bot unreachable</span><span data-i18n="error.generic">Something went wrong</span><span data-i18n="auth.invalid">Invalid credentials</span><span data-i18n="auth.locked" data-i18n-args="{&quot;minutes&quot;:1}">Try again in {minutes} minutes</span><span data-i18n="auth.setup_needs_password">Enter your password first to set up authentication.</span><span data-i18n="common.close">Close</span></div>
+<section id="imageOptions" class="attach-popover" role="dialog" aria-label="Image processing" data-i18n-attr="aria-label:attach.processing" hidden></section>
 </body></html>

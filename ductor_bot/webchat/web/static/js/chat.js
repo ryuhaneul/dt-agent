@@ -1,5 +1,6 @@
 import { api } from './api.js';
 import { initCommands } from './commands.js';
+import { initAttachments } from './attachments.js';
 import { initSecret } from './secret.js';
 import { initAutocompact } from './autocompact.js';
 import { t } from './i18n.js';
@@ -12,7 +13,7 @@ const histories = new Map(), turns = new Map(), busy = new Map(), drafts = new M
 let active = false, epoch = 0, stopEvents = null, telegram = { state: 'unknown' };
 let botUp = false, webSessions = null, pending = 0, outbox = [], sending = false;
 let view = 'chat', loading = false, selection = 0, commandMenu = null, secretDialog = null, autocompactDialog = null;
-let streamFrame = null, historyRender = null;
+let streamFrame = null, historyRender = null, composerFiles = null;
 const streamUpdates = new Set();
 function history(tid) {
   if (!histories.has(tid)) histories.set(tid, { entries: new Map(), meta: new Map(), choices: new Map(), hasMore: false, loaded: false, rendered: false, renderStart: null, markdown: createMarkdownCache(`entry:${tid}`) });
@@ -33,6 +34,7 @@ function visibleChat() {
   return view === 'chat' && ['#chat', ''].includes(location.hash) && !document.hidden;
 }
 function errorNotice(error) {
+  if (error.attachmentKey) { notify(error.attachmentKey, error.attachmentValues || {}); return; }
   if (error.code === 'auth_required') return;
   notify(['bot_unreachable', 'telegram_unavailable', 'web_turn_running', 'topic_busy', 'read_only'].includes(error.code)
     ? `error.${error.code}` : 'error.generic');
@@ -607,14 +609,19 @@ async function sendMessage() {
   }
   const text = input.value, control = isControlCommand(text);
   if (sending && !control) return;
-  if (!text.trim() || text.length > 32000) return;
+  const hasFiles = composerFiles?.has(topic.tid);
+  if ((!text.trim() && !hasFiles) || text.length > 32000) return;
+  if (hasFiles && text.trimStart().startsWith('/')) { notify('attach.command'); return; }
   if (!control) sending = true;
   renderHeader();
   const generation = epoch;
   try {
+    const uploaded = hasFiles ? await composerFiles.upload(topic.tid) : null;
+    if (!active || generation !== epoch) return;
     const result = await api(`/topics/${encodeURIComponent(topic.tid)}/messages`, {
-      method: 'POST', body: { text, client_id: crypto.randomUUID() },
+      method: 'POST', body: { text, client_id: crypto.randomUUID(), ...(uploaded ? { attachment_ids: uploaded.ids } : {}) },
     });
+    if (uploaded && active && generation === epoch) composerFiles.sent(topic.tid, uploaded.batch);
     if (!active || generation !== epoch) return;
     if (result.turn_id) {
       const turn = turns.get(result.turn_id) || { id: result.turn_id, tid: topic.tid, phase: 'queued', text: '' };
@@ -680,6 +687,7 @@ export function initChat() {
   new ResizeObserver(updateThreadNavigation).observe(thread);
   initMarkdownLinks(thread);
   input.maxLength = 32000;
+  composerFiles = initAttachments({ getTopic, changed: renderHeader });
   commandMenu = initCommands(input, value => { if (getTopic()) drafts.set(getTopic().tid, value); resizeComposer(); });
   input.addEventListener('input', () => { if (getTopic()) drafts.set(getTopic().tid, input.value); resizeComposer(); renderHeader(); });
   window.addEventListener('resize', resizeComposer);

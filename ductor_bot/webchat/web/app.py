@@ -33,7 +33,7 @@ from ductor_bot.webchat.web.sessions import (
 from ductor_bot.webchat.web.upstream import BridgeClient, BridgeUnavailableError
 
 CSP = (
-    "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
+    "default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; "
     "connect-src 'self'; frame-src 'self'; frame-ancestors 'none'; "
     "base-uri 'none'; form-action 'self'"
 )
