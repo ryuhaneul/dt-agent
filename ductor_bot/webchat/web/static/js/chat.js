@@ -156,7 +156,8 @@ function scheduleStreamRender(turnId) {
       const element = [...thread.querySelectorAll('[data-turn]')].find(node => node.dataset.turn === id);
       if (element) element.outerHTML = streamMarkup(turn);
       else if (![...history(topic.tid).entries.values()].some(entry => entry.role === 'bot' && entry.turn_id === id)) {
-        thread.insertAdjacentHTML('beforeend', streamMarkup(turn));
+        renderThread();
+        return;
       }
     }
     renderHeader();

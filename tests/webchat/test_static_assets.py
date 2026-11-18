@@ -944,6 +944,17 @@ final.mirror={state:'sent'};await chat.namespace.handleEvent({type:'outbox',pend
 final.mirror={state:'failed'};await chat.namespace.handleEvent({type:'outbox',pending:0,item:{...queue[0],state:'failed'}});assert.ok(thread.innerHTML.includes(strings['chat.mirror_failed']));
 // Telegram busy displays metadata only, never a synthetic body or web stop action.
 await chat.namespace.handleEvent({type:'busy',tid:'1.2',busy:true,source:'telegram'});assert.ok(thread.innerHTML.includes(strings['chat.answering']));assert.equal(send.className,'btn btn-primary');
+// Reconnecting mid-response may deliver a delta before any turn event.
+await chat.namespace.handleEvent({type:'delta',tid:'1.2',turn_id:'reconnected',text:'Reconnected answer'});
+const reconnectFrame=frames.values().next().value;frames.clear();reconnectFrame();
+assert.ok(thread.innerHTML.includes('Reconnected answer'));
+assert.equal((thread.innerHTML.match(/class="typing"/g)||[]).length,1,'the stream replaces the busy-only indicator');
+const reconnectHistory=thread.innerHTML.split('<div class="msg bot" id="streamMsg"')[0];
+await chat.namespace.handleEvent({type:'delta',tid:'1.2',turn_id:'reconnected',text:' continued'});
+const continuedFrame=frames.values().next().value;frames.clear();continuedFrame();
+assert.equal(thread.innerHTML.split('<div class="msg bot" id="streamMsg"')[0],reconnectHistory,'later deltas preserve the history');
+assert.ok(thread.innerHTML.includes('Reconnected answer continued'));
+await chat.namespace.handleEvent({type:'turn',tid:'1.2',turn_id:'reconnected',phase:'done'});
 await chat.namespace.handleEvent({type:'busy',tid:'1.2',busy:false,source:'telegram'});
 for(const path of ['/api/topics','/api/topics/1.2/messages']){
   failGet=path;const before=notices.length;
