@@ -1731,6 +1731,17 @@ for(const url of ['https://x.com/a.html','http://x.com/?a=1&b=2','HTTPS://x.com/
  const escaped=url.replaceAll('&','&amp;');
  assert.equal(md(url+' 에서'),'<p>'+anchor(escaped)+' 에서</p>');
 }
+for(const url of ['http://[::1]:8080/design','https://[2001:db8::1]/preview',
+ 'http://[::ffff:192.0.2.128]:8080/design','https://[2001:db8:85a3::8a2e:370:7334]/preview',
+ 'https://example.test/design?filter[status]=ready','https://example.test/design[preview]',
+ 'https://example.test/design?filter[status][value]=ready']){
+ assert.equal(md(url),'<p>'+anchor(url)+'</p>');
+ assert.equal(md('[시안]('+url+')'),'<p>'+anchor(url,'시안')+'</p>');
+ assert.equal(md('['+url+']'),'<p>['+anchor(url)+']</p>');
+ for(const suffix of ['].',']).','에서'])assert.equal(md(url+suffix),'<p>'+anchor(url)+suffix+'</p>');
+}
+assert.equal(md('https://example.test/design[unfinished'),'<p>'+anchor('https://example.test/design')+'[unfinished</p>');
+assert.equal(md('https://example.test/design]tail'),'<p>'+anchor('https://example.test/design')+']tail</p>');
 assert.equal(md('https://x.com/a.html에서'),'<p>'+anchor('https://x.com/a.html')+'에서</p>');
 assert.equal(md('[한글](https://x.com/한글)'),'<p>'+anchor('https://x.com/한글','한글')+'</p>');
 assert.equal(md('시안 (https://x.com/a_(b)). 다음'),'<p>시안 ('+anchor('https://x.com/a_(b)')+'). 다음</p>');
