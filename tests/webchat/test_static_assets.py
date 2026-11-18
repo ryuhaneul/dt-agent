@@ -774,7 +774,8 @@ class Element {
       }};
     });
   }
-  insertAdjacentHTML(position,value){assert.equal(position,'beforeend');this.html+=value;}
+  get firstElementChild(){const match=/^<div class="day">[\s\S]*?<\/div>/.exec(this.html);return match?{remove:()=>{this.html=this.html.slice(match[0].length);}}:null;}
+  insertAdjacentHTML(position,value){assert.ok(['beforeend','afterbegin'].includes(position));this.html=position==='afterbegin'?value+this.html:this.html+value;}
   get innerHTML(){return this.html;}
   set innerHTML(value){this.html=value;}
 }
@@ -871,6 +872,7 @@ const context=vm.createContext({document,window:document,CustomEvent,WebSocket,f
   requestAnimationFrame:callback=>{frames.set(++frameId,callback);return frameId},
   cancelAnimationFrame:id=>frames.delete(id),
   ResizeObserver:class {observe(){}},
+  requestIdleCallback:callback=>setImmediate(callback),cancelIdleCallback:clearImmediate,
   location:{href:'https://chat.example.com/#list',hash:'#list'},
   setTimeout:(callback,delay)=>{const id=++timerId;timers.set(id,{callback,delay});return id},
   clearTimeout:id=>timers.delete(id),

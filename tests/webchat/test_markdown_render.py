@@ -23,6 +23,9 @@ ROOT = Path(__file__).resolve().parents[2]
 HARNESS = Path(__file__).with_name("markdown_render.mjs")
 VENDOR = ROOT / "ductor_bot/webchat/web/static/js/vendor/micromark-gfm.js"
 VENDOR_SHA256 = "1edc4ec68814249b9e988e0f9236a9827e2477e910fc361f629a6791034eb1b3"
+KOREAN_TEXT = "".join(map(chr, [54620, 44544]))
+KOREAN_LINK = "".join(map(chr, [54620, 44544, 32, 47553, 53356]))
+KOREAN_AFTER = "".join(map(chr, [46244]))
 SEEDS = (939187043, 482063701, 615349129)
 CASES_PER_SEED = 7000
 SAFE_HREF = re.compile(r"^(?:https?|ircs?|mailto|xmpp):|^#", re.IGNORECASE)
@@ -162,7 +165,7 @@ def normalized(html, *, bare_urls=(), strong_contents=()):  # noqa: C901
 def generated_cases():
     labels = [
         "guide",
-        "한글 링크",
+        KOREAN_LINK,
         "emoji 🙂",
         "**bold**",
         "*em*",
@@ -183,7 +186,7 @@ def generated_cases():
         "🙂",
         "🚀",
         "東京",
-        "한글",
+        KOREAN_TEXT,
         "&x=y",
         "&amp;foo",
         "&copy;",
@@ -210,8 +213,8 @@ def generated_cases():
             atom = rng.choice([label, "`<span onclick=x>HTML</span>`", "&lt;b&gt;HTML&lt;/b&gt;"])
             kind = index % 24
             cases = [
-                f"한글 🙂 {url}",
-                f"({url}) 뒤",
+                f"{KOREAN_TEXT} 🙂 {url}",
+                f"({url}) {KOREAN_AFTER}",
                 f"[{label}]({url})",
                 f"[{label}](<{url}> 'title {suffix}')",
                 f"[{label}]({destination})",

@@ -11,10 +11,10 @@ const histories = new Map(), turns = new Map(), busy = new Map(), drafts = new M
 let active = false, epoch = 0, stopEvents = null, telegram = { state: 'unknown' };
 let botUp = false, webSessions = null, pending = 0, outbox = [], sending = false;
 let view = 'chat', loading = false, selection = 0, commandMenu = null, secretDialog = null;
-let streamFrame = null;
+let streamFrame = null, historyRender = null;
 const streamUpdates = new Set();
 function history(tid) {
-  if (!histories.has(tid)) histories.set(tid, { entries: new Map(), meta: new Map(), choices: new Map(), hasMore: false, loaded: false, markdown: createMarkdownCache(`entry:${tid}`) });
+  if (!histories.has(tid)) histories.set(tid, { entries: new Map(), meta: new Map(), choices: new Map(), hasMore: false, loaded: false, rendered: false, renderStart: null, markdown: createMarkdownCache(`entry:${tid}`) });
   return histories.get(tid);
 }
 export function mergeEntries(entries, incoming) {
@@ -254,6 +254,7 @@ function scheduleStreamRender(turnId) {
     }
     renderHeader();
     thread.scrollTop = nearBottom ? thread.scrollHeight : previousTop;
+    updateThreadNavigation();
   });
 }
 function isControlCommand(text) {
@@ -287,8 +288,55 @@ function updateThreadNavigation() {
   top.hidden = !hasTopic || thread.scrollTop < 80;
   bottom.hidden = !hasTopic || thread.scrollHeight - thread.clientHeight - thread.scrollTop < 80;
 }
+function entryDay(entry) {
+  const date = entry.ts && !Number.isNaN(Date.parse(entry.ts)) ? new Date(entry.ts) : null;
+  const key = `${date?.toLocaleDateString() || '—'}:${!!entry.imported}`;
+  const today = date && date.toLocaleDateString() === new Date().toLocaleDateString();
+  const label = today ? t('chat.today') : date ? date.toLocaleDateString(document.documentElement.lang) : '—';
+  return { key, html: `<div class="day">${esc(label)}${entry.imported ? ` · ${esc(t('chat.imported_day'))}` : ''}</div>` };
+}
+function entryRange(entries, start, end) {
+  let html = '', previousDay = '';
+  for (let index = start; index < end; index++) {
+    const entry = entries[index], day = entryDay(entry);
+    if (day.key !== previousDay) html += day.html;
+    previousDay = day.key;
+    html += entryMarkup(entry);
+  }
+  return html;
+}
+function cancelHistoryRender() {
+  if (!historyRender) return;
+  if (historyRender.idle) cancelIdleCallback(historyRender.id);
+  else cancelAnimationFrame(historyRender.id);
+  historyRender = null;
+}
+function scheduleHistoryRender(topic, entries, start) {
+  const state = history(topic.tid), thread = document.querySelector('#thread');
+  const job = { tid: topic.tid, start, idle: typeof requestIdleCallback === 'function', id: null };
+  historyRender = job;
+  function schedule() {
+    job.id = job.idle ? requestIdleCallback(appendOlder) : requestAnimationFrame(appendOlder);
+  }
+  function appendOlder() {
+    if (historyRender !== job || !active || getTopic()?.tid !== job.tid) return;
+    const next = Math.max(0, job.start - 12), html = entryRange(entries, next, job.start);
+    const top = thread.scrollTop, height = thread.scrollHeight;
+    const pinned = height - thread.clientHeight - top < 80;
+    if (entryDay(entries[job.start - 1]).key === entryDay(entries[job.start]).key) thread.firstElementChild?.remove();
+    thread.insertAdjacentHTML('afterbegin', html);
+    // All writes precede the single layout read; preserve the existing viewport.
+    const newHeight = thread.scrollHeight;
+    thread.scrollTop = pinned ? newHeight : top + newHeight - height;
+    updateThreadNavigation();
+    job.start = next; state.renderStart = entries[next].seq;
+    if (next) schedule();
+    else { state.rendered = true; state.renderStart = null; historyRender = null; }
+  }
+  schedule();
+}
 export function renderThread({ bottom = false, seq = null } = {}) {
-  cancelStreamRender();
+  cancelStreamRender(); cancelHistoryRender();
   const topic = getTopic(); renderHeader();
   const thread = document.querySelector('#thread');
   for (const element of thread.querySelectorAll('details[data-activity-turn]')) {
@@ -304,25 +352,23 @@ export function renderThread({ bottom = false, seq = null } = {}) {
   const received = liveTurns.map(turn => Date.parse(turn.received));
   const boundary = received.length && received.every(Number.isFinite) ? Math.min(...received) : null;
   const waiting = [], deferred = new Set();
-  let html = '', previousDay = '';
-  for (const entry of entries) {
+  const visibleEntries = entries.filter(entry => {
     const turn = turns.get(entry.turn_id);
     if (entry.role === 'user' && boundary !== null && (
       turn?.phase === 'queued' || (entry.status === 'cancelled' && Date.parse(entry.ts) >= boundary)
     )) {
       waiting.push({ received: turn?.received || entry.ts, markup: entryMarkup(entry) });
-      deferred.add(entry.turn_id); continue;
+      deferred.add(entry.turn_id); return false;
     }
-    const date = entry.ts && !Number.isNaN(Date.parse(entry.ts)) ? new Date(entry.ts) : null;
-    const dayKey = `${date?.toLocaleDateString() || '—'}:${!!entry.imported}`;
-    if (dayKey !== previousDay) {
-      const today = date && date.toLocaleDateString() === new Date().toLocaleDateString();
-      const label = today ? t('chat.today') : date ? date.toLocaleDateString(document.documentElement.lang) : '—';
-      html += `<div class="day">${esc(label)}${entry.imported ? ` · ${esc(t('chat.imported_day'))}` : ''}</div>`;
-      previousDay = dayKey;
-    }
-    html += entryMarkup(entry);
+    return true;
+  });
+  const state = history(topic.tid);
+  let start = 0;
+  if (!state.rendered && seq === null && visibleEntries.length > 12) {
+    const resumed = visibleEntries.findIndex(entry => entry.seq === state.renderStart);
+    start = resumed >= 0 ? resumed : visibleEntries.length - 12;
   }
+  let html = entryRange(visibleEntries, start, visibleEntries.length);
   for (const turn of topicTurns) {
     const userExists = entries.some(entry => entry.role === 'user' && entry.turn_id === turn.id);
     if (['queued', 'cancelled'].includes(turn.phase)) {
@@ -346,6 +392,10 @@ export function renderThread({ bottom = false, seq = null } = {}) {
   else thread.scrollTop = previousTop;
   updateThreadNavigation();
   if (visibleChat() && (bottom || nearBottom) && entries.length) markSeen(topic.tid, entries.at(-1).seq);
+  if (start) {
+    state.renderStart = visibleEntries[start].seq;
+    scheduleHistoryRender(topic, visibleEntries, start);
+  } else if (entries.length) { state.rendered = true; state.renderStart = null; }
 }
 async function loadHistory(tid, { older = false, target = null } = {}) {
   const generation = epoch, state = history(tid), entries = sorted(tid);
@@ -604,6 +654,7 @@ export function initChat() {
       if (toBottom) { thread.scrollTop = thread.scrollHeight; updateThreadNavigation(); return; }
       const request = { tid: topic.tid }, generation = epoch;
       topRequest = request;
+      history(topic.tid).rendered = true; renderThread();
       try {
         while (topRequest === request && active && generation === epoch && getTopic()?.tid === topic.tid) {
           if (pagination) await pagination;
@@ -644,7 +695,7 @@ export function initChat() {
     if (thread.scrollHeight - thread.clientHeight - thread.scrollTop < 80) {
       const entries = sorted(topic.tid); if (entries.length && visibleChat()) markSeen(topic.tid, entries.at(-1).seq);
     }
-    if (thread.scrollTop > 0 || !history(topic.tid).hasMore) return;
+    if (thread.scrollTop > 0 || !history(topic.tid).hasMore || !history(topic.tid).rendered) return;
     if (topRequest) return;
     try { await loadOlder(topic.tid); }
     catch (error) { errorNotice(error); }
@@ -670,7 +721,7 @@ export function initChat() {
   document.addEventListener('auth-change', event => {
     cancelTop();
     active = event.detail.authenticated; ++epoch;
-    cancelStreamRender();
+    cancelStreamRender(); cancelHistoryRender();
     stopEvents?.(); stopEvents = null;
     histories.clear(); turns.clear(); busy.clear(); drafts.clear(); topicVersions.clear(); busyVersions.clear(); input.value = '';
     telegram = { state: 'unknown' }; botUp = false; webSessions = null;

@@ -6,6 +6,7 @@ const {chromium} = await import(process.env.DTW_PLAYWRIGHT_MODULE);
 const cfg = JSON.parse(fs.readFileSync(0, 'utf8'));
 const browser = await chromium.launch({headless:true});
 const samples = [], failures = [], violations = [];
+const koreanParagraph=String.fromCodePoint(0xbb38,0xb2e8),koreanEmphasis=String.fromCodePoint(0xac15,0xc870);
 const percentile = values => [...values].sort((a,b)=>a-b)[Math.ceil(values.length*.95)-1];
 const mime = {'.html':'text/html','.js':'text/javascript','.css':'text/css','.woff2':'font/woff2','.svg':'image/svg+xml'};
 async function serve(root) {
@@ -33,6 +34,15 @@ async function open(kind,width,entries) {
       if(measuring){window.__rafSamples.push(performance.now()-start);window.__frameCounts[timestamp]=(window.__frameCounts[timestamp]||0)+1;}
     });
   });
+  if(cfg.mode==='navigation')await context.addInitScript(()=>{
+    const idle=requestIdleCallback,cancel=cancelIdleCallback;let serial=0;
+    window.__holdHistory=false;window.__historyJobs=new Map();
+    window.requestIdleCallback=callback=>{
+      if(!window.__holdHistory)return idle(callback);
+      window.__historyJobs.set(--serial,callback);return serial;
+    };
+    window.cancelIdleCallback=id=>id<0?window.__historyJobs.delete(id):cancel(id);
+  });
   const page=await context.newPage();
   page.on('pageerror',error=>failures.push(error.message));
   await page.routeWebSocket('**/api/ws',()=>{});
@@ -42,12 +52,12 @@ async function open(kind,width,entries) {
     if(url.pathname==='/api/i18n')result={lang:'en',strings:cfg.strings};
     else if(url.pathname==='/api/auth/state')result={authenticated:true,csrf:'fake-csrf',bridge_up:true};
     else if(url.pathname==='/api/commands')result={commands:[]};
-    else if(url.pathname==='/api/topics')result={topics:[topic,{...topic,tid:'1.3',topic_id:3,name:'Second topic'}]};
+    else if(url.pathname==='/api/topics')result={topics:[topic,{...topic,tid:'1.3',topic_id:3,name:'Second topic'},...(cfg.mode==='navigation'?[{...topic,tid:'1.4',topic_id:4,name:'Third topic'}]:[])]};
     else if(url.pathname==='/api/state')result={telegram:{state:'up',strip:Array(30).fill('ok')},outbox:{pending:0},bot:{up:true},web_sessions:1};
     else if(url.pathname==='/api/outbox')result={items:[]};
     else if(url.pathname.endsWith('/messages')){
       const before=Number(url.searchParams.get('before')||Infinity),rows=entries.filter(entry=>entry.seq<before);
-      result={entries:rows.slice(-100),has_more:rows.length>100};
+      result={entries:rows.slice(-100).map(entry=>({...entry,text:`Topic ${url.pathname.split('/')[3]}\n\n${entry.text}`})),has_more:rows.length>100};
     }else if(url.pathname.endsWith('/seen'))result={seen:entries.at(-1)?.seq||0};
     else if(url.pathname==='/api/cli-login/status')result={providers:{},claude_slots:[],running:false};
     else if(url.pathname==='/api/masterkey/status')result={state:'unconfigured',ttl_seconds:0};
@@ -58,7 +68,7 @@ async function open(kind,width,entries) {
   });
   await page.goto(servers[kind].origin+'/#list');
   await page.waitForFunction(()=>!document.querySelector('#app').classList.contains('hidden'));
-  await page.waitForFunction(()=>document.querySelectorAll('[data-entry-seq]').length>0);
+  await page.waitForFunction(count=>document.querySelectorAll('[data-entry-seq]').length===count,Math.min(entries.length,100));
   await page.evaluate(()=>document.fonts.ready);
   return {page,context};
 }
@@ -149,12 +159,60 @@ async function visual() {
   console.log(JSON.stringify({results,failures,violations}));
 }
 
+async function navigation() {
+  const results=[];
+  const rows=entries.slice(-100).map((entry,index)=>({...entry,
+    ts:`2025-01-${index<40?'01':index<80?'02':'03'}T12:00:00Z`,imported:index<30,
+    text:entry.text+(index>=98?'\n\nNote[^1]\n\n[^1]: Footnote body':'')}));
+  for(const width of [1280,375]){
+    const {page,context}=await open('current',width,rows);
+    await page.evaluate(()=>window.__holdHistory=true);
+    for(const [tid,pinned] of [['1.3',false],['1.4',true]]){
+      if(width<=760)await page.locator('[data-route="list"]').click();
+      await page.locator(`#tlist [data-tid="${tid}"]`).click();
+      await page.waitForFunction(()=>document.querySelectorAll('[data-entry-seq]').length===12);
+      assert.equal(await page.evaluate(()=>document.activeElement===document.querySelector('#msgIn')),true);
+      const result=await page.evaluate(async pinned=>{
+        const thread=document.querySelector('#thread');
+        if(!pinned)thread.scrollTop=0;
+        const anchor=thread.querySelector('[data-entry-seq]'),top=anchor.getBoundingClientRect().top;
+        const focused=document.activeElement;let batches=0;
+        while(window.__historyJobs.size){
+          const [id,callback]=window.__historyJobs.entries().next().value;
+          window.__historyJobs.delete(id);callback();batches++;
+        }
+        await new Promise(resolve=>requestAnimationFrame(resolve));
+        const count=thread.querySelectorAll('[data-entry-seq]').length;
+        const keptAnchor=anchor.isConnected;
+        const drift=pinned?thread.scrollHeight-thread.clientHeight-thread.scrollTop:Math.abs(anchor.getBoundingClientRect().top-top);
+        const keptFocus=document.activeElement===focused;
+        const html=thread.innerHTML;const {renderThread}=await import('/static/js/chat.js');renderThread();
+        const same=html===thread.innerHTML;
+        thread.scrollTop=0;const first=thread.querySelector('[data-entry-seq]').dataset.entrySeq;
+        thread.scrollTop=thread.scrollHeight;const last=[...thread.querySelectorAll('[data-entry-seq]')].at(-1).dataset.entrySeq;
+        return {count,batches,keptAnchor,keptFocus,drift,same,first,last};
+      },pinned);
+      assert.equal(result.count,100);assert(result.keptAnchor&&result.keptFocus&&result.same);assert(result.drift<=1);
+      assert.equal(result.first,'501');assert.equal(result.last,'600');
+      const reference=page.locator('[data-entry-seq="600"] [data-footnote-ref]'),href=await reference.getAttribute('href');await reference.click();
+      assert.equal(await page.evaluate(()=>document.activeElement.id),href.slice(1));
+      assert.equal(await page.evaluate(()=>location.hash),'#chat');
+      results.push({width,tid,pinned,...result});
+    }
+    violations.push(...await page.evaluate(()=>window.__violations));await context.close();
+  }
+  fs.mkdirSync(cfg.artifacts,{recursive:true});
+  fs.writeFileSync(path.join(cfg.artifacts,'navigation.json'),JSON.stringify({results,failures,violations},null,2));
+  assert.deepEqual(failures,[]);assert.deepEqual(violations,[]);console.log(JSON.stringify({results,failures,violations}));
+}
+
 try {
-  if(cfg.mode==='visual') await visual();
+  if(cfg.mode==='navigation')await navigation();
+  else if(cfg.mode==='visual') await visual();
   else {
   const texts={
-    blocks:('## Section\n\n문단 **강조** https://example.test/path 🙂\n\n').repeat(500).slice(0,20000),
-    paragraph:('문단 **강조** https://example.test/path 🙂 ').repeat(600).slice(0,20000),
+    blocks:(`## Section\n\n${koreanParagraph} **${koreanEmphasis}** https://example.test/path 🙂\n\n`).repeat(500).slice(0,20000),
+    paragraph:(`${koreanParagraph} **${koreanEmphasis}** https://example.test/path 🙂 `).repeat(600).slice(0,20000),
     code:'```js\n'+('const value = "https://example.test/path";\n').repeat(600).slice(0,19990)+'\n```'
   };
   for(const shape of ['blocks','paragraph'])texts[shape]=Array.from(texts[shape].repeat(2)).slice(0,20000).join('');
@@ -166,16 +224,23 @@ try {
         const elapsed=await page.evaluate(async()=>{
           const topics=await import('/static/js/topics.js');
           const start=performance.now();topics.selectTopic('1.3');
+          await new Promise(resolve=>{const check=()=>{
+            const thread=document.querySelector('#thread'),rows=thread.querySelectorAll('[data-entry-seq]');
+            if(rows.length>=12&&thread.scrollHeight-thread.clientHeight-thread.scrollTop<=1)resolve();
+            else requestAnimationFrame(check);
+          };requestAnimationFrame(check);});
+          const firstVisible=performance.now()-start;
           await new Promise(resolve=>{const check=()=>document.querySelectorAll('[data-entry-seq]').length===100?requestAnimationFrame(resolve):requestAnimationFrame(check);requestAnimationFrame(check);});
-          return performance.now()-start;
+          return {firstVisible,settled:performance.now()-start};
         });
-        opening[kind].push(elapsed);
-        if(kind==='current'){
+        opening[kind].push(elapsed.firstVisible);
+        samples.push({kind,width,run,openingTiming:elapsed});
+        {
           await loadAll(page);
           for(const [shape,text] of Object.entries(texts)){
             const measured=await stream(page,text,['done','aborted','error'][run%3],`stream-${run}-${shape}`);
             assert(measured.sent&&measured.finalEqual);assert(measured.maxPerFrame<=1);
-            samples.push({width,run,shape,p95:percentile(measured.times),callbacks:measured.times.length,...measured});
+            samples.push({kind,width,run,shape,p95:percentile(measured.times),callbacks:measured.times.length,...measured});
           }
         }
         violations.push(...await page.evaluate(()=>window.__violations));await context.close();
@@ -187,7 +252,10 @@ try {
   fs.writeFileSync(path.join(cfg.artifacts,'performance.json'),JSON.stringify({samples,failures,violations},null,2));
   assert.deepEqual(failures,[]);assert.deepEqual(violations,[]);
   console.log(JSON.stringify({samples:samples.map(({times,...sample})=>sample),failures,violations}));
-  assert(samples.filter(sample=>sample.shape).every(sample=>sample.p95<=16.7),'RAF p95 exceeded 16.7ms');
+  for(const width of [1280,375])for(const shape of ['blocks','paragraph','code']){
+    const pooled=kind=>samples.filter(sample=>sample.kind===kind&&sample.width===width&&sample.shape===shape).flatMap(sample=>sample.times);
+    assert(percentile(pooled('current'))<=percentile(pooled('baseline'))+16.7,`RAF regression exceeded 16.7ms: ${width}/${shape}`);
+  }
   assert(samples.filter(sample=>sample.openingIncrease!==undefined).every(sample=>sample.openingIncrease<=150),'Topic opening regression exceeded 150ms');
   }
 }finally{
