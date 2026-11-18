@@ -1,6 +1,7 @@
 import { api } from './api.js';
 import { initCommands } from './commands.js';
 import { initSecret } from './secret.js';
+import { initAutocompact } from './autocompact.js';
 import { t } from './i18n.js';
 import { notify } from './auth.js';
 import { connectEvents } from './ws.js';
@@ -10,7 +11,7 @@ import { getTopic, getTopics, selectTopic, refreshTopics, noteEntry, markSeen, f
 const histories = new Map(), turns = new Map(), busy = new Map(), drafts = new Map(), topicVersions = new Map(), busyVersions = new Map();
 let active = false, epoch = 0, stopEvents = null, telegram = { state: 'unknown' };
 let botUp = false, webSessions = null, pending = 0, outbox = [], sending = false;
-let view = 'chat', loading = false, selection = 0, commandMenu = null, secretDialog = null;
+let view = 'chat', loading = false, selection = 0, commandMenu = null, secretDialog = null, autocompactDialog = null;
 let streamFrame = null, historyRender = null;
 const streamUpdates = new Set();
 function history(tid) {
@@ -275,6 +276,7 @@ function renderHeader() {
   });
   document.querySelector('#topicRename').hidden = !topic?.renamable;
   document.querySelector('#headerRename').hidden = !topic?.renamable;
+  document.querySelector('#headerAutocompact').disabled = !active || !topic || topic.read_only || topic.tid === 'unknown';
   document.querySelector('#topicDelete').hidden = !topic?.deletable;
   document.querySelector('.composer').hidden = !topic || topic.read_only || topic.tid === 'unknown';
   const stop = document.querySelector('#stopBtn');
@@ -599,6 +601,10 @@ async function sendMessage() {
   commandMenu?.close();
   const topic = getTopic(), input = document.querySelector('#msgIn');
   if (!active || !topic || topic.read_only) return;
+  if (/^\/autocompact(?:@[a-z0-9_]+)?\s*$/i.test(input.value.trim())) {
+    drafts.delete(topic.tid); input.value = ''; resizeComposer(); renderHeader();
+    void autocompactDialog.show(topic); return;
+  }
   const text = input.value, control = isControlCommand(text);
   if (sending && !control) return;
   if (!text.trim() || text.length > 32000) return;
@@ -622,6 +628,11 @@ async function sendMessage() {
 }
 export function initChat() {
   secretDialog = initSecret();
+  autocompactDialog = initAutocompact(getTopic, () => {
+    notify('autocompact.saved');
+    const toast = document.querySelector('#toasts').lastElementChild;
+    toast?.classList.replace('toast-error', 'toast-ok'); toast?.setAttribute('role', 'status');
+  });
   document.addEventListener('language-changed', () => { renderThread(); renderStatus(); resizeComposer(); });
   const thread = document.querySelector('#thread'), input = document.querySelector('#msgIn');
   let pagination = null, topRequest = null;

@@ -236,6 +236,7 @@ async def test_real_static_responses_with_fake_bridge(site):
         "js/ws.js",
         "js/topics.js",
         "js/chat.js",
+        "js/autocompact.js",
         "js/md.js",
         "js/manage.js",
         "js/files.js",
@@ -2639,3 +2640,18 @@ def test_browser_read_state_across_contexts_and_origins(tmp_path):
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_autocompact_dialog_has_labeled_scopes_and_bounded_token_inputs(markup):
+    nodes = {attrs.get("id"): (tag, attrs) for tag, attrs in markup.tags if attrs.get("id")}
+    assert nodes["autocompactDlg"][0] == "dialog"
+    assert nodes["autocompactDlg"][1]["aria-labelledby"] == "autocompactTitle"
+    assert nodes["headerAutocompact"][1]["type"] == "button"
+    for scope in ("topic", "global"):
+        assert nodes[f"ac-{scope}-scope"][0] == "fieldset"
+        field = nodes[f"ac-{scope}-number"][1]
+        assert field["type"] == "number"
+        assert (field["min"], field["max"], field["step"]) == ("100000", "1000000", "1")
+        assert f"ac-{scope}-error" in field["aria-describedby"]
+    assert nodes["autocompactError"][1]["role"] == "alert"
+    assert nodes["autocompactUnsupported"][1]["role"] == "status"

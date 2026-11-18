@@ -1,0 +1,141 @@
+import { api } from './api.js';
+import { t } from './i18n.js';
+
+export function initAutocompact(getTopic, onSaved) {
+  const dialog = document.querySelector('#autocompactDlg');
+  const close = document.querySelector('#autocompactClose');
+  const cancel = document.querySelector('#autocompactCancel');
+  const save = document.querySelector('#autocompactSave');
+  const notice = document.querySelector('#autocompactError');
+  const subtitle = document.querySelector('#autocompactContext');
+  const follow = document.querySelector('#autocompactFollow');
+  const effective = document.querySelector('#autocompactEffective');
+  const warning = document.querySelector('#autocompactUnsupported');
+  const scopes = ['topic', 'global'];
+  const fields = Object.fromEntries(scopes.map(scope => [scope, document.querySelector(`#ac-${scope}-number`)]));
+  let snapshot = null, topic = null, opener = null, authenticated = false, busy = false, version = 0;
+  let modes = {}, errorKey = null;
+  const mode = value => value === null ? 'inherit' : typeof value === 'number' ? 'tokens' : value;
+  const value = scope => modes[scope] === 'inherit' ? null : modes[scope] === 'tokens'
+    ? Number(fields[scope].value) : modes[scope];
+  const valid = scope => modes[scope] !== 'tokens' || (/^\d+$/.test(fields[scope].value)
+    && Number.isInteger(value(scope)) && value(scope) >= 100000 && value(scope) <= 1000000);
+  const path = () => `/topics/${encodeURIComponent(topic.tid)}/autocompact`;
+  function format(current) {
+    return current === null ? t('autocompact.inherit') : typeof current === 'number'
+      ? t('autocompact.tokens', { count: new Intl.NumberFormat(document.documentElement.lang).format(current) })
+      : t(`autocompact.${current}`);
+  }
+  function render() {
+    dialog.dataset.ready = String(!!snapshot);
+    const loading = errorKey === 'autocompact.loading';
+    notice.setAttribute('role', loading ? 'status' : 'alert');
+    notice.classList.toggle('ac-error', !loading); notice.classList.toggle('hint', loading);
+    notice.hidden = !errorKey;
+    notice.textContent = errorKey ? t(errorKey) : '';
+    if (!snapshot) return;
+    const provider = snapshot.provider;
+    subtitle.textContent = `${topic.name} · ${provider === 'claude' ? 'Claude' : provider === 'codex' ? 'Codex' : provider === 'grok' ? 'Grok' : 'Gemini'}`;
+    for (const scope of scopes) {
+      dialog.querySelectorAll(`[data-ac-scope="${scope}"]`).forEach(button => {
+        button.setAttribute('aria-pressed', String(modes[scope] === button.dataset.acMode));
+      });
+      document.querySelector(`#ac-${scope}-custom`).hidden = modes[scope] !== 'tokens';
+      const invalid = !valid(scope);
+      document.querySelector(`#ac-${scope}-error`).hidden = !invalid;
+      fields[scope].setAttribute('aria-invalid', String(invalid));
+    }
+    follow.hidden = modes.topic !== 'inherit';
+    follow.textContent = `${t('autocompact.inherit')} → ${valid('global') ? format(value('global')) : '—'}`;
+    const selected = value('topic') === null ? 'global' : 'topic';
+    effective.textContent = valid(selected) ? format(value(selected)) : '—';
+    const unsupported = ['grok', 'gemini'].includes(provider) ? 'unsupported'
+      : provider === 'codex' && scopes.some(scope => modes[scope] === 'off') ? 'off_unsupported' : null;
+    warning.hidden = !unsupported;
+    warning.textContent = unsupported ? t(`autocompact.${unsupported}`, { provider: subtitle.textContent.split(' · ').at(-1) }) : '';
+  }
+  function setBusy(next) {
+    busy = next;
+    dialog.setAttribute('aria-busy', String(next));
+    scopes.forEach(scope => { document.querySelector(`#ac-${scope}-scope`).disabled = next || !snapshot; });
+    save.disabled = next || !snapshot;
+    close.disabled = cancel.disabled = next;
+  }
+  function apply(state) {
+    snapshot = state;
+    scopes.forEach(scope => {
+      const current = state[`${scope}_value`];
+      modes[scope] = mode(current);
+      fields[scope].value = typeof current === 'number' ? String(current) : '200000';
+    });
+    render();
+  }
+  async function show(selected, source = document.activeElement) {
+    if (!authenticated || !selected || selected.read_only || selected.tid === 'unknown') return;
+    const generation = ++version;
+    topic = selected; opener = source; snapshot = null; errorKey = 'autocompact.loading';
+    render(); setBusy(true);
+    if (!dialog.open) dialog.showModal();
+    try {
+      const state = await api(path());
+      if (generation !== version || !authenticated || !dialog.open) return;
+      errorKey = null; apply(state);
+    } catch (error) {
+      if (generation !== version || !authenticated || !dialog.open) return;
+      errorKey = error.code === 'bot_unreachable' ? 'error.bot_unreachable' : 'error.generic'; render();
+    } finally {
+      if (generation === version) { setBusy(false); if (dialog.open) close.focus(); }
+    }
+  }
+  async function submit() {
+    if (busy || !snapshot) return;
+    const invalid = scopes.find(scope => !valid(scope));
+    if (invalid) { render(); fields[invalid].focus(); return; }
+    const body = {};
+    scopes.forEach(scope => { if (value(scope) !== snapshot[`${scope}_value`]) body[scope] = value(scope); });
+    if (!Object.keys(body).length) { dialog.close(); return; }
+    const generation = version;
+    errorKey = null; render(); setBusy(true);
+    try {
+      const state = await api(path(), { method: 'PUT', body });
+      if (generation !== version || !authenticated || !dialog.open) return;
+      apply(state); setBusy(false); dialog.close(); onSaved(state);
+    } catch (error) {
+      if (generation !== version || !authenticated || !dialog.open) return;
+      // A failed rollback can leave a persisted value: compare the next attempt
+      // with the server's actual state while preserving the user's draft.
+      try {
+        const current = await api(path());
+        if (generation === version && authenticated && dialog.open) snapshot = current;
+      } catch { /* Keep the last known state. */ }
+      if (generation !== version || !authenticated || !dialog.open) return;
+      errorKey = error.status === 400 ? 'autocompact.invalid' : error.code === 'bot_unreachable' ? 'error.bot_unreachable' : 'error.generic';
+      render(); notice.focus();
+    } finally { if (generation === version) setBusy(false); }
+  }
+  dialog.querySelectorAll('[data-ac-mode]').forEach(button => button.addEventListener('click', () => {
+    if (busy || !snapshot) return;
+    modes[button.dataset.acScope] = button.dataset.acMode;
+    render();
+  }));
+  scopes.forEach(scope => fields[scope].addEventListener('input', render));
+  save.addEventListener('click', () => { void submit(); });
+  [close, cancel].forEach(button => button.addEventListener('click', () => { if (!busy) dialog.close(); }));
+  dialog.addEventListener('cancel', event => { if (busy) event.preventDefault(); });
+  dialog.addEventListener('close', () => {
+    // Native close events are queued: a newly reopened modal owns its new state.
+    if (dialog.open) return;
+    ++version; snapshot = null; topic = null; errorKey = null; modes = {}; setBusy(false);
+    if (authenticated && opener?.isConnected !== false) opener?.focus();
+    opener = null;
+  });
+  document.addEventListener('language-changed', () => { if (dialog.open) render(); });
+  document.addEventListener('topic-selected', () => { if (dialog.open) dialog.close(); });
+  document.addEventListener('route-change', event => { if (event.detail.view !== 'chat' && dialog.open) dialog.close(); });
+  document.addEventListener('auth-change', event => {
+    authenticated = event.detail.authenticated;
+    if (!authenticated) { ++version; if (dialog.open) dialog.close(); }
+  });
+  document.querySelector('#headerAutocompact').addEventListener('click', event => { void show(getTopic(), event.currentTarget); });
+  return { show };
+}
