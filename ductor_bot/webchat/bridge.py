@@ -93,6 +93,11 @@ def create_bridge_app(  # noqa: C901
 
     app = web.Application(middlewares=[authenticate], client_max_size=512 * 1024)
 
+    async def close_auth(_app: web.Application) -> None:
+        await auth.close()
+
+    app.on_cleanup.append(close_auth)
+
     async def health(_request: web.Request) -> web.Response:
         return web.json_response({"ok": True, "agent": "main"})
 
@@ -110,7 +115,12 @@ def create_bridge_app(  # noqa: C901
         return hmac.digest(token.encode(), auth.credentials(), "sha256").hex()
 
     async def auth_state(_request: web.Request) -> web.Response:
-        return web.json_response({**auth.state(), "credential_generation": credential_generation()})
+        try:
+            return web.json_response(
+                {**auth.state(), "credential_generation": credential_generation()}
+            )
+        except AuthError as exc:
+            return web.json_response(exc.payload, status=403)
 
     async def authenticate_user(request: web.Request) -> web.Response:
         try:
@@ -121,10 +131,10 @@ def create_bridge_app(  # noqa: C901
             return web.json_response({"error": "invalid"}, status=403)
         try:
             result = await auth.handle(request.path.removeprefix(f"{_PREFIX}/auth/"), data)
+            if request.path in {f"{_PREFIX}/auth/totp", f"{_PREFIX}/auth/password-change"}:
+                result["credential_generation"] = credential_generation()
         except AuthError as exc:
             return web.json_response(exc.payload, status=403)
-        if request.path in {f"{_PREFIX}/auth/totp", f"{_PREFIX}/auth/password-change"}:
-            result["credential_generation"] = credential_generation()
         return web.json_response(result)
 
     async def state(_request: web.Request) -> web.Response:
@@ -138,7 +148,7 @@ def create_bridge_app(  # noqa: C901
     app.router.add_get(f"{_PREFIX}/health", health)
     app.router.add_get(f"{_PREFIX}/meta", meta)
     app.router.add_get(f"{_PREFIX}/auth/state", auth_state)
-    for action in ("password", "totp", "setup/begin", "setup/confirm", "password-change"):
+    for action in ("password", "totp", "setup/begin", "setup/confirm", "password-change", "logout"):
         app.router.add_post(f"{_PREFIX}/auth/{action}", authenticate_user)
     app.router.add_get(f"{_PREFIX}/state", state)
     _register_conversation_routes(app, bot, runtime)

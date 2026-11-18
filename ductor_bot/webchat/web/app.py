@@ -318,6 +318,12 @@ async def logout(request: web.Request) -> web.Response:
     state = request.app[STATE]
     token = request.cookies.get(SESSION_COOKIE, "")
     await _cancel_login(state, token)
+    preauth = request.cookies.get(PREAUTH_COOKIE)
+    if preauth:
+        with contextlib.suppress(BridgeUnavailableError):
+            await state.bridge.request(
+                "POST", "/auth/logout", body=json.dumps({"preauth": preauth}).encode()
+            )
     state.sessions.delete(token)
     state.validated.pop(token, None)
     for socket, owner in list(state.sockets.items()):

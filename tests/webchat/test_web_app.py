@@ -157,6 +157,8 @@ class FakeBridge:
                 return web.json_response({"error": "invalid"}, status=403)
             self.generation = "changed-generation"
             return web.json_response({"ok": True, "credential_generation": self.generation})
+        if path == "/auth/logout":
+            return web.json_response({"ok": True})
         if path.startswith("/auth/"):
             if body["preauth"] != "fake-preauth":
                 return web.json_response({"error": "invalid"}, status=403)
@@ -1204,3 +1206,16 @@ async def test_read_state_relay_requires_session_client_header_and_csrf(site, me
         assert response.status == 403
         assert "WWW-Authenticate" not in response.headers
     assert not any(call[1] == path.removeprefix("/api") for call in fake.calls[before:])
+
+
+async def test_logout_releases_its_pending_authentication_context(site):
+    client, fake = site
+    headers, _ = await login(client)
+    pre = await password(client)
+    headers["Cookie"] += "; " + cookie_header(pre, "dtw_pre")
+    response = await client.post("/api/auth/logout", headers=headers)
+    assert response.status == 200
+    calls = [call for call in fake.calls if call[1] == "/auth/logout"]
+    assert len(calls) == 1
+    assert calls[0][3] == {"preauth": "fake-preauth"}
+    assert response.cookies["dtw_pre"]["max-age"] == "0"

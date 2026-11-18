@@ -4386,3 +4386,57 @@ async def test_telegram_title_cache_survives_corrupt_registry(
     assert "synthetic-sensitive" not in caplog.text
     assert "topics_registry_invalid" not in caplog.text
     assert "Traceback" not in caplog.text
+
+
+async def test_encrypted_web_credentials_work_with_locked_vault(bridge, monkeypatch):
+    from ductor_bot.infra.secret_vault import SecretVault
+    from ductor_bot.webchat import auth
+    from ductor_bot.webchat.credentials import CredentialStore, WebCredentials
+
+    client, _, _, paths = bridge
+    wall = SimpleNamespace(now=1_800_000_000)
+    monkeypatch.setattr(auth, "time", SimpleNamespace(time=lambda: wall.now, monotonic=lambda: 1000))
+    store = CredentialStore(paths.webchat_dir / "credentials.json")
+    store.save(WebCredentials(hash_password(_PASSWORD), None))
+    vault = SecretVault(paths.ductor_home / "secrets.env")
+    await vault.setup("sample-master-key")
+    await vault.lock()
+    login = await client.post(f"{_PREFIX}/auth/password", headers=headers(), json={"password": _PASSWORD, "client_ip": "198.51.100.7"})
+    assert login.status == 200
+    preauth = (await login.json())["preauth"]
+    setup = await client.post(f"{_PREFIX}/auth/setup/begin", headers=headers(), json={"preauth": preauth, "mode": "new"})
+    seed = (await setup.json())["secret"]
+    response = await client.post(f"{_PREFIX}/auth/setup/confirm", headers=headers(), json={"preauth": preauth, "code": totp_code(seed, wall.now // 30), "client_ip": "198.51.100.7"})
+    assert response.status == 200
+    response = await client.get(f"{_PREFIX}/auth/state", headers=headers())
+    body = await response.json()
+    assert body["totp_configured"]
+    assert seed not in json.dumps(body)
+    assert seed not in store.path.read_text()
+    assert not vault.plaintext_path.exists()
+    login = await client.post(f"{_PREFIX}/auth/password", headers=headers(), json={"password": _PASSWORD, "client_ip": "198.51.100.7"})
+    preauth = (await login.json())["preauth"]
+    response = await client.post(f"{_PREFIX}/auth/totp", headers=headers(), json={"preauth": preauth, "code": totp_code(seed, wall.now // 30), "client_ip": "198.51.100.7"})
+    assert response.status == 403
+    assert await response.json() == {"error": "code_reused"}
+    wall.now += 30
+    response = await client.post(f"{_PREFIX}/auth/totp", headers=headers(), json={"preauth": preauth, "code": totp_code(seed, wall.now // 30), "client_ip": "198.51.100.7"})
+    assert response.status == 200
+    assert "credential_generation" in await response.json()
+    login = await client.post(f"{_PREFIX}/auth/password", headers=headers(), json={"password": _PASSWORD, "client_ip": "198.51.100.7"})
+    preauth = (await login.json())["preauth"]
+    response = await client.post(f"{_PREFIX}/auth/logout", headers=headers(), json={"preauth": preauth})
+    assert response.status == 200
+    wall.now += 30
+    response = await client.post(f"{_PREFIX}/auth/totp", headers=headers(), json={"preauth": preauth, "code": totp_code(seed, wall.now // 30), "client_ip": "198.51.100.7"})
+    assert response.status == 403
+
+
+async def test_corrupt_credentials_status_is_auth_failure(bridge):
+    client, _, _, paths = bridge
+    path = paths.webchat_dir / "credentials.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{broken")
+    response = await client.get(f"{_PREFIX}/auth/state", headers=headers())
+    assert response.status == 403
+    assert await response.json() == {"error": "invalid"}
