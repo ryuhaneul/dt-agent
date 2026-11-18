@@ -60,6 +60,7 @@ async def h(tmp_path, monkeypatch):
         )
     )
     runtime = SimpleNamespace(
+        topic_registry_lock=asyncio.Lock(),
         events=EventHub(),
         history=SimpleNamespace(append=AsyncMock()),
         recorder=MagicMock(),
