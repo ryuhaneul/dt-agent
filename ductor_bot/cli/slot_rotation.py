@@ -221,13 +221,21 @@ async def record_auth_failure(
             and registry.credential_mtimes(slot) == credential_mtimes
             and snapshot.auth_failures.get(slot, credential_mtimes) == credential_mtimes
         ):
+            now = time.time()
             previous = snapshot.auth_failure_details.get(slot)
             delay = float(SUBSCRIPTION_RETRY_INITIAL_SECONDS)
-            if previous is not None and previous.kind == "subscription_unavailable":
+            if (
+                kind == "subscription_unavailable"
+                and previous is not None
+                and previous.kind == "subscription_unavailable"
+            ):
+                if now < previous.failed_at + previous.retry_delay:
+                    # Duplicate failures must not escalate or postpone the scheduled retry.
+                    return
                 delay = min(previous.retry_delay * 2, SUBSCRIPTION_RETRY_MAX_SECONDS)
             snapshot.auth_failures[slot] = credential_mtimes
             snapshot.auth_failure_details[slot] = (
-                AuthFailureDetails(kind, time.time(), delay)
+                AuthFailureDetails(kind, now, delay)
                 if kind == "subscription_unavailable"
                 else AuthFailureDetails()
             )

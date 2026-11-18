@@ -695,3 +695,37 @@ async def test_login_quarantine_never_becomes_time_retryable(registry, utc, monk
     )
     assert attempter.calls == ["claude-b"]
     assert registry.load().auth_failures == {"claude-a": mtimes}
+
+
+async def test_duplicate_subscription_failures_preserve_retry_schedule(registry, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    from ductor_bot.cli import slot_rotation
+    from ductor_bot.cli.slot_rotation import hot_slots, record_auth_failure
+
+    clock = [1800000000.0]
+    monkeypatch.setattr(slot_rotation, "time", SimpleNamespace(time=lambda: clock[0]))
+    mtimes = registry.credential_mtimes("claude-a")
+
+    async def fail_three_requests():
+        await asyncio.gather(*(
+            record_auth_failure(
+                SlotRegistry(registry.state_path), "claude-a", mtimes,
+                kind="subscription_unavailable",
+            )
+            for _ in range(3)
+        ))
+        return SlotRegistry(registry.state_path).load().auth_failure_details["claude-a"]
+
+    for delay in [1800, 3600, 7200, 14400, 21600, 21600]:
+        details = await fail_three_requests()
+        assert (details.failed_at, details.retry_delay) == (clock[0], delay)
+        deadline = details.failed_at + details.retry_delay
+        clock[0] += 60
+        assert await fail_three_requests() == details
+        clock[0] = deadline - 1
+        assert await fail_three_requests() == details
+        assert await hot_slots(registry, ["claude-a", "claude-b"]) == ["claude-b"]
+        clock[0] = deadline
+        assert await hot_slots(registry, ["claude-a", "claude-b"]) == ["claude-a", "claude-b"]

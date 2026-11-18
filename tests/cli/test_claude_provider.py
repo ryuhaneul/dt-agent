@@ -2440,6 +2440,6 @@ async def test_subscription_single_probe_updates_quarantine(tmp_path, monkeypatc
     details = snapshot.auth_failure_details["claude-a"]
     assert details.kind == ("login_expired" if failure == "login" else "subscription_unavailable")
     if failure != "login":
-        assert details.failed_at == clock[0]
-        assert details.retry_delay == (3600 if failure == "subscription" else 1800)
+        assert details.failed_at == (1800000000 if failure == "subscription" else clock[0])
+        assert details.retry_delay == 1800
     assert snapshot.auth_failure_details["claude-b"].failed_at == 1800000000
