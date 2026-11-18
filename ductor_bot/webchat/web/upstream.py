@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -105,6 +106,25 @@ class BridgeClient:
         if not isinstance(data, dict):
             raise BridgeUnavailableError
         return status, data, received
+
+    @asynccontextmanager
+    async def download(
+        self, method: str, path: str, *, headers: Mapping[str, str]
+    ) -> AsyncIterator[aiohttp.ClientResponse]:
+        """Keep the upstream response open while the browser consumes bounded chunks."""
+        forwarded = {name: headers[name] for name in ("Range",) if name in headers}
+        try:
+            async with self._client.request(
+                method,
+                self._url + path,
+                headers={**self._headers, **forwarded},
+                allow_redirects=False,
+                auto_decompress=False,
+                timeout=aiohttp.ClientTimeout(total=None, sock_connect=5, sock_read=30),
+            ) as response:
+                yield response
+        except (aiohttp.ClientError, TimeoutError):
+            raise BridgeUnavailableError from None
 
     async def events(self, publish: Callable[[str], Awaitable[None]]) -> None:
         delay = 2

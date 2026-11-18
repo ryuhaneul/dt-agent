@@ -153,7 +153,10 @@ async def response_headers(request: web.Request, response: web.StreamResponse) -
     )
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "no-referrer"
-    if request.path.startswith("/api/"):
+    private_attachment = response.headers.get("Cache-Control") == "private" and re.fullmatch(
+        r"/api/topics/[^/]+/messages/[^/]+/attachments/[a-f0-9]{32}(?:/preview)?", request.path
+    )
+    if request.path.startswith("/api/") and not private_attachment:
         response.headers["Cache-Control"] = "no-store"
 
 
@@ -420,6 +423,46 @@ async def upload_relay(request: web.Request) -> web.Response:
     return web.json_response(data, status=status, headers=headers)
 
 
+async def download_relay(request: web.Request) -> web.StreamResponse:
+    """Relay authenticated file responses without storing them in web process memory."""
+    state = request.app[STATE]
+    path = request.rel_url.raw_path.removeprefix("/api")
+    if request.rel_url.raw_query_string:
+        path += "?" + request.rel_url.raw_query_string
+    response = None
+    try:
+        async with state.bridge.download(request.method, path, headers=request.headers) as upstream:
+            headers = {
+                name: upstream.headers[name]
+                for name in (
+                    "Content-Type",
+                    "Content-Length",
+                    "Content-Disposition",
+                    "Content-Range",
+                    "Accept-Ranges",
+                    "X-Content-Type-Options",
+                    "Cache-Control",
+                )
+                if name in upstream.headers
+            }
+            if upstream.status in {200, 206, 416}:
+                headers["Cache-Control"] = "private"
+            response = web.StreamResponse(status=upstream.status, headers=headers)
+            await response.prepare(request)
+            if request.method != "HEAD":
+                async for chunk in upstream.content.iter_chunked(64 * 1024):
+                    async with asyncio.timeout(30):
+                        await response.write(chunk)
+            await response.write_eof()
+            return response
+    except (BridgeUnavailableError, TimeoutError, ConnectionError):
+        if response is None or not response.prepared:
+            raise BridgeUnavailableError from None
+        if request.transport is not None:
+            request.transport.close()
+        return response
+
+
 async def websocket(request: web.Request) -> web.StreamResponse:
     state = request.app[STATE]
     if request.headers.get("Origin") != state.public_origin:
@@ -518,6 +561,11 @@ def create_app(
     app.router.add_post("/api/auth/logout", logout)
     app.router.add_get("/api/ws", websocket)
     app.router.add_get("/api/state", relay)
+    for suffix in ("", "/preview"):
+        app.router.add_get(
+            "/api/topics/{tid}/messages/{entry_id}/attachments/{attachment_id}" + suffix,
+            download_relay,
+        )
     for upload_path, upload_methods in (
         ("/topics/{tid}/uploads", ("POST",)),
         ("/topics/{tid}/uploads/{upload_id}", ("GET", "PUT", "DELETE")),

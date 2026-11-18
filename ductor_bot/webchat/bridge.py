@@ -62,6 +62,7 @@ from ductor_bot.webchat.commands import (
     command_list,
     parse_command,
 )
+from ductor_bot.webchat.downloads import AttachmentDownloads, stream_attachment
 from ductor_bot.webchat.files import WebFileError, WebFiles
 from ductor_bot.webchat.read_state import ReadState
 from ductor_bot.webchat.secret import WebSecrets
@@ -262,6 +263,10 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
         app[ATTACH_SETTINGS],
         bot._orch.paths.workspace,
         bot._orch.paths.webchat_dir / "attachments.jsonl",
+    )
+
+    downloads = AttachmentDownloads(
+        bot._orch.paths.workspace, attachments.index, bot._orch.paths.webchat_dir / "thumbnails"
     )
 
     async def recover_attachments(_app: web.Application) -> AsyncIterator[None]:
@@ -561,15 +566,39 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
         if await topics.lookup(tid) is None:
             return _error("unknown_topic", 404)
         try:
-            if await runtime.history.get_entry(tid, entry_id) is None:
+            entry = await runtime.history.get_entry(tid, entry_id)
+            if entry is None:
                 return _error("unknown_entry", 404)
         except LockTimeoutError:
             return _error("history_busy", 503)
-        return web.json_response({"attachments": await attachments.index.get(tid, entry_id)})
+        items = await downloads.list(tid, entry)
+        return web.json_response({"attachments": [item.metadata for item in items]})
+
+    async def download_attachment(request: web.Request) -> web.StreamResponse:
+        tid = request.match_info["tid"]
+        if await topics.lookup(tid) is None:
+            return _error("unknown_topic", 404)
+        try:
+            entry = await runtime.history.get_entry(tid, request.match_info["entry_id"])
+        except LockTimeoutError:
+            return _error("history_busy", 503)
+        if entry is None:
+            return _error("unknown_entry", 404)
+        item = await downloads.find(tid, entry, request.match_info["attachment_id"])
+        if item is None:
+            return _error("unknown_attachment", 404)
+        return await stream_attachment(request, item)
 
     app.router.add_get(
         f"{_PREFIX}/topics/{{tid}}/messages/{{entry_id}}/attachments", entry_attachments
     )
+
+    for suffix in ("", "/preview"):
+        app.router.add_get(
+            f"{_PREFIX}/topics/{{tid}}/messages/{{entry_id}}/attachments/{{attachment_id}}"
+            + suffix,
+            download_attachment,
+        )
 
     async def dispatch_text(  # noqa: C901 -- preserve existing command/message ingress
         tid: str,

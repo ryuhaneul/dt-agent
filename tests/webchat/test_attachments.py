@@ -268,13 +268,19 @@ async def test_message_prompt_history_index_and_legacy_reader(conversation, tmp_
     response = await h.client.get(
         f"/webchat/v1/topics/-123.7/messages/{entries[0].id}/attachments", headers=headers()
     )
-    assert (await response.json())["attachments"] == metadata
+    public = (await response.json())["attachments"]
+    assert [{key: item[key] for key in metadata[0]} for item in public] == metadata
+    assert public[0]["download_url"].endswith("/" + upload_id)
+    assert public[0]["preview_url"] is None
     response = await h.client.get(
         f"/webchat/v1/topics/-123.7/messages/{entries[0].id}/attachments",
         headers={**headers(), "X-Dtw-Owner": "other-browser"},
     )
     assert response.status == 200
-    assert (await response.json())["attachments"] == metadata
+    public = (await response.json())["attachments"]
+    assert [{key: item[key] for key in metadata[0]} for item in public] == metadata
+    assert public[0]["download_url"].endswith("/" + upload_id)
+    assert public[0]["preview_url"] is None
     index.path.write_text("corrupted index\n")
     response = await h.client.get(
         f"/webchat/v1/topics/-123.7/messages/{entries[0].id}/attachments", headers=headers()
