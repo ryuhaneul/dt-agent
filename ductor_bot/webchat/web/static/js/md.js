@@ -567,10 +567,9 @@ function destinationAt(text, start) {
   if (!skipSpace()) return null;
   if (text[index] !== ')' && index > beforeSpace && /["'(]/.test(text[index] || '')) {
     const delimiter = text[index++] === '(' ? ')' : text[index - 1];
-    let newlines = 0;
     while (index < text.length && text[index] !== delimiter) {
       if (text[index] === '\\' && text[index + 1]) index++;
-      else if (text[index] === '\n' && ++newlines > 1) return null;
+      else if (text[index] === '\n' && /^[ \t\r]*\n/.test(text.slice(index + 1))) return null;
       index++;
     }
     if (text[index++] !== delimiter || !skipSpace()) return null;
@@ -651,7 +650,7 @@ function tableAlignments(header, delimiter) {
     : cell.endsWith(':') ? 'right' : null);
 }
 export function md(text) {
-  let output = '', list = false;
+  let output = '', list = false, paragraph = null;
   const lines = String(text).split('\n');
   function closeList() {
     if (list) { output += '</ul>'; list = false; }
@@ -696,15 +695,21 @@ export function md(text) {
     }
     let escaped;
     if (line.trim() && !/^ {0,3}(?:#{1,6}(?:\s|$)|[-+*]\s|\d+[.)]\s|>)/.test(line)) {
-      const paragraph = [line];
-      for (let next = index + 1; next < lines.length && lines[next].trim(); next++) {
-        if (/^ {0,3}(?:#{1,6}(?:\s|$)|[-+*]\s|\d+[.)]\s|>|`{3,}|~{3,})/.test(lines[next])
-          || (next + 1 < lines.length && tableAlignments(lines[next], lines[next + 1]))) break;
-        paragraph.push(lines[next]);
+      if (!paragraph || index < paragraph.start || index >= paragraph.end) {
+        const parts = [line], offsets = [0];
+        let next = index + 1, length = line.length + 1;
+        for (; next < lines.length && !/^[ \t\r]*$/.test(lines[next]); next++) {
+          if (/^ {0,3}(?:#{1,6}(?:\s|$)|[-+*]\s|\d+[.)]\s|>|`{3,}|~{3,})/.test(lines[next])
+            || (next + 1 < lines.length && tableAlignments(lines[next], lines[next + 1]))) break;
+          offsets.push(length); parts.push(lines[next]); length += lines[next].length + 1;
+        }
+        // Build each paragraph once; subsequent lines use its existing character offsets.
+        paragraph = { start: index, end: next, text: parts.join('\n'), offsets };
       }
-      const rendered = inline(paragraph.join('\n'), true, true, true);
+      const remaining = paragraph.text.slice(paragraph.offsets[index - paragraph.start]);
+      const rendered = inline(remaining, true, true, true);
       escaped = rendered.html;
-      index += (paragraph.join('\n').slice(0, rendered.end).match(/\n/g) || []).length;
+      index += (remaining.slice(0, rendered.end).match(/\n/g) || []).length;
     } else escaped = inline(line);
     if (/^- /.test(line)) {
       if (!list) { output += '<ul>'; list = true; }

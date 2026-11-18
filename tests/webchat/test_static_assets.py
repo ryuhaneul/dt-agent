@@ -1742,6 +1742,7 @@ const source=fs.readFileSync(0,'utf8');
 const {md}=await import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
 assert.equal(md('# Title\n## Sub\n- **bold**\n- `code`\n[x](https://example.com)'),
  '<h1>Title</h1><h2>Sub</h2><ul><li><b>bold</b></li><li><code>code</code></li></ul><p><a href="https://example.com" target="_blank" rel="noopener noreferrer">x</a></p>');
+assert.equal(md('one\ntwo\n\n# title\nthree\nfour'),'<p>one</p><p>two</p><h1>title</h1><p>three</p><p>four</p>');
 const table=md('| Left | Center | Right |\n| :--- | :---: | ---: |\n| **A** | `B` | <img onerror="x"> |');
 assert.ok(table.startsWith('<div class="table-scroll" tabindex="0"><table>'));
 assert.ok(table.endsWith('</tbody></table></div>'));
@@ -2777,6 +2778,36 @@ AUTOLINK_SPEC_CASES = [
         [["https://example.test/a", "a b c"]],
     ],
     ["r5 minimum 23", "[x](http://[::1]:8080/a)", [["http://%5B::1%5D:8080/a", "x"]]],
+    [
+        "r6 multiline title 1",
+        '[a](https://example.test/a "one\ntwo\nthree")',
+        [["https://example.test/a", "a"]],
+    ],
+    [
+        "r6 multiline title 2",
+        "[a](https://example.test/a 'one\ntwo\nthree\nfour')",
+        [["https://example.test/a", "a"]],
+    ],
+    [
+        "r6 multiline title 3",
+        "[a](https://example.test/a (one\ntwo\nthree))",
+        [["https://example.test/a", "a"]],
+    ],
+    [
+        "r6 multiline title 4",
+        '[a](https://example.test/a "one\n  \nthree")',
+        [["https://example.test/a", "https://example.test/a"]],
+    ],
+    [
+        "r6 non-ASCII title line 1",
+        '[a](https://example.test/a "one\n\u00a0\nthree")',
+        [["https://example.test/a", "a"]],
+    ],
+    [
+        "r6 non-ASCII title line 2",
+        '[a](https://example.test/a "one\n\u2003\nthree")',
+        [["https://example.test/a", "a"]],
+    ],
 ]
 
 
