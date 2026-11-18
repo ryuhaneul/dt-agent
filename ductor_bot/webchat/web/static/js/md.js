@@ -12,35 +12,49 @@ function link(url, label) {
   } catch { return null; }
   return `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`;
 }
+function bareLinks(text) {
+  const pattern = /https?:\/\/(?:(?!&(?:lt|gt|quot|#39);)[^\s<>"'`\u1100-\u11ff\u3130-\u318f\uac00-\ud7af])+/gi;
+  let output = '', offset = 0, match;
+  while ((match = pattern.exec(text))) {
+    let url = match[0];
+    const brackets = [];
+    for (let index = 0; index < url.length; index++) {
+      if (url[index] === '[') brackets.push(index);
+      else if (url[index] === ']') {
+        if (!brackets.length) { url = url.slice(0, index); break; }
+        brackets.pop();
+      }
+    }
+    if (brackets.length) url = url.slice(0, brackets[0]);
+    // Preserve balanced URL parentheses, but leave surrounding prose outside.
+    while (true) {
+      const previous = url;
+      url = url.replace(/[.,!?:。！？、…]+$/, '');
+      if (url.endsWith(';') && !url.endsWith('&amp;')) url = url.slice(0, -1);
+      for (const [open, close] of [['(', ')'], ['{', '}']]) {
+        if (url.endsWith(close) && url.split(close).length > url.split(open).length) url = url.slice(0, -1);
+      }
+      if (url === previous) break;
+    }
+    output += text.slice(offset, match.index) + (link(url, url) || url);
+    // Resume at the actual URL boundary so a following URL remains discoverable.
+    offset = pattern.lastIndex = match.index + url.length;
+  }
+  return output + text.slice(offset);
+}
 function inlineEscaped(text) {
-  // One pass keeps generated attributes out of subsequent Markdown replacements.
-  return text.replace(/(`+)(.+?)\1|\[([^\]\n]+)\]\(((?:[^()\s]|\([^()\s]*\))+)\)|\*\*(.+?)\*\*|https?:\/\/(?:(?!&(?:lt|gt|quot|#39);)[^\s<>"'`\u1100-\u11ff\u3130-\u318f\uac00-\ud7af])+/gi,
-    (match, ticks, code, label, destination, bold) => {
-      if (ticks) return `<code>${code}</code>`;
-      if (label !== undefined) return link(destination, label) || match;
-      if (bold !== undefined) return `<b>${inlineEscaped(bold)}</b>`;
-      let url = match;
-      const brackets = [];
-      for (let index = 0; index < url.length; index++) {
-        if (url[index] === '[') brackets.push(index);
-        else if (url[index] === ']') {
-          if (!brackets.length) { url = url.slice(0, index); break; }
-          brackets.pop();
-        }
-      }
-      if (brackets.length) url = url.slice(0, brackets[0]);
-      // Preserve balanced URL parentheses, but leave surrounding prose outside.
-      while (true) {
-        const previous = url;
-        url = url.replace(/[.,!?:。！？、…]+$/, '');
-        if (url.endsWith(';') && !url.endsWith('&amp;')) url = url.slice(0, -1);
-        for (const [open, close] of [['(', ')'], ['{', '}']]) {
-          if (url.endsWith(close) && url.split(close).length > url.split(open).length) url = url.slice(0, -1);
-        }
-        if (url === previous) break;
-      }
-      return (link(url, url) || url) + match.slice(url.length);
-    });
+  // Confirm Markdown/code tokens before looking for bare URLs in intervening text.
+  const tokens = /(`+)(.+?)\1|\[([^\]\n]+)\]\(((?:[^()\s]|\([^()\s]*\))+)\)|\*\*(.+?)\*\*/g;
+  let output = '', offset = 0;
+  for (const match of text.matchAll(tokens)) {
+    const [raw, ticks, code, label, destination, bold] = match;
+    output += bareLinks(text.slice(offset, match.index));
+    if (ticks) output += `<code>${code}</code>`;
+    else if (label !== undefined) output += link(destination, label) || raw;
+    else output += `<b>${inlineEscaped(bold)}</b>`;
+    offset = match.index + raw.length;
+  }
+  return output + bareLinks(text.slice(offset));
 }
 function inline(text) {
   return inlineEscaped(esc(text));

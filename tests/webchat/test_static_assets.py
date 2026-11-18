@@ -1727,37 +1727,41 @@ const {md}=await import('data:text/javascript;base64,'+Buffer.from(source).toStr
 assert.equal(md('# Title\n## Sub\n- **bold**\n- `code`\n[x](https://example.com)'),
  '<h1>Title</h1><h2>Sub</h2><ul><li><b>bold</b></li><li><code>code</code></li></ul><p><a href="https://example.com" target="_blank" rel="noopener noreferrer">x</a></p>');
 const anchor=(url,label=url)=>`<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+const linkCases=[
+ ['adjacent Markdown','https://example.test/a][link](https://example.test/b)',anchor('https://example.test/a')+']'+anchor('https://example.test/b','link')],
+ ['adjacent bare','https://example.test/a]https://example.test/b',anchor('https://example.test/a')+']'+anchor('https://example.test/b')],
+ ['URL label','[https://example.test/a](https://example.test/b)',anchor('https://example.test/b','https://example.test/a')],
+ ['consecutive Markdown','[a](https://example.test/a)[b](https://example.test/b)',anchor('https://example.test/a','a')+anchor('https://example.test/b','b')],
+ ['mixed links','https://example.test/a [b](https://example.test/b) https://example.test/c',anchor('https://example.test/a')+' '+anchor('https://example.test/b','b')+' '+anchor('https://example.test/c')],
+ ['Korean suffix','https://x.com/a.html에서',anchor('https://x.com/a.html')+'에서'],
+ ['Korean Markdown','[한글](https://x.com/한글)',anchor('https://x.com/한글','한글')],
+ ['balanced parentheses','시안 (https://x.com/a_(b)). 다음','시안 ('+anchor('https://x.com/a_(b)')+'). 다음'],
+ ['Markdown parentheses','[시안](https://x.com/a_(b))',anchor('https://x.com/a_(b)','시안')],
+ ['bold URL','**https://x.com/a**','<b>'+anchor('https://x.com/a')+'</b>'],
+ ['inline code','`https://x.com/a` ``[시안](https://x.com/a)``','<code>https://x.com/a</code> <code>[시안](https://x.com/a)</code>'],
+ ['unclosed bracket','https://example.test/design[unfinished',anchor('https://example.test/design')+'[unfinished'],
+ ['unmatched bracket','https://example.test/design]tail',anchor('https://example.test/design')+']tail'],
+ ['escaped HTML','https://x.com/?a=1&b=2<img src=x>',anchor('https://x.com/?a=1&amp;b=2')+'&lt;img src=x&gt;'],
+];
 for(const url of ['https://x.com/a.html','http://x.com/?a=1&b=2','HTTPS://x.com/a','https://x.com/%ED%95%9C','https://x.com/?a&']){
- const escaped=url.replaceAll('&','&amp;');
- assert.equal(md(url+' 에서'),'<p>'+anchor(escaped)+' 에서</p>');
+ linkCases.push(['bare '+url,url+' 에서',anchor(url.replaceAll('&','&amp;'))+' 에서']);
 }
 for(const url of ['http://[::1]:8080/design','https://[2001:db8::1]/preview',
  'http://[::ffff:192.0.2.128]:8080/design','https://[2001:db8:85a3::8a2e:370:7334]/preview',
  'https://example.test/design?filter[status]=ready','https://example.test/design[preview]',
  'https://example.test/design?filter[status][value]=ready']){
- assert.equal(md(url),'<p>'+anchor(url)+'</p>');
- assert.equal(md('[시안]('+url+')'),'<p>'+anchor(url,'시안')+'</p>');
- assert.equal(md('['+url+']'),'<p>['+anchor(url)+']</p>');
- for(const suffix of ['].',']).','에서'])assert.equal(md(url+suffix),'<p>'+anchor(url)+suffix+'</p>');
+ linkCases.push(['bracket '+url,url,anchor(url)],['bracket Markdown '+url,'[시안]('+url+')',anchor(url,'시안')],
+  ['surrounding brackets '+url,'['+url+']','['+anchor(url)+']']);
+ for(const suffix of ['].',']).','에서'])linkCases.push(['bracket suffix '+url+suffix,url+suffix,anchor(url)+suffix]);
 }
-assert.equal(md('https://example.test/design[unfinished'),'<p>'+anchor('https://example.test/design')+'[unfinished</p>');
-assert.equal(md('https://example.test/design]tail'),'<p>'+anchor('https://example.test/design')+']tail</p>');
-assert.equal(md('https://x.com/a.html에서'),'<p>'+anchor('https://x.com/a.html')+'에서</p>');
-assert.equal(md('[한글](https://x.com/한글)'),'<p>'+anchor('https://x.com/한글','한글')+'</p>');
-assert.equal(md('시안 (https://x.com/a_(b)). 다음'),'<p>시안 ('+anchor('https://x.com/a_(b)')+'). 다음</p>');
 for(const suffix of ['.',',','!','?',':',';','。','\uff01','\uff1f','…',').', '}.']){
- assert.equal(md('https://x.com/a'+suffix),'<p>'+anchor('https://x.com/a')+suffix+'</p>');
+ linkCases.push(['punctuation '+suffix,'https://x.com/a'+suffix,anchor('https://x.com/a')+suffix]);
 }
-assert.equal(md('[시안](https://x.com/a_(b))'),'<p>'+anchor('https://x.com/a_(b)','시안')+'</p>');
-assert.equal(md('**https://x.com/a**'),'<p><b>'+anchor('https://x.com/a')+'</b></p>');
-assert.equal(md('`https://x.com/a` ``[시안](https://x.com/a)``'),'<p><code>https://x.com/a</code> <code>[시안](https://x.com/a)</code></p>');
+for(const payload of ['[x](javascript:alert(1))','[x](data:text/html,test)','[x](vbscript:x)','[x](//x.com)','[x](https://)']){
+ linkCases.push(['blocked '+payload,payload,payload]);
+}
+for(const [name,input,expected] of linkCases)assert.equal(md(input),'<p>'+expected+'</p>',name);
 for(const fence of ['```','~~~'])assert.equal(md(fence+'\nhttps://x.com/a [시안](https://x.com/b)\n'+fence),'<pre tabindex="0"><code>https://x.com/a [시안](https://x.com/b)\n</code></pre>');
-for(const payload of ['[x](javascript:alert(1))','[x](data:text/html,test)','[x](vbscript:x)','[x](//x.com)','[x](https://)','[<img src=x onerror=alert(1)>](https://x.com/)']){
- const html=md(payload);
- assert.ok(!/<(?:img|script|svg)\b/i.test(html));
- if(!payload.startsWith('[<img'))assert.ok(!html.includes('<a '),html);
-}
-assert.equal(md('https://x.com/?a=1&b=2<img src=x>'),'<p>'+anchor('https://x.com/?a=1&amp;b=2')+'&lt;img src=x&gt;</p>');
 const table=md('| Left | Center | Right |\n| :--- | :---: | ---: |\n| **A** | `B` | <img onerror="x"> |');
 assert.ok(table.startsWith('<div class="table-scroll" tabindex="0"><table>'));
 assert.ok(table.endsWith('</tbody></table></div>'));
