@@ -428,11 +428,13 @@ class WebTurns:
                 self._turns.pop(turn["turn_id"], None)
                 return
             if await self.runtime.outbox.mirror_state(turn["user_entry_id"]) is None:
+                mirror_text, origin = user_mirror_fields(state.text, self._strings)
                 await self.runtime.outbox.enqueue(
                     kind="user_mirror",
                     chat_id=key.chat_id,
                     topic_id=key.topic_id,
-                    text=self._strings.chat("chat_log.mirror_user", text=state.text),
+                    text=mirror_text,
+                    origin=origin,
                     history_id=turn["user_entry_id"],
                 )
             await self._save_cancelled(

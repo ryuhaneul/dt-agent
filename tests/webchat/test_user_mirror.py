@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import html
 import importlib.util
 import sys
@@ -19,6 +20,7 @@ from ductor_bot.chat_log.outbox import Outbox
 from ductor_bot.i18n.loader import TranslationStore
 from ductor_bot.messenger.telegram.sender import SendProgress
 from ductor_bot.messenger.telegram.webchat_ops import TelegramWebchatOps
+from ductor_bot.webchat.turns import WebTurns
 from tests.webchat.test_bridge_api import (
     conversation as conversation,  # noqa: PLC0414 -- shared bridge fixture
 )
@@ -217,3 +219,85 @@ async def test_outbox_preview_decodes_web_user_text_before_truncation(tmp_path, 
     assert (await events.get())["item"]["preview"] == expected
     assert (await outbox.views())[0]["preview"] == expected
     assert (await Outbox(outbox.directory).pending())[0].text == stored
+
+
+@pytest.mark.parametrize("delivery", ["current", "ecede25"])
+@pytest.mark.parametrize("cancellation", ["queued", "missing_mirror", "restart"])
+async def test_cancelled_user_mirror_remains_literal_after_rebase(
+    conversation, tmp_path, cancellation, delivery
+):
+    h = conversation
+    secret = tmp_path / "private.txt"
+    secret.write_text("must not be sent")
+    text = f"<file:{secret}> [button:Go] [buttonurl:site|https://example.com] <b>& 😀\nline"
+    turns = WebTurns(h.bot, h.runtime)
+    events = h.runtime.events.subscribe()
+    lock = h.pool.get(h.key.lock_key)
+    await lock.acquire()
+    try:
+        turn_id = await turns.submit("-123.7", text)
+        while True:
+            event = await asyncio.wait_for(events.get(), 3)
+            if event.get("turn_id") == turn_id and event.get("phase") == "queued":
+                break
+        if cancellation == "restart":
+            await turns.stop()
+            for _ in range(2):
+                await WebTurns(h.bot, h.runtime).recover_pending()
+        else:
+            if cancellation == "missing_mirror":
+                paths = list((h.runtime.outbox.directory / "pending").glob("*.json"))
+                assert len(paths) == 1
+                paths[0].unlink()
+                assert await h.runtime.outbox.pending() == []
+            assert await turns.cancel("-123.7", turn_id) == "cancelled"
+    finally:
+        lock.release()
+        await turns.stop()
+        h.runtime.events.unsubscribe(events)
+    h.bot._orch.handle_message_streaming.assert_not_awaited()
+    entries = await h.runtime.history.read("-123.7")
+    assert [(entry.role, entry.status, entry.text) for entry in entries] == [
+        ("user", "cancelled", text)
+    ]
+    items = await h.runtime.outbox.pending()
+    mirror, notice = items
+    plain = TranslationStore("en").chat("chat_log.mirror_user", text=text)
+    assert mirror.origin == "web_user_text"
+    assert mirror.text == html.escape(plain).replace("[", "&#91;").replace("]", "&#93;")
+    assert mirror.view()["preview"] == plain[:80]
+    assert notice.origin == "web_queue_cancelled"
+    assert notice.text == TranslationStore("en").chat("notice.queue_cancelled")
+    modules = []
+    bot = bot_at(h)
+    try:
+        if delivery == "current":
+            await drain(h.runtime.outbox, bot, h.runtime.history)
+            first = bot.bot_instance.send_message.await_args_list[0]
+            assert first.kwargs["text"] == plain
+            assert first.kwargs["parse_mode"] is None
+        else:
+            modules.extend(
+                legacy_module("cancel_legacy_" + name, name)
+                for name in ("outbox", "link", "sender", "ops")
+            )
+            old_outbox, old_link, old_sender, old_ops = modules
+            old_ops.SendRichOpts = old_sender.SendRichOpts
+            old_ops.send_rich_progress_detailed = old_sender.send_rich_progress_detailed
+            ops = old_ops.TelegramWebchatOps(bot)
+            monitor = old_link.TelegramLinkMonitor(ops, EventHub())
+            monitor.record(up=True)
+            await old_link.OutboxDrainer(
+                old_outbox.Outbox(h.runtime.outbox.directory), ops, monitor,
+                history=h.runtime.history,
+            ).drain()
+        calls = bot.bot_instance.send_message.await_args_list
+        assert len(calls) == 2
+        assert calls[-1].kwargs["parse_mode"] == "HTML"
+        assert all(call.kwargs.get("reply_markup") is None for call in calls)
+        assert_no_media(bot.bot_instance)
+        assert not await h.runtime.outbox.pending()
+        assert not (h.runtime.outbox.directory / "corrupt").exists()
+    finally:
+        for module in modules:
+            sys.modules.pop(module.__name__, None)
