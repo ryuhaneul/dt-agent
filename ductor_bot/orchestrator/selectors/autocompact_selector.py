@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from contextlib import nullcontext
 from typing import TYPE_CHECKING
 
 from ductor_bot.cli.autocompact import resolve_autocompact, validate_autocompact
@@ -87,14 +88,20 @@ async def autocompact_selector_start(
 
 
 async def save_autocompact(
-    orch: Orchestrator, key: SessionKey, scope: str, value: AutocompactValue | None
+    orch: Orchestrator,
+    key: SessionKey,
+    scope: str,
+    value: AutocompactValue | None,
+    *,
+    _global_lock_held: bool = False,
 ) -> SelectorResponse:
+    """Save one scope; a batched caller can retain the global lock across rollback."""
     try:
         if scope == "topic":
             await orch._sessions.set_autocompact(key, value)
         else:
             concrete = validate_autocompact(value)
-            async with orch._autocompact_global_lock:
+            async with nullcontext() if _global_lock_held else orch._autocompact_global_lock:
                 await update_config_file_async(orch.paths.config_path, autocompact=concrete)
                 if orch.paths.ductor_home.parent.name == "agents":
                     await asyncio.to_thread(

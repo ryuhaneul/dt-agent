@@ -17,6 +17,7 @@ from aiohttp import ClientError, web
 
 from ductor_bot.chat_log.history import InvalidSelectorButtonError, SelectorConflictError
 from ductor_bot.chat_log.ids import from_tid
+from ductor_bot.cli.autocompact import resolve_autocompact, validate_autocompact
 from ductor_bot.cli.claude_accounts import (
     SlotRegistry,
     host_cli_auth_dir,
@@ -30,6 +31,7 @@ from ductor_bot.i18n import LANGUAGES
 from ductor_bot.i18n.loader import TranslationStore
 from ductor_bot.infra.atomic_io import atomic_text_save
 from ductor_bot.infra.file_lock import LockTimeoutError
+from ductor_bot.infra.input_context import input_lock
 from ductor_bot.infra.secret_store import store_path
 from ductor_bot.messenger.telegram.buttons import extract_button_rows
 from ductor_bot.messenger.telegram.callbacks import (
@@ -43,6 +45,7 @@ from ductor_bot.messenger.telegram.callbacks import (
     selector_fields,
     selector_rows,
 )
+from ductor_bot.orchestrator.selectors.autocompact_selector import save_autocompact
 from ductor_bot.text.response_format import stop_text
 from ductor_bot.webchat.auth import AuthError, BridgeAuth
 from ductor_bot.webchat.cli_login import CliLoginError, CliLoginManager
@@ -65,6 +68,8 @@ from ductor_bot.webchat.vault import register_vault_routes
 if TYPE_CHECKING:
     from ductor_bot.chat_log.runtime import ChatLogRuntime
     from ductor_bot.messenger.telegram.app import TelegramBot
+    from ductor_bot.orchestrator.core import Orchestrator
+    from ductor_bot.session.key import SessionKey
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +184,48 @@ async def _body(request: web.Request) -> dict[str, Any]:
 def _name(data: dict[str, Any]) -> str | None:
     value = data.get("name")
     return value.strip() if isinstance(value, str) and 1 <= len(value.strip()) <= 128 else None
+
+
+async def _autocompact_state(orch: Orchestrator, key: SessionKey) -> dict[str, Any]:
+    session = await orch._sessions.get_active(key)
+    topic_value = session.autocompact if session else None
+    global_value = orch._config.autocompact
+    effective = resolve_autocompact(topic_value, global_value)
+    provider = session.provider if session else orch.resolve_runtime_target(orch._config.model)[1]
+    supported = provider == "claude" or (provider == "codex" and effective != "off")
+    reason = (
+        None
+        if supported
+        else ("off_unsupported" if provider == "codex" else "provider_unsupported")
+    )
+    return {
+        "topic_value": topic_value,
+        "global_value": global_value,
+        "effective_value": effective,
+        "provider": provider,
+        "supported": supported,
+        "unsupported_reason": reason,
+    }
+
+
+async def _save_autocompact_values(
+    orch: Orchestrator, key: SessionKey, data: dict[str, Any]
+) -> bool:
+    """Caller holds the topic and global locks across both saves and any rollback."""
+    previous_global = orch._config.autocompact
+    for scope in ("global", "topic"):
+        if scope not in data:
+            continue
+        result = await save_autocompact(orch, key, scope, data[scope], _global_lock_held=True)
+        if result.buttons is None:
+            if scope == "topic" and "global" in data:
+                restored = await save_autocompact(
+                    orch, key, "global", previous_global, _global_lock_held=True
+                )
+                if restored.buttons is None:
+                    logger.warning("Autocompact global rollback failed")
+            return False
+    return True
 
 
 def _register_conversation_routes(  # noqa: C901, PLR0915
@@ -306,6 +353,34 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
                 return _error("topic_busy", 409)
             except (TelegramAPIError, ClientError, ConnectionError, TimeoutError, TopicDeleteError):
                 return _error("telegram_unavailable", 503)
+
+    async def autocompact(request: web.Request) -> web.Response:
+        tid = request.match_info["tid"]
+        if tid == "unknown":
+            return _error("read_only", 409)
+        data = await _body(request) if request.method == "PUT" else {}
+        if request.method == "PUT":
+            if not data or not data.keys() <= {"topic", "global"}:
+                return _error("bad_request", 400)
+            try:
+                for scope, value in data.items():
+                    if scope != "topic" or value is not None:
+                        validate_autocompact(value)
+            except ValueError:
+                return _error("bad_request", 400)
+        async with topics.gate(tid):
+            if tid in turns.blocked or await topics.lookup(tid) is None:
+                return _error("unknown_topic", 404)
+            key = from_tid(tid)
+            async with (
+                input_lock(bot._sequential.get_lock(key.lock_key)),
+                bot._orch._autocompact_global_lock,
+            ):
+                saved = not data or await _save_autocompact_values(bot._orch, key, data)
+                state = await _autocompact_state(bot._orch, key)
+        if not saved:
+            return web.json_response({"error": "generic", **state}, status=503)
+        return web.json_response(state)
 
     async def messages(request: web.Request) -> web.Response:
         tid = request.match_info["tid"]
@@ -766,6 +841,8 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
     app.router.add_put(f"{_PREFIX}/topics/{{tid}}/seen", save_seen)
     app.router.add_patch(f"{_PREFIX}/topics/{{tid}}", manage_topic)
     app.router.add_delete(f"{_PREFIX}/topics/{{tid}}", manage_topic)
+    app.router.add_get(f"{_PREFIX}/topics/{{tid}}/autocompact", autocompact)
+    app.router.add_put(f"{_PREFIX}/topics/{{tid}}/autocompact", autocompact)
     app.router.add_get(f"{_PREFIX}/topics/{{tid}}/messages", messages)
     app.router.add_post(f"{_PREFIX}/topics/{{tid}}/messages", send_or_abort)
     app.router.add_post(f"{_PREFIX}/topics/{{tid}}/abort", send_or_abort)
