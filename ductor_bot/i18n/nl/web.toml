@@ -80,6 +80,7 @@ current = "{name} · Onderwerp #{id}"
 last_active = "Laatst actief: {time}"
 
 [chat]
+activity = "Activiteitsdetails"
 queued = "In wachtrij"
 cancelled = "Geannuleerd"
 cancel_queued = "Bericht in wachtrij annuleren"

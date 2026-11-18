@@ -80,6 +80,7 @@ current = "{name} · Topik #{id}"
 last_active = "Terakhir aktif: {time}"
 
 [chat]
+activity = "Detail aktivitas"
 queued = "Dalam antrean"
 cancelled = "Dibatalkan"
 cancel_queued = "Batalkan pesan dalam antrean"

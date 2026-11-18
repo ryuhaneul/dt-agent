@@ -187,6 +187,10 @@ dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(2px)}
 @keyframes bob{50%{transform:translateY(-3px);opacity:.35}}
 .caret{display:inline-block;width:7px;height:1.05em;background:var(--accent);vertical-align:-2px;margin-left:2px;animation:pulse 1s steps(1) infinite}
 .stopped{margin-top:5px;font-size:.76rem;color:var(--danger)}
+.activity-line{margin:6px 0;color:var(--muted);font-size:.86rem;overflow-wrap:anywhere}
+.activity-trace{margin:0 0 12px;padding-bottom:8px;border-bottom:1px solid var(--rule);font-size:.86rem;color:var(--muted)}
+.activity-trace summary{cursor:pointer;overflow-wrap:anywhere}
+.activity-lines{margin-top:8px}
 .queue-status{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:.8rem;color:var(--muted)}
 .queue-cancel{min-height:32px;padding:4px 10px;font-size:.8rem}
 .composer{padding:10px 20px 14px;border-top:1px solid var(--rule)}

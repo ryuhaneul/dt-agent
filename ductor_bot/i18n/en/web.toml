@@ -80,6 +80,7 @@ current = "{name} · Topic #{id}"
 last_active = "Last active {time}"
 
 [chat]
+activity = "Activity details"
 queued = "Queued"
 cancelled = "Cancelled"
 cancel_queued = "Cancel queued message"

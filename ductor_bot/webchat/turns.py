@@ -20,6 +20,7 @@ from ductor_bot.chat_log.recorder import ChatLogTurn, chat_log_source, chat_log_
 from ductor_bot.i18n import LANGUAGES
 from ductor_bot.i18n.loader import TranslationStore
 from ductor_bot.infra.input_context import received_at
+from ductor_bot.text.response_format import normalize_tool_name, system_status_label
 
 if TYPE_CHECKING:
     from ductor_bot.chat_log.recorder import TurnStatus
@@ -48,6 +49,9 @@ class _QueuedTurn:
     identity: ChatLogTurn
     received: str = field(default_factory=timestamp)
     phase: str = "queued"
+    started_at: str | None = None
+    activity: dict[str, Any] | None = None
+    activity_seq: int = 0
     prepared: asyncio.Event = field(default_factory=asyncio.Event)
     cancellation: asyncio.Task[None] | None = None
 
@@ -192,7 +196,7 @@ class WebTurns:
         running = next((turn for turn in queued if turn["phase"] == "started"), None)
         return (running or queued[0])["turn_id"] if queued else None
 
-    def snapshot(self, tid: str) -> list[dict[str, str]]:
+    def snapshot(self, tid: str) -> list[dict[str, Any]]:
         return [
             {
                 "turn_id": turn_id,
@@ -200,6 +204,8 @@ class WebTurns:
                 "text": state.text,
                 "user_entry_id": state.identity["user_entry_id"],
                 "received": state.received,
+                "started_at": state.started_at,
+                "activity": state.activity,
             }
             for turn_id in self._queues.get(tid, [])
             if (state := self._turns.get(turn_id)) is not None
@@ -211,8 +217,24 @@ class WebTurns:
     def _publish(self, tid: str, turn_id: str, phase: str) -> None:
         if tid not in self.blocked:
             self.runtime.events.publish(
-                {"type": "turn", "tid": tid, "turn_id": turn_id, "phase": phase}
+                {
+                    "type": "turn",
+                    "tid": tid,
+                    "turn_id": turn_id,
+                    "phase": phase,
+                    "started_at": state.started_at if (state := self._turns.get(turn_id)) else None,
+                }
             )
+
+    def _activity(self, state: _QueuedTurn, kind: str, **fields: str | None) -> None:
+        if state.tid in self.blocked:
+            return
+        state.activity_seq += 1
+        activity = {"type": kind, "seq": state.activity_seq, **fields}
+        state.activity = None if fields.get("status", "present") is None else activity
+        self.runtime.events.publish(
+            {"tid": state.tid, "turn_id": state.identity["turn_id"], **activity}
+        )
 
     def submit(self, tid: str, text: str, *, session_name: str | None = None) -> str:
         turn: ChatLogTurn = {
@@ -566,30 +588,35 @@ class WebTurns:
                 # The synchronous fsync keeps the start receipt and transition indivisible.
                 self._journal.mark(turn["turn_id"], "started")
                 state.phase = "started"
+                state.started_at = timestamp()
                 self._started.add(turn["turn_id"])
                 self._publish(tid, turn["turn_id"], "started")
 
                 async def delta(value: str) -> None:
                     nonlocal partial
                     partial += value
+                    state.activity = None
                     if tid not in self.blocked:
                         self.runtime.events.publish(
                             {"type": "delta", "tid": tid, "turn_id": turn["turn_id"], "text": value}
                         )
 
                 async def tool(event: ToolUseEvent) -> None:
-                    if tid not in self.blocked:
-                        self.runtime.events.publish(
-                            {
-                                "type": "tool",
-                                "tid": tid,
-                                "turn_id": turn["turn_id"],
-                                "name": event.tool_name,
-                            }
-                        )
+                    self._activity(state, "tool", name=normalize_tool_name(event.tool_name))
 
-                async def system_status(_value: str | None) -> None:
-                    pass
+                async def system_status(value: str | None) -> None:
+                    # Fixed status enums only: never stream arbitrary provider status values.
+                    if value is None or system_status_label(value) is not None:
+                        self._activity(state, "system_status", status=value)
+
+                thinking_sent = False
+
+                async def reasoning(value: str) -> None:
+                    nonlocal thinking_sent
+                    # Match Telegram's indicator-only reasoning mode; do not retain its text.
+                    if not thinking_sent and value.strip():
+                        thinking_sent = True
+                        await system_status("thinking")
 
                 source_token = chat_log_source.set("web")
                 turn_token = chat_log_turn.set(turn)
@@ -603,6 +630,7 @@ class WebTurns:
                                 on_text_delta=delta,
                                 on_tool_activity=tool,
                                 on_system_status=system_status,
+                                on_reasoning_delta=reasoning,
                             )
                         else:
                             from ductor_bot.orchestrator.flows import StreamingCallbacks
@@ -616,6 +644,7 @@ class WebTurns:
                                     on_text_delta=delta,
                                     on_tool_activity=tool,
                                     on_system_status=system_status,
+                                    on_reasoning_delta=reasoning,
                                 ),
                             )
                     self._settled.add(turn["turn_id"])

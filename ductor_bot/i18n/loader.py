@@ -116,4 +116,18 @@ def load_web_strings(lang: str) -> dict[str, str]:
 
     if lang != "en" and lang in LANGUAGES:
         strings.update(_load_toml(_I18N_DIR / lang / "web.toml"))
+    # Reuse only the public Telegram indicator labels, never the rest of chat strings.
+    chat = _load_toml(_I18N_DIR / "en" / "chat.toml")
+    if lang != "en" and lang in LANGUAGES:
+        chat.update(_load_toml(_I18N_DIR / lang / "chat.toml"))
+    for name in (
+        "label_thinking",
+        "label_compacting",
+        "label_recovering",
+        "label_timeout_warning",
+        "label_timeout_extended",
+        "done",
+    ):
+        key = f"stream.{name}"
+        strings[key] = chat[key]
     return strings

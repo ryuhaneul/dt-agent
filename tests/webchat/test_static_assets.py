@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from ductor_bot.i18n.loader import _load_toml
+from ductor_bot.i18n.loader import _load_toml, load_web_strings
 from ductor_bot.webchat.web.app import CSP, STARFLOW_CSP, STATE
 from tests.webchat import test_web_app as fake_contract
 
@@ -918,6 +918,8 @@ coarse=false;input.emit('keydown',{key:'Enter',shiftKey:true});await flush();ass
 input.emit('keydown',{key:'Enter',shiftKey:false,isComposing:true});await flush();assert.equal(turnNumber,0);
 input.value='hello <script>';input.emit('input');input.emit('keydown',{key:'Enter',shiftKey:false,isComposing:false});await flush();assert.equal(turnNumber,1);assert.equal(input.value,'');assert.equal(stopButton.hidden,true);
 await chat.namespace.handleEvent({type:'turn',tid:'1.2',turn_id:'turn1',phase:'started'});
+await chat.namespace.handleEvent({type:'system_status',tid:'1.2',turn_id:'turn1',status:'thinking',seq:1});
+await chat.namespace.handleEvent({type:'system_status',tid:'1.2',turn_id:'turn1',status:'thinking',seq:2});
 await chat.namespace.handleEvent({type:'delta',tid:'1.2',turn_id:'turn1',text:'**Hello** <img>'});
 await chat.namespace.handleEvent({type:'tool',tid:'1.2',turn_id:'turn1',name:'Read <script>'});
 assert.equal(frames.size,1,'delta and tool updates share one animation frame');
@@ -926,6 +928,9 @@ const historyPrefix=thread.innerHTML.split('<div class="msg bot" id="streamMsg"'
 const streamFrame=frames.values().next().value;frames.clear();streamFrame();
 assert.equal(thread.innerHTML.split('<div class="msg bot" id="streamMsg"')[0],historyPrefix,'stream updates preserve history markup');
 assert.ok(thread.innerHTML.includes('<b>Hello</b> &lt;img&gt;'));assert.ok(thread.innerHTML.includes('Read &lt;script&gt;'));
+assert.ok(thread.innerHTML.includes(`[${strings['stream.label_thinking']}] x2`));
+assert.ok(thread.innerHTML.indexOf(strings['stream.label_thinking'])<thread.innerHTML.indexOf('<b>Hello</b>'));
+assert.ok(thread.innerHTML.indexOf('<b>Hello</b>')<thread.innerHTML.indexOf('[TOOL: Read &lt;script&gt;]'));
 for(let i=0;i<100;i++)await chat.namespace.handleEvent({type:'delta',tid:'1.2',turn_id:'turn1',text:' x'});
 assert.equal(frames.size,1,'a delta burst queues only one frame');
 chat.namespace.renderThread();assert.equal(frames.size,0,'a full render cancels pending stream work');
@@ -952,6 +957,8 @@ stopButton.emit('click');await flush();assert.ok(calls.some(call=>call.url==='/a
 await chat.namespace.handleEvent({type:'turn',tid:'1.2',turn_id:'turn1',phase:'aborted'});assert.equal(stopButton.hidden,true);assert.ok(thread.innerHTML.includes(strings['chat.stopped']));assert.ok(!thread.innerHTML.includes('class="caret"'));
 const final=makeEntry(206,{source:'web',turn_id:'turn1',status:'aborted',text:'Final',mirror:{state:'pending'}});historyA.push(final);
 await chat.namespace.handleEvent({type:'entry',tid:'1.2',entry:final});await chat.namespace.handleEvent({type:'entry',tid:'1.2',entry:final});
+assert.ok(thread.innerHTML.includes('class="activity-trace" data-activity-turn="turn1"><summary>'));
+assert.ok(thread.innerHTML.includes(`<summary>${strings['chat.stopped']}`));
 assert.equal((thread.innerHTML.match(/data-entry-seq="206"/g)||[]).length,1);assert.ok(!thread.innerHTML.includes('data-turn="turn1"'));assert.ok(thread.innerHTML.includes(strings['chat.pending_mirror']));
 final.mirror={state:'sent'};await chat.namespace.handleEvent({type:'outbox',pending:0,item:{...queue[0],state:'sent'}});assert.ok(thread.innerHTML.includes(strings['chat.delivered']));assert.equal(document.querySelector('#pendingBadge').hidden,true);
 final.mirror={state:'failed'};await chat.namespace.handleEvent({type:'outbox',pending:0,item:{...queue[0],state:'failed'}});assert.ok(thread.innerHTML.includes(strings['chat.mirror_failed']));
@@ -1183,9 +1190,9 @@ def test_chat_client_against_fake_api_and_event_contract():
         input=json.dumps(
             {
                 "staticDir": str(STATIC),
-                "strings": STRINGS,
+                "strings": load_web_strings("en"),
                 "locales": {
-                    lang: _load_toml(STATIC.parents[2] / f"i18n/{lang}/web.toml")
+                    lang: load_web_strings(lang)
                     for lang in ("ko", "en", "de")
                 },
             }

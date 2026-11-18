@@ -8,6 +8,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from unittest.mock import patch
 
 import aiohttp
@@ -15,10 +16,11 @@ import pytest
 from aiohttp import web
 
 from ductor_bot.i18n.check import _compare_domain
-from ductor_bot.i18n.loader import load_web_strings
+from ductor_bot.i18n.loader import _load_toml, load_web_strings
 from ductor_bot.webchat.web.app import CSP, STARFLOW_CSP, STATE, create_app
 from ductor_bot.webchat.web.sessions import ABSOLUTE_TTL, IDLE_TTL, SessionStore
 
+I18N_ROOT = Path(__file__).resolve().parents[2] / "ductor_bot/i18n"
 ORIGIN = "https://chat.example.com"
 CLIENT = {"X-Dtw-Client": "web"}
 
@@ -443,6 +445,21 @@ async def test_i18n_explicit_web_language_is_public_and_does_not_change_bot(site
     assert response.status == 200
     assert "WWW-Authenticate" not in response.headers
     assert await response.json() == {"lang": language, "strings": load_web_strings(language)}
+    data = (await response.json())["strings"]
+    expected = {
+        "stream.label_thinking",
+        "stream.label_compacting",
+        "stream.label_recovering",
+        "stream.label_timeout_warning",
+        "stream.label_timeout_extended",
+        "stream.done",
+    }
+    chat = _load_toml(I18N_ROOT / language / "chat.toml")
+    web_keys = set(
+        _load_toml(I18N_ROOT / language / "web.toml")
+    )
+    assert set(data) == web_keys | expected
+    assert {key: data[key] for key in expected} == {key: chat[key] for key in expected}
     assert fake.language == "ko"
     assert (await (await client.get("/api/i18n")).json())["lang"] == "ko"
 

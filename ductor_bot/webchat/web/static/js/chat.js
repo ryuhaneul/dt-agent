@@ -153,6 +153,42 @@ async function cancelQueued(turnId) {
     if (active && generation === epoch) renderThread();
   }
 }
+const systemLabels = {
+  thinking: 'stream.label_thinking', compacting: 'stream.label_compacting',
+  recovering: 'stream.label_recovering', timeout_warning: 'stream.label_timeout_warning',
+  timeout_extended: 'stream.label_timeout_extended',
+};
+function addActivity(turn, event) {
+  if (event.type === 'system_status' && !Object.hasOwn(systemLabels, event.status)) return;
+  if (event.type === 'tool' && (typeof event.name !== 'string' || !event.name)) return;
+  const items = turn.activities ||= [], last = items.at(-1);
+  // Snapshot recovery may contain the last event already received over the live socket.
+  if (event.seq !== undefined && items.some(item => item.seq === event.seq)) return;
+  const offset = turn.text.length, value = event.type === 'tool' ? event.name : event.status;
+  if (last && last.type === event.type && last.value === value && last.offset === offset) {
+    last.count++; last.seq = event.seq;
+  } else items.push({ type: event.type, value, offset, count: 1, seq: event.seq });
+}
+function activityLine(item) {
+  const text = item.type === 'tool' ? `TOOL: ${item.value}` : t(systemLabels[item.value]);
+  const tag = item.type === 'tool' ? 'b' : 'i', count = item.count > 1 ? ` x${item.count}` : '';
+  return `<div class="activity-line"><${tag}>[${esc(text)}]${count}</${tag}></div>`;
+}
+function activitySummary(turn) {
+  if (!turn?.activities?.length) return '';
+  const seconds = Math.max(0, ((Date.parse(turn.finished) || Date.now()) - (Date.parse(turn.startedAt) || Date.now())) / 1000).toFixed(1);
+  const label = turn.phase === 'aborted' ? t('chat.stopped') : turn.phase === 'error' ? t('error.generic') : t('stream.done', { secs: seconds });
+  return `<details class="activity-trace" data-activity-turn="${esc(turn.id)}"${turn.activityOpen ? ' open' : ''}><summary>${esc(label)}<span class="sr-only"> · ${esc(t('chat.activity'))}</span></summary><div class="activity-lines" role="group" aria-label="${esc(t('chat.activity'))}">${turn.activities.map(activityLine).join('')}</div></details>`;
+}
+function streamContent(turn, live) {
+  if (!live) return activitySummary(turn) + md(turn.text);
+  let html = '', offset = 0;
+  for (const item of turn.activities || []) {
+    html += md(turn.text.slice(offset, item.offset)) + activityLine(item);
+    offset = item.offset;
+  }
+  return html + md(turn.text.slice(offset));
+}
 function entryMarkup(entry) {
   const time = esc(formatTime(entry.ts));
   const delegated = entry.role === 'event' && entry.kind === 'interagent';
@@ -164,12 +200,12 @@ function entryMarkup(entry) {
   }
   const turn = turns.get(entry.turn_id);
   const stopped = entry.status === 'aborted' || (entry.role === 'bot' && turn?.phase === 'aborted');
-  return `<div class="msg ${entry.role === 'user' ? 'me' : 'bot'}${entry.imported ? ' old' : ''}${entry.kind === 'command' ? ' command-message' : ''}" data-entry-seq="${entry.seq}"><div class="meta">${sourceTag(entry)}${delegated ? `<span class="tag">${esc(t('chat.delegated_response'))}</span>` : ''}<span class="tm">${time}</span>${delegated && entry.title ? `<span>${esc(entry.title)}</span>` : ''}</div><div class="bubble md">${entry.kind === 'command' ? esc(entry.text || '') : md(entry.text || '')}${responseButtons(entry)}</div>${entry.role === 'user' ? queueStatus(entry.turn_id, entry.status) : ''}${stopped ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : ''}${mirror(entry)}</div>`;
+  return `<div class="msg ${entry.role === 'user' ? 'me' : 'bot'}${entry.imported ? ' old' : ''}${entry.kind === 'command' ? ' command-message' : ''}" data-entry-seq="${entry.seq}"><div class="meta">${sourceTag(entry)}${delegated ? `<span class="tag">${esc(t('chat.delegated_response'))}</span>` : ''}<span class="tm">${time}</span>${delegated && entry.title ? `<span>${esc(entry.title)}</span>` : ''}</div><div class="bubble md">${entry.role === 'bot' ? activitySummary(turn) : ''}${entry.kind === 'command' ? esc(entry.text || '') : md(entry.text || '')}${responseButtons(entry)}</div>${entry.role === 'user' ? queueStatus(entry.turn_id, entry.status) : ''}${stopped ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : ''}${mirror(entry)}</div>`;
 }
 function streamMarkup(turn) {
   const live = ['queued', 'started'].includes(turn.phase);
   const dots = live ? '<span class="typing" aria-hidden="true"><i></i><i></i><i></i></span>' : '';
-  return `<div class="msg bot" ${live ? 'id="streamMsg"' : ''} data-turn="${esc(turn.id)}"><div class="meta"><span class="tag">${esc(t('tag.web'))}</span><span>${esc(live ? t('chat.answering') : formatTime(turn.finished))}</span>${dots}${live && turn.tool ? `<span>${esc(turn.tool)}</span>` : ''}</div><div class="bubble md">${md(turn.text)}${live ? '<span class="caret" aria-hidden="true"></span>' : ''}</div>${turn.phase === 'aborted' ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : turn.phase === 'error' ? `<div class="stopped">${esc(t('error.generic'))}</div>` : ''}</div>`;
+  return `<div class="msg bot" ${live ? 'id="streamMsg"' : ''} data-turn="${esc(turn.id)}"><div class="meta"><span class="tag">${esc(t('tag.web'))}</span><span>${esc(live ? t('chat.answering') : formatTime(turn.finished))}</span>${dots}</div><div class="bubble md">${streamContent(turn, live)}${live ? '<span class="caret" aria-hidden="true"></span>' : ''}</div>${turn.phase === 'aborted' ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : turn.phase === 'error' ? `<div class="stopped">${esc(t('error.generic'))}</div>` : ''}</div>`;
 }
 function cancelStreamRender() {
   if (streamFrame !== null) cancelAnimationFrame(streamFrame);
@@ -234,6 +270,10 @@ export function renderThread({ bottom = false, seq = null } = {}) {
   cancelStreamRender();
   const topic = getTopic(); renderHeader();
   const thread = document.querySelector('#thread');
+  for (const element of thread.querySelectorAll('details[data-activity-turn]')) {
+    const turn = turns.get(element.dataset.activityTurn);
+    if (turn) turn.activityOpen = element.open;
+  }
   const previousTop = thread.scrollTop;
   const nearBottom = thread.scrollHeight - thread.clientHeight - previousTop < 80;
   if (!topic) { thread.replaceChildren(); updateThreadNavigation(); return; }
@@ -383,6 +423,8 @@ async function resync() {
         // Admission text/time are immutable, even when newer stream events won the phase race.
         if (state.text !== undefined) turn.userText = state.text;
         turn.received = state.received ?? turn.received;
+        turn.startedAt = state.started_at ?? turn.startedAt;
+        if (stable && state.activity) addActivity(turn, state.activity);
         turns.set(turn.id, turn);
       }
     }
@@ -393,7 +435,7 @@ async function resync() {
 export async function handleEvent(event) {
   if (!active) return;
   const topic = getTopic(), tid = event.tid;
-  if (tid && ['turn', 'delta'].includes(event.type)) {
+  if (tid && ['turn', 'delta', 'tool', 'system_status'].includes(event.type)) {
     topicVersions.set(tid, (topicVersions.get(tid) || 0) + 1);
   }
   switch (event.type) {
@@ -418,7 +460,10 @@ export async function handleEvent(event) {
       busy.set(tid, event.busy); break;
     case 'turn': {
       const turn = turns.get(event.turn_id) || { id: event.turn_id, tid, text: '' };
-      turn.phase = event.phase; turns.set(turn.id, turn);
+      turn.phase = event.phase;
+      turn.startedAt = event.started_at ?? turn.startedAt;
+      if (event.phase === 'started') turn.startedAt ??= new Date().toISOString();
+      turns.set(turn.id, turn);
       if (event.phase === 'queued' && turn.userText === undefined) await resync();
       if (!['queued', 'started'].includes(event.phase)) {
         turn.finished = new Date().toISOString();
@@ -434,10 +479,11 @@ export async function handleEvent(event) {
       if (topic?.tid === tid) scheduleStreamRender(turn.id);
       return;
     }
-    case 'tool': {
-      const turn = turns.get(event.turn_id);
-      if (turn) turn.tool = event.name;
-      if (turn && topic?.tid === turn.tid) scheduleStreamRender(turn.id);
+    case 'tool':
+    case 'system_status': {
+      const turn = turns.get(event.turn_id) || { id: event.turn_id, tid, phase: 'started', text: '' };
+      addActivity(turn, event); turns.set(turn.id, turn);
+      if (topic?.tid === tid) scheduleStreamRender(turn.id);
       return;
     }
     case 'telegram': telegram = event; renderStatus(); break;

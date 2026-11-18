@@ -80,6 +80,7 @@ current = "{name} · 토픽 #{id}"
 last_active = "마지막 활동 {time}"
 
 [chat]
+activity = "활동 상세"
 queued = "대기 중"
 cancelled = "취소됨"
 cancel_queued = "대기 메시지 취소"

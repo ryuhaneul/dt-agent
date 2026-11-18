@@ -4756,3 +4756,65 @@ async def test_queue_admission_journal_failure_rejects_before_202(conversation, 
     h.bot._orch.handle_message_streaming.assert_not_awaited()
     assert await h.runtime.history.read("-123.7") == []
     assert await h.runtime.outbox.pending() == []
+
+
+async def test_activity_payload_is_indicator_only_and_snapshot_is_current(conversation):
+    h = conversation
+    tool_ready, text_ready, release_tool, release_text = (asyncio.Event() for _ in range(4))
+    canary = "private-activity-input-canary"
+
+    async def handle(key, text, **callbacks):
+        dispatch = SimpleNamespace(
+            key=key, text=text, transport_override=None, counts_as_activity=True
+        )
+        await h.recorder.begin(dispatch)
+        await callbacks["on_system_status"]("thinking")
+        await callbacks["on_system_status"]("compacting")
+        await callbacks["on_system_status"](canary)
+        await callbacks["on_system_status"](None)
+        await callbacks["on_reasoning_delta"]("  ")
+        await callbacks["on_reasoning_delta"](canary)
+        await callbacks["on_reasoning_delta"](canary)
+        await callbacks["on_tool_activity"](
+            ToolUseEvent(type="tool_use", tool_name="bash", parameters={"command": canary})
+        )
+        tool_ready.set()
+        await release_tool.wait()
+        await callbacks["on_text_delta"]("safe answer")
+        text_ready.set()
+        await release_text.wait()
+        result = OrchestratorResult(text="safe answer")
+        await h.recorder.finish(dispatch, result, status="ok")
+        return result
+
+    h.bot._orch.handle_message_streaming.side_effect = handle
+    ws = await h.client.ws_connect(f"{_PREFIX}/events", headers=headers())
+    try:
+        turn_id = (await (await post_message(h)).json())["turn_id"]
+        await asyncio.wait_for(tool_ready.wait(), 3)
+        events = await receive_until(ws, lambda event: event.get("type") == "tool")
+        tool = events[-1]
+        assert set(tool) == {"type", "tid", "turn_id", "seq", "name"}
+        assert tool["name"] == "Shell"
+        assert [event["status"] for event in events if event["type"] == "system_status"] == [
+            "thinking", "compacting", None, "thinking"
+        ]
+        response = await h.client.get(f"{_PREFIX}/topics", headers=headers())
+        topic = (await response.json())["topics"][0]
+        state = next(row for row in topic["turns"] if row["turn_id"] == turn_id)
+        assert state["started_at"]
+        assert state["activity"] == {"type": "tool", "seq": tool["seq"], "name": "Shell"}
+        assert canary not in json.dumps([events, topic])
+        release_tool.set()
+        await asyncio.wait_for(text_ready.wait(), 3)
+        response = await h.client.get(f"{_PREFIX}/topics", headers=headers())
+        topic = (await response.json())["topics"][0]
+        assert topic["turns"][0]["activity"] is None
+        release_text.set()
+        await receive_until(ws, lambda event: event.get("phase") == "done")
+        entries = await h.runtime.history.read("-123.7")
+        assert canary not in json.dumps([entry.text for entry in entries])
+    finally:
+        release_tool.set()
+        release_text.set()
+        await ws.close()
