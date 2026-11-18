@@ -658,6 +658,30 @@ class SessionManager:
                 existing.session_id = data.session_id
             existing.message_count = max(existing.message_count, data.message_count)
 
+    async def set_autocompact(self, key: SessionKey, value: AutocompactValue | None) -> None:
+        """Persist a topic setting without retargeting providers or advancing counters."""
+        from ductor_bot.cli.autocompact import validate_autocompact
+
+        if value is not None:
+            value = validate_autocompact(value)
+        async with self._lock:
+            sessions = await self._load()
+            current = sessions.get(key.storage_key)
+            if current is None:
+                current = SessionData(
+                    chat_id=key.chat_id,
+                    transport=key.transport,
+                    topic_id=key.topic_id,
+                    provider=self._config.provider,
+                    model=self._config.model,
+                    reasoning_effort=self._config.reasoning_effort,
+                    activity_at=None,
+                    activity_turns=0,
+                )
+            current.autocompact = value
+            sessions[key.storage_key] = current
+            await self._save(sessions)
+
     async def sync_session_target(
         self,
         session: SessionData,

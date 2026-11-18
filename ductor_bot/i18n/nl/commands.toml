@@ -1,6 +1,7 @@
 # Nederlandse botcommandobeschrijvingen (≤22 tekens voor Telegram).
 
 [bot]
+autocompact = "Auto-comprimeren"
 masterkey = "Hoofdsleutel beheren"
 start = "Welkom"
 where = "Gevolgde chats"

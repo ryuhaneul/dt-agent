@@ -1,6 +1,7 @@
 # Deutsche Bot-Command-Beschreibungen (≤22 Zeichen für Telegram).
 
 [bot]
+autocompact = "Auto-Komprimierung"
 masterkey = "Hauptschlüssel"
 start = "Willkommen"
 where = "Erfasste Chats"

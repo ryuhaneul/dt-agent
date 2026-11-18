@@ -76,6 +76,14 @@ async def cmd_model(orch: Orchestrator, key: SessionKey, text: str) -> Orchestra
     return OrchestratorResult(text=result_text)
 
 
+async def cmd_autocompact(orch: Orchestrator, key: SessionKey, _text: str) -> OrchestratorResult:
+    """Show the agent/topic automatic compaction controls."""
+    from ductor_bot.orchestrator.selectors.autocompact_selector import autocompact_selector_start
+
+    response = await autocompact_selector_start(orch, key)
+    return OrchestratorResult(text=response.text, buttons=response.buttons)
+
+
 async def cmd_effort(orch: Orchestrator, key: SessionKey, _text: str) -> OrchestratorResult:
     """Handle /effort: show reasoning-effort buttons for the active provider."""
     logger.info("Effort requested")

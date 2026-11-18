@@ -63,6 +63,7 @@ QUICK_COMMANDS: frozenset[str] = frozenset(
         "/accounts",
         "/usage",
         "/effort",
+        "/autocompact",
         "/showfiles",
         "/sessions",
         "/tasks",
@@ -293,6 +294,8 @@ class SequentialMiddleware(BaseMiddleware):
         self._abort_handler: AbortHandler | None = None
         self._abort_all_handler: AbortAllHandler | None = None
         self._quick_command_handler: QuickCommandHandler | None = None
+        self._interactive_input_handler: QuickCommandHandler | None = None
+        self._interactive_input_matcher: Callable[[Message], bool] | None = None
         self._message_received_handler: Callable[[Message], None] | None = None
         self._pending: dict[int, list[_QueueEntry]] = {}
         self._entry_counter = 0
@@ -335,6 +338,13 @@ class SequentialMiddleware(BaseMiddleware):
     def set_quick_command_handler(self, handler: QuickCommandHandler) -> None:
         """Register a callback for read-only commands dispatched *before* the lock."""
         self._quick_command_handler = handler
+
+    def set_interactive_input_handler(
+        self, matcher: Callable[[Message], bool], handler: QuickCommandHandler
+    ) -> None:
+        """Consume owned interactive input before mention filtering, retaining dedup."""
+        self._interactive_input_matcher = matcher
+        self._interactive_input_handler = handler
 
     def set_message_received_handler(self, handler: Callable[[Message], None]) -> None:
         """Register nonblocking topic naming after dedup, before the session lock."""
@@ -484,7 +494,11 @@ class SequentialMiddleware(BaseMiddleware):
     ) -> Any:
         if not isinstance(event, Message) or not event.chat:
             return await handler(event, data)
-        if self._is_unaddressed_group(event) or self._leave_pending_if_stopping(data):
+        if (
+            await self._consume_interactive_input(event, data)
+            or self._is_unaddressed_group(event)
+            or self._leave_pending_if_stopping(data)
+        ):
             return None
 
         topic_label: str | None = None
@@ -524,6 +538,16 @@ class SequentialMiddleware(BaseMiddleware):
             data["topic_naming_started"] = True
         session_key = get_session_key(event)
         return await self._run_under_lock(handler, event, data, chat_id, session_key)
+
+    async def _consume_interactive_input(self, event: Message, data: dict[str, Any]) -> bool:
+        if not self._interactive_input_matcher or not self._interactive_input_matcher(event):
+            return False
+        if not self._leave_pending_if_stopping(data) and not self._dedup.check(
+            build_dedup_key(event.chat.id, event.message_id)
+        ):
+            assert self._interactive_input_handler is not None
+            await self._interactive_input_handler(event.chat.id, event)
+        return True
 
     async def run_callback(
         self,

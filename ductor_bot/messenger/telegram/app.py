@@ -186,7 +186,8 @@ def _build_help_text(*, main_only: bool = False) -> str:
         SEP,
         f"{t('help.cat_daily')}\n{_help_line('new')}\n{_help_line('reset')}\n{_help_line('stop')}\n"
         f"{_help_line('interrupt')}\n{_help_line('stop_all')}\n"
-        f"{_help_line('model')}\n{_help_line('effort')}\n{_help_line('status')}\n"
+        f"{_help_line('model')}\n{_help_line('effort')}\n{_help_line('autocompact')}\n"
+        f"{_help_line('status')}\n"
         f"{_help_line('usage')}\n{_help_line('memory')}",
         f"{t('help.cat_automation')}\n{_help_line('session')}\n{_help_line('tasks')}\n{_help_line('cron')}",
         f"{t('help.cat_multiagent')}\n{_help_line('agent_commands')}",
@@ -442,6 +443,9 @@ class TelegramBot:
         self._sequential.set_abort_handler(self._on_abort)
         self._sequential.set_abort_all_handler(self._on_abort_all)
         self._sequential.set_quick_command_handler(self._on_quick_command)
+        self._sequential.set_interactive_input_handler(
+            self._matches_autocompact_input, self._on_autocompact_input
+        )
         on_rejected = self._on_group_rejected
         auth = AuthMiddleware(allowed, allowed_group_ids=allowed_groups, on_rejected=on_rejected)
         self._auth = auth
@@ -598,6 +602,7 @@ class TelegramBot:
             "memory",
             "model",
             "effort",
+            "autocompact",
             "cron",
             "diagnose",
             "reset",
@@ -1004,6 +1009,10 @@ class TelegramBot:
             return False
 
         text_lower = (message.text or "").strip().lower()
+        if text_lower.split("@", 1)[0] == "/autocompact" and message.from_user:
+            self._orch._autocompact_inputs.pop(
+                (get_session_key(message), message.from_user.id), None
+            )
 
         direct = await self._dispatch_direct_command(chat_id, message, text_lower)
         if direct is not None or self._orchestrator is None:
@@ -1043,11 +1052,53 @@ class TelegramBot:
             return
         await self._on_abort(message.chat.id, message)
 
+    def _matches_autocompact_input(self, message: Message) -> bool:
+        user = message.from_user
+        if self._orchestrator is None or user is None or user.id not in self._allowed_users:
+            return False
+        if self._is_for_others(message):
+            return False
+        text = (message.text or "").strip()
+        if text.startswith("/") and text.split("@", 1)[0].lower() != "/cancel":
+            return False
+        return (get_session_key(message), user.id) in getattr(self._orch, "_autocompact_inputs", {})
+
+    async def _on_autocompact_input(self, _chat_id: int, message: Message) -> bool:
+        from ductor_bot.orchestrator.selectors.autocompact_selector import consume_autocompact_input
+
+        if not self._matches_autocompact_input(message):
+            return False
+        assert message.from_user is not None
+        key = get_session_key(message)
+        async with input_lock(self._sequential.get_lock(key.lock_key)):
+            response = await consume_autocompact_input(
+                self._orch, key, message.text or "", user_id=message.from_user.id
+            )
+        if response is not None:
+            await self._send_command_response(
+                key.chat_id,
+                response.text,
+                SendRichOpts(
+                    reply_to_message_id=message.message_id,
+                    thread_id=get_thread_id(message),
+                    reply_markup=button_grid_to_markup(response.buttons)
+                    if response.buttons
+                    else None,
+                ),
+            )
+        return True
+
     async def _on_command(self, message: Message) -> None:
         if self._is_for_others(message):
             return
         if self._config.group_mention_only and not self._is_addressed(message):
             return
+        if (message.text or "").strip().lower().split("@", 1)[
+            0
+        ] == "/autocompact" and message.from_user:
+            self._orch._autocompact_inputs.pop(
+                (get_session_key(message), message.from_user.id), None
+            )
         await handle_command(self._orch, self._bot, message)
 
     async def _on_new(self, message: Message) -> None:
@@ -1451,7 +1502,7 @@ class TelegramBot:
     # -- Callbacks -------------------------------------------------------------
 
     @inherit_received_input
-    async def _on_callback_query(self, callback: CallbackQuery) -> None:
+    async def _on_callback_query(self, callback: CallbackQuery) -> None:  # noqa: C901, PLR0911 -- transport callback namespaces
         """Handle inline keyboard button presses.
 
         Welcome quick-start (``w:`` prefix), model selector (``ms:`` prefix),
@@ -1487,6 +1538,13 @@ class TelegramBot:
                 return
             data = resolved
 
+        if data.startswith("ac:"):
+            if callback.from_user.id not in self._allowed_users:
+                return
+            await self._run_selector_callback(
+                key, msg.message_id, data, user_id=callback.from_user.id
+            )
+            return
         if data.startswith("ns:") or await self._route_special_callback(
             key, msg.message_id, data, thread_id=thread_id
         ):
@@ -1741,6 +1799,8 @@ class TelegramBot:
         message_id: int,
         data: str,
         send_prompt: Callable[[str], Awaitable[None]] | None = None,
+        *,
+        user_id: int | None = None,
     ) -> None:
         from ductor_bot.chat_log.history import InvalidSelectorButtonError, SelectorConflictError
         from ductor_bot.chat_log.ids import to_tid
@@ -1773,7 +1833,11 @@ class TelegramBot:
                 except Exception as exc:
                     logger.warning("Selector history failed: %s", type(exc).__name__)
                     entry_id = None
-            step = await selector_callback_response(self, key, data)
+            step = (
+                await selector_callback_response(self, key, data, user_id=user_id)
+                if data.startswith("ac:")
+                else await selector_callback_response(self, key, data)
+            )
             if step.prompt is not None:
                 if runtime is not None and entry_id is not None:
                     label = next(

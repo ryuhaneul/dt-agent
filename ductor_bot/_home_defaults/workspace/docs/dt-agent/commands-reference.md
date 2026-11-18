@@ -18,6 +18,7 @@ Typed in the chat (Telegram `/cmd`; Matrix also `!cmd`). They are chat messages,
 | `/stop_all` | Abort work across all agents (supervisor) |
 | `/model [name]` | Select model/provider; without an argument shows the selector |
 | `/effort` | Select the provider's reasoning effort |
+| `/autocompact` | Telegram: set topic or independent agent-global automatic compaction; default/off or 100000–1000000 tokens, two-minute private input ownership and `/cancel`; unsupported providers are shown |
 | `/status` | Session, model and runtime status |
 | `/usage` | Telegram, all bots: read-only usage; Claude shows the last value from normal runs, Codex is queried on request, Grok is unsupported |
 | `/accounts` | Telegram, main only: manage Claude slots and show each slot's last saved usage |

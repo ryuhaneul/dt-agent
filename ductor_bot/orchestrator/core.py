@@ -32,6 +32,7 @@ from ductor_bot.i18n import t
 from ductor_bot.infra.inflight import InflightTracker
 from ductor_bot.multiagent.delegation import DelegationContext
 from ductor_bot.orchestrator.commands import (
+    cmd_autocompact,
     cmd_cron,
     cmd_diagnose,
     cmd_effort,
@@ -181,6 +182,8 @@ class Orchestrator:
         self._interagent_port = interagent_port
         self._providers = ProviderManager(config)
         self._sessions = SessionManager(paths.sessions_path, config)
+        self._autocompact_inputs: dict[tuple[SessionKey, int], tuple[str, float]] = {}
+        self._autocompact_global_lock = asyncio.Lock()
         self._named_sessions = NamedSessionRegistry(paths.named_sessions_path)
         # Set by the supervisor: the bus-owned FIFO gates for inter-agent sessions.
         self._session_gates: SessionGateRegistry | None = None
@@ -543,6 +546,7 @@ class Orchestrator:
         reg.register_async("/model", cmd_model)
         reg.register_async("/model ", cmd_model)
         reg.register_async("/effort", cmd_effort)
+        reg.register_async("/autocompact", cmd_autocompact)
         reg.register_async("/memory", cmd_memory)
         reg.register_async("/cron", cmd_cron)
         reg.register_async("/diagnose", cmd_diagnose)

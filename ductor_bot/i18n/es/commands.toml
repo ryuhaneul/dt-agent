@@ -1,6 +1,7 @@
 # Descripciones de comandos del bot (≤22 caracteres para Telegram móvil).
 
 [bot]
+autocompact = "Compresión automática"
 masterkey = "Clave maestra"
 start = "Bienvenida"
 where = "Chats registrados"

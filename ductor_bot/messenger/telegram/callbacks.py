@@ -195,6 +195,7 @@ def _selector_data(data: str) -> bool:
     from ductor_bot.messenger.telegram.file_browser import is_file_browser_callback
     from ductor_bot.messenger.telegram.middleware import MQ_PREFIX
     from ductor_bot.orchestrator.selectors.account_selector import is_account_selector_callback
+    from ductor_bot.orchestrator.selectors.autocompact_selector import is_autocompact_callback
     from ductor_bot.orchestrator.selectors.cron_selector import is_cron_selector_callback
     from ductor_bot.orchestrator.selectors.model_selector import is_model_selector_callback
     from ductor_bot.orchestrator.selectors.session_selector import is_session_selector_callback
@@ -205,6 +206,7 @@ def _selector_data(data: str) -> bool:
         for predicate in (
             is_file_browser_callback,
             is_account_selector_callback,
+            is_autocompact_callback,
             is_cron_selector_callback,
             is_model_selector_callback,
             is_session_selector_callback,
@@ -246,9 +248,9 @@ def selector_button_data(data: object) -> bool:
 
     if not isinstance(data, str):
         return False
-    return data.startswith(("ms:", "crn:", "nsc:", "tsc:", "acs:", "sf:", "sf!", "usg:")) or (
-        data.startswith("w:") and resolve_welcome_callback(data) is not None
-    )
+    return data.startswith(
+        ("ms:", "ac:", "crn:", "nsc:", "tsc:", "acs:", "sf:", "sf!", "usg:")
+    ) or (data.startswith("w:") and resolve_welcome_callback(data) is not None)
 
 
 def button_kinds(buttons: object) -> list[list[str]]:
@@ -290,14 +292,16 @@ def selector_rows(response: SelectorResponse) -> list[list[dict[str, str]]]:
 
 def selector_callback_lock_key(key: SessionKey, data: str) -> tuple[int, int | None] | int | None:
     """Share the selector's execution lock identity with web admission checks."""
-    if data.startswith("ms:"):
+    if data.startswith(("ms:", "ac:")):
         return key.lock_key
     if data.startswith(("crn:", "nsc:")):
         return key.chat_id
     return None
 
 
-async def selector_callback_response(bot: TelegramBot, key: SessionKey, data: str) -> SelectorStep:  # noqa: PLR0911 -- one branch per supported callback namespace
+async def selector_callback_response(  # noqa: C901, PLR0911 -- one branch per supported selector namespace
+    bot: TelegramBot, key: SessionKey, data: str, *, user_id: int | None = None
+) -> SelectorStep:
     """Reuse selector functions and the Telegram handlers' existing lock boundaries."""
     from ductor_bot.infra.input_context import input_lock
     from ductor_bot.messenger.telegram.file_browser import handle_file_browser_callback
@@ -308,6 +312,15 @@ async def selector_callback_response(bot: TelegramBot, key: SessionKey, data: st
     from ductor_bot.orchestrator.selectors.session_selector import handle_session_callback
     from ductor_bot.orchestrator.selectors.task_selector import handle_task_callback
 
+    if data.startswith("ac:"):
+        from ductor_bot.orchestrator.selectors.autocompact_selector import (
+            handle_autocompact_callback,
+        )
+
+        async with input_lock(bot._sequential.get_lock(key.lock_key)):
+            return SelectorStep(
+                await handle_autocompact_callback(bot._orch, key, data, user_id=user_id)
+            )
     lock_key = selector_callback_lock_key(key, data)
     if data.startswith("w:"):
         return SelectorStep(prompt=resolve_welcome_callback(data))

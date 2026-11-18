@@ -47,7 +47,7 @@ Immediate middleware-handled command path (pre-lock, no normal dispatch):
 
 Orchestrator-routed commands:
 
-- `/status`, `/memory`, `/model`, `/effort`, `/cron`, `/diagnose`, `/reset` are forwarded by `_on_command`
+- `/status`, `/memory`, `/model`, `/effort`, `/autocompact`, `/cron`, `/diagnose`, `/reset` are forwarded by `_on_command`
 - `/sessions` and `/tasks` have dedicated transport handlers that invoke the corresponding orchestrator selectors
 
 ## Middleware behavior
@@ -208,6 +208,7 @@ Special callback namespaces:
 
 - `mq:*` queue cancel
 - `ms:*` model selector, including `ms:e:*` reasoning-effort choices
+- `ac:*` automatic compaction: topic/global values, default/off, and token input. Numeric input belongs only to the same user in the same chat/topic, expires after 2 minutes, and supports `/cancel`. The current topic/global/effective values and provider limitations are shown; disabling compaction also disables its memory flush. Only allowed users may change settings. Web inline token input points to the `/autocompact` modal rather than opening a Telegram input state.
 - `crn:*` cron selector
 - `nsc:*` session selector
 - `tsc:*` task selector

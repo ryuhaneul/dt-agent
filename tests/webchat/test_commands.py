@@ -128,9 +128,9 @@ def test_exact_commands_match_actual_main_ingress():
         ingress.update(value.removeprefix("/") for value in candidates if detector(value))
     secret_parts = SecretInput._command_parts(" /SeCrEt@TestBot set KEY")
     ingress.add(secret_parts[0].removeprefix("/"))
-    assert len(ingress) == 29
+    assert len(ingress) == 30
     assert set(WEB_COMMANDS) == ingress
-    assert len(WEB_COMMANDS) == 29
+    assert len(WEB_COMMANDS) == 30
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

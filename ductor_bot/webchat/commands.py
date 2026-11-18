@@ -52,6 +52,7 @@ WEB_COMMANDS: dict[str, str] = {
     "interrupt": "bot.interrupt",
     "model": "bot.model",
     "effort": "bot.effort",
+    "autocompact": "bot.autocompact",
     "status": "bot.status",
     "usage": "bot.usage",
     "memory": "bot.memory",

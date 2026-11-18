@@ -4995,3 +4995,33 @@ async def test_cli_api_key_oauth_request_is_rejected_without_job_or_mutation(
     assert manager._active is None
     assert manager._jobs == {}
     assert tree(paths.ductor_home) == before
+
+
+@pytest.mark.parametrize("action", ["off", "input", "cancel"])
+async def test_autocompact_shared_inline_callback_without_web_input_state(conversation, action):
+    from ductor_bot.messenger.telegram.callbacks import selector_rows
+    from ductor_bot.orchestrator.core import Orchestrator
+    from ductor_bot.orchestrator.selectors.autocompact_selector import autocompact_selector_start
+
+    h = conversation
+    h.bot._orch = Orchestrator(h.bot.config, h.paths, lock_pool=h.pool)
+    h.bot._orch._cli_service.execute = AsyncMock()
+    h.bot._sequential = SimpleNamespace(get_lock=h.pool.get)
+    h.bot.bot_instance = SimpleNamespace(edit_message_text=AsyncMock())
+    view = await autocompact_selector_start(h.bot._orch, h.key)
+    entry = await h.runtime.history.append(h.key, Entry("bot", "telegram", view.text), buttons=selector_rows(view))
+    data = "ac:cancel" if action == "cancel" else f"ac:topic:{action}"
+    url = f"{_PREFIX}/topics/-123.7/callbacks"
+    payload = {"entry_id": entry.id, "data": data, "revision": 0}
+    denied = await h.client.post(url, json=payload)
+    assert denied.status == 403
+    response = await h.client.post(url, json=payload, headers=headers())
+    assert response.status == 200
+    body = await response.json()
+    assert body["selector_revision"] == 1
+    assert not h.bot._orch._autocompact_inputs
+    h.bot._orch._cli_service.execute.assert_not_called()
+    if action == "off":
+        assert (await h.bot._orch._sessions.get_active(h.key)).autocompact == "off"
+    elif action == "input":
+        assert "/autocompact" in body["text"]
