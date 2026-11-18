@@ -74,7 +74,6 @@ export function createMarkdownCache(scope) {
 // earlier text, so refresh their complete rendering at most once per second.
 // Every terminal state is always rendered from the complete source.
 export function createMarkdownStream(scope) {
-  const definitionStart = /^ {0,3}(?:\[\^(?:\\.|[^\]\\\n])+\]:|\[(?:\\.|[^\]\\\n])+\]:[ \t]*\S)/;
   let previous = '', output = '', scanned = 0, boundary = 0, complete = '', fence = null;
   let definitions = false, finalized = false, tail = '', revision = 0, lastRefresh = -Infinity;
   return {
@@ -100,7 +99,6 @@ export function createMarkdownStream(scope) {
           } else if (marker && !(marker[1][0] === '`' && marker[2].includes('`'))) {
             fence = marker[1];
           } else {
-            if (definitionStart.test(line)) definitions = true;
             if (!line.trim()) {
               complete += md(text.slice(boundary, end + 1), { scope });
               boundary = end + 1;
@@ -108,7 +106,7 @@ export function createMarkdownStream(scope) {
           }
           scanned = end + 1;
         }
-        if (!fence && definitionStart.test(text.slice(scanned))) definitions = true;
+        definitions = text.includes(']:');
         const now = definitions ? performance.now() : 0;
         if (definitions && now - lastRefresh >= 1000) {
           complete = md(text, { scope }); tail = ''; boundary = text.length;

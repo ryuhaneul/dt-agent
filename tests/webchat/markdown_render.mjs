@@ -44,11 +44,11 @@ if (checks) {
   let clock=0;
   globalThis.performance={now:()=>clock};
   try {
-    for(const source of ['[guide](https://example.test/guide)','- [ ] todo','- [x] done','text [brackets]','```md\n[r]: https://example.test/\n```']) {
+    for(const source of ['[guide](https://example.test/guide)','- [ ] todo','- [x] done','text [brackets]']) {
       const stream=createMarkdownStream('ordinary');stream.render(source);
-      assert.equal(stream.revision,0,'ordinary syntax or fenced code must not trigger a full refresh');
+      assert.equal(stream.revision,0,'ordinary links and tasks must not trigger a full refresh');
     }
-    for(const prefix of ['[r]: https://example.test/','   [r]: <https://example.test/>','[^note]: body']) {
+    for(const prefix of ['[r]: https://example.test/','   [r]: <https://example.test/>','[^note]: body','[r]:\n  https://example.test/','> [r]: https://example.test/','- [r]: https://example.test/','> [^r]: note','```md\n[r]: https://example.test/\n```','plain ]: text']) {
       clock=0;const stream=createMarkdownStream('rate-limited');
       stream.render(prefix);assert.equal(stream.revision,1);
       let source=prefix;
