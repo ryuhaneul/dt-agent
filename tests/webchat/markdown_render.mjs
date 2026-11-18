@@ -31,6 +31,45 @@ if (checks) {
     assert.equal(stream.render(source,true),md(source,{scope:'stream-test'}));
     assert.equal(stream.render(source,true),md(source,{scope:'stream-test'}));
   }
+  const listSource='1. first\n\n    - nested\n\n2. second\n';
+  const fenceSource='```text\n'+'x'.repeat(1016)+'\n# still code\nhttps://example.test/code\n';
+  for(const [source,kind] of [[listSource,'ol'],[fenceSource,'pre'],[listSource.replaceAll('\n','\r'),'ol'],[fenceSource.replaceAll('\n','\r'),'pre']])for(const size of [1,137,1024]) {
+    const stream=createMarkdownStream('block-context');
+    for(let end=size;end<source.length;end+=size) {
+      const live=stream.render(source.slice(0,end));
+      if(kind==='pre'&&source.slice(0,end).includes('```text\n')){assert.equal((live.match(/<pre /g)||[]).length,1);assert.ok(!/<h[1-6]>|<a href=/.test(live));}
+    }
+    const live=stream.render(source);
+    assert.equal(live,md(source,{scope:'block-context'}));
+    assert.equal((live.match(new RegExp('<'+kind+'(?: |>)','g'))||[]).length,1);
+    if(kind==='ol'){assert.ok(live.includes('<ul>'));assert.ok(!live.includes('<pre'));}
+    assert.equal(stream.render(source,true),md(source,{scope:'block-context'}));
+  }
+  for(const [kind,indent,loose] of [['ol',0,false],['ol',3,true],['ol-one',0,true],['ol-repeat',0,true],['ul',0,false],['ul',1,true]]) {
+    const source=Array.from({length:180},(_,i)=>' '.repeat(indent)+(kind.startsWith('ol')?`${kind==='ol-one'?1:kind==='ol-repeat'?i%2+1:i+7}. `:'- ')+`item ${i+7} `+'body '.repeat(12)+'\n'+(loose?'\n':'')+' '.repeat(indent+(kind.startsWith('ol')?String(kind==='ol-one'?1:kind==='ol-repeat'?i%2+1:i+7).length+3:2))+`- child ${i+7}\n`+(loose?'\n':'')).join('');
+    const stream=createMarkdownStream('long-list');
+    for(let end=137;end<source.length;end+=137)stream.render(source.slice(0,end));
+    const live=stream.render(source);
+    assert.ok(!live.includes('<pre'),'indented child lists stay lists');
+    const children=live.match(/<li>\s*(?:<p>)?item [^<]*(?:<\/p>)?\s*<ul>/g)||[];
+    assert.equal(children.length,180,'every child list remains inside its parent item');
+    const roots=[...live.matchAll(new RegExp('<'+(kind.startsWith('ol')?'ol':'ul')+(kind.startsWith('ol')?'(?: start="(\\d+)")?':'')+'>\\s*<li>\\s*(?:<p>)?item (\\d+)','g'))];
+    assert.ok(roots.length>1,'long lists commit several bounded pieces');
+    if(kind.startsWith('ol'))for(const root of roots)assert.equal(Number(root[1]||1),Number(root[2])-(kind==='ol'?0:6),'ordered pieces preserve logical numbering');
+    assert.equal(stream.render(source,true),md(source,{scope:'long-list'}));
+  }
+  const firstList=Array.from({length:100},(_,i)=>`1. item ${i+1} `+'words '.repeat(12)+'\n').join('');
+  for(const separator of ['# Fresh block','---','```text\nmiddle\n```']) {
+    const freshSource=firstList+separator+'\n\n'+Array.from({length:100},(_,i)=>`7. fresh ${i+7} `+'words '.repeat(12)+'\n').join('');
+    const fresh=createMarkdownStream('fresh-list');for(let end=137;end<freshSource.length;end+=137)fresh.render(freshSource.slice(0,end));
+    const freshLive=fresh.render(freshSource),freshRoots=[...freshLive.matchAll(/<ol(?: start="(\d+)")?>\s*<li>fresh (\d+)/g)];
+    assert.ok(freshRoots.length>1);for(const root of freshRoots)assert.equal(Number(root[1]||1),Number(root[2]));
+    assert.equal(fresh.render(freshSource,true),md(freshSource,{scope:'fresh-list'}));
+  }
+  const protectedFence='```text\n'+'code\n'.repeat(1000)+'1. literal\n- literal\n';
+  const protectedStream=createMarkdownStream('protected-fence');
+  for(let end=137;end<protectedFence.length;end+=137)protectedStream.render(protectedFence.slice(0,end));
+  assert.equal(protectedStream.render(protectedFence),md(protectedFence,{scope:'protected-fence'}));
   const definitions=createMarkdownStream('definition');
   definitions.render('[ref][id]\n\n');
   const defined='[ref][id]\n\n[id]: https://example.test/';

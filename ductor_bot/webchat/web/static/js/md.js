@@ -11,7 +11,7 @@ function linked(href) { return /^(?:[a-z][a-z\d+.-]*:|#)/i.test(href); }
 
 // Compose nested media from tokens, before emitting HTML. No generated attributes
 // are parsed again, and images never become browser image elements.
-function displayHtml(prefix, scoped) {
+function displayHtml(prefix, scoped, orderedStart = null) {
   const stack = [];
   const base = gfmHtml({ clobberPrefix: prefix });
   const labelId = scoped ? `${prefix}footnote-label` : 'footnote-label';
@@ -74,6 +74,13 @@ function displayHtml(prefix, scoped) {
     tableData() { cell.call(this, 'td'); },
     tableHeader() { cell.call(this, 'th'); },
     codeText() { this.setData('inCodeText', true); if (!inImage()) this.tag('<code>'); }
+  };
+  if (orderedStart !== null) enter.listItemValue = function (token) {
+    if (this.getData('expectFirstItem')) {
+      const value = orderedStart === null ? Number.parseInt(this.sliceSerialize(token), 10) : orderedStart;
+      orderedStart = null;
+      if (value !== 1) this.tag(` start="${this.encode(String(value))}"`);
+    }
   };
   const exit = {
     link: exitMedia, image: exitMedia,
@@ -143,9 +150,9 @@ function displayHtml(prefix, scoped) {
   return [base, { enter, exit }];
 }
 
-export function md(text, { scope = null } = {}) {
+export function md(text, { scope = null, orderedStart = null } = {}) {
   const prefix = scope === null ? 'user-content-' : `dtw-${encodeURIComponent(scope)}-`;
-  return micromark(String(text), { extensions: [gfm()], htmlExtensions: displayHtml(prefix, scope !== null) });
+  return micromark(String(text), { extensions: [gfm()], htmlExtensions: displayHtml(prefix, scope !== null, orderedStart) });
 }
 
 // One current rendering per sequence; verify text as well as its hash so hash
@@ -169,7 +176,8 @@ export function createMarkdownCache(scope) {
 // Every terminal state is always rendered from the complete source.
 export function createMarkdownStream(scope) {
   let previous = '', output = '', scanned = 0, boundary = 0, complete = '', fence = null;
-  let definitions = false, finalized = false, tail = '', revision = 0, lastRefresh = -Infinity;
+  let definitions = false, finalized = false, tail = '', revision = 0, lastRefresh = -Infinity, pending = 0, listIndent = null, listKind = null, listStart = null, listCount = 0, chunkStart = null, afterBlankAt = -1;
+  const part = value => md(value, { scope, orderedStart: chunkStart });
   return {
     get revision() { return revision; },
     get completeHTML() { return complete; },
@@ -178,15 +186,41 @@ export function createMarkdownStream(scope) {
       const text = String(value);
       if (text === previous && (!final || finalized)) return output;
       if (!text.startsWith(previous)) {
-        scanned = boundary = 0; complete = ''; fence = null; definitions = false;
+        scanned = boundary = pending = 0; complete = ''; fence = null; definitions = false; listIndent = listKind = listStart = chunkStart = null; listCount = 0; afterBlankAt = -1;
         revision++;
       }
       if (final) {
         output = md(text, { scope }); finalized = true;
       } else {
+        const continuation = /^(?:[ \t]|(?:[-+*]|\d{1,9}[.)])(?:[ \t]|$)|>)/;
+        function confirm(line, partial = false) {
+          if (!pending || fence || !line.trim() || (partial && /^\d{1,9}$/.test(line))) return;
+          if (continuation.test(line)) { if (partial) afterBlankAt = scanned; pending = 0; return; }
+          complete += part(text.slice(boundary, pending));
+          boundary = pending; pending = 0; listIndent = listKind = listStart = chunkStart = null; listCount = 0;
+        }
         let end;
         while ((end = text.indexOf('\n', scanned)) !== -1) {
           const line = text.slice(scanned, end).replace(/\r$/, '');
+          const afterBlank = pending > 0 || afterBlankAt === scanned;
+          confirm(line);
+          const block = !fence && /^( {0,3})(?:#{1,6}(?:[ \t]|$)|>|`{3,}|~{3,}|([-*_])(?:[ \t]*\2){2,}[ \t]*$)/.exec(line);
+          if (block && listIndent !== null && block[1].length <= listIndent) { listIndent = listKind = listStart = null; listCount = 0; }
+          const item = !fence && !block && /^( {0,3})([-+*]|\d{1,9}[.)])(?:[ \t]+|$)/.exec(line);
+          if (item && (listIndent !== null || afterBlank || scanned === boundary)) {
+            const indent = item[1].length;
+            listIndent = listIndent === null ? indent : Math.min(listIndent, indent);
+            if (indent === listIndent) {
+              const kind = item[2].at(-1);
+              if (kind !== listKind) { listKind = kind; listStart = /^\d/.test(item[2]) ? Number.parseInt(item[2], 10) : null; listCount = 0; }
+              // Keep children with their parent and continue logical ordered numbering.
+              if (scanned - boundary > 4096) {
+                complete += part(text.slice(boundary, scanned));
+                boundary = scanned; pending = 0; chunkStart = listStart === null ? null : listStart + listCount;
+              }
+              listCount++;
+            }
+          }
           const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
           if (fence) {
             if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) fence = null;
@@ -194,23 +228,28 @@ export function createMarkdownStream(scope) {
             fence = marker[1];
           } else {
             if (!line.trim()) {
-              complete += md(text.slice(boundary, end + 1), { scope });
-              boundary = end + 1;
+              pending = end + 1;
             }
           }
           scanned = end + 1;
         }
+        confirm(text.slice(scanned), true);
+        const unfinished = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(text.slice(scanned));
+        const openFence = fence || (unfinished && !(unfinished[1][0] === '`' && unfinished[2].includes('`')));
         definitions = text.includes(']:');
         const now = definitions ? performance.now() : 0;
         if (definitions && now - lastRefresh >= 1000) {
-          complete = md(text, { scope }); tail = ''; boundary = text.length;
+          complete = md(text, { scope }); tail = ''; boundary = text.length; pending = 0; chunkStart = null;
           lastRefresh = now; revision++;
         } else {
-          while (text.length - boundary > 1024) {
+          // Only a single plain paragraph can use provisional length chunks.
+          // Multiline blocks retain their parser context until a safe blank boundary.
+          const paragraph = !openFence && !/[\r\n]/.test(text.slice(boundary)) && !/^(?:[ \t>#`~]|(?:[-+*]|\d{1,9}[.)])(?:[ \t]|$))/.test(text.slice(scanned));
+          while (paragraph && text.length - boundary > 1024) {
             complete += md(text.slice(boundary, boundary + 1024), { scope });
             boundary += 1024;
           }
-          tail = md(text.slice(boundary), { scope });
+          tail = part(text.slice(boundary));
         }
         output = complete + tail;
         finalized = false;
