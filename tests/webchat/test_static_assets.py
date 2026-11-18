@@ -734,6 +734,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 const {staticDir,strings,locales}=JSON.parse(fs.readFileSync(0,'utf8'));
 const pending=[];
+const frames=new Map();let frameId=0;
 class Element {
   constructor(){this.listeners={};this.dataset={};this.children=[];this.textContent='';this.html='';this.value='';this.hidden=false;this.scrollTop=0;this.scrollHeight=500;this.clientHeight=500;this.attributes={};this.disabled=false;}
   addEventListener(type,callback){(this.listeners[type] ||= []).push(callback);}
@@ -754,7 +755,14 @@ class Element {
     }
     return (this.nodes ||= {})[selector] ||= new Element();
   }
-  querySelectorAll(){return [];}
+  querySelectorAll(selector){
+    if(selector!=='[data-turn]')return [];
+    const parent=this;
+    return [...this.html.matchAll(/<div class="msg bot" [^>]*data-turn="([^"]+)">[\s\S]*?(?=<div class="msg bot" [^>]*data-turn=|$)/g)].map(match=>({
+      dataset:{turn:match[1]},set outerHTML(value){parent.html=parent.html.replace(match[0],value)}
+    }));
+  }
+  insertAdjacentHTML(position,value){assert.equal(position,'beforeend');this.html+=value;}
   get innerHTML(){return this.html;}
   set innerHTML(value){this.html=value;}
 }
@@ -836,6 +844,8 @@ async function fetch(url,options={}){
   throw Error(`Unexpected API: ${url}`);
 }
 const context=vm.createContext({document,window:document,CustomEvent,WebSocket,fetch,URL,TextEncoder,TextDecoder,localStorage,console,
+  requestAnimationFrame:callback=>{frames.set(++frameId,callback);return frameId},
+  cancelAnimationFrame:id=>frames.delete(id),
   location:{href:'https://chat.example.com/#list',hash:'#list'},
   setTimeout:(callback,delay)=>{const id=++timerId;timers.set(id,{callback,delay});return id},
   clearTimeout:id=>timers.delete(id),
@@ -897,7 +907,16 @@ input.value='hello <script>';input.emit('input');input.emit('keydown',{key:'Ente
 await chat.namespace.handleEvent({type:'turn',tid:'1.2',turn_id:'turn1',phase:'started'});
 await chat.namespace.handleEvent({type:'delta',tid:'1.2',turn_id:'turn1',text:'**Hello** <img>'});
 await chat.namespace.handleEvent({type:'tool',tid:'1.2',turn_id:'turn1',name:'Read <script>'});
+assert.equal(frames.size,1,'delta and tool updates share one animation frame');
+assert.ok(!thread.innerHTML.includes('<b>Hello</b>'),'stream rendering waits for the frame');
+const historyPrefix=thread.innerHTML.split('<div class="msg bot" id="streamMsg"')[0];
+const streamFrame=frames.values().next().value;frames.clear();streamFrame();
+assert.equal(thread.innerHTML.split('<div class="msg bot" id="streamMsg"')[0],historyPrefix,'stream updates preserve history markup');
 assert.ok(thread.innerHTML.includes('<b>Hello</b> &lt;img&gt;'));assert.ok(thread.innerHTML.includes('Read &lt;script&gt;'));
+for(let i=0;i<100;i++)await chat.namespace.handleEvent({type:'delta',tid:'1.2',turn_id:'turn1',text:' x'});
+assert.equal(frames.size,1,'a delta burst queues only one frame');
+chat.namespace.renderThread();assert.equal(frames.size,0,'a full render cancels pending stream work');
+assert.ok(thread.innerHTML.includes(' x'.repeat(100)),'the full render includes every buffered delta');
 // A held command must not block control submissions or release the ordinary send guard.
 let releaseCommand;slowCommandHold=new Promise(resolve=>{releaseCommand=resolve});
 input.value='/usage';input.emit('input');input.emit('keydown',{key:'Enter',shiftKey:false,isComposing:false});await flush();

@@ -11,6 +11,8 @@ const histories = new Map(), turns = new Map(), busy = new Map(), drafts = new M
 let active = false, epoch = 0, stopEvents = null, telegram = { state: 'unknown' };
 let botUp = false, webSessions = null, pending = 0, outbox = [], sending = false;
 let view = 'chat', loading = false, selection = 0, commandMenu = null, secretDialog = null;
+let streamFrame = null;
+const streamUpdates = new Set();
 function history(tid) {
   if (!histories.has(tid)) histories.set(tid, { entries: new Map(), meta: new Map(), choices: new Map(), hasMore: false, loaded: false });
   return histories.get(tid);
@@ -134,6 +136,33 @@ function streamMarkup(turn) {
   const dots = live ? '<span class="typing" aria-hidden="true"><i></i><i></i><i></i></span>' : '';
   return `<div class="msg bot" ${live ? 'id="streamMsg"' : ''} data-turn="${esc(turn.id)}"><div class="meta"><span class="tag">${esc(t('tag.web'))}</span><span>${esc(live ? t('chat.answering') : formatTime(turn.finished))}</span>${dots}${live && turn.tool ? `<span>${esc(turn.tool)}</span>` : ''}</div><div class="bubble md">${md(turn.text)}${live ? '<span class="caret" aria-hidden="true"></span>' : ''}</div>${turn.phase === 'aborted' ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : turn.phase === 'error' ? `<div class="stopped">${esc(t('error.generic'))}</div>` : ''}</div>`;
 }
+function cancelStreamRender() {
+  if (streamFrame !== null) cancelAnimationFrame(streamFrame);
+  streamFrame = null; streamUpdates.clear();
+}
+function scheduleStreamRender(turnId) {
+  streamUpdates.add(turnId);
+  if (streamFrame !== null) return;
+  streamFrame = requestAnimationFrame(() => {
+    streamFrame = null;
+    const updates = [...streamUpdates]; streamUpdates.clear();
+    const topic = getTopic();
+    if (!active || !topic) return;
+    const thread = document.querySelector('#thread'), previousTop = thread.scrollTop;
+    const nearBottom = thread.scrollHeight - thread.clientHeight - previousTop < 80;
+    for (const id of updates) {
+      const turn = turns.get(id);
+      if (!turn || turn.tid !== topic.tid) continue;
+      const element = [...thread.querySelectorAll('[data-turn]')].find(node => node.dataset.turn === id);
+      if (element) element.outerHTML = streamMarkup(turn);
+      else if (![...history(topic.tid).entries.values()].some(entry => entry.role === 'bot' && entry.turn_id === id)) {
+        thread.insertAdjacentHTML('beforeend', streamMarkup(turn));
+      }
+    }
+    renderHeader();
+    thread.scrollTop = nearBottom ? thread.scrollHeight : previousTop;
+  });
+}
 function isControlCommand(text) {
   const name = text.trim().split(/\s/, 1)[0].split('@', 1)[0].toLowerCase();
   return ['/stop', '/interrupt', '/stop_all'].includes(name);
@@ -162,6 +191,7 @@ function renderHeader() {
   button.disabled = !topic || (sending && !turn && !isControlCommand(document.querySelector('#msgIn').value));
 }
 export function renderThread({ bottom = false, seq = null } = {}) {
+  cancelStreamRender();
   const topic = getTopic(); renderHeader();
   const thread = document.querySelector('#thread');
   const previousTop = thread.scrollTop;
@@ -317,12 +347,15 @@ export async function handleEvent(event) {
     }
     case 'delta': {
       const turn = turns.get(event.turn_id) || { id: event.turn_id, tid, phase: 'started', text: '' };
-      turn.text += event.text; turns.set(turn.id, turn); break;
+      turn.text += event.text; turns.set(turn.id, turn);
+      if (topic?.tid === tid) scheduleStreamRender(turn.id);
+      return;
     }
     case 'tool': {
       const turn = turns.get(event.turn_id);
       if (turn) turn.tool = event.name;
-      break;
+      if (turn && topic?.tid === turn.tid) scheduleStreamRender(turn.id);
+      return;
     }
     case 'telegram': telegram = event; renderStatus(); break;
     case 'bridge':
@@ -424,6 +457,7 @@ export function initChat() {
   document.addEventListener('visibilitychange', () => { if (active && !document.hidden) void resync(); });
   document.addEventListener('auth-change', event => {
     active = event.detail.authenticated; ++epoch;
+    cancelStreamRender();
     stopEvents?.(); stopEvents = null;
     histories.clear(); turns.clear(); busy.clear(); drafts.clear(); topicVersions.clear(); busyVersions.clear(); input.value = '';
     telegram = { state: 'unknown' }; botUp = false; webSessions = null;
