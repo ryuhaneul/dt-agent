@@ -99,6 +99,7 @@ def test_attachment_browser_contract(tmp_path):
         "directory": str(tmp_path),
         "shots": os.environ.get("DTW_ATTACH_SHOTS", str(tmp_path / "shots")),
         "csp": CSP,
+        "scenario": os.environ.get("DTW_ATTACH_SCENARIO", "4a"),
         "strings": _load_toml(STATIC.parents[2] / "i18n/ko/web.toml"),
     }
     config = tmp_path / "browser.json"

@@ -35,14 +35,15 @@ export async function processImage(file, options) {
   } finally { image.close(); }
 }
 
-export function initAttachments({ getTopic, changed }) {
+export function initAttachments({ getTopic, changed, resume }) {
   const picker = document.querySelector('#filePick'), tray = document.querySelector('#attachmentTray');
   if (!picker || !tray || picker.type !== 'file') return null;
+  initAttachmentSettings();
   const wrap = document.querySelector('#attachmentWrap'), button = document.querySelector('#attachBtn');
   const panel = document.querySelector('#imageOptions'), drop = document.querySelector('#attachmentDrop');
   const status = document.querySelector('#attachmentStatus'), input = document.querySelector('#msgIn');
   const topics = new Map();
-  let busy = false, generation = 0, menu = null, previewWork = Promise.resolve(), timer = null, controller = null, dragDepth = 0;
+  let busy = false, generation = 0, menu = null, previewWork = Promise.resolve(), timer = null, controller = null, dragDepth = 0, activeRun = null, posting = false, activeItem = null, cancelled = false;
   const items = tid => topics.get(tid) || [];
   const current = () => items(getTopic()?.tid);
   const available = () => { const topic = getTopic(); return topic && !topic.read_only && topic.tid !== 'unknown' && !busy; };
@@ -60,10 +61,30 @@ export function initAttachments({ getTopic, changed }) {
       <div class="attach-top">${item.url ? `<img class="attach-thumb" src="${esc(item.url)}" alt="${esc(t('attach.preview', { name:item.output.name }))}">` : `<span class="attach-icon" aria-hidden="true">${esc((item.output.name.split('.').at(-1) || 'FILE').slice(0,5).toUpperCase())}</span>`}
       <div class="grow"><span class="attach-name" title="${esc(item.output.name)}">${esc(item.output.name)}</span><span class="attach-sub">${esc(bytes(item.output.size))} · ${esc(item.output.type || 'FILE')}</span></div>
       <button type="button" class="attach-remove" data-remove="${item.id}" aria-label="${esc(t('attach.remove', { name:item.output.name }))}"${busy?' disabled':''}>×</button></div>
-      ${item.image ? `<div class="attach-processing"><button type="button" class="attach-chip" data-options="${item.id}" aria-haspopup="dialog" aria-expanded="${menu?.item===item}"${busy?' disabled':''}>${esc(t('attach.'+item.options.mode))} <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button><span class="attach-estimate">${esc(t('attach.estimate', { size:bytes(item.output.size) }))}</span></div>` : ''}</article>`).join('');
+      ${item.image ? `<div class="attach-processing"><button type="button" class="attach-chip" data-options="${item.id}" aria-haspopup="dialog" aria-expanded="${menu?.item===item}"${busy?' disabled':''}>${esc(t('attach.'+item.options.mode))} <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button><span class="attach-estimate">${esc(t('attach.estimate', { size:bytes(item.output.size) }))}</span></div>` : ''}${progressMarkup(item)}</article>`).join('');
     button.disabled = !available(); picker.disabled = !available();
-    status.hidden = !busy; status.textContent = busy ? t('attach.uploading') : '';
-    resize();
+    status.hidden = !busy; status.textContent = busy ? t(posting?'attach.dispatching':'attach.uploading') : '';
+    list.forEach(updateProgress); resize();
+  }
+  function progressMarkup(item) {
+    return `<div class="attach-transfer" data-transfer${!item.state||item.state==='ready'?' hidden':''}>
+      <div class="attach-transfer-head"><span data-state></span><span data-amount></span></div>
+      <progress value="0" max="${Math.max(1,item.output.size)}" aria-label="${esc(t('attach.progress',{name:item.output.name}))}"></progress>
+      <p data-transfer-error role="status"></p><div class="attach-transfer-actions"><button type="button" class="btn btn-sm" data-resume="${item.id}">${esc(t('attach.resume'))}</button><button type="button" class="btn btn-sm" data-cancel-upload="${item.id}">${esc(t('attach.cancel_upload'))}</button></div></div>`;
+  }
+  function updateProgress(item) {
+    const card=tray.querySelector(`[data-attachment="${item.id}"]`), block=card?.querySelector('[data-transfer]');
+    if(!block)return;
+    block.hidden=!item.state||item.state==='ready';block.dataset.uploadState=item.state||'ready';
+    const received=item.received||0,percent=item.state==='complete'?100:item.output.size?Math.floor(received/item.output.size*100):0;
+    block.querySelector('[data-state]').textContent=t('attach.state_'+(item.state||'ready'));
+    block.querySelector('[data-amount]').textContent=`${percent}% · ${bytes(received)} / ${bytes(item.output.size)}`;
+    const meter=block.querySelector('progress');meter.value=item.state==='complete'?meter.max:received;
+    block.querySelector('[data-transfer-error]').textContent=item.error?t(item.error):'';
+    const retry=block.querySelector('[data-resume]'),cancel=block.querySelector('[data-cancel-upload]');
+    retry.hidden=!['failed','cancelled','paused'].includes(item.state);retry.disabled=busy;
+    cancel.hidden=!busy||posting||!['hashing','uploading','verifying'].includes(item.state);
+    cancel.disabled=posting;
   }
   function free(item) { if (item.url) URL.revokeObjectURL(item.url); }
   function setPreview(item) {
@@ -91,7 +112,7 @@ export function initAttachments({ getTopic, changed }) {
       const settings = await limits();
       if (epoch !== generation) return;
       const existing = items(topic.tid);
-      const added = incoming.map(file => ({ id:crypto.randomUUID(), original:file, output:file, image:raster(file.type), options:{ mode:'original',edge:1920,quality:80 }, url:null, upload:null }));
+      const added = incoming.map(file => ({ id:crypto.randomUUID(), original:file, output:file, image:raster(file.type), options:{ mode:'original',edge:1920,quality:80 }, url:null, upload:null, state:'ready', received:0, error:null }));
       validate([...existing,...added], settings);
       for (const item of added) setPreview(item);
       topics.set(topic.tid,[...existing,...added]); render(); changed();
@@ -156,11 +177,15 @@ export function initAttachments({ getTopic, changed }) {
   },true);
   tray.addEventListener('click',event=>{
     const remove = event.target.closest('[data-remove]'), option = event.target.closest('[data-options]');
+    const cancel=event.target.closest('[data-cancel-upload]'),retry=event.target.closest('[data-resume]');
+    if(cancel && busy && !posting){cancelled=true;controller?.abort();return;}
+    if(retry && !busy){resume?.();return;}
     if (!available()) return;
     if (remove) {
       const item = current().find(item=>item.id===remove.dataset.remove);
       if (!item) return;
       closeMenu(false); free(item);
+      if(item.upload?.id && item.state!=='complete')void api(`/topics/${encodeURIComponent(getTopic().tid)}/uploads/${item.upload.id}`,{method:'DELETE'}).catch(()=>{});
       topics.set(getTopic().tid,current().filter(value=>value!==item)); render(); changed(); input.focus();
     }
     if (option) { const item=current().find(item=>item.id===option.dataset.options); if(item) openMenu(item); }
@@ -176,7 +201,7 @@ export function initAttachments({ getTopic, changed }) {
         const settings=await limits();
         if (menu!==snapshot || snapshot.revision!==revision) return;
         validate(current().map(item=>item===snapshot.item?{...item,output:result}:item),settings);
-        snapshot.item.output=result; snapshot.item.options=options; snapshot.item.upload=null;
+        snapshot.item.output=result; snapshot.item.options=options; snapshot.item.upload=null;snapshot.item.state='ready';snapshot.item.received=0;snapshot.item.error=null;
         setPreview(snapshot.item); const id=snapshot.item.id; closeMenu(false); render(); changed();
         tray.querySelector(`[data-options="${id}"]`)?.focus();
       } catch(error) { showError(error); }
@@ -214,7 +239,7 @@ export function initAttachments({ getTopic, changed }) {
   document.addEventListener('topic-updated',render);
   document.addEventListener('language-changed',()=>{closeMenu(false);render();});
   document.addEventListener('auth-change',event=>{
-    if(!event.detail.authenticated){++generation;controller?.abort();closeMenu(false);for(const list of topics.values())list.forEach(free);topics.clear();busy=false;}
+    if(!event.detail.authenticated){++generation;controller?.abort();closeMenu(false);for(const list of topics.values())list.forEach(free);topics.clear();busy=false;posting=false;activeRun=null;activeItem=null;}
     render();changed();
   });
   input.addEventListener('input',resize); wrap.addEventListener('scroll',position);
@@ -231,36 +256,88 @@ export function initAttachments({ getTopic, changed }) {
   return {
     has:tid=>items(tid).length>0,
     async upload(tid) {
-      closeMenu(false);busy=true;controller=new AbortController();render();changed();
+      if(busy)throw failure('attach.failed');
+      closeMenu(false);busy=true;posting=false;cancelled=false;controller=new AbortController();
+      const run=crypto.randomUUID();activeRun=run;
       const signal=controller.signal, epoch=generation, batch=[...items(tid)];
+      for(const item of batch){if(item.state!=='complete')item.state='waiting';item.error=null;}
+      render();changed();
       try {
         const settings=await limits();validate(batch,settings);
         const prefix=`/topics/${encodeURIComponent(tid)}/uploads`,ids=[];
         for(const item of batch){
           if(epoch!==generation || signal.aborted)throw failure('attach.failed');
+          activeItem=item;
           const file=item.output;
-          if(!item.upload)item.upload={hash:await digest(file,signal),id:null};
+          if(!item.upload){item.state='hashing';updateProgress(item);item.upload={hash:await digest(file,signal),id:null};}
           const upload=item.upload;
           let state=null;
           if(upload.id){try{state=await api(`${prefix}/${upload.id}`,{signal});}catch(error){if(error.status!==404)throw error;upload.id=null;}}
           if(!upload.id){state=await api(prefix,{method:'POST',body:{name:file.name,size:file.size,mime:file.type},signal});upload.id=state.id;}
           let offset=state.offset;
           if(!Number.isSafeInteger(offset)||offset<0||offset>file.size)throw failure('attach.failed');
+          item.received=offset;item.state='uploading';updateProgress(item);
           while(offset<file.size){
             const result=await api(`${prefix}/${upload.id}`,{method:'PUT',body:file.slice(offset,offset+settings.chunk_bytes),binary:true,headers:{'Upload-Offset':String(offset)},signal});
             if(!Number.isSafeInteger(result.offset)||result.offset<=offset||result.offset>file.size)throw failure('attach.failed');
-            offset=result.offset;
+            offset=result.offset;item.received=offset;updateProgress(item);
           }
-          await api(`${prefix}/${upload.id}/complete`,{method:'POST',body:{sha256:upload.hash},signal});ids.push(upload.id);
+          item.state='verifying';updateProgress(item);
+          await api(`${prefix}/${upload.id}/complete`,{method:'POST',body:{sha256:upload.hash},signal});
+          item.state='complete';item.received=file.size;updateProgress(item);ids.push(upload.id);
         }
         if(epoch!==generation)throw failure('attach.failed');
-        return {ids,batch};
+        posting=true;render();changed();
+        return {ids,batch,run};
       } catch(error) {
-        if(error instanceof ApiError && error.code!=='auth_required')throw failure('attach.failed');
-        throw error;
-      } finally {busy=false;controller=null;render();changed();}
+        if(epoch===generation){
+          if(activeItem){activeItem.state=cancelled?'cancelled':'failed';activeItem.error=cancelled?null:(error.attachmentKey||'attach.failed');}
+          batch.filter(item=>item.state==='waiting').forEach(item=>{item.state='paused';});
+        }
+        const result=error.code==='auth_required'||error.attachmentKey?error:failure('attach.failed');
+        result.attachmentRun=run;if(cancelled)result.silent=true;throw result;
+      } finally {if(activeRun===run){controller=null;render();changed();}}
+    },
+    finish(run,error=null){
+      if(!run||activeRun!==run)return;
+      if(error && posting)for(const item of current()){if(item.state==='complete'){item.state='failed';item.error='attach.message_failed';}}
+      const focus=activeItem?.id;busy=false;posting=false;activeRun=null;activeItem=null;render();changed();
+      if(error?.silent && focus)tray.querySelector(`[data-resume="${focus}"]`)?.focus();
     },
     sent(tid,batch){const list=items(tid);batch.forEach(free);topics.set(tid,list.filter(item=>!batch.includes(item)));render();changed();},
     resize,
   };
+}
+
+function initAttachmentSettings() {
+  const dialog=document.querySelector('#attachmentLimits');
+  if(!dialog || dialog.tagName!=='DIALOG')return;
+  const opener=document.querySelector('#openAttachSettings'),form=document.querySelector('#attachmentLimitsForm');
+  const size=document.querySelector('#attachmentMaxSize'),count=document.querySelector('#attachmentMaxCount');
+  const message=document.querySelector('#attachmentLimitsNotice'),save=document.querySelector('#saveAttachmentLimits');
+  let settings=null,sequence=0;
+  const show=(key,values={},error=false)=>{message.textContent=t(key,values);message.hidden=false;message.className=error?'attach-limit-error':'attach-limit-success';};
+  function fill(value){settings=value;size.value=String(value.max_file_bytes/1024**2);count.value=String(value.max_files_per_message);size.max=String(value.server_max_file_bytes/1024**2);count.max=String(value.server_max_files_per_message);document.querySelector('#attachmentServerLimits').textContent=t('attach.server_limits',{size:value.server_max_file_bytes/1024**2,n:value.server_max_files_per_message});}
+  function enabled(value){size.disabled=count.disabled=!value;save.disabled=!value;form.setAttribute('aria-busy',String(!value));}
+  opener.addEventListener('click',async()=>{
+    document.querySelector('#accountMenu').hidden=true;document.querySelector('#accountButton').setAttribute('aria-expanded','false');
+    const version=++sequence;settings=null;message.hidden=true;form.reset();enabled(false);dialog.showModal();
+    try{const value=await api('/attach-settings');if(version!==sequence)return;fill(value);enabled(true);size.focus();}
+    catch(error){if(version===sequence && error.code!=='auth_required')show('attach.settings_failed',{},true);}
+  });
+  document.querySelector('#closeAttachmentLimits').addEventListener('click',()=>dialog.close());
+  dialog.addEventListener('close',()=>{++sequence;form.reset();settings=null;document.querySelector('#accountButton').focus();});
+  document.addEventListener('auth-change',event=>{if(!event.detail.authenticated)dialog.close();});
+  form.addEventListener('submit',async event=>{
+    event.preventDefault();if(!settings)return;
+    size.removeAttribute('aria-invalid');count.removeAttribute('aria-invalid');
+    const mib=Number(size.value),number=Number(count.value),amount=Math.round(mib*1024**2);
+    const badSize=!Number.isFinite(mib)||mib<=0||!Number.isSafeInteger(amount)||amount<1||mib>settings.server_max_file_bytes/1024**2;
+    const badCount=!Number.isSafeInteger(number)||number<1||number>settings.server_max_files_per_message;
+    if(badSize||badCount){if(badSize)size.setAttribute('aria-invalid','true');if(badCount)count.setAttribute('aria-invalid','true');show('attach.limit_invalid',{size:settings.server_max_file_bytes/1024**2,n:settings.server_max_files_per_message},true);(badSize?size:count).focus();return;}
+    const version=sequence;enabled(false);message.hidden=true;
+    try{const value=await api('/attach-settings',{method:'PUT',body:{max_file_bytes:amount,max_files_per_message:number}});if(version!==sequence)return;fill(value);show('attach.limits_saved');}
+    catch(error){if(version===sequence && error.code!=='auth_required')show('attach.settings_failed',{},true);}
+    finally{if(version===sequence)enabled(true);}
+  });
 }
