@@ -128,6 +128,8 @@ async def security(
     handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
 ) -> web.StreamResponse:
     try:
+        if request.path.startswith(("/api/masterkey/", "/api/secrets/")):
+            request = request.clone(client_max_size=64 * 1024)
         if request.can_read_body:
             await request.read()
         return await handler(request)
@@ -336,6 +338,12 @@ async def logout(request: web.Request) -> web.Response:
 
 
 async def relay(request: web.Request) -> web.Response:
+    if (
+        request.path.startswith(("/api/masterkey/", "/api/secrets/"))
+        and request.method in _MUTATING
+        and request.content_type != "application/json"
+    ):
+        return _error("bad_request", 400)
     state = request.app[STATE]
     body = await request.read()
     path = request.rel_url.raw_path.removeprefix("/api")
@@ -457,6 +465,10 @@ def create_app(
     app.router.add_get("/api/ws", websocket)
     app.router.add_get("/api/state", relay)
     for path, methods in (
+        ("/masterkey/status", ("GET",)),
+        ("/masterkey/{action:setup|unlock|lock|change|ttl}", ("POST",)),
+        ("/secrets/keys", ("GET",)),
+        ("/secrets/{action:set|delete|reveal}", ("POST",)),
         ("/cli-login/status", ("GET",)),
         ("/cli-login/jobs", ("POST",)),
         ("/cli-login/jobs/{id}", ("GET",)),

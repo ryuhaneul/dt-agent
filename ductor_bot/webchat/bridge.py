@@ -59,6 +59,7 @@ from ductor_bot.webchat.secret import WebSecrets
 from ductor_bot.webchat.settings import resolve_default_chat_id
 from ductor_bot.webchat.topics import TopicBusyError, TopicDeleteError, WebTopics
 from ductor_bot.webchat.turns import WebTurns
+from ductor_bot.webchat.vault import register_vault_routes
 
 if TYPE_CHECKING:
     from ductor_bot.chat_log.runtime import ChatLogRuntime
@@ -154,6 +155,7 @@ def create_bridge_app(  # noqa: C901
     _register_conversation_routes(app, bot, runtime)
     _register_file_routes(app, bot, runtime)
     _register_cli_login_routes(app, bot)
+    register_vault_routes(app, store_path(bot._orch.paths.ductor_home), runtime)
     return app
 
 

@@ -212,13 +212,29 @@ class SecretVault:
         self._failures = 0
         self._retry_at = 0.0
         self._expiry_callback: Callable[[], None] | None = None
+        self._change_listeners: set[Callable[[], None]] = set()
 
     @staticmethod
     def _validate_ttl(ttl_seconds: int) -> None:
         if type(ttl_seconds) is not int or ttl_seconds < 0:
             raise VaultError("INVALID_TTL")
 
+    def add_change_listener(self, listener: Callable[[], None]) -> None:
+        """Observe invalidation only; callbacks receive no keys, values, or status data."""
+        self._change_listeners.add(listener)
+
+    def remove_change_listener(self, listener: Callable[[], None]) -> None:
+        """Detach one transport without affecting expiry security notifications."""
+        self._change_listeners.discard(listener)
+
+    def _notify_change(self) -> None:
+        for listener in tuple(self._change_listeners):
+            # A transport failure must not turn an already committed write into a failure.
+            with contextlib.suppress(Exception):
+                listener()
+
     def _clear_unlocked(self) -> None:
+        changed = self._key is not None
         self._key = None
         self._salt = None
         self._text = None
@@ -227,6 +243,8 @@ class SecretVault:
         if self._expiry_task is not None and self._expiry_task is not asyncio.current_task():
             self._expiry_task.cancel()
         self._expiry_task = None
+        if changed:
+            self._notify_change()
 
     def _remaining(self) -> float | None:
         if self._unlocked_at is None or not self._ttl_seconds:
@@ -341,6 +359,7 @@ class SecretVault:
             self._values = _parse_text(text)
             self._unlocked_at = self._clock()
             self._schedule_expiry()
+            self._notify_change()
 
     async def unlock(self, master_key: str) -> None:
         """Authenticate and start a fresh absolute unlock lifetime."""
@@ -353,6 +372,7 @@ class SecretVault:
             self._values = _parse_text(text)
             self._unlocked_at = self._clock()
             self._schedule_expiry()
+            self._notify_change()
 
     async def lock(self) -> None:
         """Drop all unlocked material and cancel the expiry timer."""
@@ -373,6 +393,7 @@ class SecretVault:
             self._key, self._salt, self._text = key, salt, text
             self._values = _parse_text(text)
             self._expire()
+            self._notify_change()
 
     async def set_ttl(self, ttl_seconds: int) -> None:
         """Recalculate expiry immediately against the last successful unlock."""
@@ -384,6 +405,7 @@ class SecretVault:
             self._ttl_seconds = ttl_seconds
             self._expire()
             self._schedule_expiry()
+            self._notify_change()
 
     async def _read_values(self) -> dict[str, str]:
         if not self._configured:
@@ -413,6 +435,7 @@ class SecretVault:
         self._text = text
         self._values = _parse_text(text)
         self._expire()
+        self._notify_change()
 
     async def set(self, key: str, value: str) -> None:
         """Persist one value atomically, retaining previous memory on a failed write."""
@@ -425,6 +448,7 @@ class SecretVault:
                 raise VaultError(reason.upper())
             if not self._configured:
                 await self._worker(set_secret, self.plaintext_path, key, value)
+                self._notify_change()
                 return
             assert self._text is not None
             lines = [
@@ -445,7 +469,10 @@ class SecretVault:
             if reason:
                 raise VaultError(reason.upper())
             if not self._configured:
-                return await self._worker(delete_secret, self.plaintext_path, key)
+                deleted = await self._worker(delete_secret, self.plaintext_path, key)
+                if deleted:
+                    self._notify_change()
+                return deleted
             assert self._text is not None
             lines = self._text.splitlines(keepends=True)
             updated = [line for line in lines if _line_key(line) != key]
