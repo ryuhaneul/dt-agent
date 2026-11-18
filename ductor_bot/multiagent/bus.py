@@ -1402,6 +1402,24 @@ class InterAgentBus:
             result.transport,
         )
 
+    async def _park_and_notify(
+        self, result: AsyncInterAgentResult, target: str, *, not_ready: bool = False
+    ) -> None:
+        self._park_record(result, target, not_ready=not_ready)
+        if not_ready or self._record_store is None:
+            return
+        # Announce preservation only after the complete record is actually parked.
+        try:
+            self._record_store.load(target, result.task_id, area="undelivered")
+        except Exception:
+            return
+        stack = self._agents.get(target)
+        message_bus = getattr(stack.bot, "_bus", None) if stack is not None else None
+        from ductor_bot.bus.bus import MessageBus
+
+        if isinstance(message_bus, MessageBus):
+            await message_bus.notify_interagent_undelivered(result.task_id)
+
     async def _attempt_delivery(
         self, result: AsyncInterAgentResult, target: str, *, retry: bool = False
     ) -> bool:
@@ -1538,7 +1556,7 @@ class InterAgentBus:
                 return
             if await self._attempt_delivery(result, target, retry=True):
                 return
-        self._park_record(result, target)
+        await self._park_and_notify(result, target)
 
     async def redeliver_undelivered(  # noqa: C901, PLR0912, PLR0915
         self,
@@ -1734,7 +1752,9 @@ class InterAgentBus:
                 if delivered:
                     delivered_count += 1
                 else:
-                    self._park_record(result, target, not_ready=not self._delivery_ready(target))
+                    await self._park_and_notify(
+                        result, target, not_ready=not self._delivery_ready(target)
+                    )
             finally:
                 self._delivering_results.pop(task_id, None)
                 self._injected_responses.pop(task_id, None)
@@ -1783,7 +1803,9 @@ class InterAgentBus:
                 if delivered:
                     delivered_count += 1
                 else:
-                    self._park_record(result, target, not_ready=not self._delivery_ready(target))
+                    await self._park_and_notify(
+                        result, target, not_ready=not self._delivery_ready(target)
+                    )
             finally:
                 self._delivering_results.pop(task_id, None)
                 self._injected_responses.pop(task_id, None)
@@ -1979,7 +2001,7 @@ class InterAgentBus:
                         if store.path_for(target, task_id).exists():
                             if newly_parked is not None:
                                 newly_parked.add(task_id)
-                            self._park_record(
+                            await self._park_and_notify(
                                 result,
                                 target,
                                 not_ready=not self._delivery_ready(target),
@@ -2004,7 +2026,7 @@ class InterAgentBus:
             if task.asyncio_task and not task.asyncio_task.done():
                 waiting_result = self._retry_waiting.get(task.task_id)
                 if waiting_result is not None:
-                    self._park_record(
+                    await self._park_and_notify(
                         waiting_result, waiting_result.reply_to or waiting_result.sender
                     )
                 task.asyncio_task.cancel()

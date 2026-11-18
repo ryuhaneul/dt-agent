@@ -291,16 +291,23 @@ _RATE_PATTERNS = (
 _CONTEXT_PATTERNS = ("context length", "token limit", "maximum context", "too long")
 
 
+def cli_error_kind(raw: str) -> str:
+    """Stable, locale-independent category for deduplicating CLI failure notices."""
+    lower = raw.lower()
+    for patterns, kind in (
+        (_AUTH_PATTERNS, "auth"),
+        (_RATE_PATTERNS, "rate"),
+        (_CONTEXT_PATTERNS, "context"),
+    ):
+        if any(pattern in lower for pattern in patterns):
+            return kind
+    return "error"
+
+
 def classify_cli_error(raw: str) -> str | None:
     """Return a user-facing hint for known CLI error patterns, or None."""
-    lower = raw.lower()
-    if any(p in lower for p in _AUTH_PATTERNS):
-        return t("session.error_auth")
-    if any(p in lower for p in _RATE_PATTERNS):
-        return t("session.error_rate")
-    if any(p in lower for p in _CONTEXT_PATTERNS):
-        return t("session.error_context")
-    return None
+    kind = cli_error_kind(raw)
+    return t(f"session.error_{kind}") if kind != "error" else None
 
 
 def session_error_text(model: str, cli_detail: str = "") -> str:

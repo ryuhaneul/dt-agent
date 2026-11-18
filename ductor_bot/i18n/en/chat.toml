@@ -515,6 +515,7 @@ extras_hint = "image build extras: '{extras}'. Add the feature to DUCTOR_EXTRAS 
 only_sub = "only sub-agent '{sub}' is excluded"
 
 [notice]
+ia_result_preserved = "The result is preserved. Fix the CLI error and wait for automatic redelivery, or restart the bot to retry immediately."
 session_cancelled = "**[{name}] Cancelled**"
 session_failed = "**[{name}] Failed** ({elapsed})"
 session_complete = "**[{name}] Complete** ({elapsed})"

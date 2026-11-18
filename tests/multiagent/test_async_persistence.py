@@ -3907,3 +3907,178 @@ async def test_delivered_parked_record_after_restart_is_cleanup_only(tmp_path: P
     bus._injector.inject_prompt.assert_not_awaited()
     assert not store.path_for("main", task.task_id).exists()
     assert not store.path_for("main", task.task_id, area="undelivered").exists()
+
+
+_SUBSCRIPTION_ERROR = (
+    "Claude Code can't use your Claude subscription, usually because a payment is past due "
+    "· Pay or renew at https://claude.ai/settings/billing (if you just paid, try again "
+    "shortly), or use an Anthropic AP"
+)
+
+
+def _cli_failure(bus: MessageBus, detail: str = _SUBSCRIPTION_ERROR) -> None:
+    from ductor_bot.orchestrator.injection import InjectionIncomplete
+    from ductor_bot.text.response_format import cli_error_kind, session_error_text
+
+    bus._injector.inject_prompt.side_effect = InjectionIncomplete(
+        "injected turn did not complete (error)",
+        notice_text=session_error_text("opus", detail),
+        error_kind=cli_error_kind(detail),
+    )
+
+
+@pytest.mark.parametrize("headless_worker", [False, True])
+async def test_cli_injection_failure_notifies_once_then_redelivers(
+    tmp_path: Path, headless_worker: bool
+) -> None:
+    from ductor_bot.i18n import t
+    from ductor_bot.text.response_format import session_error_text
+
+    ia, bus, transport = _setup_bus(tmp_path)
+    ia._retry_delays = (0, 0)
+    _cli_failure(bus)
+    task = _task()
+    store = AsyncRecordStore(tmp_path)
+    store.create(task)
+    result = _result(task, result_text="PRIVATE WORK RESULT")
+    if headless_worker:
+        ia._agents["alpha.v2"].config.transport = "headless"
+    await ia._deliver_async_result(result)
+    notices = [call.args[0] for call in transport.deliver.await_args_list]
+    assert [notice.result_text for notice in notices] == [
+        session_error_text("opus", _SUBSCRIPTION_ERROR),
+        t("notice.ia_result_preserved"),
+    ]
+    assert all((notice.chat_id, notice.topic_id) == (123, 8) for notice in notices)
+    assert all("PRIVATE WORK RESULT" not in notice.result_text for notice in notices)
+    assert all(not notice.prompt and not notice.prompt_preview for notice in notices)
+    record = store.load("main", task.task_id, area="undelivered")
+    assert record["result"]["result_text"] == "PRIVATE WORK RESULT"
+    assert record["stage"] == "received"
+    assert record["main_response"] == ""
+    assert await ia.redeliver_undelivered("main") == 0
+    assert transport.deliver.await_count == 2
+
+    bus._injector.inject_prompt.side_effect = None
+    assert await ia.redeliver_undelivered("main") == 1
+    assert transport.deliver.await_count == 3
+    assert transport.deliver.await_args.args[0].result_text == "Final report"
+    assert not store.path_for("main", task.task_id, area="undelivered").exists()
+
+
+async def test_cli_notice_dedup_resets_on_restart(tmp_path: Path) -> None:
+    ia, bus, transport = _setup_bus(tmp_path)
+    ia._retry_delays = (0, 0)
+    _cli_failure(bus)
+    task = _task()
+    AsyncRecordStore(tmp_path).create(task)
+    await ia._deliver_async_result(_result(task))
+    assert transport.deliver.await_count == 2
+
+    restarted, fresh_bus, fresh_transport = _setup_bus(tmp_path)
+    restarted._retry_delays = (0, 0)
+    _cli_failure(fresh_bus)
+    assert await restarted.redeliver_undelivered("main") == 0
+    assert fresh_transport.deliver.await_count == 2
+    assert await restarted.redeliver_undelivered("main") == 0
+    assert fresh_transport.deliver.await_count == 2
+
+
+async def test_cli_notice_new_error_kind_is_announced_once(tmp_path: Path) -> None:
+    ia, bus, transport = _setup_bus(tmp_path)
+    ia._retry_delays = (0, 0)
+    _cli_failure(bus)
+    task = _task()
+    AsyncRecordStore(tmp_path).create(task)
+    await ia._deliver_async_result(_result(task))
+    _cli_failure(bus, "You've hit your usage limit. Please try again later.")
+    assert await ia.redeliver_undelivered("main") == 0
+    assert await ia.redeliver_undelivered("main") == 0
+    assert transport.deliver.await_count == 3  # error, preservation, new rate-limit cause
+
+
+async def test_cli_notice_send_failure_does_not_loop(tmp_path: Path) -> None:
+    ia, bus, transport = _setup_bus(tmp_path)
+    ia._retry_delays = (0, 0)
+    _cli_failure(bus)
+    transport.deliver.side_effect = RuntimeError("telegram unavailable")
+    task = _task()
+    store = AsyncRecordStore(tmp_path)
+    store.create(task)
+    await ia._deliver_async_result(_result(task))
+    assert await ia.redeliver_undelivered("main") == 0
+    assert transport.deliver.await_count == 2
+    assert store.load("main", task.task_id, area="undelivered")["result"] is not None
+
+
+async def test_transport_failure_without_cli_error_has_no_failure_notice(tmp_path: Path) -> None:
+    ia, bus, transport = _setup_bus(tmp_path)
+    ia._retry_delays = (0, 0)
+    transport.deliver.side_effect = RuntimeError("telegram unavailable")
+    task = _task()
+    store = AsyncRecordStore(tmp_path)
+    store.create(task)
+    await ia._deliver_async_result(_result(task))
+    assert transport.deliver.await_count == 3
+    assert not bus._noticed_errors
+    assert store.load("main", task.task_id, area="undelivered")["main_response"] == "Final report"
+
+
+async def test_cli_notice_uses_webchat_topic_history(tmp_path: Path) -> None:
+    from ductor_bot.chat_log.events import EventHub
+    from ductor_bot.chat_log.history import HistoryStore
+    from ductor_bot.chat_log.recorder import HistoryRecorder
+    from ductor_bot.i18n import t
+
+    ia, bus, transport = _setup_bus(tmp_path)
+    ia._retry_delays = (0, 0)
+    _cli_failure(bus)
+    history = HistoryStore(tmp_path / "history", EventHub())
+    recorder = HistoryRecorder(history, EventHub(), [123])
+    bus.set_delivery_observer(recorder.on_delivered)
+    task = _task(chat_id=-100123, topic_id=777)
+    AsyncRecordStore(tmp_path).create(task)
+    await ia._deliver_async_result(_result(task, result_text="PRIVATE WORK RESULT"))
+    rows = await history.read("-100123.777")
+    visible = [row for row in rows if row.text]
+    assert len(visible) == 2
+    assert visible[-1].text == t("notice.ia_result_preserved")
+    assert all(row.kind == "interagent" for row in visible)
+    assert all("PRIVATE WORK RESULT" not in row.text for row in rows)
+    assert all(call.args[0].topic_id == 777 for call in transport.deliver.await_args_list)
+
+
+@pytest.mark.parametrize("send_ok", [False, True])
+async def test_cli_notice_telegram_adapter_sends_raw_text_in_origin_topic(
+    tmp_path: Path, send_ok: bool
+) -> None:
+    from ductor_bot.i18n import t
+    from ductor_bot.messenger.telegram.transport import TelegramTransport
+    from ductor_bot.text.response_format import session_error_text
+
+    ia, bus, _transport = _setup_bus(tmp_path)
+    ia._retry_delays = (0, 0)
+    _cli_failure(bus)
+    bot = MagicMock()
+    bot.file_roots.return_value = []
+    bus._transports = [TelegramTransport(bot)]
+    task = _task()
+    store = AsyncRecordStore(tmp_path)
+    store.create(task)
+    with patch(
+        "ductor_bot.messenger.telegram.transport.send_rich_checked_progress",
+        new=AsyncMock(return_value=(send_ok, 1 if send_ok else 0)),
+    ) as send:
+        await ia._deliver_async_result(_result(task, result_text="PRIVATE WORK RESULT"))
+        assert await ia.redeliver_undelivered("main") == 0
+    assert send.await_count == 2
+    assert [call.args[2] for call in send.await_args_list] == [
+        session_error_text("opus", _SUBSCRIPTION_ERROR),
+        t("notice.ia_result_preserved"),
+    ]
+    assert all(call.args[1] == 123 for call in send.await_args_list)
+    assert all(call.args[3].thread_id == 8 for call in send.await_args_list)
+    record = store.load("main", task.task_id, area="undelivered")
+    assert record["delivered_chunks"] == 0
+    assert record["main_response"] == ""
+    assert record["result"]["result_text"] == "PRIVATE WORK RESULT"

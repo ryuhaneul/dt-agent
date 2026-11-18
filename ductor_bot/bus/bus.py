@@ -7,6 +7,7 @@ import logging
 import secrets
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from inspect import getattr_static
 from typing import Any, Protocol, runtime_checkable
 
@@ -103,6 +104,9 @@ class MessageBus:
         self._wake_hook: Callable[[Envelope], Awaitable[None]] | None = None
         self._on_injected: Callable[[Envelope], Awaitable[None]] | None = None
         self._delivery_observer: Callable[[Envelope], Awaitable[None]] | None = None
+        # Process-local only: after a restart the same failure can be announced once again.
+        self._injection_notices: dict[str, Envelope] = {}
+        self._noticed_errors: set[tuple[str, str]] = set()
 
     @property
     def lock_pool(self) -> LockPool:
@@ -158,11 +162,11 @@ class MessageBus:
         else:
             await self._process(envelope)
 
-        if self._delivery_observer is not None:
-            try:
-                await self._delivery_observer(envelope)
-            except Exception:
-                logger.exception("Delivery observer failed")
+        if envelope.injection_error_text:
+            await self._injection_notice(
+                envelope, envelope.injection_error_text, envelope.injection_error_kind
+            )
+        await self._observe_delivery(envelope)
 
         injected = envelope.injected
         delivered = envelope.delivered
@@ -183,10 +187,64 @@ class MessageBus:
             injected=injected,
             delivered=delivered,
             error=error,
+            injection_error_kind=envelope.injection_error_kind,
+            injection_error_text=envelope.injection_error_text,
             delivered_chunks=envelope.delivered_chunks,
             delivered_text_sha256=delivery_hash,
             chunk_scheme=envelope.chunk_scheme,
         )
+
+    async def _observe_delivery(self, envelope: Envelope) -> None:
+        if self._delivery_observer is not None:
+            try:
+                await self._delivery_observer(envelope)
+            except Exception:
+                logger.exception("Delivery observer failed")
+
+    async def _injection_notice(self, envelope: Envelope, text: str, kind: str) -> None:
+        """Send a separate notice, leaving the original result and retry state untouched."""
+        task_id = envelope.metadata.get("ia_task_id")
+        if not task_id or (task_id, kind) in self._noticed_errors:
+            return
+        # Claim before sending: a transport failure must not start another retry loop.
+        self._noticed_errors.add((task_id, kind))
+        notice = replace(
+            envelope,
+            prompt="",
+            prompt_preview="",
+            result_text=text,
+            status="error",
+            is_error=False,  # Use the IA raw-text path, not the failed-worker summary.
+            needs_injection=False,
+            injected=True,
+            delivered=True,
+            delivery_error="",
+            injection_error_kind="",
+            injection_error_text="",
+            delivered_chunks=0,
+            start_chunk=0,
+            delivered_text_sha256="",
+            chunk_scheme="",
+            failed_transports=[],
+            session_name="",
+            envelope_id=secrets.token_hex(6),
+            metadata={"ia_task_id": task_id},
+        )
+        if kind != "undelivered":
+            # No prompt, task result, or original request is retained in this notice.
+            self._injection_notices[task_id] = replace(notice, result_text="")
+        await self._deliver(notice)
+        await self._observe_delivery(notice)
+        if not notice.delivered:
+            logger.warning(
+                "Inter-agent failure notice not delivered task=%s kind=%s", task_id, kind
+            )
+
+    async def notify_interagent_undelivered(self, task_id: str) -> None:
+        """Announce a preserved result only if its injection failed with a CLI response."""
+        notice = self._injection_notices.get(task_id)
+        if notice is not None:
+            await self._injection_notice(notice, t("notice.ia_result_preserved"), "undelivered")
 
     @asynccontextmanager
     async def _injection_typing(self, envelope: Envelope) -> AsyncIterator[None]:
@@ -254,13 +312,14 @@ class MessageBus:
                     )
                 if not await self._accept_injection(envelope, response):
                     return
-            except Exception:
+            except Exception as exc:
                 logger.exception(
                     "Injection failed: origin=%s chat=%d",
                     envelope.origin.value,
                     envelope.chat_id,
                 )
                 if envelope.origin == Origin.INTERAGENT:
+                    self._capture_injection_failure(envelope, exc)
                     envelope.is_error = True
                     envelope.result_text = ""
                     envelope.injected = False
@@ -284,6 +343,14 @@ class MessageBus:
             return
 
         await self._deliver(envelope)
+
+    @staticmethod
+    def _capture_injection_failure(envelope: Envelope, exc: Exception) -> None:
+        from ductor_bot.orchestrator.injection import InjectionIncomplete
+
+        if isinstance(exc, InjectionIncomplete):
+            envelope.injection_error_text = exc.notice_text
+            envelope.injection_error_kind = exc.error_kind
 
     async def _accept_injection(self, envelope: Envelope, response: str) -> bool:
         """Take the injected turn's reply as the envelope's result; ``False``: stop (IA failure).

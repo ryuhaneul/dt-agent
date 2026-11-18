@@ -33,6 +33,7 @@ from ductor_bot.orchestrator.flows import (
 )
 from ductor_bot.session.key import SessionKey
 from ductor_bot.session.named import NamedSession, interagent_session_name
+from ductor_bot.text.response_format import cli_error_kind, session_error_text, timeout_error_text
 from ductor_bot.workspace.loader import build_appended_files_block
 
 if TYPE_CHECKING:
@@ -46,6 +47,11 @@ logger = logging.getLogger(__name__)
 
 class InjectionIncomplete(RuntimeError):  # noqa: N818 -- reads as the state it reports
     """The injected turn ended in an error or timeout instead of a reply."""
+
+    def __init__(self, message: str, *, notice_text: str = "", error_kind: str = "") -> None:
+        super().__init__(message)
+        self.notice_text = notice_text
+        self.error_kind = error_kind
 
 
 _TRANSPORT_ALIASES = {"telegram": "tg", "matrix": "mx"}
@@ -180,7 +186,17 @@ async def _inject_prompt(  # noqa: PLR0913
     if response and (response.is_error or response.timed_out):
         # An error or timeout is no reply: do not hand its (usually empty) text on as one.
         msg = f"injected turn did not complete ({'timeout' if response.timed_out else 'error'})"
-        raise InjectionIncomplete(msg)
+        model = request.model_override or orch._config.model
+        notice = (
+            timeout_error_text(model, orch._config.cli_timeout)
+            if response.timed_out
+            else session_error_text(model, response.result)
+        )
+        raise InjectionIncomplete(
+            msg,
+            notice_text=notice,
+            error_kind="timeout" if response.timed_out else cli_error_kind(response.result),
+        )
     return response.result if response else ""
 
 

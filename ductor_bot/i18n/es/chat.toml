@@ -518,6 +518,7 @@ extras_hint = "extras de la imagen: '{extras}'. Añade la función a DUCTOR_EXTR
 only_sub = "solo se excluye el subagente '{sub}'"
 
 [notice]
+ia_result_preserved = "El resultado está guardado. Resuelve el error de la CLI y espera la entrega automática, o reinicia el bot para reintentar de inmediato."
 session_cancelled = "**[{name}] Cancelado**"
 session_failed = "**[{name}] Falló** ({elapsed})"
 session_complete = "**[{name}] Completado** ({elapsed})"

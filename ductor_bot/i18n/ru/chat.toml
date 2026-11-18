@@ -518,6 +518,7 @@ extras_hint = "extras образа: '{extras}'. Добавь функцию в D
 only_sub = "исключается только суб-агент '{sub}'"
 
 [notice]
+ia_result_preserved = "Результат сохранён. Устрани ошибку CLI и дождись автоматической доставки или перезапусти бота для немедленной повторной попытки."
 session_cancelled = "**[{name}] Отменено**"
 session_failed = "**[{name}] Ошибка** ({elapsed})"
 session_complete = "**[{name}] Завершено** ({elapsed})"

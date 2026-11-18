@@ -208,3 +208,31 @@ async def test_a_good_injection_delivers_only_the_session_reply(orch: Orchestrat
     )
     assert env.injected
     assert [e.result_text for e in transport.delivered] == ["session reply"]
+
+
+@pytest.mark.parametrize(
+    ("detail", "kind"),
+    [
+        (
+            (
+                "Claude Code can't use your Claude subscription, usually because a payment is past due "
+                "· Pay or renew at https://claude.ai/settings/billing (if you just paid, try again "
+                "shortly), or use an Anthropic AP"
+            ),
+            "error",
+        ),
+        ("You've hit your usage limit. Please try again later.", "rate"),
+    ],
+)
+async def test_cli_failure_notice_matches_normal_turn(
+    orch: Orchestrator, detail: str, kind: str
+) -> None:
+    from ductor_bot.text.response_format import session_error_text
+
+    _respond(orch, AgentResponse(result=detail, is_error=True))
+    with pytest.raises(InjectionIncomplete) as caught:
+        await orch.inject_prompt("private result", CHAT, "interagent:x", topic_id=TOPIC)
+    session = await orch._sessions.get_active(_key("tg"))
+    assert session is not None
+    assert caught.value.notice_text == session_error_text(session.model, detail)
+    assert caught.value.error_kind == kind

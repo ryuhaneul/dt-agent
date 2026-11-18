@@ -513,6 +513,7 @@ extras_hint = "extras build image: '{extras}'. Tambahkan fitur ke DUCTOR_EXTRAS 
 only_sub = "hanya sub-agen '{sub}' yang dikecualikan"
 
 [notice]
+ia_result_preserved = "Hasil disimpan. Perbaiki error CLI lalu tunggu pengiriman ulang otomatis, atau mulai ulang bot untuk langsung mencoba lagi."
 session_cancelled = "**[{name}] Dibatalkan**"
 session_failed = "**[{name}] Gagal** ({elapsed})"
 session_complete = "**[{name}] Selesai** ({elapsed})"

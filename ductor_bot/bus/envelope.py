@@ -48,6 +48,8 @@ class DeliveryOutcome:
     injected: bool
     delivered: bool
     error: str = ""
+    injection_error_kind: str = field(default="", kw_only=True)
+    injection_error_text: str = field(default="", kw_only=True)
     delivered_chunks: int = 0
     delivered_text_sha256: str = ""
     chunk_scheme: str = ""
@@ -88,6 +90,8 @@ class Envelope:
     # Broadcast delivery records each failed transport for targeted retries.
     delivered: bool = True
     delivery_error: str = ""
+    injection_error_kind: str = field(default="", kw_only=True)
+    injection_error_text: str = field(default="", kw_only=True)
     # IA final report: absolute count of leading chunks sent, and retry offset.
     delivered_chunks: int = 0
     start_chunk: int = 0
