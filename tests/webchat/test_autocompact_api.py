@@ -410,7 +410,9 @@ async def test_automation_save_roundtrip_and_next_execution(
     monkeypatch.setattr(
         "ductor_bot.cron.execution.claude_autocompact_flag_supported", lambda _: True
     )
+    monkeypatch.setattr("ductor_bot.cron.execution.which", lambda _: "/fake/claude")
     command = build_cmd(config, "hello")
+    assert command is not None
     expected = 500000 if value is None else value
     assert command.env_overrides["DUCTOR_AUTOCOMPACT"] == str(expected)
     assert ("--autocompact" in command.cmd) == isinstance(expected, int)

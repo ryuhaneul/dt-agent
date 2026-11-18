@@ -199,7 +199,9 @@ def test_saved_values_reach_execution_argv_env(orch, kind, item_id, value, monke
     monkeypatch.setattr(
         "ductor_bot.cron.execution.claude_autocompact_flag_supported", lambda _: True
     )
+    monkeypatch.setattr("ductor_bot.cron.execution.which", lambda _: "/fake/claude")
     command = build_cmd(cfg, "hello")
+    assert command is not None
     apply_autocompact_env(command, cfg)
     expected = 300000 if kind == "cron" else 500000
     assert command.cmd[command.cmd.index("--autocompact") + 1] == str(expected)
