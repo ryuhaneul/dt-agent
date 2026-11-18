@@ -3961,7 +3961,7 @@ async def test_seen_save_and_delete_are_serialized(conversation, monkeypatch):
     assert response.status == 404
 
 
-@pytest.mark.parametrize("error_type", [PermissionError, OSError])
+@pytest.mark.parametrize("failure", ["permission", "io", "directory"])
 @pytest.mark.parametrize(
     ("method", "resource", "body"),
     [
@@ -3971,32 +3971,54 @@ async def test_seen_save_and_delete_are_serialized(conversation, monkeypatch):
         ("DELETE", "topics/-123.7", {"confirm_name": "Topic #7"}),
     ],
 )
-async def test_seen_unreadable_file_returns_json_without_overwrite(
-    conversation, monkeypatch, caplog, *, error_type, method, resource, body
+async def test_seen_unreadable_file_preserves_topic_operations_and_stored_cursors(
+    conversation, monkeypatch, caplog, *, failure, method, resource, body
 ):
     h = conversation
     await h.runtime.history.append("-123.7", Entry(role="bot", source="telegram", text="live"))
     path = h.paths.webchat_dir / "read_state.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     original = b'{"-123.7": 9, "unknown": -3}'
-    path.write_bytes(original)
+    if failure == "directory":
+        path.mkdir()
+        preserved = path / "untouched"
+    else:
+        preserved = path
+    preserved.write_bytes(original)
     read_text = Path.read_text
     writes = MagicMock()
 
     def denied_read(target, *args, **kwargs):
-        if target == path:
+        if target == path and failure != "directory":
+            error_type = PermissionError if failure == "permission" else OSError
             raise error_type("private-error-detail")
         return read_text(target, *args, **kwargs)
 
     monkeypatch.setattr(Path, "read_text", denied_read)
     monkeypatch.setattr("ductor_bot.webchat.read_state.atomic_json_save", writes)
     response = await h.client.request(method, f"{_PREFIX}/{resource}", json=body, headers=headers())
-    assert response.status == 503
-    assert await response.json() == {"error": "generic"}
-    assert path.read_bytes() == original
+    data = await response.json()
+    if method == "GET":
+        assert response.status == 200
+        assert data["topics"]
+        assert all(topic["seen"] is None for topic in data["topics"])
+        assert data["topics"][0]["tid"] == "-123.7"
+        h.runtime.ops.delete_topic.assert_not_awaited()
+    elif method == "DELETE":
+        assert response.status == 200
+        assert data["telegram_deleted"] is True
+        h.runtime.ops.delete_topic.assert_awaited_once_with(-123, 7)
+        assert await h.bot._orch._sessions.get_active(h.key) is None
+        assert await h.runtime.history.count("-123.7") == 0
+        assert "Unable to clean up webchat read state after topic deletion" in caplog.text
+    else:
+        assert response.status == 503
+        assert data == {"error": "generic"}
+        h.runtime.ops.delete_topic.assert_not_awaited()
+    assert preserved.read_bytes() == original
     writes.assert_not_called()
-    h.runtime.ops.delete_topic.assert_not_awaited()
     assert "private-error-detail" not in caplog.text
+    assert str(path) not in caplog.text
 
 
 @pytest.mark.parametrize("operation", ["merge", "remove"])

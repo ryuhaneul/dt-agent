@@ -205,7 +205,7 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
         try:
             cursors = await read_state.load()
         except OSError:
-            return _error("generic", 503)
+            cursors = {}
         return web.json_response(
             {"topics": [{**topic, "seen": cursors.get(topic["tid"])} for topic in listed]}
         )
@@ -263,7 +263,7 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
             return _error("telegram_unavailable", 503)
         return web.json_response({"topic": topic}, status=201)
 
-    async def manage_topic(request: web.Request) -> web.Response:  # noqa: C901, PLR0911 -- explicit storage and topic failure responses
+    async def manage_topic(request: web.Request) -> web.Response:  # noqa: PLR0911
         tid = request.match_info["tid"]
         if tid == "unknown":
             return _error("not_a_topic", 409)
@@ -283,15 +283,11 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
                 if data.get("confirm_name") != topic["name"]:
                     return _error("confirm_mismatch", 400)
                 async with read_state.lock:
-                    try:
-                        await read_state.load()
-                    except OSError:
-                        return _error("generic", 503)
                     result = await topics.delete(tid)
                     try:
                         await read_state.remove(tid)
                     except OSError:
-                        return _error("generic", 503)
+                        logger.warning("Unable to clean up webchat read state after topic deletion")
                 return web.json_response(result)
             except TopicBusyError:
                 return _error("topic_busy", 409)
