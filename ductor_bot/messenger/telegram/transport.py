@@ -135,6 +135,12 @@ class TelegramTransport:
             on_keyboard=self._keyboard_observer(
                 envelope, envelope.chat_id, envelope.topic_id or envelope.thread_id
             ),
+            on_file=self._history.file_observer(
+                SessionKey.telegram(envelope.chat_id, envelope.topic_id or envelope.thread_id),
+                envelope.metadata.setdefault("chat_log_entry_id", new_id()),
+            )
+            if self._history is not None
+            else None,
         )
 
     def _keyboard_observer(
@@ -162,7 +168,16 @@ class TelegramTransport:
         return record
 
     async def _send_part(self, env: Envelope, chat_id: int, text: str, opts: SendRichOpts) -> None:
-        opts = replace(opts, on_keyboard=self._keyboard_observer(env, chat_id, opts.thread_id))
+        opts = replace(
+            opts,
+            on_keyboard=self._keyboard_observer(env, chat_id, opts.thread_id),
+            on_file=self._history.file_observer(
+                SessionKey.telegram(chat_id, opts.thread_id),
+                env.metadata.setdefault("chat_log_entry_id", new_id()),
+            )
+            if self._history is not None
+            else None,
+        )
         if self._outbox is None:
             await send_rich(self._bot.bot_instance, chat_id, text, opts)
             return

@@ -29,7 +29,11 @@ class ChatLogRuntime:
         self.events = EventHub()
         self.topic_registry_lock = asyncio.Lock()
         directory = bot._orch.paths.chat_log_dir
-        self.history = HistoryStore(directory / "history", self.events)
+        self.history = HistoryStore(
+            directory / "history",
+            self.events,
+            attachment_index_path=bot._orch.paths.webchat_dir / "attachments.jsonl",
+        )
         self.outbox = Outbox(directory / "outbox", self.events)
         self.recorder = HistoryRecorder(self.history, self.events, bot.config.allowed_user_ids)
         self.ops = TelegramWebchatOps(bot)

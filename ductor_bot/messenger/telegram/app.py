@@ -1999,25 +1999,31 @@ class TelegramBot:
             self._get_topic_namer().on_user_message(get_session_key(message), text)
 
     async def _on_message(self, message: Message, topic_naming_started: bool = False) -> None:
-        if not topic_naming_started:
-            self._start_topic_name(message)
-        text = await self._resolve_text(message)
-        if text is None:
-            return
+        from ductor_bot.chat_log.recorder import received_file
 
-        key = get_session_key(message)
-        thread_id = get_thread_id(message)
-        logger.debug("Message text=%s", text[:80])
+        received_file.set(None)
+        try:
+            if not topic_naming_started:
+                self._start_topic_name(message)
+            text = await self._resolve_text(message)
+            if text is None:
+                return
 
-        # #63: status_reaction (stage-based) wins over seen_reaction (one-shot).
-        # Both enabled would fight over the same Telegram emoji slot.
-        if self._config.scene.seen_reaction and not self._config.scene.status_reaction:
-            await self._set_seen_reaction(message)
+            key = get_session_key(message)
+            thread_id = get_thread_id(message)
+            logger.debug("Message text=%s", text[:80])
 
-        if self._config.streaming.enabled:
-            await self._handle_streaming(message, key, text, thread_id=thread_id)
-        else:
-            await self._handle_non_streaming(message, key, text, thread_id=thread_id)
+            # #63: status_reaction (stage-based) wins over seen_reaction (one-shot).
+            # Both enabled would fight over the same Telegram emoji slot.
+            if self._config.scene.seen_reaction and not self._config.scene.status_reaction:
+                await self._set_seen_reaction(message)
+
+            if self._config.streaming.enabled:
+                await self._handle_streaming(message, key, text, thread_id=thread_id)
+            else:
+                await self._handle_non_streaming(message, key, text, thread_id=thread_id)
+        finally:
+            received_file.set(None)
 
     async def _set_seen_reaction(self, message: Message) -> None:
         """Set a seen reaction on the user message. Graceful degradation on failure."""

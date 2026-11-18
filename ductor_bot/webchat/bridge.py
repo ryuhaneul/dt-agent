@@ -265,6 +265,9 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
         bot._orch.paths.webchat_dir / "attachments.jsonl",
     )
 
+    if hasattr(runtime, "history"):
+        runtime.history.attachment_index_path = attachments.index.path
+
     downloads = AttachmentDownloads(
         bot._orch.paths.workspace, attachments.index, bot._orch.paths.webchat_dir / "thumbnails"
     )

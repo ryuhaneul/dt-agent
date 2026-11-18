@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
+import mimetypes
 import os
 import tempfile
 from bisect import bisect_left, bisect_right
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, BinaryIO, Literal
@@ -79,8 +81,15 @@ class InvalidSelectorButtonError(Exception):
 
 
 class HistoryStore:
-    def __init__(self, directory: Path, events: EventHub | None = None) -> None:
+    def __init__(
+        self,
+        directory: Path,
+        events: EventHub | None = None,
+        *,
+        attachment_index_path: Path | None = None,
+    ) -> None:
         self.directory = directory
+        self.attachment_index_path = attachment_index_path or directory.parent / "attachments.jsonl"
         self._events = events
         self._locks: dict[str, asyncio.Lock] = {}
         self._sequences: dict[str, tuple[int, int]] = {}
@@ -249,6 +258,47 @@ class HistoryStore:
         assert metadata is not None
         self._publish_metadata(tid, entry_id, metadata)
         return metadata
+
+    def file_observer(self, key: SessionKey, entry_id: str) -> Callable[[Path], Awaitable[None]]:
+        async def record(path: Path) -> None:
+            await self.record_file(to_tid(key), entry_id, path, provenance="delivered")
+
+        return record
+
+    async def record_file(
+        self, tid: str, entry_id: str, path: Path, *, provenance: Literal["received", "delivered"]
+    ) -> None:
+        """Bind only paths supplied by actual receive/send operations, outside history."""
+        from ductor_bot.webchat.attachments import AttachmentIndex
+
+        absolute = await asyncio.to_thread(path.absolute)
+        if ".." in absolute.parts:
+            return
+        stored = absolute.as_posix()
+        info = await asyncio.to_thread(absolute.stat)
+        item = {
+            "id": hashlib.sha256((provenance + absolute.as_posix()).encode()).hexdigest()[:32],
+            "name": path.name,
+            "size": info.st_size,
+            "mime": mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+            "path": stored,
+            "inline_allowed": True,
+            "provenance": provenance,
+        }
+        if provenance == "received":
+            workspace = self.attachment_index_path.parent.parent / "workspace"
+            relative = absolute.relative_to(workspace)
+            if not relative.is_relative_to("telegram_files"):
+                raise ValueError("invalid_received_file_root")
+            item["path"] = relative.as_posix()
+        index = AttachmentIndex(self.attachment_index_path)
+        async with self._lock(tid):
+            items = await index.get(tid, entry_id)
+            if any(old["id"] == item["id"] for old in items):
+                return
+            await asyncio.to_thread(index.append, tid, entry_id, [*items, item])
+        if self._events is not None:
+            self._events.publish({"type": "attachments_changed", "tid": tid, "entry_id": entry_id})
 
     async def record_buttons(
         self,

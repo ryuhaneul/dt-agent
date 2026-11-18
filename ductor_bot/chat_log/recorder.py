@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping, Sequence
 from contextvars import ContextVar
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypedDict
 
 from ductor_bot.bus.cron_sanitize import sanitize_cron_result_text
@@ -27,6 +29,9 @@ class ChatLogTurn(TypedDict):
     user_entry_id: str
     reply_entry_id: str
 
+
+received_file: ContextVar[Path | None] = ContextVar("received_file", default=None)
+logger = logging.getLogger(__name__)
 
 chat_log_source: ContextVar[ChatLogSource | None] = ContextVar("chat_log_source", default=None)
 chat_log_turn: ContextVar[ChatLogTurn | None] = ContextVar("chat_log_turn", default=None)
@@ -72,6 +77,8 @@ class HistoryRecorder:
         )
 
     async def begin(self, dispatch: _MessageDispatch) -> None:
+        incoming = received_file.get()
+        received_file.set(None)
         if dispatch.key.transport != "tg":
             return
         self._busy(dispatch, busy=True)
@@ -80,13 +87,21 @@ class HistoryRecorder:
             return
         source = self._source(dispatch)
         turn = chat_log_turn.get() if source == "web" else None
+        entry_id = turn["user_entry_id"] if turn else new_id()
+        if source == "telegram" and incoming is not None:
+            try:
+                await self._history.record_file(
+                    to_tid(dispatch.key), entry_id, incoming, provenance="received"
+                )
+            except (OSError, ValueError):
+                logger.warning("Incoming attachment receipt unavailable")
         await self._history.append(
             dispatch.key,
             Entry(
                 role="user",
                 source=source,
                 text=dispatch.text,
-                id=turn["user_entry_id"] if turn else new_id(),
+                id=entry_id,
                 turn_id=turn["turn_id"] if turn else None,
             ),
         )

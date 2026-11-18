@@ -480,6 +480,7 @@ async function refreshOutbox() {
   outbox = data.items; renderStatus();
 }
 async function resync() {
+  attachmentView?.reset?.();
   const generation = epoch, versions = new Map(topicVersions), busySnapshot = new Map(busyVersions);
   try {
     await Promise.all([refreshTopics(), refreshState(), refreshOutbox()]);
@@ -529,6 +530,9 @@ export async function handleEvent(event) {
       if (!getTopics().some(item => item.tid === tid)) await refreshTopics();
       break;
     }
+    case 'attachments_changed':
+      attachmentView?.invalidate?.(tid,event.entry_id);
+      break;
     case 'entry_meta': {
       const state = history(tid);
       mergeButtonMeta(state, event.entry_id, event.meta || {});

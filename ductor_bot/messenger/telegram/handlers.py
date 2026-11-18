@@ -82,7 +82,7 @@ async def command_reply_options(  # noqa: PLR0913 -- native delivery context and
         if to_tid(key) not in recorder.blocked:
             await observer(message_id, markup, html_text)
 
-    return replace(opts, on_keyboard=record)
+    return replace(opts, on_keyboard=record, on_file=recorder._history.file_observer(key, entry_id))
 
 
 def interrupt_response(orchestrator: Orchestrator, chat_id: int) -> str:

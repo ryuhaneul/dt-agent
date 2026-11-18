@@ -63,20 +63,22 @@ export function initAttachmentView({changed}) {
   document.addEventListener('auth-change',event=>{live=event.detail.authenticated;++generation;cache.clear();references.clear();dialog.close();});
   document.addEventListener('topic-selected',()=>dialog.close());
   return {
+    invalidate(tid,id){cache.delete(key(tid,id));},
+    reset(){cache.clear();},
     load(tid,entries){
       const epoch=generation;
       for(const entry of entries){
         const identity=key(tid,entry.id);if(cache.has(identity))continue;
-        cache.set(identity,{files:[]});
+        const pending={files:[]};cache.set(identity,pending);
         void api(`/topics/${encodeURIComponent(tid)}/messages/${encodeURIComponent(entry.id)}/attachments`).then(result=>{
-          if(epoch!==generation)return;cache.set(identity,{files:validate(tid,entry,result.attachments)});changed();
+          if(epoch!==generation||cache.get(identity)!==pending)return;cache.set(identity,{files:validate(tid,entry,result.attachments)});changed();
         }).catch(()=>{});
       }
     },
     text(tid,entry){
       const files=list(tid,entry),text=entry.text||'';if(!files.length)return text;
       if(entry.role==='user')return caption(text,files);
-      if(entry.role!=='bot')return text;
+      if(entry.role!=='bot'&&entry.role!=='event')return text;
       return text.replace(/<file:([^>]+)>/g,(tag,path)=>{
         let name;try{name=decodeURIComponent(path.trim()).replace(/\\/g,'/').split('/').at(-1);}catch{return tag;}
         return files.some(item=>item.name===name||item.path===name)?'':tag;

@@ -21,8 +21,6 @@ from aiohttp import web
 from PIL import Image, ImageOps
 
 from ductor_bot.chat_log.history import Entry
-from ductor_bot.files.prompt import MediaInfo, build_media_prompt
-from ductor_bot.files.tags import classify_mime, extract_file_paths, path_from_file_tag
 from ductor_bot.webchat.attachments import AttachmentIndex
 
 _SAFE_IMAGES = {
@@ -36,10 +34,6 @@ _PIXELS = 100_000_000
 _PREVIEW_BYTES = 32 * 1024 * 1024
 _BUFFER = 64 * 1024
 _ID = re.compile(r"[a-f0-9]{32}\Z")
-_TELEGRAM = re.compile(
-    r"\A\[INCOMING FILE\]\nThe user sent you a file via Telegram\.\n"
-    r"Path: ([^\n]+)\nType: ([^\n]+)\nOriginal filename: ([^\n]+)\n"
-)
 
 
 def open_regular(path: Path) -> BinaryIO:
@@ -111,44 +105,6 @@ class AttachmentDownloads:
         self.cache = cache.absolute()
         self._images = asyncio.Semaphore(1)
 
-    def _legacy(self, entry: Entry) -> list[tuple[Path, str]]:
-        if entry.role == "bot":
-            result = []
-            for tag in extract_file_paths(entry.text):
-                path = path_from_file_tag(tag)
-                if not path.is_absolute():
-                    path = self.workspace / path
-                if ".." not in path.parts:
-                    result.append((path, path.name))
-            return result
-        if entry.role != "user" or entry.source != "telegram":
-            return []
-        match = _TELEGRAM.match(entry.text)
-        if match is None:
-            return []
-        relative, mime, name = match.groups()
-        path = Path(relative)
-        if path.is_absolute() or ".." in path.parts or not path.is_relative_to("telegram_files"):
-            return []
-        absolute = self.workspace / path
-        caption = entry.text.partition("\n\nUser message: ")[2] or None
-        # Audio/video can also arrive as documents, without transcription instructions.
-        for original_type in (classify_mime(mime), "document"):
-            expected = build_media_prompt(
-                MediaInfo(
-                    caption=caption,
-                    file_name=name,
-                    media_type=mime,
-                    original_type=original_type,
-                    path=absolute,
-                ),
-                self.workspace,
-                transport="Telegram",
-            )
-            if entry.text == expected:
-                return [(absolute, name)]
-        return []
-
     def _thumbnail(self, stream: BinaryIO, info: os.stat_result, path: Path) -> Path | None:
         key = hashlib.sha256(
             f"{path}:{info.st_dev}:{info.st_ino}:{info.st_size}:{info.st_mtime_ns}:{info.st_ctime_ns}:512".encode()
@@ -207,6 +163,9 @@ class AttachmentDownloads:
                 inline = mime is not None and metadata.get("inline_allowed", True)
                 description = {
                     **metadata,
+                    "path": path.name
+                    if metadata.get("provenance") == "delivered"
+                    else metadata["path"],
                     "size": info.st_size,
                     "mime": mime
                     or (
@@ -230,16 +189,27 @@ class AttachmentDownloads:
         candidates = []
         for metadata in indexed:
             path = Path(metadata["path"])
-            if (
-                path.parts
-                and path.parts[0] in {"webchat_files", "telegram_files"}
-                and not path.is_absolute()
-                and ".." not in path.parts
-            ):
-                candidates.append((self.workspace / path, metadata))
-        for path, name in self._legacy(entry):
-            identity = hashlib.sha256(str(path).encode()).hexdigest()[:32]
-            candidates.append((path, {"id": identity, "name": name, "path": path.name}))
+            origin = metadata.get("provenance")
+            if origin == "delivered":
+                if entry.role in {"bot", "event"} and ".." not in path.parts:
+                    candidates.append(
+                        (path if path.is_absolute() else self.workspace / path, metadata)
+                    )
+            elif not path.is_absolute() and ".." not in path.parts and path.parts:
+                received = (
+                    origin == "received"
+                    and entry.role == "user"
+                    and entry.source == "telegram"
+                    and path.parts[0] == "telegram_files"
+                )
+                uploaded = (
+                    origin is None
+                    and entry.role == "user"
+                    and entry.source == "web"
+                    and path.parts[0] == "webchat_files"
+                )
+                if received or uploaded:
+                    candidates.append((self.workspace / path, metadata))
         result = []
         seen = set()
         for path, metadata in candidates:

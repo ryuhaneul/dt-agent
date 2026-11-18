@@ -51,7 +51,7 @@ class AttachmentIndex:
             and raw["size"] >= 0
             and isinstance(raw.get("mime"), str)
             and isinstance(path, str)
-            and not Path(path).is_absolute()
+            and (not Path(path).is_absolute() or raw.get("provenance") == "delivered")
             and ".." not in Path(path).parts
             and type(raw.get("inline_allowed")) is bool
         )

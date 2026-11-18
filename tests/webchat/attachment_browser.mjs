@@ -20,16 +20,17 @@ const browser=await chromium.launch({headless:true});
 const context=await browser.newContext({viewport:{width:1280,height:720},permissions:['clipboard-read','clipboard-write']});
 const page=await context.newPage(), errors=[], sessions=new Map(), messages=[], requests=[];
 page.on('pageerror',error=>errors.push(error.message));
-const topic={tid:'123.7',chat_id:123,topic_id:7,name:'첨부 기능 확인',group:'telegram',count:0,imported_count:0,read_only:false,renamable:true,deletable:true,busy:false,seen:0};
+const topic={tid:'123.7',chat_id:123,topic_id:7,name:'Attachment checks',group:'telegram',count:0,imported_count:0,read_only:false,renamable:true,deletable:true,busy:false,seen:0};
 let settings={max_file_bytes:2*1024**3,max_files_per_message:10,chunk_bytes:1024**2,server_max_file_bytes:2*1024**3,server_max_files_per_message:10}, failPut=false;
 let historyEnabled=false,dropAfterAck=false,holdPut=false,releasePut=null,settingsPuts=0;
 const putOffsets=[];
-const incoming='[INCOMING FILE]\nThe user sent you a file via Telegram.\nPath: telegram_files/2026-11-18/photo.png\nType: image/png\nOriginal filename: photo.png\n\nCheck tools/media_tools/CLAUDE.md for file handling instructions.\n\nUser message: 사진을 확인해 주세요.';
+let wsPeer=null,backgroundReady=false;
+const incoming='[INCOMING FILE]\nThe user sent you a file via Telegram.\nPath: telegram_files/2026-11-18/photo.png\nType: image/png\nOriginal filename: photo.png\n\nCheck tools/media_tools/CLAUDE.md for file handling instructions.\n\nUser message: Please check the photo.';
 const longName='project-'+ 'f'.repeat(220)+'report.pdf';
-const entries=[{id:'aaaaaaaaaaaa',seq:1,role:'user',source:'telegram',text:incoming,ts:'2026-11-18T10:00:00Z'}, {id:'bbbbbbbbbbbb',seq:2,role:'bot',source:'web',text:`작업 명세입니다. <file:/safe/${longName}>`,ts:'2026-11-18T10:01:00Z'}, {id:'cccccccccccc',seq:3,role:'user',source:'web',text:'<file:/outside/'+ 'p'.repeat(320)+'/secret.txt>',ts:'2026-11-18T10:02:00Z'}, {id:'dddddddddddd',seq:4,role:'user',source:'web',text:'웹 첨부 본문',ts:'2026-11-18T10:03:00Z'}, {id:'eeeeeeeeeeee',seq:5,role:'user',source:'web',text:'',ts:'2026-11-18T10:04:00Z'}];
+const entries=[{id:'aaaaaaaaaaaa',seq:1,role:'user',source:'telegram',text:incoming,ts:'2026-11-18T10:00:00Z'}, {id:'bbbbbbbbbbbb',seq:2,role:'bot',source:'web',text:`Project specification. <file:/safe/${longName}>`,ts:'2026-11-18T10:01:00Z'}, {id:'cccccccccccc',seq:3,role:'user',source:'web',text:'<file:/outside/'+ 'p'.repeat(320)+'/secret.txt>',ts:'2026-11-18T10:02:00Z'}, {id:'dddddddddddd',seq:4,role:'user',source:'web',text:'Web attachment caption',ts:'2026-11-18T10:03:00Z'}, {id:'eeeeeeeeeeee',seq:5,role:'user',source:'web',text:'',ts:'2026-11-18T10:04:00Z'}, {id:'ffffffffffff',seq:6,role:'event',source:'system',kind:'background',text:'Background <file:/safe/background.txt>',ts:'2026-11-18T10:05:00Z'}];
 const cardMeta=(entry,id,name,mime,inline)=>{const base=`/api/topics/123.7/messages/${entry}/attachments/${id}`;return{id,name,mime,size:2048,path:name,inline_allowed:inline,download_url:base,original_url:inline?base+'?inline=1':null,preview_url:inline?base+'/preview':null};};
 const response=(route,data,status=200)=>route.fulfill({status,contentType:'application/json',body:JSON.stringify(data)});
-await page.routeWebSocket('**/api/ws',()=>{});
+await page.routeWebSocket('**/api/ws',peer=>{wsPeer=peer;});
 await page.route('**/api/**',async route=>{
   const request=route.request(),url=new URL(request.url()),p=url.pathname.slice(4),method=request.method();
   requests.push({p,method});
@@ -50,7 +51,7 @@ await page.route('**/api/**',async route=>{
   const attachmentPath=p.match(/^\/topics\/123\.7\/messages\/([^/]+)\/attachments(?:\/([a-f0-9]{32})(?:\/preview)?)?$/);
   if(attachmentPath){
     if(attachmentPath[2])return route.fulfill({contentType:attachmentPath[1]==='bbbbbbbbbbbb'?'application/pdf':'image/png',body:await fs.readFile(path.join(cfg.directory,'sample.png'))});
-    return response(route,{attachments:attachmentPath[1]==='aaaaaaaaaaaa'?[cardMeta(attachmentPath[1],'a'.repeat(32),'photo.png','image/png',true)]:attachmentPath[1]==='bbbbbbbbbbbb'?[cardMeta(attachmentPath[1],'b'.repeat(32),longName,'application/pdf',false)]:attachmentPath[1]==='dddddddddddd'?[cardMeta(attachmentPath[1],'d'.repeat(32),'web-notes.txt','text/plain',false)]:attachmentPath[1]==='eeeeeeeeeeee'?[cardMeta(attachmentPath[1],'e'.repeat(32),'attachment-only.txt','text/plain',false)]:[]});
+    return response(route,{attachments:attachmentPath[1]==='aaaaaaaaaaaa'?[cardMeta(attachmentPath[1],'a'.repeat(32),'photo.png','image/png',true)]:attachmentPath[1]==='bbbbbbbbbbbb'?[cardMeta(attachmentPath[1],'b'.repeat(32),longName,'application/pdf',false)]:attachmentPath[1]==='dddddddddddd'?[cardMeta(attachmentPath[1],'d'.repeat(32),'web-notes.txt','text/plain',false)]:attachmentPath[1]==='eeeeeeeeeeee'?[cardMeta(attachmentPath[1],'e'.repeat(32),'attachment-only.txt','text/plain',false)]:attachmentPath[1]==='ffffffffffff'&&backgroundReady?[cardMeta(attachmentPath[1],'f'.repeat(32),'background.txt','text/plain',false)]:[]});
   }
   if(p.endsWith('/messages') && method==='GET')return response(route,{entries:historyEnabled?entries:[],has_more:false});
   if(p.includes('/uploads')){
@@ -124,7 +125,7 @@ try{
   await page.evaluate(()=>{const data=new DataTransfer();data.items.add(new File(['dropped file'],'dropped.txt',{type:'text/plain'}));const pane=document.querySelector('[data-view="chat"]');pane.dispatchEvent(new DragEvent('dragenter',{dataTransfer:data,bubbles:true,cancelable:true}));pane.dispatchEvent(new DragEvent('drop',{dataTransfer:data,bubbles:true,cancelable:true}));});
   await page.waitForFunction(()=>document.querySelectorAll('.attach-draft').length===3);
   assert(await page.locator('#attachmentDrop').isHidden());results.checks.push('native PNG clipboard','file ClipboardEvent','DataTransfer drop');
-  const draft=Array(24).fill('첨부한 화면과 자료를 확인해 주세요.').join('\n');
+  const draft=Array(24).fill('Please review the attached screenshot and notes.').join('\n');
   await page.locator('#msgIn').fill(draft);
   for(const [width,height] of [[375,667],[768,960],[1280,720]]){
     await page.setViewportSize({width,height});
@@ -140,7 +141,7 @@ try{
   results.extraViewport=await page.evaluate(()=>({width:innerWidth,height:innerHeight,overflow:Math.max(document.documentElement.scrollWidth,document.body.scrollWidth)-innerWidth,bottom:document.querySelector('#stopBtn').getBoundingClientRect().bottom}));
   assert.equal(results.extraViewport.overflow,0);assert(results.extraViewport.bottom<=844);
   await page.locator('[data-remove]').last().click();assert.equal(await page.locator('#msgIn').inputValue(),draft);results.checks.push('remove preserves draft');
-  await popup();await selectMode('compress');await page.locator('[data-cancel]').click();assert.match(await page.locator('.attach-chip').first().innerText(),/원본/);results.checks.push('cancel preserves mode');
+  await popup();await selectMode('compress');await page.locator('[data-cancel]').click();assert((await page.locator('.attach-chip').first().innerText()).includes(cfg.strings['attach.original']));results.checks.push('cancel preserves mode');
   await page.evaluate(()=>{const data=new DataTransfer();data.items.add(new File(['dropped file'],'dropped-again.txt',{type:'text/plain'}));document.querySelector('[data-view="chat"]').dispatchEvent(new DragEvent('drop',{dataTransfer:data,bubbles:true,cancelable:true}));});
   await page.waitForFunction(()=>document.querySelectorAll('.attach-draft').length===3);
   const pasted=await page.evaluate(()=>Promise.all(window.pasted));
@@ -179,36 +180,39 @@ try{
   await page.waitForSelector('#toasts [role="alert"]');assert.equal(await page.locator('.attach-draft').count(),0);
   settings={...settings,max_file_bytes:5};await reset();await page.locator('#filePick').setInputFiles(path.join(cfg.directory,'notes.txt'));await page.waitForSelector('#toasts [role="alert"]');assert.equal(await page.locator('.attach-draft').count(),0);results.checks.push('count cap','size cap');
   settings={...settings,max_file_bytes:2*1024**3,max_files_per_message:10};await reset();await addFile();
-  await page.locator('#msgIn').fill('전송 실패 후 보존');failPut=true;await page.locator('#stopBtn').click();await page.waitForSelector('#toasts [role="alert"]');assert.equal(await page.locator('.attach-draft').count(),1);assert.equal(await page.locator('#msgIn').inputValue(),'전송 실패 후 보존');results.checks.push('transfer failure preserves draft');
+  await page.locator('#msgIn').fill('Draft after transfer failure');failPut=true;await page.locator('#stopBtn').click();await page.waitForSelector('#toasts [role="alert"]');assert.equal(await page.locator('.attach-draft').count(),1);assert.equal(await page.locator('#msgIn').inputValue(),'Draft after transfer failure');results.checks.push('transfer failure preserves draft');
   if(cfg.scenario==='4b'){
-    await reset();await addFile();await page.locator('#msgIn').fill('이어 올리기 확인');dropAfterAck=true;
+    await reset();await addFile();await page.locator('#msgIn').fill('Resume upload check');dropAfterAck=true;
     await page.locator('#stopBtn').click();await page.waitForSelector('[data-upload-state="failed"]');
     const failed=[...sessions.values()].at(-1);assert(failed.offset>=2*settings.chunk_bytes);
     const accepted=failed.offset;await page.locator('[data-resume]').click();await page.waitForFunction(()=>document.querySelectorAll('.attach-draft').length===0);
-    assert.equal(messages.at(-1).text,'이어 올리기 확인');
+    assert.equal(messages.at(-1).text,'Resume upload check');
     const offsets=putOffsets.filter(value=>value.id===failed.id);assert.equal(offsets[2].offset,accepted);assert.equal(failed.bytes.length,failed.size);
     results.checks.push('lost chunk acknowledgement resumes at server offset and SHA matches');
-    await reset();await addFile();await page.locator('#msgIn').fill('취소 후 유지');holdPut=true;
+    await reset();await addFile();await page.locator('#msgIn').fill('Draft after cancellation');holdPut=true;
     await page.locator('#stopBtn').click();
     for(let i=0;!releasePut&&i<300;i++)await new Promise(resolve=>setTimeout(resolve,10));assert(releasePut);
     for(const [width,height] of [[375,667],[768,960],[1280,720]]){await page.setViewportSize({width,height});for(const theme of ['light','dark']){await page.evaluate(value=>document.documentElement.dataset.theme=value,theme);const metrics=await page.evaluate(()=>({overflow:Math.max(document.documentElement.scrollWidth,document.body.scrollWidth)-innerWidth,bottom:document.querySelector('#stopBtn').getBoundingClientRect().bottom}));assert(metrics.overflow<=0);assert(metrics.bottom<=height);await page.screenshot({path:path.join(cfg.shots,`4b-progress-${width}-${theme}.png`)});}}
     await page.locator('[data-cancel-upload]:visible').click();await page.waitForSelector('[data-upload-state="cancelled"]');
-    assert.equal(await page.locator('#msgIn').inputValue(),'취소 후 유지');
+    assert.equal(await page.locator('#msgIn').inputValue(),'Draft after cancellation');
     const cancelled=[...sessions.values()].at(-1);releasePut();await page.locator('[data-remove]').click();await page.waitForFunction(()=>document.querySelectorAll('.attach-draft').length===0);
     for(let i=0;sessions.has(cancelled.id)&&i<100;i++)await new Promise(resolve=>setTimeout(resolve,10));assert(!sessions.has(cancelled.id));results.checks.push('cancel retains draft; remove cancels unfinished session');
     await reset();await page.locator('#accountButton').click();await page.locator('#openAttachSettings').click();await page.waitForFunction(()=>!document.querySelector('#attachmentMaxSize').disabled);
     const previous=settingsPuts;await page.locator('#attachmentMaxSize').fill('2049');await page.locator('#attachmentMaxCount').fill('11');await page.locator('#saveAttachmentLimits').click();
     assert.equal(settingsPuts,previous);assert.equal(await page.locator('#attachmentMaxSize').getAttribute('aria-invalid'),'true');
-    await page.locator('#attachmentMaxSize').fill('1');await page.locator('#attachmentMaxCount').fill('2');await page.locator('#saveAttachmentLimits').click();await page.waitForFunction(()=>document.querySelector('#attachmentLimitsNotice').textContent.includes('저장'));
+    await page.locator('#attachmentMaxSize').fill('1');await page.locator('#attachmentMaxCount').fill('2');await page.locator('#saveAttachmentLimits').click();await page.waitForFunction(expected=>document.querySelector('#attachmentLimitsNotice').textContent===expected,cfg.strings['attach.limits_saved']);
     assert.equal(settings.max_file_bytes,1024**2);assert.equal(settings.max_files_per_message,2);await page.keyboard.press('Escape');await page.waitForFunction(()=>document.activeElement.id==='accountButton');
     await page.locator('#filePick').setInputFiles(path.join(cfg.directory,'sample.png'));await page.waitForSelector('#toasts [role="alert"]');assert.equal(await page.locator('.attach-draft').count(),0);
     await page.locator('#accountButton').click();await page.locator('#openAttachSettings').click();await page.waitForFunction(()=>!document.querySelector('#attachmentMaxSize').disabled);assert.equal(await page.locator('#attachmentMaxSize').inputValue(),'1');
-    await page.locator('#attachmentMaxSize').fill('2048');await page.locator('#attachmentMaxCount').fill('10');await page.locator('#saveAttachmentLimits').click();await page.waitForFunction(()=>document.querySelector('#attachmentLimitsNotice').textContent.includes('저장'));await page.keyboard.press('Escape');
+    await page.locator('#attachmentMaxSize').fill('2048');await page.locator('#attachmentMaxCount').fill('10');await page.locator('#saveAttachmentLimits').click();await page.waitForFunction(expected=>document.querySelector('#attachmentLimitsNotice').textContent===expected,cfg.strings['attach.limits_saved']);await page.keyboard.press('Escape');
     results.checks.push('settings persist; maximum rejected before PUT; next selection uses new cap');
     historyEnabled=true;await reset();await page.waitForSelector('.message-attachment');await page.waitForFunction(()=>document.querySelectorAll('.message-attachment').length===4);
-    assert.equal(await page.locator('.attachment-filename').allTextContents().then(value=>value.sort()).then(value=>value.join(',')),['attachment-only.txt','photo.png',longName,'web-notes.txt'].sort().join(','));
-    assert(!await page.locator('#thread').innerText().then(value=>value.includes('[INCOMING FILE]')));assert(await page.locator('#thread').innerText().then(value=>value.includes('写真')||value.includes('사진을 확인해 주세요.')));
-    assert.equal(await page.locator('.message-attachment').filter({hasText:'secret.txt'}).count(),0);assert(await page.locator('#thread').innerText().then(value=>value.includes('웹 첨부 본문')));
+    backgroundReady=true;wsPeer.send(JSON.stringify({type:'attachments_changed',tid:'123.7',entry_id:'ffffffffffff'}));
+    await page.waitForFunction(()=>document.querySelectorAll('.message-attachment').length===5);
+    assert.equal(await page.locator('.attachment-filename').allTextContents().then(value=>value.sort()).then(value=>value.join(',')),['attachment-only.txt','photo.png',longName,'web-notes.txt','background.txt'].sort().join(','));
+    assert(!await page.locator('#thread').innerText().then(value=>value.includes('[INCOMING FILE]')));assert(await page.locator('#thread').innerText().then(value=>value.includes('Please check the photo.')));
+    assert.equal(await page.locator('.message-attachment').filter({hasText:'secret.txt'}).count(),0);assert(await page.locator('#thread').innerText().then(value=>value.includes('Web attachment caption')));
+    assert(!await page.locator('#thread').innerText().then(value=>value.includes('<file:/safe/background.txt>')));
     for(const [width,height] of [[375,667],[768,960],[1280,720]]){
       await page.setViewportSize({width,height});
       for(const theme of ['light','dark']){
