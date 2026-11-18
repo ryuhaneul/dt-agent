@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -44,10 +44,15 @@ class BridgeClient:
         history_read = method == "GET" and (
             resource == "/topics" or re.fullmatch(r"/topics/[^/]+/messages", resource) is not None
         )
+        upload = re.fullmatch(r"/topics/[^/]+/uploads(?:/[^/]+(?:/complete)?)?", resource)
         timeout = (
-            aiohttp.ClientTimeout(total=45)
-            if topic_mutation or abort or history_read
-            else self._client.timeout
+            aiohttp.ClientTimeout(total=120, sock_connect=5, sock_read=30)
+            if upload
+            else (
+                aiohttp.ClientTimeout(total=45)
+                if topic_mutation or abort or history_read
+                else self._client.timeout
+            )
         )
         try:
             async with self._client.request(
@@ -65,6 +70,41 @@ class BridgeClient:
         if not isinstance(data, dict):
             raise BridgeUnavailableError
         return status, data
+
+    async def upload_chunk(
+        self,
+        path: str,
+        chunks: AsyncIterator[bytes],
+        *,
+        owner: str,
+        offset: str,
+        length: int | None,
+    ) -> tuple[int, dict[str, Any], str | None]:
+        """Send binary chunks without buffering or forwarding browser credentials."""
+        headers = {
+            **self._headers,
+            "X-Dtw-Owner": owner,
+            "Upload-Offset": offset,
+            "Content-Type": "application/octet-stream",
+        }
+        if length is not None:
+            headers["Content-Length"] = str(length)
+        try:
+            async with self._client.put(
+                self._url + path,
+                data=chunks,
+                headers=headers,
+                allow_redirects=False,
+                timeout=aiohttp.ClientTimeout(total=120, sock_connect=5, sock_read=30),
+            ) as response:
+                data = await response.json()
+                status = response.status
+                received = response.headers.get("Upload-Offset")
+        except (aiohttp.ClientError, TimeoutError, ValueError):
+            raise BridgeUnavailableError from None
+        if not isinstance(data, dict):
+            raise BridgeUnavailableError
+        return status, data, received
 
     async def events(self, publish: Callable[[str], Awaitable[None]]) -> None:
         delay = 2

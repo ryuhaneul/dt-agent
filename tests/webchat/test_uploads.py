@@ -22,7 +22,7 @@ from PIL import Image
 from ductor_bot.config import AgentConfig, WebchatConfig
 from ductor_bot.webchat.bridge import create_bridge_app
 from ductor_bot.webchat.topics import WebTopics
-from ductor_bot.webchat.uploads import UPLOAD_TTL, UPLOADS, UploadError, UploadStore
+from ductor_bot.webchat.uploads import CHUNK_BYTES, UPLOAD_TTL, UPLOADS, UploadError, UploadStore
 from ductor_bot.workspace.paths import DuctorPaths
 
 _BASE = "/webchat/v1/topics/123/uploads"
@@ -438,3 +438,334 @@ asyncio.run(main())
     assert measured["bytes"] == 256 * 1024 * 1024
     assert measured["growth_kib"] < 32 * 1024
     assert measured["python_peak_bytes"] < 32 * 1024 * 1024
+
+
+@pytest.mark.parametrize(("extra", "accepted"), [(0, 1), (16 * 1024**2, 2)])
+async def test_concurrent_reservations_include_staging_and_floor(tmp_path, extra, accepted):
+    free = 5 * 1024**3 + extra
+    store = UploadStore(tmp_path / "files", free_bytes=lambda _: free)
+    results = await asyncio.gather(
+        *(
+            store.start("123", "owner", {"name": "large.bin", "size": 2 * 1024**3})
+            for _ in range(3)
+        ),
+        return_exceptions=True,
+    )
+    sessions = [value for value in results if not isinstance(value, BaseException)]
+    assert len(sessions) == accepted
+    errors = [value for value in results if isinstance(value, UploadError)]
+    assert all(error.code == "insufficient_space" for error in errors)
+    assert len(errors) == 3 - accepted
+    for session in sessions:
+        record = json.loads((store.incoming / f"{session.id}.json").read_text())
+        assert record["reserved_bytes"] == 2 * 1024**3 + CHUNK_BYTES
+
+
+async def test_reservations_restore_decrease_and_release(tmp_path):
+    free = 5 * 1024**3 + 16 * 1024**2
+    store = UploadStore(tmp_path / "files", free_bytes=lambda _: free)
+    first = await begin(store, b"abcdefgh")
+    await store.put(first.id, "123", "session-one", 0, chunks(b"abcd"))
+    record = json.loads((store.incoming / f"{first.id}.json").read_text())
+    assert record["reserved_bytes"] == 4 + CHUNK_BYTES
+    second = await begin(store, b"other")
+    restarted = UploadStore(store.directory, free_bytes=lambda _: free)
+    await restarted.status(first.id, "123", "session-one")
+    assert sum(restarted._reservations.values()) == 9 + 2 * CHUNK_BYTES
+    await restarted.cancel(second.id, "123", "session-one")
+    assert second.id not in restarted._reservations
+    await restarted.put(first.id, "123", "session-one", 4, chunks(b"efgh"))
+    await restarted.complete(
+        first.id, "123", "session-one", hashlib.sha256(b"abcdefgh").hexdigest()
+    )
+    assert not restarted._reservations
+    stale = await begin(restarted, b"stale")
+    assert await restarted.cleanup(now=time.time() + UPLOAD_TTL + 1) == 1
+    assert stale.id not in restarted._reservations
+
+
+async def test_disk_drops_during_stream_aborts_and_releases(tmp_path):
+    free = 2 * 1024**3
+    store = UploadStore(tmp_path / "files", free_bytes=lambda _: free)
+    session = await begin(store, b"abcdef")
+
+    async def falling_disk():
+        nonlocal free
+        yield b"abc"
+        free = 1024**3 - 1
+        yield b"def"
+
+    with pytest.raises(UploadError, match="insufficient_space") as error:
+        await store.put(session.id, "123", "session-one", 0, falling_disk())
+    assert error.value.status == 507
+    assert session.id not in store._reservations
+    assert not list(store.incoming.iterdir())
+
+
+async def test_disk_floor_also_checked_during_staging_append(tmp_path):
+    free = 2 * 1024**3
+    store = UploadStore(tmp_path / "files", free_bytes=lambda _: free)
+    session = await begin(store, b"abc")
+
+    async def exhausted_before_append():
+        nonlocal free
+        yield b"abc"
+        free = 1024**3 - 1
+
+    with pytest.raises(UploadError, match="insufficient_space"):
+        await store.put(session.id, "123", "session-one", 0, exhausted_before_append())
+    assert not store._reservations
+    assert not list(store.incoming.iterdir())
+
+
+async def test_attachment_settings_clamp_persist_and_recover(tmp_path, caplog):
+    from ductor_bot.webchat.uploads import AttachmentSettings
+
+    config = WebchatConfig(attach_max_file_bytes=4096, attach_max_files_per_message=4)
+    path = tmp_path / "webchat" / "attach_settings.json"
+    settings = AttachmentSettings(path, config)
+    assert (await settings.get())["max_file_bytes"] == 4096
+    saved = await settings.put({"max_file_bytes": 9999, "max_files_per_message": 99})
+    assert saved["max_file_bytes"] == 4096
+    assert saved["max_files_per_message"] == 4
+    assert path.stat().st_mode & 0o777 == 0o600
+    await settings.put({"max_file_bytes": 1024, "max_files_per_message": 2})
+    restarted = AttachmentSettings(path, config)
+    assert (await restarted.get())["max_file_bytes"] == 1024
+    path.write_text("not JSON")
+    assert (await restarted.get())["max_files_per_message"] == 4
+    assert "using defaults" in caplog.text
+    with pytest.raises(UploadError, match="bad_request"):
+        await settings.put({"max_file_bytes": True, "max_files_per_message": 1})
+
+
+@pytest.mark.parametrize("chunk", [0, 1024**2 - 1, 8 * 1024**2 + 1])
+def test_server_chunk_config_bounds(chunk):
+    with pytest.raises(ValueError, match="upload_chunk_bytes"):
+        WebchatConfig(upload_chunk_bytes=chunk)
+
+
+@pytest.fixture
+async def relay(tmp_path):
+    from ductor_bot.webchat.uploads import register_upload_routes
+    from ductor_bot.webchat.web.app import STATE, create_app
+
+    owners = []
+
+    @web.middleware
+    async def bridge_auth(request, handler):
+        assert request.headers.get("X-Dtw-Bridge-Token") == "bridge-test-token"
+        if "/uploads" in request.path:
+            owners.append(request.headers.get("X-Dtw-Owner"))
+        return await handler(request)
+
+    async def lookup(tid):
+        return {"tid": tid, "read_only": False} if tid == "123" else None
+
+    async def auth_state(_request):
+        return web.json_response(
+            {
+                "password_configured": True,
+                "totp_configured": True,
+                "credential_generation": "generation",
+            }
+        )
+
+    async def events(request):
+        socket = web.WebSocketResponse()
+        await socket.prepare(request)
+        async for _ in socket:
+            pass
+        return socket
+
+    backend = web.Application(middlewares=[bridge_auth], client_max_size=512 * 1024)
+    backend.router.add_get("/webchat/v1/auth/state", auth_state)
+    backend.router.add_get("/webchat/v1/events", events)
+    config = WebchatConfig(attach_max_file_bytes=16 * 1024**2)
+    register_upload_routes(
+        backend,
+        tmp_path / "files",
+        lookup,
+        config=config,
+        settings_path=tmp_path / "attach_settings.json",
+    )
+    async with TestClient(TestServer(backend)) as bridge_client:
+        app = create_app(
+            bridge_url=str(bridge_client.make_url("")),
+            bridge_token="bridge-test-token",
+            public_origin="https://chat.example.com",
+            static_dir=tmp_path,
+        )
+        async with TestClient(TestServer(app)) as public_client:
+            state = app[STATE]
+            token = state.sessions.create("generation")
+            public_client.session.cookie_jar.update_cookies({"dtw_session": token})
+            headers = {"X-Dtw-Client": "web", "X-Dtw-Csrf": state.sessions.get(token).csrf}
+            yield public_client, bridge_client, state, headers, token, owners
+
+
+async def test_web_relay_streams_and_replaces_owner(relay, monkeypatch):
+    public, bridge, state, headers, token, owners = relay
+    reads = []
+    original = web.Request.read
+
+    async def track(request):
+        if request.method == "PUT" and "/uploads/" in request.path:
+            reads.append(request.path)
+        return await original(request)
+
+    monkeypatch.setattr(web.Request, "read", track)
+    response = await public.post(
+        "/api/topics/123/uploads",
+        json={"name": "file.bin", "size": CHUNK_BYTES},
+        headers={**headers, "X-Dtw-Owner": "attacker"},
+    )
+    assert response.status == 200
+    upload_id = (await response.json())["id"]
+    url = f"/api/topics/123/uploads/{upload_id}"
+
+    async def payload():
+        for _ in range(CHUNK_BYTES // 65536):
+            yield b"\x00" * 65536
+
+    response = await public.put(
+        url,
+        data=payload(),
+        headers={
+            **headers,
+            "Content-Type": "application/octet-stream",
+            "Upload-Offset": "0",
+            "X-Dtw-Owner": "attacker",
+        },
+    )
+    assert response.status == 200
+    assert response.headers["Upload-Offset"] == str(CHUNK_BYTES)
+    assert not reads
+    assert owners
+    assert all(owner != "attacker" and len(owner) == 64 for owner in owners)
+    assert len(set(owners)) == 1
+    data = (bridge.app[UPLOADS].incoming / f"{upload_id}.part").read_bytes()
+    assert len(data) == CHUNK_BYTES
+    response = await public.post(
+        url + "/complete", json={"sha256": hashlib.sha256(data).hexdigest()}, headers=headers
+    )
+    assert response.status == 200
+    second = state.sessions.create("generation")
+    public.session.cookie_jar.update_cookies({"dtw_session": second})
+    assert (await public.get(url)).status == 404
+    public.session.cookie_jar.update_cookies({"dtw_session": token})
+    assert (await public.get(url)).status == 200
+
+
+async def test_upload_relay_checks_auth_before_read_and_keeps_json_limit(relay, monkeypatch):
+    public, _bridge, state, headers, token, _owners = relay
+    reads = []
+    original = web.Request.read
+
+    async def track(request):
+        if "/uploads/" in request.path and request.method == "PUT":
+            reads.append(request.path)
+        return await original(request)
+
+    monkeypatch.setattr(web.Request, "read", track)
+    url = "/api/topics/123/uploads/" + "a" * 32
+    for bad_headers in [{}, {"X-Dtw-Client": "web"}, {**headers, "X-Dtw-Csrf": "wrong"}]:
+        response = await public.put(url, data=b"a" * 600000, headers=bad_headers)
+        assert response.status == 403
+        assert "WWW-Authenticate" not in response.headers
+    assert not reads
+    assert (
+        await public.put(url, data=b"abc", headers={**headers, "Content-Type": "text/plain"})
+    ).status == 415
+    response = await public.post(
+        "/api/topics/123/uploads", data=b"x" * (512 * 1024 + 1), headers=headers
+    )
+    assert response.status == 413
+    state.sessions.delete(token)
+    assert (await public.get("/api/attach-settings")).status == 403
+
+
+async def test_settings_api_changes_next_upload_limit(relay):
+    public, _bridge, _state, headers, _token, _owners = relay
+    response = await public.get("/api/attach-settings")
+    settings = await response.json()
+    assert settings["max_file_bytes"] == 16 * 1024**2
+    assert settings["chunk_bytes"] == CHUNK_BYTES
+    response = await public.put(
+        "/api/attach-settings",
+        json={"max_file_bytes": 999 * 1024**3, "max_files_per_message": 100},
+        headers=headers,
+    )
+    settings = await response.json()
+    assert settings["max_file_bytes"] == 16 * 1024**2
+    assert settings["max_files_per_message"] == 10
+    assert (
+        await public.put(
+            "/api/attach-settings", json={"max_file_bytes": 8, "max_files_per_message": 2}
+        )
+    ).status == 403
+    assert (
+        await public.put(
+            "/api/attach-settings",
+            json={"max_file_bytes": 8, "max_files_per_message": 2},
+            headers=headers,
+        )
+    ).status == 200
+    response = await public.post(
+        "/api/topics/123/uploads", json={"name": "too-large", "size": 9}, headers=headers
+    )
+    assert response.status == 413
+    response = await public.post(
+        "/api/topics/123/uploads", json={"name": "allowed", "size": 8}, headers=headers
+    )
+    assert response.status == 200
+
+
+async def test_relay_preserves_bridge_chunk_limit_error(relay):
+    public, bridge, _state, headers, _token, _owners = relay
+    bridge.app[UPLOADS].chunk_bytes = 1024**2
+    response = await public.post(
+        "/api/topics/123/uploads",
+        json={"name": "too-big-chunk", "size": 2 * 1024**2},
+        headers=headers,
+    )
+    upload_id = (await response.json())["id"]
+    response = await public.put(
+        f"/api/topics/123/uploads/{upload_id}",
+        data=b"\x00" * (2 * 1024**2),
+        headers={**headers, "Upload-Offset": "0", "Content-Type": "application/octet-stream"},
+    )
+    assert response.status == 413
+    assert (await response.json())["error"] == "too_large"
+
+
+async def test_gzip_bomb_is_rejected_without_inflating(relay, client):
+    import tracemalloc
+
+    compressor = zlib.compressobj(wbits=31)
+    payload = b"".join(compressor.compress(b"x" * 65536) for _ in range(2048)) + compressor.flush()
+    assert len(payload) < 256 * 1024
+    public, _bridge, _state, headers, _token, _owners = relay
+    tracemalloc.start()
+    try:
+        for server, path, auth in [
+            (public, "/api/topics/123/uploads", headers),
+            (client, _BASE, _HEADERS),
+        ]:
+            response = await server.post(
+                path,
+                data=payload,
+                headers={**auth, "Content-Type": "application/json", "Content-Encoding": "gzip"},
+            )
+            assert response.status == 415
+            assert (await response.json())["error"] == "unsupported_media_type"
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    print(
+        "GZIP_MEMORY",
+        json.dumps(
+            {"wire_bytes": len(payload), "decoded_bytes": 128 * 1024**2, "python_peak_bytes": peak}
+        ),
+    )
+    assert peak < 16 * 1024**2

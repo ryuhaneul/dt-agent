@@ -101,9 +101,15 @@ def create_bridge_app(  # noqa: C901
             supplied.encode("utf-8", errors="replace"), token.encode()
         ):
             return web.json_response({"error": "forbidden"}, status=403)
+        if request.can_read_body and "Content-Encoding" in request.headers:
+            return web.json_response({"error": "unsupported_media_type"}, status=415)
         return await handler(request)
 
-    app = web.Application(middlewares=[authenticate], client_max_size=512 * 1024)
+    app = web.Application(
+        middlewares=[authenticate],
+        client_max_size=512 * 1024,
+        handler_args={"auto_decompress": False},
+    )
 
     async def close_auth(_app: web.Application) -> None:
         await auth.close()
@@ -238,7 +244,13 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
 ) -> None:
     turns = WebTurns(bot, runtime)
     topics = WebTopics(bot, runtime, turns)
-    register_upload_routes(app, bot._orch.paths.workspace / "webchat_files", topics.lookup)
+    register_upload_routes(
+        app,
+        bot._orch.paths.workspace / "webchat_files",
+        topics.lookup,
+        config=bot.config.webchat,
+        settings_path=bot._orch.paths.webchat_dir / "attach_settings.json",
+    )
     read_state = ReadState(bot._orch.paths.webchat_dir / "read_state.json")
     dispatcher = WebCommandDispatcher(
         bot,

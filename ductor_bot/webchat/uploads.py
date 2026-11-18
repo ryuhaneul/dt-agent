@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import codecs
 import contextlib
+import errno
 import hashlib
 import hmac
 import json
@@ -12,13 +13,15 @@ import logging
 import os
 import re
 import secrets
+import shutil
+import threading
 import time
 import warnings
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import TYPE_CHECKING, Any, BinaryIO
 
 import filetype
 from aiohttp import web
@@ -27,9 +30,13 @@ from PIL import Image
 from ductor_bot.infra.atomic_io import complete_write
 from ductor_bot.infra.json_store import atomic_json_save
 
+if TYPE_CHECKING:
+    from ductor_bot.config import WebchatConfig
+
 CHUNK_BYTES = 8 * 1024 * 1024
 MAX_FILE_BYTES = 2 * 1024**3
 UPLOAD_TTL = 24 * 60 * 60
+SPACE_FLOOR = 1024**3
 _BUFFER_BYTES = 64 * 1024
 _ID = re.compile(r"[a-f0-9]{32}\Z")
 _SHA256 = re.compile(r"[a-fA-F0-9]{64}\Z")
@@ -102,6 +109,7 @@ class UploadSession:
     mime: str | None = None
     sha256: str | None = None
     inline_allowed: bool = False
+    reserved_bytes: int = 0
 
     def public(self) -> dict[str, Any]:
         return {
@@ -195,6 +203,7 @@ class UploadStore:
         max_file_bytes: int = MAX_FILE_BYTES,
         chunk_bytes: int = CHUNK_BYTES,
         idle_timeout: float = 30,
+        free_bytes: Callable[[Path], int] | None = None,
     ) -> None:
         self.directory = directory.absolute()
         self.incoming = self.directory / ".incoming"
@@ -202,6 +211,10 @@ class UploadStore:
         self.chunk_bytes = chunk_bytes
         self.idle_timeout = idle_timeout
         self._locks: dict[str, asyncio.Lock] = {}
+        self._space_lock = threading.RLock()
+        self._reservations: dict[str, int] = {}
+        self._ledger_ready = False
+        self._free_bytes = free_bytes or (lambda path: shutil.disk_usage(path).free)
 
     def _lock(self, upload_id: str) -> asyncio.Lock:
         if _ID.fullmatch(upload_id) is None:
@@ -209,11 +222,55 @@ class UploadStore:
         return self._locks.setdefault(upload_id, asyncio.Lock())
 
     def _prepare(self) -> None:
-        self.directory.mkdir(parents=True, exist_ok=True)
-        if self.directory.is_symlink():
-            raise UploadError("storage_unavailable", 403)
-        self.incoming.mkdir(exist_ok=True, mode=0o700)
-        self._safe(self.incoming)
+        with self._space_lock:
+            self.directory.mkdir(parents=True, exist_ok=True)
+            if self.directory.is_symlink():
+                raise UploadError("storage_unavailable", 403)
+            self.incoming.mkdir(exist_ok=True, mode=0o700)
+            self._safe(self.incoming)
+            if not self._ledger_ready:
+                self._restore_reservations()
+
+    def _restore_reservations(self) -> None:
+        for path in self.incoming.glob("*.json"):
+            if _ID.fullmatch(path.stem) is None:
+                continue
+            try:
+                session = UploadSession(**json.loads(self._safe(path).read_text()))
+                self._validate_record(session)
+            except (ValueError, TypeError, UploadError):
+                logger.warning("Ignoring invalid upload reservation record")
+                continue
+            if session.path is None:
+                session.reserved_bytes = session.size - session.offset + self.chunk_bytes
+                self._reservations[session.id] = session.reserved_bytes
+                self._save(session)
+        self._ledger_ready = True
+
+    @staticmethod
+    def _validate_record(session: UploadSession) -> None:
+        if (
+            _ID.fullmatch(session.id) is None
+            or not isinstance(session.owner, str)
+            or type(session.size) is not int
+            or type(session.offset) is not int
+            or not 0 <= session.offset <= session.size
+        ):
+            raise UploadError("upload_corrupt", 409)
+
+    def _write_bytes(self, stream: BinaryIO, data: bytes) -> None:
+        with self._space_lock:
+            if self._free_bytes(self.directory) - len(data) < SPACE_FLOOR:
+                raise UploadError("insufficient_space", 507)
+            try:
+                stream.write(data)
+                stream.flush()
+                if self._free_bytes(self.directory) < SPACE_FLOOR:
+                    raise UploadError("insufficient_space", 507)
+            except OSError as exc:
+                if exc.errno == errno.ENOSPC:
+                    raise UploadError("insufficient_space", 507) from exc
+                raise
 
     def _safe(self, path: Path) -> Path:
         if self.directory.is_symlink() or self.incoming.is_symlink() or path.is_symlink():
@@ -233,8 +290,10 @@ class UploadStore:
         path.chmod(0o600)
 
     def _load(self, upload_id: str, tid: str, owner: str) -> UploadSession:
+        self._prepare()
         try:
             session = UploadSession(**json.loads(self._metadata(upload_id).read_text()))
+            self._validate_record(session)
         except (FileNotFoundError, ValueError, TypeError):
             raise UploadError("not_found", 404) from None
         if (
@@ -253,7 +312,9 @@ class UploadStore:
                     stream.truncate(session.offset)
         return session
 
-    async def start(self, tid: str, owner: str, data: dict[str, Any]) -> UploadSession:
+    async def start(
+        self, tid: str, owner: str, data: dict[str, Any], *, max_file_bytes: int | None = None
+    ) -> UploadSession:
         size, name, mime = data.get("size"), data.get("name"), data.get("mime", "")
         if (
             type(size) is not int
@@ -266,7 +327,12 @@ class UploadStore:
             or any(ord(c) < 32 for c in mime)
         ):
             raise UploadError("bad_request", 400)
-        if size > self.max_file_bytes:
+        limit = (
+            self.max_file_bytes
+            if max_file_bytes is None
+            else min(self.max_file_bytes, max_file_bytes)
+        )
+        if size > limit:
             raise UploadError("too_large", 413)
         try:
             name.encode("utf-8")
@@ -280,6 +346,17 @@ class UploadStore:
         return session
 
     def _create(self, session: UploadSession) -> None:
+        with self._space_lock:
+            self._prepare()
+            reservation = session.size + self.chunk_bytes
+            available = self._free_bytes(self.directory) - sum(self._reservations.values())
+            if available - SPACE_FLOOR < reservation:
+                raise UploadError("insufficient_space", 507)
+            session.reserved_bytes = reservation
+            self._create_files(session)
+            self._reservations[session.id] = reservation
+
+    def _create_files(self, session: UploadSession) -> None:
         self._prepare()
         if self._metadata(session.id).exists():
             raise UploadError("storage_conflict", 409)
@@ -301,7 +378,7 @@ class UploadStore:
         fd = os.open(path, os.O_CREAT | os.O_TRUNC | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
         return os.fdopen(fd, "wb")
 
-    async def put(  # noqa: PLR0913 -- request identity, offset, stream and optional length
+    async def put(  # noqa: PLR0913 -- request identity and rollback on partial input
         self,
         upload_id: str,
         tid: str,
@@ -329,18 +406,27 @@ class UploadStore:
                         break
                     total += len(chunk)
                     if total > self.chunk_bytes or offset + total > session.size:
-                        raise UploadError("too_large", 413)
-                    await complete_write(stage.write, chunk)
+                        raise UploadError("too_large", 413)  # noqa: TRY301 -- discard only disk failures
+                    await complete_write(self._write_bytes, stage, chunk)
                 if total == 0 or (length is not None and total != length):
-                    raise UploadError("incomplete_chunk", 409)
+                    raise UploadError("incomplete_chunk", 409)  # noqa: TRY301 -- preserve prior offset
                 await complete_write(stage.close)
                 await complete_write(self._commit_chunk, session, total)
+            except UploadError as exc:
+                if exc.code == "insufficient_space":
+                    await complete_write(stage.close)
+                    await complete_write(self._discard, upload_id)
+                raise
             finally:
                 await complete_write(stage.close)
                 await complete_write(stage_path.unlink, missing_ok=True)
             return session
 
     def _commit_chunk(self, session: UploadSession, size: int) -> None:
+        with self._space_lock:
+            self._append_chunk(session, size)
+
+    def _append_chunk(self, session: UploadSession, size: int) -> None:
         path = self._safe(self.incoming / f"{session.id}.part")
         stage = self._safe(self.incoming / f"{session.id}.chunk")
         offset = session.offset
@@ -348,14 +434,17 @@ class UploadStore:
             with path.open("r+b") as target, stage.open("rb") as source:
                 target.seek(offset)
                 while data := source.read(_BUFFER_BYTES):
-                    target.write(data)
+                    self._write_bytes(target, data)
                 target.flush()
                 os.fsync(target.fileno())
             session.offset += size
+            session.reserved_bytes = session.size - session.offset + self.chunk_bytes
             session.updated = time.time()
             self._save(session)
+            self._reservations[session.id] = session.reserved_bytes
         except BaseException:
             session.offset = offset
+            session.reserved_bytes = session.size - offset + self.chunk_bytes
             with path.open("r+b") as target:
                 target.truncate(offset)
             raise
@@ -393,14 +482,19 @@ class UploadStore:
         session.mime, session.inline_allowed, session.sha256 = mime, inline, digest
         session.updated = time.time()
         try:
-            self._save(session)
+            with self._space_lock:
+                session.reserved_bytes = 0
+                self._save(session)
+                self._reservations.pop(session.id, None)
         except BaseException:
             destination.replace(path)
             raise
 
     def _discard(self, upload_id: str) -> None:
-        for suffix in ("part", "chunk", "json"):
-            self._safe(self.incoming / f"{upload_id}.{suffix}").unlink(missing_ok=True)
+        with self._space_lock:
+            for suffix in ("part", "chunk", "json"):
+                self._safe(self.incoming / f"{upload_id}.{suffix}").unlink(missing_ok=True)
+            self._reservations.pop(upload_id, None)
 
     async def cancel(self, upload_id: str, tid: str, owner: str) -> None:
         async with self._lock(upload_id):
@@ -449,6 +543,68 @@ class UploadStore:
         return True
 
 
+class AttachmentSettings:
+    """Persist browser preferences within administrator configured hard caps."""
+
+    def __init__(self, path: Path, config: WebchatConfig) -> None:
+        self.path = path
+        self.config = config
+        self._lock = asyncio.Lock()
+
+    def _view(self, values: dict[str, Any]) -> dict[str, int]:
+        file_cap = self.config.attach_max_file_bytes
+        count_cap = self.config.attach_max_files_per_message
+        size = values.get("max_file_bytes", MAX_FILE_BYTES)
+        count = values.get("max_files_per_message", 10)
+        if type(size) is not int or type(count) is not int:
+            raise TypeError("invalid_attachment_settings")
+        return {
+            "max_file_bytes": max(1, min(file_cap, size)),
+            "max_files_per_message": max(1, min(count_cap, count)),
+            "server_max_file_bytes": file_cap,
+            "server_max_files_per_message": count_cap,
+            "chunk_bytes": self.config.upload_chunk_bytes,
+        }
+
+    def _invalid(self) -> dict[str, int]:
+        logger.warning("Attachment settings are invalid; using defaults")
+        return self._view({})
+
+    def _read(self) -> dict[str, int]:
+        try:
+            raw = json.loads(self.path.read_text())
+            if not isinstance(raw, dict):
+                return self._invalid()
+            return self._view(raw)
+        except FileNotFoundError:
+            return self._view({})
+        except (ValueError, TypeError):
+            return self._invalid()
+
+    async def get(self) -> dict[str, int]:
+        async with self._lock:
+            return await asyncio.to_thread(self._read)
+
+    def _save(self, values: dict[str, Any]) -> dict[str, int]:
+        effective = self._view(values)
+        atomic_json_save(
+            self.path,
+            {key: effective[key] for key in ("max_file_bytes", "max_files_per_message")},
+        )
+        self.path.chmod(0o600)
+        return effective
+
+    async def put(self, values: dict[str, Any]) -> dict[str, int]:
+        if set(values) != {"max_file_bytes", "max_files_per_message"}:
+            raise UploadError("bad_request", 400)
+        try:
+            self._view(values)
+        except (ValueError, TypeError):
+            raise UploadError("bad_request", 400) from None
+        async with self._lock:
+            return await complete_write(self._save, values)
+
+
 UPLOADS = web.AppKey("webchat_uploads", UploadStore)
 
 
@@ -456,9 +612,17 @@ def register_upload_routes(  # noqa: C901, PLR0915 -- route lifecycle and reques
     app: web.Application,
     directory: Path,
     lookup: Callable[[str], Awaitable[dict[str, Any] | None]],
+    *,
+    config: WebchatConfig,
+    settings_path: Path,
 ) -> None:
     """Register bridge-only streaming routes; bridge middleware authenticates first."""
-    store = UploadStore(directory)
+    store = UploadStore(
+        directory,
+        max_file_bytes=config.attach_max_file_bytes,
+        chunk_bytes=config.upload_chunk_bytes,
+    )
+    settings = AttachmentSettings(settings_path, config)
     app[UPLOADS] = store
 
     async def lifecycle(_app: web.Application) -> AsyncIterator[None]:
@@ -521,7 +685,10 @@ def register_upload_routes(  # noqa: C901, PLR0915 -- route lifecycle and reques
                 if upload_id:
                     session = await store.complete(upload_id, tid, owner, data.get("sha256"))
                 else:
-                    session = await store.start(tid, owner, data)
+                    limits = await settings.get()
+                    session = await store.start(
+                        tid, owner, data, max_file_bytes=limits["max_file_bytes"]
+                    )
             return web.json_response(
                 session.public(), headers={"Upload-Offset": str(session.offset)}
             )
@@ -536,6 +703,23 @@ def register_upload_routes(  # noqa: C901, PLR0915 -- route lifecycle and reques
         except OSError:
             return web.json_response({"error": "storage_unavailable"}, status=507)
 
+    async def attachment_settings(request: web.Request) -> web.Response:
+        try:
+            if request.method == "GET":
+                return web.json_response(await settings.get())
+            raw = await request.json()
+            if not isinstance(raw, dict):
+                return web.json_response({"error": "bad_request"}, status=400)
+            return web.json_response(await settings.put(raw))
+        except UploadError as exc:
+            return web.json_response({"error": exc.code}, status=exc.status)
+        except (ValueError, UnicodeError):
+            return web.json_response({"error": "bad_request"}, status=400)
+        except OSError:
+            return web.json_response({"error": "storage_unavailable"}, status=507)
+
+    app.router.add_get("/webchat/v1/attach-settings", attachment_settings)
+    app.router.add_put("/webchat/v1/attach-settings", attachment_settings)
     app.router.add_post(_PREFIX, upload)
     app.router.add_get(_PREFIX + "/{upload_id}", upload)
     app.router.add_put(_PREFIX + "/{upload_id}", upload)

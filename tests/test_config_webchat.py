@@ -55,6 +55,9 @@ def test_defaults_and_disabled_validation(tmp_path: Path) -> None:
         "crowdsec_lapi_port": 18080,
         "crowdsec_appsec_port": 17422,
         "default_chat_id": 0,
+        "attach_max_file_bytes": 2 * 1024**3,
+        "attach_max_files_per_message": 10,
+        "upload_chunk_bytes": 8 * 1024**2,
     }
     assert validate_chat_log(config) == []
     assert validate_webchat(config) == []
