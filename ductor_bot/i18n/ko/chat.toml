@@ -484,8 +484,8 @@ done = "✓ 완료 · {secs}초"
 quarantine_stopped = "하트비트 점검을 멈췄어요: 이 대화의 CLI 세션을 이어갈 수 없어요. 이후 대화에서 세션 복구가 성공해 새 세션이 만들어지면 점검이 자동으로 다시 시작돼요."
 
 [slot]
-switched_auth = "전환 (로그인 만료)"
-reauth_required = "Claude 로그인이 만료됐어요. ./scripts/login.sh claude <name> 으로 다시 로그인해 주세요. 기본 슬롯은 <name>을 생략하세요."
+switched_auth = "전환 (로그인 만료 또는 구독 사용 불가)"
+reauth_required = "Claude 로그인 만료 또는 구독 사용 불가 상태예요. 구독·결제를 확인하거나 ./scripts/login.sh claude <name> 으로 다시 로그인해 주세요. 기본 슬롯은 <name>을 생략하세요."
 switched_estimated = "전환 (할당량 소진, 리셋 시각 알 수 없음, 약 1시간 뒤 재시도)"
 switched = "전환 (할당량 소진, {reset} 리셋)"
 cooldown_unparsable = "쿨다운 파싱 실패, 원본 stderr 이하"
@@ -689,7 +689,7 @@ btn_cancel = "취소"
 
 [accounts]
 api_key = "API 키"
-auth_expired = "로그인 만료 · 재로그인 필요"
+auth_expired = "로그인 만료 또는 구독 사용 불가 · 로그인·결제 확인 필요"
 error = "계정 관리에 실패했어요. 다시 시도해 주세요."
 title = "Claude 계정 슬롯 (위가 먼저 쓰임)"
 authenticated = "인증됨"

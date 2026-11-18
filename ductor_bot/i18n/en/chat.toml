@@ -486,8 +486,8 @@ done = "✓ Done · {secs}s"
 quarantine_stopped = "Heartbeat checks stopped: the CLI session of this conversation cannot be continued. They restart automatically once a later conversation recovers the session and a new session is created."
 
 [slot]
-switched_auth = "switched (login expired)"
-reauth_required = "Claude login expired. Sign in again with ./scripts/login.sh claude <name> (omit <name> for the default slot)."
+switched_auth = "switched (login expired or subscription unavailable)"
+reauth_required = "Claude login expired or subscription unavailable. Check your subscription and billing, or sign in again with ./scripts/login.sh claude <name> (omit <name> for the default slot)."
 switched_estimated = "switched (quota exhausted, reset time unknown, retry after ~1h)"
 switched = "switched (quota exhausted, resets {reset})"
 cooldown_unparsable = "cooldown time could not be parsed, raw stderr below"
@@ -691,7 +691,7 @@ btn_cancel = "Cancel"
 
 [accounts]
 api_key = "API key"
-auth_expired = "Login expired; sign in again"
+auth_expired = "Login expired or subscription unavailable; check login and billing"
 error = "Account management failed. Please try again."
 title = "Claude accounts (top first)"
 authenticated = "Authenticated"

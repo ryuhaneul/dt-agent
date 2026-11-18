@@ -492,8 +492,9 @@ async def test_api_key_auth_failure_record_is_noop_and_stale_record_is_ignored(t
 @pytest.mark.parametrize("driver", ["send", "streaming", "task"])
 @pytest.mark.parametrize("cooling", [False, True])
 @pytest.mark.parametrize("stale_failure", [False, True])
+@pytest.mark.parametrize("subscription_failure", [False, True])
 async def test_api_key_login_error_has_no_quarantine_or_relogin_notice(
-    tmp_path, monkeypatch, driver, cooling, stale_failure
+    tmp_path, monkeypatch, driver, cooling, stale_failure, *, subscription_failure
 ):
     import json
     import time
@@ -505,7 +506,9 @@ async def test_api_key_login_error_has_no_quarantine_or_relogin_notice(
     from ductor_bot.config import AgentConfig
     from ductor_bot.i18n import t
     from ductor_bot.infra.task_runner import TaskRunOptions, run_oneshot_task
-    from tests.cli.test_claude_accounts import _AUTH_EXPIRED
+    from tests.cli.test_claude_accounts import _AUTH_EXPIRED, _SUBSCRIPTION_UNAVAILABLE
+
+    error = _SUBSCRIPTION_UNAVAILABLE if subscription_failure else _AUTH_EXPIRED
     from tests.cli.test_claude_provider import _install_slot_cli, _read_slot_calls
 
     init("en")
@@ -521,7 +524,7 @@ async def test_api_key_login_error_has_no_quarantine_or_relogin_notice(
             "((auth / '.credentials.json').exists() or (auth / 'settings.json').is_file())",
         )
     )
-    control.write_text(json.dumps({"limited": ["claude-api"], "error": _AUTH_EXPIRED}))
+    control.write_text(json.dumps({"limited": ["claude-api"], "error": error}))
     registry = SlotRegistry(home / ".cli-auth" / "_claude-slots.json")
     registry.state_path.write_text(
         json.dumps(
@@ -566,7 +569,7 @@ async def test_api_key_login_error_has_no_quarantine_or_relogin_notice(
             result = next(event.result for event in events if isinstance(event, ResultEvent))
         else:
             result = (await cli.send("hello")).result
-    assert result == _AUTH_EXPIRED
+    assert result == error
     assert t("slot.reauth_required") not in result
     assert t("slot.switched_auth") not in result
     assert registry.load().auth_failures == {}

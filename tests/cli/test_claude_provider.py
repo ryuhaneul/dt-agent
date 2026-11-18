@@ -2161,3 +2161,96 @@ async def test_corrupt_slot_state_does_not_block_requests(tmp_path, monkeypatch,
     assert not {"bad", "inf", "neg", "overflow"} & snapshot.cooldowns.keys()
     if b'"good"' in contents:
         assert snapshot.cooldowns["good"] == 99
+
+
+@pytest.mark.parametrize("driver", ["send", "streaming", "task"])
+@pytest.mark.parametrize("scenario", ["rotate", "all-fail", "cooling-probe"])
+async def test_subscription_failure_reuses_login_quarantine_policy(
+    tmp_path, monkeypatch, driver, scenario
+):
+    import os
+    import time
+
+    from ductor_bot.cli.claude_accounts import SlotRegistry
+    from ductor_bot.cli.param_resolver import resolve_cli_config
+    from ductor_bot.cli.slot_rotation import build_reauth_notice
+    from ductor_bot.config import AgentConfig
+    from ductor_bot.infra.task_runner import TaskRunOptions, run_oneshot_task
+    from tests.cli.test_claude_accounts import _SUBSCRIPTION_UNAVAILABLE
+
+    home, control, calls = _install_slot_cli(tmp_path, monkeypatch)
+    accounts = ["claude-a", "claude-b"]
+    limited = accounts if scenario == "all-fail" else ["claude-a"]
+    control.write_text(json.dumps({"limited": limited, "error": _SUBSCRIPTION_UNAVAILABLE}))
+    state_path = home / ".cli-auth" / "_claude-slots.json"
+    if scenario == "cooling-probe":
+        SlotRegistry(state_path).save(
+            SlotSnapshot(cooldowns=dict.fromkeys(accounts, time.time() + 3600))
+        )
+
+    async def send():
+        # Reconstruct the provider and registry, as after a process restart.
+        if driver == "task":
+            config = AgentConfig(
+                ductor_home=str(home),
+                provider="claude",
+                model="opus",
+                claude_accounts=accounts,
+                user_timezone="UTC",
+            )
+            response = await run_oneshot_task(
+                resolve_cli_config(config, None),
+                "hello",
+                TaskRunOptions(cwd=tmp_path, timeout_seconds=10, timeout_label="test"),
+            )
+            return response.result_text, response.status == "success"
+        cli = ClaudeCodeCLI(
+            CLIConfig(
+                provider="claude",
+                model="opus",
+                ductor_home=home,
+                working_dir=str(tmp_path),
+                claude_accounts=accounts,
+                user_timezone="UTC",
+            )
+        )
+        if driver == "streaming":
+            events = [event async for event in cli.send_streaming("hello")]
+            response = next(event for event in events if isinstance(event, ResultEvent))
+        else:
+            response = await cli.send("hello")
+        return response.result, not response.is_error
+
+    first, succeeded = await send()
+    expected = ["claude-a"] if scenario == "cooling-probe" else accounts
+    assert [Path(row["auth"]).name for row in _read_slot_calls(calls)] == expected
+    quarantined = accounts if scenario == "all-fail" else ["claude-a"]
+    assert set(SlotRegistry(state_path).load().auth_failures) == set(quarantined)
+    assert succeeded is (scenario == "rotate")
+    if scenario == "rotate":
+        assert first.startswith("[Claude: claude-a → claude-b ")
+        assert "subscription unavailable" in first
+        assert first.endswith("\n\nok")
+    else:
+        assert first == _SUBSCRIPTION_UNAVAILABLE + build_reauth_notice()
+
+    # Payment alone leaves credentials unchanged. A hot alternative stays selected;
+    # when every slot is quarantined, the existing top-slot probe can recover it.
+    control.write_text(json.dumps({"limited": []}))
+    calls.write_text("")
+    assert await send() == ("ok", True)
+    expected = ["claude-a"] if scenario == "all-fail" else ["claude-b"]
+    assert [Path(row["auth"]).name for row in _read_slot_calls(calls)] == expected
+    failures = SlotRegistry(state_path).load().auth_failures
+    assert set(failures) == ({"claude-b"} if scenario == "all-fail" else {"claude-a"})
+
+    if scenario == "all-fail":
+        return
+    # Both credential filenames retain the existing mtime-based recovery rule.
+    credential = home / ".cli-auth" / "claude-a" / ".credentials.json"
+    old = credential.stat().st_mtime_ns
+    os.utime(credential, ns=(old + 1000000, old + 1000000))
+    assert SlotRegistry(state_path).load().auth_failures == {}
+    calls.write_text("")
+    assert await send() == ("ok", True)
+    assert [Path(row["auth"]).name for row in _read_slot_calls(calls)] == ["claude-a"]

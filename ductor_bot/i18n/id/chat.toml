@@ -484,8 +484,8 @@ done = "✓ Selesai · {secs} dtk"
 quarantine_stopped = "Pemeriksaan heartbeat dihentikan: sesi CLI percakapan ini tidak dapat dilanjutkan. Pemeriksaan akan dimulai lagi secara otomatis setelah pemulihan sesi berhasil pada percakapan berikutnya dan sesi baru dibuat."
 
 [slot]
-switched_auth = "beralih (login kedaluwarsa)"
-reauth_required = "Login Claude kedaluwarsa. Login kembali dengan ./scripts/login.sh claude <name> (hilangkan <name> untuk slot default)."
+switched_auth = "beralih (login kedaluwarsa atau langganan tidak tersedia)"
+reauth_required = "Login Claude kedaluwarsa atau langganan tidak tersedia. Periksa langganan dan tagihan, atau login kembali dengan ./scripts/login.sh claude <name> (hilangkan <name> untuk slot default)."
 switched_estimated = "beralih (kuota habis, waktu reset tidak diketahui, coba lagi dalam ~1 jam)"
 switched = "beralih (kuota habis, direset {reset})"
 cooldown_unparsable = "cooldown tidak dapat dibaca, stderr asli di bawah"
@@ -689,7 +689,7 @@ btn_cancel = "Batal"
 
 [accounts]
 api_key = "Kunci API"
-auth_expired = "Login kedaluwarsa; login kembali"
+auth_expired = "Login kedaluwarsa atau langganan tidak tersedia; periksa login dan tagihan"
 error = "Pengelolaan akun gagal. Silakan coba lagi."
 title = "Akun Claude (prioritas teratas di atas)"
 authenticated = "Terautentikasi"

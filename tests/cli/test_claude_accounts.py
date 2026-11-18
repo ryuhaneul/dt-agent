@@ -818,3 +818,54 @@ def test_registry_ignores_stored_api_key_auth_failure(tmp_path):
     )
     assert registry.load().auth_failures == {}
     assert registry.load().cooldowns == {"claude-api": 123}
+
+
+_SUBSCRIPTION_UNAVAILABLE = (
+    "Claude Code can't use your Claude subscription, usually because a payment is past due "
+    "· Pay or renew at https://claude.ai/settings/billing"
+)
+
+
+@pytest.mark.parametrize("returncode", [0, None, 1])
+@pytest.mark.parametrize("source", ["stderr", "error_result", "normal_result"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        _SUBSCRIPTION_UNAVAILABLE,
+        _SUBSCRIPTION_UNAVAILABLE.upper(),
+        "Warning: config notice\r\n  " + _SUBSCRIPTION_UNAVAILABLE + "\r\n",
+        "\x1b[31mError: " + _SUBSCRIPTION_UNAVAILABLE + "\x1b[0m",
+        "API Error: 403 " + _SUBSCRIPTION_UNAVAILABLE,
+        _SUBSCRIPTION_UNAVAILABLE.split(" · ", maxsplit=1)[0] + " · Contact support",
+    ],
+)
+def test_subscription_failure_detection_obeys_error_flags(text, returncode, source):
+    from ductor_bot.cli.claude_accounts import detect_auth_failure
+
+    assert detect_auth_failure(
+        returncode=returncode,
+        is_error=source == "error_result",
+        stderr=text if source == "stderr" else "",
+        result=text if source != "stderr" else "",
+    ) is (returncode == 1 and source != "normal_result")
+    assert not detect_rate_limit(returncode=returncode, is_error=True, stderr=text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The diagnostic being explained is: " + _SUBSCRIPTION_UNAVAILABLE,
+        "[mcp:billing] " + _SUBSCRIPTION_UNAVAILABLE,
+        "Tool failed; output was: " + _SUBSCRIPTION_UNAVAILABLE,
+        "Your payment is past due",
+        "Claude subscription expired",
+        "API Error: 403 permission denied",
+        "Claude Code can't use your Claude subscription, usually because of a network issue",
+        _SUBSCRIPTION_UNAVAILABLE.replace("past due", "past dues"),
+        "Your credit balance is too low to access the Anthropic API.",
+    ],
+)
+def test_subscription_failure_does_not_match_other_diagnostics(text):
+    from ductor_bot.cli.claude_accounts import detect_auth_failure
+
+    assert not detect_auth_failure(returncode=1, is_error=True, stderr=text, result=text)

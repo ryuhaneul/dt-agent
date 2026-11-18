@@ -140,7 +140,7 @@ def detect_rate_limit(
 
 
 # Claude Code 2.1.326 auth error text (installed CLI's embedded JavaScript).
-# Match only diagnostics that require signing in again, not transient refresh,
+# Match only diagnostics that require sign-in or subscription intervention, not transient refresh,
 # network, disk, gateway, MCP, or external API-key errors.
 # Allow CLI decorations and error prefixes without backtracking through them.
 _AUTH_FAILURE_TOKENS = re.compile(
@@ -156,7 +156,8 @@ _AUTH_FAILURE_TOKENS = re.compile(
     r"Authentication required · Sign in again to continue|"
     r"Not logged in · Please run /login|"
     r"Not logged in\. Run claude auth login to authenticate\.|"
-    r"Session expired\. Please run /login to sign in again\."
+    r"Session expired\. Please run /login to sign in again\.|"
+    r"Claude Code can't use your Claude subscription, usually because a payment is past due\b"
     r")",
     re.IGNORECASE | re.MULTILINE,
 )
@@ -169,7 +170,7 @@ def detect_auth_failure(
     stderr: str,
     result: str = "",
 ) -> bool:
-    """Recognize Claude login expiry/revocation on failed subprocesses only.
+    """Recognize Claude login expiry/revocation or unusable subscription on failures.
 
     As with rate-limit detection, result text is trusted only on error results;
     normal assistant prose about authentication must never disable a slot.

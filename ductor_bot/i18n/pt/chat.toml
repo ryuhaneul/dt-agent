@@ -487,8 +487,8 @@ done = "✓ Concluído · {secs}s"
 quarantine_stopped = "As verificações de heartbeat foram interrompidas: a sessão de CLI desta conversa não pode ser continuada. Elas recomeçam automaticamente quando a recuperação funcionar em uma conversa posterior e uma nova sessão for criada."
 
 [slot]
-switched_auth = "alternado (sessão expirada)"
-reauth_required = "A sessão do Claude expirou. Entre novamente com ./scripts/login.sh claude <name> (omita <name> para a conta padrão)."
+switched_auth = "alternado (sessão expirada ou assinatura indisponível)"
+reauth_required = "A sessão do Claude expirou ou a assinatura está indisponível. Verifica a assinatura e a faturação, ou inicia sessão novamente com ./scripts/login.sh claude <name> (omite <name> para a conta predefinida)."
 switched_estimated = "troca realizada (cota esgotada, horário de redefinição desconhecido, tente novamente em ~1 h)"
 switched = "trocado (cota esgotada, reinicia {reset})"
 cooldown_unparsable = "cooldown ilegível, stderr original abaixo"
@@ -692,7 +692,7 @@ btn_cancel = "Cancelar"
 
 [accounts]
 api_key = "Chave de API"
-auth_expired = "Sessão expirada; entre novamente"
+auth_expired = "Sessão expirada ou assinatura indisponível; verifica o acesso e a faturação"
 error = "Falha no gerenciamento de contas. Tente novamente."
 title = "Contas Claude (prioridade no topo)"
 authenticated = "Autenticada"

@@ -485,8 +485,8 @@ done = "✓ Klaar · {secs}s"
 quarantine_stopped = "Heartbeat-controles gestopt: de CLI-sessie van dit gesprek kan niet worden voortgezet. Ze starten automatisch opnieuw zodra het herstel in een later gesprek lukt en er een nieuwe sessie is gemaakt."
 
 [slot]
-switched_auth = "overgeschakeld (aanmelding verlopen)"
-reauth_required = "Claude-aanmelding verlopen. Meld opnieuw aan met ./scripts/login.sh claude <name> (laat <name> weg voor het standaardslot)."
+switched_auth = "overgeschakeld (aanmelding verlopen of abonnement niet beschikbaar)"
+reauth_required = "Claude-aanmelding verlopen of abonnement niet beschikbaar. Controleer je abonnement en facturering, of meld opnieuw aan met ./scripts/login.sh claude <name> (laat <name> weg voor het standaardslot)."
 switched_estimated = "gewisseld (quotum verbruikt, resettijd onbekend, probeer het over circa 1 uur opnieuw)"
 switched = "gewisseld (quotum op, reset {reset})"
 cooldown_unparsable = "cooldown niet leesbaar, ruwe stderr hieronder"
@@ -690,7 +690,7 @@ btn_cancel = "Annuleren"
 
 [accounts]
 api_key = "API-sleutel"
-auth_expired = "Aanmelding verlopen; meld opnieuw aan"
+auth_expired = "Aanmelding verlopen of abonnement niet beschikbaar; controleer aanmelding en facturering"
 error = "Accountbeheer is mislukt. Probeer het opnieuw."
 title = "Claude-accounts (hoogste prioriteit eerst)"
 authenticated = "Aangemeld"
