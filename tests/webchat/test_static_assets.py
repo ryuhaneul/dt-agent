@@ -1725,7 +1725,28 @@ import fs from 'node:fs';
 const source=fs.readFileSync(0,'utf8');
 const {md}=await import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
 assert.equal(md('# Title\n## Sub\n- **bold**\n- `code`\n[x](https://example.com)'),
- '<h1>Title</h1><h2>Sub</h2><ul><li><b>bold</b></li><li><code>code</code></li></ul><p>[x](https://example.com)</p>');
+ '<h1>Title</h1><h2>Sub</h2><ul><li><b>bold</b></li><li><code>code</code></li></ul><p><a href="https://example.com" target="_blank" rel="noopener noreferrer">x</a></p>');
+const anchor=(url,label=url)=>`<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+for(const url of ['https://x.com/a.html','http://x.com/?a=1&b=2','HTTPS://x.com/a','https://x.com/%ED%95%9C','https://x.com/?a&']){
+ const escaped=url.replaceAll('&','&amp;');
+ assert.equal(md(url+' 에서'),'<p>'+anchor(escaped)+' 에서</p>');
+}
+assert.equal(md('https://x.com/a.html에서'),'<p>'+anchor('https://x.com/a.html')+'에서</p>');
+assert.equal(md('[한글](https://x.com/한글)'),'<p>'+anchor('https://x.com/한글','한글')+'</p>');
+assert.equal(md('시안 (https://x.com/a_(b)). 다음'),'<p>시안 ('+anchor('https://x.com/a_(b)')+'). 다음</p>');
+for(const suffix of ['.',',','!','?',':',';','。','\uff01','\uff1f','…',').', '}.']){
+ assert.equal(md('https://x.com/a'+suffix),'<p>'+anchor('https://x.com/a')+suffix+'</p>');
+}
+assert.equal(md('[시안](https://x.com/a_(b))'),'<p>'+anchor('https://x.com/a_(b)','시안')+'</p>');
+assert.equal(md('**https://x.com/a**'),'<p><b>'+anchor('https://x.com/a')+'</b></p>');
+assert.equal(md('`https://x.com/a` ``[시안](https://x.com/a)``'),'<p><code>https://x.com/a</code> <code>[시안](https://x.com/a)</code></p>');
+for(const fence of ['```','~~~'])assert.equal(md(fence+'\nhttps://x.com/a [시안](https://x.com/b)\n'+fence),'<pre tabindex="0"><code>https://x.com/a [시안](https://x.com/b)\n</code></pre>');
+for(const payload of ['[x](javascript:alert(1))','[x](data:text/html,test)','[x](vbscript:x)','[x](//x.com)','[x](https://)','[<img src=x onerror=alert(1)>](https://x.com/)']){
+ const html=md(payload);
+ assert.ok(!/<(?:img|script|svg)\b/i.test(html));
+ if(!payload.startsWith('[<img'))assert.ok(!html.includes('<a '),html);
+}
+assert.equal(md('https://x.com/?a=1&b=2<img src=x>'),'<p>'+anchor('https://x.com/?a=1&amp;b=2')+'&lt;img src=x&gt;</p>');
 const table=md('| Left | Center | Right |\n| :--- | :---: | ---: |\n| **A** | `B` | <img onerror="x"> |');
 assert.ok(table.startsWith('<div class="table-scroll" tabindex="0"><table>'));
 assert.ok(table.endsWith('</tbody></table></div>'));
@@ -1760,6 +1781,43 @@ def test_markdown_tables_fences_escaping_and_existing_rules():
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_markdown_link_attributes_remain_safe_after_html_parsing():
+    payloads = [
+        '[<img src=x onerror="alert(1)">](https://x.com/)',
+        '[x](https://x.com/" onclick="alert(1))',
+        'https://x.com/" onclick="alert(1)',
+        "[x](javascript:alert(1))",
+        "[x](data:text/html,<svg onload=alert(1)>)",
+        "[x](https://x.com/&#34;onmouseover=alert(1))",
+        "[x](https://x.com/&quot;onmouseover=alert(1))",
+        "[x](https://x.com/\\evil)",
+    ]
+    script = """
+import fs from 'node:fs';
+const {source,payloads}=JSON.parse(fs.readFileSync(0,'utf8'));
+const {md}=await import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
+console.log(JSON.stringify(payloads.map(md)));
+"""
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        input=json.dumps({"source": (STATIC / "js/md.js").read_text(), "payloads": payloads}),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    for rendered in json.loads(result.stdout):
+        for tag, attrs in Markup(rendered).tags:
+            assert tag in {"p", "a"}
+            assert "style" not in attrs
+            assert not any(name.lower().startswith("on") for name in attrs)
+            if tag == "a":
+                assert set(attrs) == {"href", "target", "rel"}
+                assert attrs["href"].startswith("https://")
+                assert attrs["target"] == "_blank"
+                assert attrs["rel"] == "noopener noreferrer"
 
 
 def test_secret_dialog_password_and_accessible_shell(markup):

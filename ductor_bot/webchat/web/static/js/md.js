@@ -3,9 +3,38 @@ export function esc(value) {
   return String(value).replace(/[&<>"']/g, character =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
 }
+function link(url, label) {
+  // Input has already passed through esc(); never decode it into HTML again.
+  if (!/^https?:\/\//i.test(url) || /[\s\\]|&(?:lt|gt|quot|#39);/i.test(url)) return null;
+  try {
+    const parsed = new URL(url);
+    if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname) return null;
+  } catch { return null; }
+  return `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+}
+function inlineEscaped(text) {
+  // One pass keeps generated attributes out of subsequent Markdown replacements.
+  return text.replace(/(`+)(.+?)\1|\[([^\]\n]+)\]\(((?:[^()\s]|\([^()\s]*\))+)\)|\*\*(.+?)\*\*|https?:\/\/(?:(?!&(?:lt|gt|quot|#39);)[^\s<>"'`\[\]\u1100-\u11ff\u3130-\u318f\uac00-\ud7af])+/gi,
+    (match, ticks, code, label, destination, bold) => {
+      if (ticks) return `<code>${code}</code>`;
+      if (label !== undefined) return link(destination, label) || match;
+      if (bold !== undefined) return `<b>${inlineEscaped(bold)}</b>`;
+      let url = match;
+      // Preserve balanced URL parentheses, but leave surrounding prose outside.
+      while (true) {
+        const previous = url;
+        url = url.replace(/[.,!?:。！？、…]+$/, '');
+        if (url.endsWith(';') && !url.endsWith('&amp;')) url = url.slice(0, -1);
+        for (const [open, close] of [['(', ')'], ['{', '}']]) {
+          if (url.endsWith(close) && url.split(close).length > url.split(open).length) url = url.slice(0, -1);
+        }
+        if (url === previous) break;
+      }
+      return (link(url, url) || url) + match.slice(url.length);
+    });
+}
 function inline(text) {
-  return esc(text).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
-    .replace(/`(.+?)`/g, '<code>$1</code>');
+  return inlineEscaped(esc(text));
 }
 function cells(line) {
   return line.trim().replace(/^\|/, '').replace(/(?<!\\)\|$/, '')
