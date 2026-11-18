@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import tempfile
 import time
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
@@ -16,11 +17,18 @@ from shutil import which
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
+from ductor_bot.cli.autocompact import (
+    autocompact_env,
+    claude_autocompact_flag_supported,
+    claude_settings_use_file,
+    merge_claude_settings,
+)
 from ductor_bot.cli.base import (
     BaseCLI,
     CLIConfig,
     add_cli_opt,
     format_cli_cmd,
+    write_private_temp_file,
 )
 from ductor_bot.cli.claude_accounts import (
     SlotRegistry,
@@ -81,6 +89,9 @@ class _PromptFiles:
 
     system: str | None = None
     append: str | None = None
+    settings: str | None = None
+    settings_dir: str | None = None
+    parameters: list[str] | None = None
 
 
 @dataclass(slots=True)
@@ -160,8 +171,17 @@ class ClaudeCodeCLI(BaseCLI):
             cmd.append("--continue")
 
         # Add extra CLI parameters before the separator
-        if cfg.cli_parameters:
-            cmd.extend(cfg.cli_parameters)
+        if files.parameters is None:
+            if cfg.autocompact != "default" and claude_settings_use_file(cfg.cli_parameters):
+                raise ValueError("File settings require per-attempt private settings preparation")
+            parameters = merge_claude_settings(
+                cfg.cli_parameters, cfg.autocompact, self._working_dir
+            )
+        else:
+            parameters = files.parameters
+        cmd.extend(parameters)
+        if isinstance(cfg.autocompact, int) and claude_autocompact_flag_supported(self._cli):
+            cmd += ["--autocompact", str(cfg.autocompact)]
 
         if "--verbose" not in cmd:
             cmd.insert(1, "--verbose")
@@ -173,10 +193,13 @@ class ClaudeCodeCLI(BaseCLI):
 
     def _slot_extra_env(self, slot_name: str) -> dict[str, str]:
         """Return the env overrides that pin the CLI to *slot_name*."""
-        return slot_extra_env(
-            slot_name,
-            working_dir=str(Path(self._config.ductor_home) / "workspace"),
-        )
+        return {
+            **slot_extra_env(
+                slot_name,
+                working_dir=str(Path(self._config.ductor_home) / "workspace"),
+            ),
+            **autocompact_env("claude", self._config.autocompact),
+        }
 
     def _default_timezone(self) -> ZoneInfo:
         return resolve_user_timezone(self._config.user_timezone)
@@ -739,6 +762,19 @@ class ClaudeCodeCLI(BaseCLI):
         cfg = self._config
         files = _PromptFiles()
         try:
+            files.parameters = merge_claude_settings(
+                cfg.cli_parameters, cfg.autocompact, self._working_dir
+            )
+            if cfg.autocompact != "default" and claude_settings_use_file(cfg.cli_parameters):
+                files.settings_dir = tempfile.mkdtemp(prefix="ductor_settings_")
+                settings_index = files.parameters.index("--settings") + 1
+                files.settings = write_private_temp_file(
+                    files.parameters[settings_index],
+                    prefix="settings_",
+                    suffix=".json",
+                    directory=files.settings_dir,
+                )
+                files.parameters[settings_index] = files.settings
             if cfg.system_prompt:
                 files.system = create_system_prompt_file(cfg.system_prompt, prefix=_SYSTEM_PREFIX)
             if cfg.append_system_prompt:
@@ -752,10 +788,13 @@ class ClaudeCodeCLI(BaseCLI):
 
 
 def _unlink_prompt_files(files: _PromptFiles) -> None:
-    for path in (files.system, files.append):
+    for path in (files.system, files.append, files.settings):
         if path:
             with contextlib.suppress(OSError):
                 Path(path).unlink(missing_ok=True)
+    if files.settings_dir:
+        with contextlib.suppress(OSError):
+            Path(files.settings_dir).rmdir()
 
 
 async def _cleanup_prompt_files(files: _PromptFiles) -> None:

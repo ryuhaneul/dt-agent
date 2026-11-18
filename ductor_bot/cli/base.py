@@ -20,6 +20,7 @@ from ductor_bot.cli.types import CLIResponse
 if TYPE_CHECKING:
     from ductor_bot.cli.process_registry import ProcessRegistry
     from ductor_bot.cli.timeout_controller import TimeoutController
+    from ductor_bot.config import AutocompactValue
 
 _IS_WINDOWS = sys.platform == "win32"
 
@@ -106,6 +107,7 @@ class CLIConfig:
     permission_mode: str = "bypassPermissions"
     # Reasoning effort: used by Codex (-c model_reasoning_effort) and Claude (--effort).
     reasoning_effort: str = "medium"
+    autocompact: AutocompactValue = "default"
     # Codex-specific fields (ignored by Claude provider):
     sandbox_mode: str = "read-only"
     images: list[str] = field(default_factory=list)

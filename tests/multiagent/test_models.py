@@ -338,3 +338,20 @@ async def test_the_sub_override_survives_a_change_of_its_config_file(tmp_path: P
     update_config_file(config_path, model="haiku")  # e.g. a /model change in the sub chat
     await reloader._check()
     assert merged.memory_lint.mode == "full"
+
+
+@pytest.mark.parametrize("main_value", ["off", 300000])
+@pytest.mark.parametrize("sub_value", [None, "default", "off", 400000])
+def test_autocompact_independent_after_registry_restart(tmp_path, main_value, sub_value):
+    import json
+
+    from ductor_bot.multiagent.registry import AgentRegistry
+
+    registry_path = tmp_path / "agents.json"
+    registry_path.write_text(
+        json.dumps([{"name": "worker", "transport": "headless", "autocompact": sub_value}])
+    )
+    for main in [AgentConfig(autocompact=main_value), AgentConfig(autocompact=1000000)]:
+        sub = AgentRegistry(registry_path).load()[0]
+        cfg = merge_sub_agent_config(main, sub, tmp_path / "agents" / "worker")
+        assert cfg.autocompact == ("default" if sub_value is None else sub_value)

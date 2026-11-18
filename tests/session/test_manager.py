@@ -756,3 +756,53 @@ async def test_a_late_update_of_the_old_key_is_the_only_way_it_comes_back(
     await mgr.update_session(old)  # a counted turn does
     assert await mgr.get_active(src) is not None
     assert (await mgr.get_active(dst)) is not None
+
+
+@pytest.mark.parametrize("value", [None, "default", "off", 300000])
+async def test_autocompact_round_trip_and_provider_reset(tmp_path, value):
+    mgr = _make_manager(tmp_path)
+    key = SessionKey(chat_id=1, topic_id=42)
+    session = SessionData(chat_id=1, topic_id=42, autocompact=value)
+    session.session_id = "original"
+    await mgr.update_session(session)
+    restarted = _make_manager(tmp_path)
+    loaded = await restarted.get_active(key)
+    assert loaded.autocompact == value
+    await restarted.reset_provider_session(key, provider="codex", model="gpt-5.5")
+    assert (await restarted.get_active(key)).autocompact == value
+    await restarted.reset_provider_session(key, provider="claude", model="opus")
+    assert (await restarted.get_active(key)).autocompact == value
+
+
+def test_legacy_session_without_autocompact_inherits_global():
+    session = SessionData(chat_id=1, session_id="legacy", model="opus")
+    assert session.autocompact is None
+    assert session.session_id == "legacy"
+
+
+@pytest.mark.parametrize("value", [None, "default", "off", 300000])
+@pytest.mark.parametrize("target", [False, True])
+@pytest.mark.parametrize("expiry", ["idle", "daily"])
+async def test_autocompact_survives_automatic_shell_replacement(tmp_path, value, target, expiry):
+    mgr = _make_manager(
+        tmp_path,
+        idle_timeout_minutes=30 if expiry == "idle" else 0,
+        daily_reset_enabled=expiry == "daily",
+        daily_reset_hour=4,
+        user_timezone="UTC",
+    )
+    key = SessionKey(chat_id=1, topic_id=42)
+    with time_machine.travel("2026-11-17 03:59:00+00:00", tick=False):
+        session = SessionData(chat_id=1, topic_id=42, autocompact=value, session_id="old-session")
+        await mgr.update_session(session)
+    later = "2026-11-17 04:31:00+00:00" if expiry == "idle" else "2026-11-17 04:01:00+00:00"
+    with time_machine.travel(later, tick=False):
+        if target:
+            fresh, created = await mgr.resolve_session_target(key, provider="claude", model="opus")
+        else:
+            fresh, created = await mgr.resolve_session(key, provider="claude", model="opus")
+        assert created
+        assert fresh.autocompact == value
+        assert fresh.session_id == ""
+        assert fresh.message_count == 0
+        assert (await mgr.get_active(key)).autocompact == value

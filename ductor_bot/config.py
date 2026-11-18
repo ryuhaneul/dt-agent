@@ -7,10 +7,15 @@ import logging
 from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal, TypeAlias
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+# Defined here so config validation never imports the eager cli package.
+AutocompactValue: TypeAlias = (
+    Literal["default", "off"] | Annotated[int, Field(strict=True, ge=100_000, le=1_000_000)]
+)
 
 logger = logging.getLogger(__name__)
 NULLISH_TEXT_VALUES: frozenset[str] = frozenset({"null", "none"})
@@ -621,6 +626,7 @@ class AgentConfig(BaseModel):
     interagent: InteragentConfig = Field(default_factory=InteragentConfig)
     # "off": Claude renders its system prompt anew every turn (needs the CLI flag).
     claude_system_prompt_snapshot: Literal["off", "on"] = "off"
+    autocompact: AutocompactValue = "default"
     transport: str = "telegram"  # "telegram" | "matrix" | "slack"
     transports: list[str] = Field(default_factory=list)
     telegram_token: str = ""

@@ -37,6 +37,7 @@ _HOT_RELOADABLE: frozenset[str] = frozenset(
         "model",
         "provider",
         "reasoning_effort",
+        "autocompact",
         "cli_timeout",
         "max_budget_usd",
         "max_turns",

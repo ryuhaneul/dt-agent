@@ -118,6 +118,7 @@ class MemoryFlusher:
             topic_id=key.topic_id,
             transport=key.transport,
             resume_session=session_id,
+            autocompact=session.autocompact,
             process_label="memory_flush",
         )
         logger.info("Memory flush firing chat=%d session=%s", key.chat_id, session_id[:8])
@@ -147,6 +148,7 @@ class MemoryFlusher:
             topic_id=key.topic_id,
             transport=key.transport,
             resume_session=session_id,
+            autocompact=session.autocompact,
             process_label="memory_compact",
         )
         logger.info(

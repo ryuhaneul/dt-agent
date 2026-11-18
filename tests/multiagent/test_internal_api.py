@@ -1068,8 +1068,9 @@ async def test_isolated_broadcast_redelegation_preserves_origin(
     orch.paths = DuctorPaths(ductor_home=tmp_path)
     orch._config.append_system_prompt_files = []
     orch._config.cli_timeout = 60
+    orch._config.autocompact = "default"
     orch._sessions.get_active = AsyncMock(
-        return_value=MagicMock(session_id="dm-session-DM_MARKER_7f3")
+        return_value=MagicMock(autocompact=None, session_id="dm-session-DM_MARKER_7f3")
     )
 
     async def execute(request: object) -> AgentResponse:

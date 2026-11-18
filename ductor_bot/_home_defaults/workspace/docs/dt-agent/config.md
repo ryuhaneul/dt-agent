@@ -179,6 +179,7 @@ Host paths written as `~/.ductor` below mean the default home; substitute the co
 | `permission_mode` | `str` | `"bypassPermissions"` | Provider sandbox/approval mode |
 | `cli_timeout` | `float` | `1800.0` | Legacy/global timeout. Still used by cron/webhook `cron_task`, inter-agent turns, stale-process heartbeat cleanup, and as fallback for unknown timeout paths |
 | `reasoning_effort` | `str` | `"medium"` | Default reasoning level for providers that support effort |
+| `autocompact` | `"default"` or `"off"` or `int` | `"default"` | Agent-local automatic compaction value, hot-reloaded for the next request. `"default"` preserves CLI/slot settings; `"off"` disables automatic compaction on Claude; integer token windows must be 100000–1000000. An explicit topic value wins; a topic with no value follows this agent's global value. Sub-agents never inherit the main agent's value: an absent sub-agent override means `"default"`. Claude supports tokens and off; Codex supports tokens on new and resumed sessions, but not off; Grok and Gemini receive no compaction override. DT merges command-line settings over lower CLI settings; managed policy still wins. Disabling automatic compaction also prevents its boundary-triggered memory flush. |
 | `file_access` | `str` | `"all"` | File access scope (`all`, `home`, `workspace`) for file sends and API `GET /files`; unknown values fall back to workspace-only |
 | `gemini_api_key` | `str \| None` | `None` | Config fallback key injected for Gemini API-key mode |
 | `transport` | `str` | `"telegram"` | Main messaging transport: `"telegram"`, `"matrix"`, or `"slack"`; `"headless"` is sub-agent only |
@@ -729,7 +730,7 @@ Toggles are read live from `config.json` on each skill-sync tick (independent of
 
 Hot-reloadable top-level fields:
 
-- `model`, `provider`, `reasoning_effort`
+- `model`, `provider`, `reasoning_effort`, `autocompact`
 - `cli_timeout`, `max_budget_usd`, `max_turns`, `max_session_messages`
 - `idle_timeout_minutes`, `session_age_warning_hours`, `daily_reset_hour`, `daily_reset_enabled`
 - `permission_mode`, `file_access`, `user_timezone`

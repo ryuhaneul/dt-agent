@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from ductor_bot.config import (
     AgentConfig,
     ApiConfig,
+    AutocompactValue,
     CleanupConfig,
     CLIParametersConfig,
     HeartbeatConfig,
@@ -74,6 +75,8 @@ class SubAgentConfig(BaseModel):
     # Partial override of main's ``interagent`` limits (only the keys given here differ).
     interagent: InteragentConfig | None = None
     claude_system_prompt_snapshot: Literal["off", "on"] | None = None
+    # Independent agent setting: None means framework default, never main's value.
+    autocompact: AutocompactValue | None = None
 
 
 def resolve_sub_transports(sub: SubAgentConfig, agent_home: Path) -> list[str]:
@@ -126,6 +129,7 @@ def merge_sub_agent_config(
     # agents.json explicit overrides (non-None fields win)
     overrides = sub.model_dump(exclude_none=True, exclude={"name"})
     base.update(overrides)
+    base["autocompact"] = sub.autocompact if sub.autocompact is not None else "default"
     # ``interagent`` is a partial override over main's value, key by key.
     base["interagent"] = {
         **main.interagent.model_dump(),

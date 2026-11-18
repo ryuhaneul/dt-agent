@@ -1073,3 +1073,32 @@ async def test_effective_memory_lint_is_written_to_the_sub_config_file(
     lint = update.await_args.kwargs["memory_lint"]
     assert (lint["mode"], lint["schedule"], lint["every_hours"]) == ("full", "0 9 * * 1", 168)
 
+
+
+@pytest.mark.parametrize("value", [None, "off", 300000])
+async def test_autocompact_written_to_sub_config_and_survives_restart(tmp_path, value):
+    from ductor_bot.multiagent.registry import AgentRegistry
+
+    registry_path = tmp_path / "agents.json"
+    entry = {"name": "worker", "transport": "headless"}
+    if value is not None:
+        entry["autocompact"] = value
+    registry_path.write_text(json.dumps([entry]))
+    config_path = tmp_path / "agents" / "worker" / "config" / "config.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("{}")
+    expected = "default" if value is None else value
+    for main_value in ["off", 1000000]:
+        supervisor = AgentSupervisor(AgentConfig(ductor_home=str(tmp_path), autocompact=main_value))
+        supervisor._notify_main_agent = AsyncMock()
+        supervisor._supervised_run = AsyncMock()
+        stack = MagicMock()
+        stack.shutdown = AsyncMock()
+        with patch(
+            "ductor_bot.multiagent.supervisor.AgentStack.create", new=AsyncMock(return_value=stack)
+        ) as create:
+            result = await supervisor._start_sub_agent(AgentRegistry(registry_path).load()[0])
+        assert result.ok
+        assert create.await_args.args[1].autocompact == expected
+        assert json.loads(config_path.read_text())["autocompact"] == expected
+        await supervisor.stop_agent("worker")

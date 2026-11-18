@@ -973,3 +973,74 @@ async def test_existing_topic_effort_fixed_when_global_default_changes(
     assert se.reasoning_effort == "low"
     assert sf is not None
     assert sf.reasoning_effort == "high"
+
+
+@pytest.mark.parametrize("topic_value", [None, "default", "off", 300000])
+async def test_autocompact_normal_named_and_heartbeat(orch, topic_value):
+    from ductor_bot.cli.autocompact import resolve_autocompact
+
+    orch._config.autocompact = 200000
+    orch._config.heartbeat.cooldown_minutes = 0
+    key = SessionKey(chat_id=1, topic_id=42)
+    session = SessionData(chat_id=1, topic_id=42, autocompact=topic_value)
+    session.session_id = "session-1"
+    await orch._sessions.update_session(session)
+    expected = resolve_autocompact(topic_value, 200000)
+    orch._cli_service.execute = AsyncMock(return_value=_mock_response())
+    await normal(orch, key, "hello")
+    assert orch._cli_service.execute.await_args.args[0].autocompact == expected
+    ns = orch._named_sessions.create(1, "claude", "opus", "setup", key=key)
+    orch._named_sessions.update_after_response(1, ns.name, "named-session")
+    orch._cli_service.execute.reset_mock()
+    await named_session_flow(orch, key, ns.name, "hello")
+    assert orch._cli_service.execute.await_count == 1
+    assert orch._cli_service.execute.await_args.args[0].autocompact == expected
+    orch._cli_service.execute = AsyncMock(return_value=_mock_response(result="HEARTBEAT_OK"))
+    await heartbeat_flow(orch, key)
+    assert orch._cli_service.execute.await_args.args[0].autocompact == expected
+
+
+async def test_autocompact_hot_reload_applies_on_next_cli_request(workspace):
+    from ductor_bot.cli.types import AgentRequest
+    from ductor_bot.config_reload import classify_changes, diff_configs
+
+    paths, cfg = workspace
+    cfg.autocompact = 200000
+    orch = Orchestrator(cfg, paths)
+    assert orch._cli_service._make_cli(AgentRequest(prompt="hi"))._config.autocompact == 200000
+    updated = cfg.model_copy(update={"autocompact": 400000})
+    hot, restart = classify_changes(diff_configs(cfg, updated))
+    assert hot == {"autocompact": 400000}
+    assert restart == []
+    orch._on_config_hot_reload(updated, hot)
+    assert orch._cli_service._make_cli(AgentRequest(prompt="hi"))._config.autocompact == 400000
+    assert (
+        orch._cli_service._make_cli(
+            AgentRequest(prompt="hi", autocompact="default")
+        )._config.autocompact
+        == "default"
+    )
+
+
+@pytest.mark.parametrize("error", [OSError, ValueError, TypeError])
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_named_autocompact_metadata_failure_uses_agent_global(orch, error, streaming, caplog):
+    from ductor_bot.orchestrator.flows import named_session_streaming
+
+    orch._config.autocompact = 200000
+    key = SessionKey(chat_id=1, topic_id=42)
+    ns = orch._named_sessions.create(1, "claude", "opus", "setup", key=key)
+    orch._named_sessions.update_after_response(1, ns.name, "named-session")
+    orch._sessions.get_active = AsyncMock(side_effect=error("SYNTHETIC_PRIVATE_VALUE /private/path"))
+    execute = AsyncMock(return_value=_mock_response())
+    if streaming:
+        orch._cli_service.execute_streaming = execute
+        await named_session_streaming(orch, key, ns.name, "hello")
+    else:
+        orch._cli_service.execute = execute
+        await named_session_flow(orch, key, ns.name, "hello")
+    assert execute.await_count == 1
+    assert execute.await_args.args[0].autocompact == 200000
+    assert "Autocompact topic lookup failed" in caplog.text
+    assert "SYNTHETIC_PRIVATE_VALUE" not in caplog.text
+    assert "/private/path" not in caplog.text

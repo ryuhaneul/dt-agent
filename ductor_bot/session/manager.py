@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from ductor_bot.config import AgentConfig, resolve_user_timezone
+from ductor_bot.config import AgentConfig, AutocompactValue, resolve_user_timezone
 from ductor_bot.infra.atomic_io import complete_write
 from ductor_bot.infra.json_store import atomic_json_save, load_json
 from ductor_bot.session.key import SessionKey
@@ -84,6 +84,7 @@ class SessionData:
     provider: str
     model: str
     reasoning_effort: str
+    autocompact: AutocompactValue | None
     created_at: str
     last_active: str
     provider_sessions: dict[str, ProviderSessionData] = field(default_factory=dict)
@@ -121,6 +122,10 @@ class SessionData:
         self.provider = provider
         self.model = model
         self.reasoning_effort = reasoning_effort
+        from ductor_bot.cli.autocompact import validate_autocompact
+
+        value = raw.pop("autocompact", None)
+        self.autocompact = None if value is None else validate_autocompact(value)
 
         now = datetime.now(UTC).isoformat()
         self.created_at = created_at or now
@@ -341,6 +346,7 @@ class SessionManager:
             provider=prov,
             model=model_name,
             reasoning_effort=effort,
+            autocompact=existing.autocompact if existing else None,
             provider_sessions={},
             activity_at=None,
             activity_turns=0,
@@ -411,6 +417,7 @@ class SessionManager:
                 provider=provider,
                 model=model,
                 reasoning_effort=reasoning_effort or "",
+                autocompact=existing.autocompact if existing else None,
                 provider_sessions={},
                 activity_at=None,
                 activity_turns=0,

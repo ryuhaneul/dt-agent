@@ -10,6 +10,7 @@ from pathlib import Path
 from shutil import which
 from typing import TYPE_CHECKING
 
+from ductor_bot.cli.autocompact import codex_autocompact_args
 from ductor_bot.cli.base import (
     BaseCLI,
     CLIConfig,
@@ -122,6 +123,7 @@ class CodexCLI(BaseCLI):
             cmd += ["--model", cfg.model]
         if cfg.reasoning_effort and cfg.reasoning_effort != "default":
             cmd += ["-c", f"model_reasoning_effort={cfg.reasoning_effort}"]
+        cmd += codex_autocompact_args(cfg.autocompact)
         cmd += ["--", session_id]
         cmd.append("-")
         return cmd
@@ -158,6 +160,7 @@ class CodexCLI(BaseCLI):
         if cfg.cli_parameters:
             cmd.extend(cfg.cli_parameters)
 
+        cmd += codex_autocompact_args(cfg.autocompact)
         cmd.append("--")
         # Keep large composed prompts out of argv; Linux enforces per-arg and
         # total argv/env limits before Codex can even start.

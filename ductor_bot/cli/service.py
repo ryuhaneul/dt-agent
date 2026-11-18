@@ -12,6 +12,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
+from ductor_bot.cli.autocompact import resolve_autocompact
 from ductor_bot.cli.base import CLIConfig
 from ductor_bot.cli.claude_features import SNAPSHOT_FLAG
 from ductor_bot.cli.factory import create_cli
@@ -30,7 +31,7 @@ from ductor_bot.cli.types import AgentRequest, AgentResponse, CLIResponse
 if TYPE_CHECKING:
     from ductor_bot.cli.base import BaseCLI
     from ductor_bot.cli.process_registry import ProcessRegistry
-    from ductor_bot.config import ModelRegistry
+    from ductor_bot.config import AutocompactValue, ModelRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +109,7 @@ class CLIServiceConfig:
     permission_mode: str
     ductor_home: str = "/ductor"
     reasoning_effort: str = "medium"
+    autocompact: AutocompactValue = "default"
     gemini_api_key: str | None = None
     claude_cli_parameters: tuple[str, ...] = ()
     codex_cli_parameters: tuple[str, ...] = ()
@@ -429,6 +431,7 @@ class CLIService:
                 max_budget_usd=self._config.max_budget_usd,
                 permission_mode=self._config.permission_mode,
                 reasoning_effort=effort,
+                autocompact=resolve_autocompact(request.autocompact, self._config.autocompact),
                 gemini_api_key=self._config.gemini_api_key,
                 process_registry=self._process_registry,
                 chat_id=request.chat_id,

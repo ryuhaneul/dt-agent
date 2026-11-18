@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from ductor_bot.cli import auth as cli_auth
+from ductor_bot.cli.autocompact import resolve_autocompact
 from ductor_bot.cli.claude_features import snapshot_refresh_active
 from ductor_bot.cli.stream_events import ToolUseEvent
 from ductor_bot.cli.timeout_controller import TimeoutConfig as TCConfig
@@ -41,6 +42,7 @@ from ductor_bot.workspace.loader import (
 )
 
 if TYPE_CHECKING:
+    from ductor_bot.config import AutocompactValue
     from ductor_bot.orchestrator.core import Orchestrator
 
 logger = logging.getLogger(__name__)
@@ -132,6 +134,18 @@ async def build_append_prompt(
     return ("\n\n".join(parts) or None), snapshot_off
 
 
+async def _topic_autocompact(orch: Orchestrator, key: SessionKey) -> AutocompactValue:
+    """Resolve a named turn's recipient setting without blocking metadata recovery."""
+    try:
+        session = await orch._sessions.get_active(key)
+    except (OSError, ValueError, TypeError):
+        logger.warning("Autocompact topic lookup failed; using the agent global value")
+        return resolve_autocompact(None, orch._config.autocompact)
+    return resolve_autocompact(
+        session.autocompact if session else None, orch._config.autocompact
+    )
+
+
 async def _prepare_normal(
     orch: Orchestrator,
     key: SessionKey,
@@ -200,6 +214,7 @@ async def _prepare_normal(
         model_override=req_model,
         provider_override=req_provider,
         effort_override=req_effort,
+        autocompact=resolve_autocompact(session.autocompact, orch._config.autocompact),
         chat_id=key.chat_id,
         topic_id=key.topic_id,
         transport=transport_override or key.transport,
@@ -1012,6 +1027,7 @@ async def _named_flow_turn(
         model_override=ns.model,
         provider_override=ns.provider,
         effort_override=ns.reasoning_effort or None,
+        autocompact=await _topic_autocompact(orch, key),
         chat_id=key.chat_id,
         topic_id=key.topic_id,
         transport=key.transport,
@@ -1108,6 +1124,7 @@ async def _named_streaming_turn(  # noqa: PLR0913
         model_override=ns.model,
         provider_override=ns.provider,
         effort_override=ns.reasoning_effort or None,
+        autocompact=await _topic_autocompact(orch, key),
         chat_id=key.chat_id,
         topic_id=key.topic_id,
         transport=transport_override or key.transport,
@@ -1214,6 +1231,7 @@ async def heartbeat_flow(  # noqa: PLR0911
         model_override=session.model or req_model,
         provider_override=session.provider,
         effort_override=session.reasoning_effort or None,
+        autocompact=resolve_autocompact(session.autocompact, orch._config.autocompact),
         chat_id=key.chat_id,
         topic_id=key.topic_id,
         transport=key.transport,

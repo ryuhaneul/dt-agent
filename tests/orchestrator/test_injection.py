@@ -18,6 +18,7 @@ def _make_orch(active: Any) -> MagicMock:
         return_value=AgentResponse(result="ok", session_id="any", is_error=False)
     )
     orch._config.cli_timeout = 60
+    orch._config.autocompact = "default"
     return orch
 
 
@@ -29,7 +30,7 @@ class TestInjectPromptProviderOverride:
     """`_inject_prompt` passes the active session's provider/model into AgentRequest."""
 
     async def test_uses_active_session_provider_model(self) -> None:
-        active = MagicMock(session_id="sid", provider="codex", model="gpt-5.5")
+        active = MagicMock(autocompact=None, session_id="sid", provider="codex", model="gpt-5.5")
         orch = _make_orch(active)
 
         with patch("ductor_bot.orchestrator.injection._update_session", new=AsyncMock()):
@@ -42,7 +43,7 @@ class TestInjectPromptProviderOverride:
 
     async def test_creates_the_session_when_there_is_no_active_one(self) -> None:
         orch = _make_orch(None)
-        created = MagicMock(session_id="", provider="claude", model="opus", reasoning_effort="")
+        created = MagicMock(autocompact=None, session_id="", provider="claude", model="opus", reasoning_effort="")
         orch.resolve_runtime_target = MagicMock(return_value=("opus", "claude"))
         orch._sessions.resolve_session = AsyncMock(return_value=(created, True))
 
@@ -60,7 +61,7 @@ class TestInjectPromptProviderOverride:
         update.assert_awaited_once()  # the returned id is stored on the created session
 
     async def test_claude_active_session(self) -> None:
-        active = MagicMock(session_id="sid", provider="claude", model="opus")
+        active = MagicMock(autocompact=None, session_id="sid", provider="claude", model="opus")
         orch = _make_orch(active)
 
         with patch("ductor_bot.orchestrator.injection._update_session", new=AsyncMock()):
@@ -77,7 +78,7 @@ async def test_inject_prompt_appends_configured_files(tmp_path: Path) -> None:
     paths.workspace.mkdir(parents=True, exist_ok=True)
     (paths.workspace / "PERSONA.md").write_text("You are helpful.")
 
-    active = MagicMock(session_id="sid", provider="claude", model="opus")
+    active = MagicMock(autocompact=None, session_id="sid", provider="claude", model="opus")
     orch = _make_orch(active)
     orch.paths = paths
     orch._config.append_system_prompt_files = ["PERSONA.md"]
@@ -95,7 +96,7 @@ async def test_inject_prompt_no_files_leaves_append_none(tmp_path: Path) -> None
     paths = DuctorPaths(ductor_home=tmp_path)
     paths.workspace.mkdir(parents=True, exist_ok=True)
 
-    orch = _make_orch(MagicMock(session_id="sid", provider="claude", model="opus"))
+    orch = _make_orch(MagicMock(autocompact=None, session_id="sid", provider="claude", model="opus"))
     orch.paths = paths
     orch._config.append_system_prompt_files = []
 
@@ -108,7 +109,7 @@ async def test_inject_prompt_no_files_leaves_append_none(tmp_path: Path) -> None
 
 
 async def test_isolated_injection_does_not_resume_or_update_dm_session() -> None:
-    dm = MagicMock(session_id="dm-secret-session", provider="claude", model="opus")
+    dm = MagicMock(autocompact=None, session_id="dm-secret-session", provider="claude", model="opus")
     orch = _make_orch(dm)
     with patch("ductor_bot.orchestrator.injection._update_session", new=AsyncMock()) as update:
         first = await _inject_prompt(
@@ -128,3 +129,14 @@ async def test_isolated_injection_does_not_resume_or_update_dm_session() -> None
     assert all(req.result_origin == "cron-broadcast" for req in requests)
     assert all(req.broadcast_ref == "job-1" for req in requests)
     assert dm.session_id == "dm-secret-session"
+
+
+async def test_injection_carries_topic_value_and_isolated_uses_global():
+    active = MagicMock(autocompact=400000, session_id="sid", provider="claude", model="opus")
+    orch = _make_orch(active)
+    orch._config.autocompact = 200000
+    with patch("ductor_bot.orchestrator.injection._update_session", new=AsyncMock()):
+        await _inject_prompt(orch, "hello", chat_id=1, topic_id=42, process_label="inject")
+        assert _captured_request(orch).autocompact == 400000
+        await _inject_prompt(orch, "hello", chat_id=1, process_label="inject", isolated=True)
+        assert _captured_request(orch).autocompact == 200000

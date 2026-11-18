@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from ductor_bot.cli.timeout_controller import TimeoutController
+    from ductor_bot.config import AutocompactValue
 
 
 _TASK_LABEL_PREFIX = "task:"
@@ -56,6 +57,7 @@ class AgentRequest:
     model_override: str | None = None
     provider_override: str | None = None
     effort_override: str | None = None
+    autocompact: AutocompactValue | None = None
     chat_id: int = 0
     topic_id: int | None = None
     transport: str = "tg"

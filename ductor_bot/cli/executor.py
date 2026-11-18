@@ -15,6 +15,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeVar
 
+from ductor_bot.cli.autocompact import autocompact_env
 from ductor_bot.cli.base import (
     _IS_WINDOWS,
     CLIConfig,
@@ -104,6 +105,12 @@ def build_subprocess_env(
     if extra_env:
         env.update(extra_env)
 
+    env.update(autocompact_env(config.provider, config.autocompact))
+    if config.provider == "claude" and isinstance(config.autocompact, int):
+        # Remove inherited/.env disables; flag-settings env neutralises slot disables.
+        env.pop("DISABLE_AUTO_COMPACT", None)
+        env.pop("DISABLE_COMPACT", None)
+
     # Framework routing and identity always win over inherited, .env, and
     # provider-specific extra variables.
     env.pop("DUCTOR_SECRETS_TOKEN", None)
@@ -114,6 +121,7 @@ def build_subprocess_env(
     env.update(secret_environment(ductor_home))
     env["DUCTOR_HOME"] = str(ductor_home)
     env["DUCTOR_TRANSPORT"] = config.transport
+    env["DUCTOR_AUTOCOMPACT"] = str(config.autocompact)
     env["DUCTOR_SHARED_MEMORY_PATH"] = str(main_home / "SHAREDMEMORY.md")
 
     optional = {

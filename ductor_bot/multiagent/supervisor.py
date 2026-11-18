@@ -884,6 +884,7 @@ class AgentSupervisor:
                     memory_lint=config.memory_lint.model_dump(mode="json"),
                     interagent=config.interagent.model_dump(mode="json"),
                     claude_system_prompt_snapshot=config.claude_system_prompt_snapshot,
+                    autocompact=config.autocompact,
                 )
 
             self._stacks[name] = stack

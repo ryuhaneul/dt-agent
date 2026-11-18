@@ -737,3 +737,20 @@ def test_api_turn_async_delegation_keeps_api_transport(
     assert (captured["chat_id"], captured["topic_id"], captured["transport"]) == (
         87654, 9, "api",
     )
+
+
+@pytest.mark.parametrize("recipient_value", [None, "default", "off", 400000])
+async def test_autocompact_uses_recipient_session_not_sender_topic(orch_ia, recipient_value):
+    from ductor_bot.session import SessionData, SessionKey
+
+    orch_ia._config.autocompact = 200000
+    recipient = SessionData(chat_id=12345, autocompact=recipient_value)
+    await orch_ia._sessions.update_session(recipient)
+    sender_topic = SessionData(chat_id=-900, topic_id=99, autocompact=1000000)
+    await orch_ia._sessions.update_session(sender_topic)
+    await orch_ia.handle_interagent_message("main", "hello", source_chat_id=-900, source_topic_id=99)
+    request = orch_ia._cli_service.execute.await_args.args[0]
+    assert request.autocompact == (200000 if recipient_value is None else recipient_value)
+    assert request.chat_id == 12345
+    assert request.topic_id is None
+    assert (await orch_ia._sessions.get_active(SessionKey(chat_id=-900, topic_id=99))).autocompact == 1000000

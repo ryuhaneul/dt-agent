@@ -35,8 +35,17 @@ def redact_cmd_for_log(cmd: list[str]) -> list[str]:
     """Return a copy of *cmd* with environment values safe for logs."""
     redacted: list[str] = []
     expects_env = False
+    expects_settings = False
     for arg in cmd:
-        if expects_env:
+        if expects_settings:
+            redacted.append("***")
+            expects_settings = False
+        elif arg == "--settings":
+            redacted.append(arg)
+            expects_settings = True
+        elif arg.startswith("--settings="):
+            redacted.append("--settings=***")
+        elif expects_env:
             redacted.append(_redact_assignment(arg, force=True))
             expects_env = False
         elif arg in {"-e", "--env"}:

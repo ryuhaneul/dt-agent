@@ -326,3 +326,14 @@ async def test_compact_excludes_appended_system_prompt(tmp_path: Path) -> None:
     assert cli.execute.await_count == 1
     request = cli.execute.await_args[0][0]
     assert request.append_system_prompt is None
+
+
+async def test_flush_and_compact_carry_topic_autocompact(tmp_path):
+    flusher, cli = _make_flusher(tmp_path)
+    session = _session_with_id("session-1")
+    session.autocompact = 300000
+    key = SessionKey(chat_id=101)
+    await flusher.flush(key, session)
+    assert cli.execute.await_args.args[0].autocompact == 300000
+    await flusher.compact(key, session)
+    assert cli.execute.await_args.args[0].autocompact == 300000

@@ -14,6 +14,7 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, TypedDict
 
+from ductor_bot.cli.autocompact import resolve_autocompact
 from ductor_bot.cli.claude_features import snapshot_refresh_active
 from ductor_bot.cli.types import AgentRequest
 from ductor_bot.infra.input_context import (
@@ -28,6 +29,7 @@ from ductor_bot.multiagent.delegation import (
 )
 from ductor_bot.orchestrator.flows import (
     _is_invalid_session,
+    _topic_autocompact,
     _update_session,
     build_append_prompt,
 )
@@ -153,6 +155,9 @@ async def _inject_prompt(  # noqa: PLR0913
         provider_override=active.provider if active else None,
         model_override=active.model if active else None,
         effort_override=(active.reasoning_effort or None) if active else None,
+        autocompact=resolve_autocompact(
+            active.autocompact if active else None, orch._config.autocompact
+        ),
         session_kind="background" if isolated else "foreground",
         resume_session=resume_id,
         timeout_seconds=orch._config.cli_timeout,
@@ -608,10 +613,14 @@ async def _interagent_session_turn(  # noqa: PLR0913
     files_block = await build_appended_files_block(
         orch.paths, orch._config.append_system_prompt_files
     )
+    autocompact = await _topic_autocompact(
+        orch, SessionKey(transport=transport, chat_id=chat_id)
+    )
     request = AgentRequest(
         prompt=prompt,
         received_context=current_input_context(orch._config.user_timezone),
         append_system_prompt=files_block,
+        autocompact=autocompact,
         chat_id=chat_id,
         transport=transport,
         origin_chat_id=source_chat_id,
@@ -671,6 +680,7 @@ async def _interagent_session_turn(  # noqa: PLR0913
         )
         retry_request = AgentRequest(
             prompt=prompt,
+            autocompact=autocompact,
             received_context=current_input_context(orch._config.user_timezone),
             append_system_prompt=files_block,
             chat_id=chat_id,
