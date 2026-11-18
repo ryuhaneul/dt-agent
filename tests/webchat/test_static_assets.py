@@ -1744,6 +1744,12 @@ assert.equal(md('# Title\n## Sub\n- **bold**\n- `code`\n[x](https://example.com)
  '<h1>Title</h1><h2>Sub</h2><ul><li><b>bold</b></li><li><code>code</code></li></ul><p><a href="https://example.com" target="_blank" rel="noopener noreferrer">x</a></p>');
 const anchor=(url,label=url)=>`<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`;
 const linkCases=[
+ ['query with non-http syntax','https://example.test/search?q=[guide](draft)',anchor('https://example.test/search?q=[guide](draft)')],
+ ['path with non-http syntax','https://example.test/design[preview](draft)',anchor('https://example.test/design[preview](draft)')],
+ ['IPv6 with non-http syntax','http://[::1]:8080/design[preview](draft)',anchor('http://[::1]:8080/design[preview](draft)')],
+ ['earlier URL owns http syntax','https://example.test/a[link](https://example.test/b)',anchor('https://example.test/a[link](https://example.test/b)')],
+ ['non-http Markdown stays text','[guide](draft)','[guide](draft)'],
+
  ['adjacent Markdown','https://example.test/a][link](https://example.test/b)',anchor('https://example.test/a')+']'+anchor('https://example.test/b','link')],
  ['adjacent bare','https://example.test/a]https://example.test/b',anchor('https://example.test/a')+']'+anchor('https://example.test/b')],
  ['URL label','[https://example.test/a](https://example.test/b)',anchor('https://example.test/b','https://example.test/a')],
@@ -1849,6 +1855,174 @@ console.log(JSON.stringify(payloads.map(md)));
                 assert attrs["href"].startswith("https://")
                 assert attrs["target"] == "_blank"
                 assert attrs["rel"] == "noopener noreferrer"
+
+
+GENERATED_LINK_REGRESSIONS = [
+    {
+        "text": "case 2: "
+        "`code`[HTTPS://[::ffff:192.0.2.128]/a_(b)489?q=[guide](draft)](HTTPS://[2001:db8::1]/design[preview](draft)616?a=1&b=2)). "
+        "https://example.test/design[preview](draft)168?q=(draft))[guide](HTTPS://[2001:db8::1]/a_(b)95?q=(draft))], "
+        "`code`[guide](HTTPS://[::ffff:192.0.2.128]/a[b(c)]670?q=[guide](draft)/한글)). [label "
+        '<tag> " &](https://[::1]:8080/a_(b)202?q=(draft)/한글); `HTTPS://[::1]:8080/a[b(c)]270 '
+        '[guide](https://example.test/a_(b)189?q=[guide](draft)) <svg onload="x">`; '
+        "https://[::ffff:192.0.2.128]/a[b(c)]281?filter[status]=ready], ",
+        "visible": "case 2: codeHTTPS://[::ffff:192.0.2.128]/a_(b)489?q=[guide](draft)). "
+        "https://example.test/design[preview](draft)168?q=(draft))guide], codeguide). label "
+        '<tag> " &; HTTPS://[::1]:8080/a[b(c)]270 '
+        '[guide](https://example.test/a_(b)189?q=[guide](draft)) <svg onload="x">; '
+        "https://[::ffff:192.0.2.128]/a[b(c)]281?filter[status]=ready], ",
+        "links": [
+            [
+                "HTTPS://[2001:db8::1]/design[preview](draft)616?a=1&b=2",
+                "HTTPS://[::ffff:192.0.2.128]/a_(b)489?q=[guide](draft)",
+            ],
+            [
+                "https://example.test/design[preview](draft)168?q=(draft)",
+                "https://example.test/design[preview](draft)168?q=(draft)",
+            ],
+            ["HTTPS://[2001:db8::1]/a_(b)95?q=(draft)", "guide"],
+            ["HTTPS://[::ffff:192.0.2.128]/a[b(c)]670?q=[guide](draft)/한글", "guide"],
+            ["https://[::1]:8080/a_(b)202?q=(draft)/한글", 'label <tag> " &'],
+            [
+                "https://[::ffff:192.0.2.128]/a[b(c)]281?filter[status]=ready",
+                "https://[::ffff:192.0.2.128]/a[b(c)]281?filter[status]=ready",
+            ],
+        ],
+    }
+]
+
+
+def test_markdown_generated_link_invariants():  # noqa: C901 - generated grammar and HTML invariants
+    import random
+    from urllib.parse import urlsplit
+
+    rng = random.Random(0x62165D0)  # noqa: S311 - reproducible test data
+
+    def url():
+        scheme = rng.choice(["http", "https", "HTTPS"])
+        host = rng.choice(["example.test", "[::1]:8080", "[2001:db8::1]", "[::ffff:192.0.2.128]"])
+        path = rng.choice(
+            ["/design", "/a_(b)", "/design[preview](draft)", "/a[b(c)]", "/%ED%95%9C"]
+        )
+        query = rng.choice(
+            ["", "?q=[guide](draft)", "?filter[status]=ready", "?a=1&b=2", "?q=(draft)"]
+        )
+        return f"{scheme}://{host}{path}{rng.randrange(1000)}{query}"
+
+    def markdown():
+        destination = url() + rng.choice(["", "/한글"])
+        label = rng.choice(["guide", "한글", 'label <tag> " &', url()])
+        return f"[{label}]({destination})", label, [[destination, label]]
+
+    def fragment():
+        first, second = url(), url()
+        choice = rng.randrange(10)
+        if choice == 0:
+            return first, first, [[first, first]]
+        if choice == 1:
+            return markdown()
+        if choice == 2:
+            text = f"[guide]({rng.choice(['draft', 'javascript:alert(1)', 'data:text/html,test', 'vbscript:test'])})"
+            return text, text, []
+        if choice == 3:
+            ticks = rng.choice(["`", "``"])
+            body = f'{first} [guide]({second}) <svg onload="x">'
+            return ticks + body + ticks, body, []
+        if choice == 4:
+            # The earlier bare URL owns the balanced Markdown-looking suffix.
+            combined = first + f"[guide]({second})"
+            return combined, combined, [[combined, combined]]
+        if choice == 5:
+            closer = rng.choice([")[", "]["])
+            text = first + closer + f"guide]({second})"
+            return text, first + closer[0] + "guide", [[first, first], [second, "guide"]]
+        if choice == 6:
+            left, left_text, left_links = markdown()
+            right, right_text, right_links = markdown()
+            return left + right, left_text + right_text, left_links + right_links
+        if choice == 7:
+            text = rng.choice(
+                ['<img src=x onerror="alert(1)">', '<script>"x"</script>', "plain < > \" ' &"]
+            )
+            return text, text, []
+        if choice == 8:
+            return first + "`code`", first + "code", [[first, first]]
+        source, label, links = markdown()
+        return "`code`" + source, "code" + label, links
+
+    cases = list(GENERATED_LINK_REGRESSIONS)
+    for index in range(5000):
+        if index % 10 == 0:
+            body = f'{url()} [guide]({url()}) <img src=x onerror="alert(1)">'
+            cases.append({"text": f"```txt\n{body}\n```", "visible": body + "\n", "links": []})
+            continue
+        source = visible = f"case {index}: "
+        links = []
+        for _ in range(rng.randrange(2, 8)):
+            part, shown, anchors = fragment()
+            separator = rng.choice([" ", " 에서 ", "], ", "). ", "; ", "。 ", "\t"])
+            source += part + separator
+            visible += shown + separator
+            links.extend(anchors)
+        cases.append({"text": source, "visible": visible, "links": links})
+
+    script = """
+import fs from 'node:fs';
+const {source,cases}=JSON.parse(fs.readFileSync(0,'utf8'));
+const {md}=await import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
+console.log(JSON.stringify(cases.map(row=>md(row.text))));
+"""
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        input=json.dumps({"source": (STATIC / "js/md.js").read_text(), "cases": cases}),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    class Parsed(HTMLParser):
+        def __init__(self, rendered):
+            super().__init__()
+            self.links = []
+            self.visible = ""
+            self.in_link = False
+            self.feed(rendered)
+
+        def handle_starttag(self, tag, attrs):
+            attrs = dict(attrs)
+            assert tag in {"p", "a", "code", "pre"}, (tag, attrs)
+            if tag == "a":
+                assert not self.in_link
+                assert set(attrs) == {"href", "target", "rel"}, attrs
+                assert attrs["target"] == "_blank"
+                assert attrs["rel"] == "noopener noreferrer"
+                assert urlsplit(attrs["href"]).scheme in {"http", "https"}
+                self.links.append([attrs["href"], ""])
+                self.in_link = True
+            else:
+                assert attrs == ({"tabindex": "0"} if tag == "pre" else {})
+
+        def handle_endtag(self, tag):
+            if tag == "a":
+                self.in_link = False
+
+        def handle_data(self, data):
+            self.visible += data
+            if self.in_link:
+                self.links[-1][1] += data
+
+    rendered_cases = json.loads(result.stdout)
+    assert len(rendered_cases) == len(cases) == 5000 + len(GENERATED_LINK_REGRESSIONS)
+    for index, (case, rendered) in enumerate(zip(cases, rendered_cases, strict=True)):
+        parsed = Parsed(rendered)
+        assert parsed.links == case["links"], (index, case["text"], parsed.links, case["links"])
+        assert parsed.visible == case["visible"], (
+            index,
+            case["text"],
+            parsed.visible,
+            case["visible"],
+        )
 
 
 def test_secret_dialog_password_and_accessible_shell(markup):
