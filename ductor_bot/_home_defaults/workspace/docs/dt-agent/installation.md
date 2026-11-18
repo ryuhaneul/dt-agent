@@ -70,6 +70,28 @@ Every onboarding option is listed in [Onboarding options](#onboarding-options) b
 
 Onboarding language precedence is `--language` → `ONBOARD_LANGUAGE` → saved language on reruns → the first nonempty server locale (`LC_ALL`, `LC_MESSAGES`, `LANG`) → `en`. It extracts the language part, for example `ko_KR.UTF-8` → `ko`; an unsupported server locale falls back to `en`. Supported bundled codes are `de`, `en`, `es`, `fr`, `id`, `ko`, `nl`, `pt`, `ru`. Unsupported explicit options/environment/question answers fail before writes. Question 5 displays the saved or detected default; Enter retains it; the decided language also sets the onboarding questions, errors, completion notice and the `onboard.sh` preflight messages (commands, options, codes and paths stay untranslated); `login.sh`, `logout.sh`, `status.sh`, `update.sh` and `rebuild.sh` use the same order without `--language` (`ONBOARD_LANGUAGE`, the language saved in the host home's config, the server locale, `en`) as well as command-line errors and the `--help` text, and answering question 5 changes the texts that follow. `config.language` controls bot UI messages. Existing config is retained without `--force`, and the language line of the completion notice reports the saved value. Option names are read in full: an abbreviation such as `--lang=ko` is an unknown-argument error in the decided language (exit 2, nothing written).
 
+## Claude API key slot
+
+1. In a private chat with the bot, use `/secret set ANTHROPIC_CREDIT_API_KEY` to store the API key.
+2. From the host repository, run:
+
+   ```bash
+   ./scripts/login.sh claude-api ANTHROPIC_CREDIT_API_KEY
+   ./scripts/logout.sh claude --list
+   ./scripts/status.sh
+   ```
+
+   The key-name argument defaults to `ANTHROPIC_CREDIT_API_KEY`. Names must match `^[A-Z_][A-Z0-9_]*$`. An existing OAuth credential file in `claude-api` must first be retired with `./scripts/logout.sh claude --remove claude-api`.
+3. The script creates `.cli-auth/claude-api/api-key-helper.sh` (0700) and a regular `settings.json` (0644), sharing sessions and other settings with the default slot. It appends `claude-api` without changing existing priority; an empty list becomes `["claude", "claude-api"]`. Re-running it replaces the selected key name and refreshes settings.
+
+The helper reads only the selected stored key when Claude runs. The plaintext registration check reads key names only; a missing key exits with a `/secret set` instruction and leaves priority unchanged. For an encrypted store, registration prints a warning and skips key-name verification because the host login subprocess lacks the bot's process-owned RPC credentials. Calls through that slot fail if the key is missing or the store is locked; unlock it through the bot before use.
+
+`/accounts`, `/usage` and host slot lists show **API key**; `status.sh` includes its stored key name. The web CLI login dialog shows the API key badge and directs API slot management to the host script. Credit exhaustion records a one-hour cooldown and rotates to the next available slot. If all slots are cooling down, the next request still tries the first non-expired slot once.
+
+Run `./scripts/login.sh claude --repair` to refresh shared settings while retaining the API helper and keeping the default slot file unchanged. Both `./scripts/logout.sh claude --disable claude-api` and `--remove claude-api` remove the slot from priority and rename its settings to `settings.json.removed-<timestamp>`. The folder, helper and stored key remain available; the command prints `./scripts/login.sh claude-api ANTHROPIC_CREDIT_API_KEY` for recovery when its standard helper header is present.
+
+**Billing:** keep `ANTHROPIC_API_KEY` out of the bot's `.env` when using subscription slots alongside this slot. An inherited value makes all slots use API billing. Credits apply only to the Console organization connected to the API key.
+
 ## Onboarding options
 
 `scripts/onboard.sh` (a wrapper that checks Python, Docker and Compose before calling `scripts/onboard.py`) accepts the options below. Run `./scripts/onboard.sh --help` for the parser-only help. Precedence is explicit argument → environment variable → default or interactive question.

@@ -151,12 +151,24 @@ Recovery triggers handled in orchestrator flows:
 - the main Telegram bot exposes `/accounts` for authenticated-slot status, ordering and cooldown clearing. `logout.sh claude --prefer SLOT`, `--priority A,B,...` and `--clear-cooldown SLOT|all` delegate to the same module through the running container; short names resolve to `claude-NAME` (`default` resolves to `claude`). Invalid slots or incomplete/duplicate priority lists leave files unchanged
 - Claude login expiry/revocation also switches immediately to the next hot slot in streaming, non-streaming and one-shot calls. Diagnostics are based on Claude Code 2.1.326 auth error text (the installed CLI's embedded JavaScript); transient network/refresh failures and external API-key errors do not expire slots. Failed logins are stored separately from cooldowns in `_claude-slots.json`, with only the nanosecond mtimes of `credentials.json` and `.credentials.json` captured before each attempt, never credentials or error bodies. A change to either file makes the slot eligible again; clearing a cooldown does not clear login expiry. `/accounts` shows expired logins separately from missing credentials.
 - If every slot is marked expired, the top-priority slot is still attempted once. Success clears that slot's expired status even when mtimes are unchanged; failure preserves the actual error and adds a re-login instruction. If only cooldowns remain, the first non-expired slot is probed once, retaining the existing all-cooling policy.
-- `/accounts` also shows a saved Claude usage line per slot, with capture and reset times
+- `/accounts` also shows a saved Claude usage line per OAuth slot, with capture and reset times
 - `login.sh` without a provider logs into the Claude default slot, like `login.sh claude`. Provider-specific login retains its authentication-based exit status.
 - `logout.sh claude --list` reads authentication, configured priority and remaining cooldowns on the host without requiring a container. Priority changes reach main within seconds and sub-agents at their next start; cooldown clearing applies to all on the next call
 - config and cooldown read-modify-write transactions lock companion files and reload the latest data before changing it. Login registration defaults to Y (empty input or non-TTY registers; n/no declines), merging newly authenticated slots into the latest list
 - the system and append-system prompts are always written to private (0600) temporary files and passed as `--system-prompt-file` / `--append-system-prompt-file` (regardless of size); the user prompt is sent over stdin on every OS, with no `--` separator or prompt argument. None of these texts appear in the process list (`ps`), and the temp files are removed after each attempt, including slot-rotation retries and failures
 - one-shot cron/webhook-style runs (`cron/execution.py`) follow the same rule: the Claude and Codex task prompts go over stdin (Codex via `-`) and the Grok prompt through a 0600 `--prompt-file`, so none of them appears in argv
+
+### Claude API key slots
+
+Use `/secret set ANTHROPIC_CREDIT_API_KEY` in the bot's private chat, then `./scripts/login.sh claude-api` on the host. The optional key-name argument chooses another stored key. Registration appends `claude-api`, or initializes `["claude", "claude-api"]` for an empty priority list. See the [setup and recovery procedure](../installation.md#claude-api-key-slot).
+
+`slot_is_api_key` requires a regular, non-symlink `settings.json` with a nonempty top-level string `apiKeyHelper`. Its private helper uses `store_secrets` and sends the value only to Claude. `slot_is_authenticated` accepts this configuration, and auth scans use the settings file timestamp. The API slot keeps its own settings while sharing project sessions and other entries; both host and web sharing refresh default settings plus the existing helper.
+
+API slots stay eligible across OAuth expiry diagnostics: recording expiry is a no-op and stored expiry records are ignored, including streaming, all-cooling probes and one-shot tasks. `Credit balance is too low` on a failed subprocess follows rate-limit rotation with a one-hour estimated cooldown. If all slots are cooling down, the next request still attempts the first non-expired slot once.
+
+`/accounts` labels API slots **API key** with priority and cooldown; `/usage` shows the same label in place of subscription windows. Host lists and web CLI login use localized labels. Web OAuth creation and re-login requests for API slots return `api_key_slot`; manage them through `login.sh claude-api`. Host `--repair` preserves the helper, and logout `--disable`/`--remove` retains renamed settings plus the folder, helper and stored key for recovery.
+
+Plaintext registration verifies names with `secret_keys`, reading no values. Encrypted registration detects the existing encrypted file and warns before skipping name verification; calls fail if the key is missing or the store is locked. An inherited `ANTHROPIC_API_KEY` in the bot's `.env` makes every slot use API billing. Credits apply only to the Console organization connected to that API key.
 
 ### Account usage
 
@@ -215,7 +227,7 @@ Foreground user conversations recheck the **resolved session provider** authenti
 Statuses: `AUTHENTICATED`, `INSTALLED`, `NOT_FOUND`.
 
 - Claude: `~/.claude/.credentials.json`
-- Claude first scans other `claude`/`claude-*` slots under `$DUCTOR_HOME/.cli-auth/` for `.credentials.json` or `credentials.json`; fallback paths then use `ANTHROPIC_API_KEY`, then `claude auth status`
+- Claude first scans other `claude`/`claude-*` slots under `$DUCTOR_HOME/.cli-auth/` for `.credentials.json`, `credentials.json`, or a slot-local `apiKeyHelper` in regular `settings.json`; fallback paths then use `ANTHROPIC_API_KEY`, then `claude auth status`
 - Codex: `$CODEX_HOME/auth.json`
 - Codex fallback paths: `OPENAI_API_KEY`; install markers: `version.json` or `config.toml`
 - Gemini:

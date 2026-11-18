@@ -108,6 +108,8 @@ a pasted authorization code when needed. If prompt detection fails, expand the r
 output and use the one-line input. Display-language changes preserve the job and typed input.
 Gemini web CLI login is unsupported because personal-account Gemini CLI OAuth ended on 2026-06-18.
 
+API key slots show an **API key** badge. Manage them on the server: store the key with `/secret set ANTHROPIC_CREDIT_API_KEY` in the bot's private chat, then run `./scripts/login.sh claude-api`. Web OAuth requests for the reserved names `api`/`claude-api` or an existing API key slot return `api_key_slot` before a login job or filesystem change. The slot list identifies each entry with `kind: "oauth"` or `kind: "api_key"`; shared-setting repair preserves the API slot's regular settings file and helper. `/accounts` and `/usage` also identify API key slots. See [setup and billing](../installation.md#claude-api-key-slot): credits apply to the key's Console organization, and an inherited `ANTHROPIC_API_KEY` in the bot's `.env` makes all slots use API billing. Encrypted registration warns and skips key-name verification; calls fail while the store is locked or the key is missing.
+
 Only one login job can run at a time across all providers and browser sessions.
 Only the browser session that started a job can read its output, send input or cancel
 it; other sessions see that a login is in progress. No additional password or TOTP

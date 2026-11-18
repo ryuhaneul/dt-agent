@@ -197,13 +197,20 @@ docker compose up -d --build
 | --- | --- |
 | `onboard.sh` / `onboard.py` | 선행 조건 래퍼 / 비공개 config 작성기. 옵션은 3절. 예: `./scripts/onboard.sh --help`. |
 | `login.sh [provider]` | 인자 없음: Claude 기본 슬롯(`claude`와 같음). provider는 claude/codex/gemini/grok, -h/--help/help 지원. 예: `./scripts/login.sh codex`. |
+| `login.sh claude-api [KEY_NAME]` | API 키 슬롯을 설정합니다. 기본 키 이름은 `ANTHROPIC_CREDIT_API_KEY`이며, 기존 순서를 유지하며 자동 등록합니다. |
 | `login.sh claude [slot]` | 빈 값·default·claude는 claude, alt는 claude-alt, 완전한 claude-*도 허용합니다. --list/-l/list는 슬롯 조회(공유 디렉터리 생성), --repair/repair는 비자격 항목을 백업 후 공유 링크로 옮기며 claude -h/--help도 지원합니다. 예: `./scripts/login.sh claude alt`. |
-| `logout.sh [provider]` | 인자 없음은 전체 로그아웃. claude/codex/gemini/grok, -h/--help 지원. Claude --list(인증·우선순위·남은 쿨다운, 컨테이너 없이 조회), --prefer SLOT, --priority A,B,..., --clear-cooldown SLOT 또는 all(변경은 실행 중인 컨테이너 필요), --disable SLOT(config만), --remove SLOT 또는 SLOT(config와 자격 백업 이름 변경). 예: `./scripts/logout.sh claude --disable alt`. Codex는 저장 인증 파일을 제거하고 Gemini는 `oauth_creds.json`을 제거하고 키 삭제·재시작 안내를 출력합니다. |
+| `logout.sh [provider]` | 인자 없음은 전체 로그아웃. claude/codex/gemini/grok, -h/--help 지원. Claude --list(인증·우선순위·남은 쿨다운, 컨테이너 없이 조회), --prefer SLOT, --priority A,B,..., --clear-cooldown SLOT 또는 all(변경은 실행 중인 컨테이너 필요), --disable SLOT(OAuth는 config만, API 키는 슬롯 설정도 보존), --remove SLOT 또는 SLOT(config와 자격·슬롯 설정 파일 이름 변경). 예: `./scripts/logout.sh claude --disable alt`. Codex는 저장 인증 파일을 제거하고 Gemini는 `oauth_creds.json`을 제거하고 키 삭제·재시작 안내를 출력합니다. |
 | `status.sh` | 파싱하는 옵션 없음. 컨테이너·CLI 인증 탐침. 예: `./scripts/status.sh`. Gemini는 API 키 환경 또는 OAuth 자격증명 파일을 확인합니다. |
 | `rebuild.sh` | 파싱하는 옵션 없음. CACHEBUST와 --pull로 빌드 후 up -d·ps. 소스 pull 없음. 예: `./scripts/rebuild.sh`. 컨테이너 교체와 가변 CLI 버전 갱신을 수행합니다. |
 | `update.sh` | 파싱하는 옵션 없음. 추적 파일 변경 검사·origin fetch·추적 브랜치 ff-only pull·확인 질문·재빌드·교체. 예: `./scripts/update.sh`. 교체를 거부하면 새 소스와 기존 실행 이미지가 공존할 수 있으며 자동 롤백은 없습니다. 턴이나 작업이 실행 중이면 교체 직전에 다시 묻고, 거부하면 새 이미지는 빌드된 채 기존 컨테이너가 계속 실행됩니다. |
 
 필요한 provider만 개별 인증하십시오. Gemini는 대화형 CLI를 시작하며 컨테이너에 `GEMINI_API_KEY` 또는 `GOOGLE_API_KEY`가 있으면 OAuth 파일 확인을 건너뜁니다. 원격 서버에서 Google OAuth를 쓰면 해당 CLI 안내에 따른 SSH loopback 포워딩이 필요할 수 있습니다. Grok은 device 인증, Codex 스크립트는 `codex login --device-auth`를 사용합니다. Claude 대체 슬롯은 기본 슬롯과 프로젝트 세션·비자격 설정을 공유하지만 자격 파일은 별도입니다. 로그인 성공 후 인증된 Claude 슬롯이 둘 이상이면 스크립트가 `["claude", "claude-alt"]`처럼 순서 있는 `claude_accounts` 목록을 제안합니다. 등록 질문은 기본 Y입니다. 빈 입력·y/yes·비TTY 실행은 새로 인증된 슬롯을 저장 시점의 최신 config.json 목록에 병합하고, n/no는 등록하지 않습니다. 다른 설정과 기존 파일 권한은 보존합니다. 갱신 실패 시 0이 아닌 종료 코드로 끝나며 Updated 안내를 출력하지 않습니다. 우선순위는 main에 몇 초 안에, 하위 에이전트는 다음 기동 때 반영됩니다. 쿨다운 해제는 모두 다음 호출부터 반영됩니다. `--disable`·`--remove`는 원자적으로 목록을 수정하고 이후 호출은 목록을 다시 읽으며 이미 진행 중인 호출은 기존 슬롯 목록을 유지합니다.
+
+### Claude API 키 슬롯
+
+봇 개인 채팅에서 `/secret set ANTHROPIC_CREDIT_API_KEY`로 키를 저장한 뒤, 호스트 저장소에서 `./scripts/login.sh claude-api`를 실행하십시오. 선택 인자로 다른 저장된 키 이름을 지정할 수 있습니다. 스크립트는 전용 헬퍼와 일반 `settings.json`을 가진 `claude-api` 슬롯을 만들고, 세션과 나머지 설정을 공유하며, 기존 순서를 유지한 채 `claude_accounts` 끝에 등록합니다. 빈 목록은 `["claude", "claude-api"]`가 됩니다. `--repair`는 헬퍼를 유지하며 공유 설정을 갱신합니다. `logout.sh claude --disable claude-api`와 `--remove claude-api`는 설정 파일 이름을 바꿔 보존하고 복구 명령을 안내합니다.
+
+`/accounts`·`/usage`·호스트 슬롯 목록·웹 CLI 로그인은 이 슬롯을 **API 키**로 표시합니다. 키 관리는 서버의 `login.sh claude-api`로 합니다. 크레딧 소진 시 1시간 쿨다운을 기록하며, 모든 슬롯이 쿨다운이어도 다음 요청에서 로그인이 만료되지 않은 첫 슬롯을 한 번 시도합니다. 구독 슬롯과 함께 쓸 때 봇 `.env`의 `ANTHROPIC_API_KEY`는 제거하십시오. 이 값이 상속되면 모든 슬롯이 API 키로 과금됩니다. 크레딧은 해당 API 키에 연결된 Console 조직에만 적용됩니다. 암호화 저장소에서는 등록 시 경고 후 키 이름 확인을 건너뛰며, 저장소가 잠겨 있거나 키가 없으면 호출이 실패합니다. 자세한 절차는 [설치 문서](docs/installation.md#claude-api-key-slot)를 보십시오.
 
 표준 이미지는 `/etc/claude-code/managed-settings.d/10-dt-agent-retention.json`에 `cleanupPeriodDays: 36500`을 설정해 슬롯과 무관하게 컨테이너 안 모든 Claude 실행(봇 호출·스트리밍·원샷·하위 에이전트·로그인·직접 실행)에 적용합니다. 조직의 서버 정책처럼 우선순위가 높은 managed 출처는 이 로컬 정책을 대체할 수 있고, 관리자는 같은 디렉터리에 이름이 더 뒤인 drop-in을 두어 값을 의도적으로 바꿀 수 있습니다([Claude Code의 managed 출처 결합 규칙](https://code.claude.com/docs/en/managed-settings#how-claude-code-combines-managed-sources)).
 대화 기록은 `DUCTOR_HOME` 아래 계속 쌓여 디스크를 사용하며 `CleanupObserver`는 이를 지우지 않습니다.
@@ -258,8 +265,8 @@ docker compose exec ductor-bot ductor agents list
 | `/interrupt` | 활성 CLI 작업에 SIGINT로 부드러운 중단. |
 | `/stop_all` | supervisor가 있으면 에이전트 전체 작업 중단. |
 | `/model [name]` | 모델·provider 선택. 인자 없으면 선택 UI. |
-| `/accounts` | main Telegram 봇 전용: Claude 슬롯의 인증·우선순위·쿨다운·저장된 사용량 조회, 순서 변경·쿨다운 해제. |
-| `/usage` | Telegram main·하위 봇 모두: 읽기 전용 사용량. Claude는 평소 실행에서 받은 마지막 값, Codex는 명령·새로고침 때 조회. |
+| `/accounts` | main Telegram 봇 전용: Claude 슬롯의 인증·우선순위·쿨다운·저장된 사용량 조회, 순서 변경·쿨다운 해제. API 슬롯은 **API 키**로 표시합니다. |
+| `/usage` | Telegram main·하위 봇 모두: 읽기 전용 사용량. Claude는 평소 실행에서 받은 마지막 값, Codex는 명령·새로고침 때 조회. API 슬롯은 구독 사용량 대신 **API 키**로 표시합니다. |
 | `/effort` | provider 추론 수준 선택. |
 | `/status` | 현재 세션·모델·실행 상태. |
 | `/secret` | main Telegram 봇 전용, 허용 사용자의 1:1 채팅: 도구 시크릿 입력·키 목록·삭제·취소. 값은 입력 요청에 답장으로 보냅니다. |
