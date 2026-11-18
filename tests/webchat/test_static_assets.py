@@ -852,7 +852,7 @@ const context=vm.createContext({document,window:document,CustomEvent,WebSocket,f
   matchMedia:()=>({matches:!coarse}),crypto:{randomUUID:()=>`client-${calls.length}`}});
 const modules=new Map();
 for(const [name,exports] of Object.entries({
- 'router.js':{go:route=>{context.location.hash=`#${route}`;routes.push(route);document.dispatchEvent(new CustomEvent('route-change',{detail:{route,view:route==='manage'?'manage':'chat'}}))}},
+ 'router.js':{renderRoute:()=>document.querySelector('[data-view="chat"] h2').focus(),go:route=>{context.location.hash=`#${route}`;routes.push(route);document.dispatchEvent(new CustomEvent('route-change',{detail:{route,view:route==='manage'?'manage':'chat'}}))}},
  'auth.js':{notify:key=>notices.push(key)}
 })){
   const module=new vm.SyntheticModule(Object.keys(exports),function(){for(const [key,value]of Object.entries(exports))this.setExport(key,value)},{context});
@@ -882,6 +882,22 @@ assert.ok(list.innerHTML.includes('Alpha &lt;img&gt;'));assert.ok(!list.innerHTM
 assert.ok(list.innerHTML.includes(strings['topic.group_imported']));assert.ok(list.innerHTML.includes(strings['topic.group_unknown']));
 assert.equal(topics.getTopic().tid,'1.2');assert.ok(thread.innerHTML.includes('Entry 205'));assert.ok(!thread.innerHTML.includes('Entry 1</p>'));
 assert.equal(topicRows[0].seen,203);assert.equal(storage.has('dtw-seen:1.2'),false);assert.ok(list.innerHTML.includes('2 unread'));
+const composer=document.querySelector('#msgIn'), chatHeading=document.querySelector('[data-view="chat"] h2');
+const topicButton=new Element();topicButton.dataset.tid='1.2';
+list.emit('click',{target:topicButton,isTrusted:true});
+assert.equal(document.activeElement,composer,'list selection focuses synchronously');
+await flush();assert.equal(document.activeElement,composer,'history completion preserves composer focus');
+composer.focus();topics.selectTopic('1.2');await flush();
+assert.equal(document.activeElement,chatHeading,'programmatic selection retains heading announcement');
+composer.focus();topics.selectTopic('1.2',null,false);await flush();
+assert.equal(document.activeElement,chatHeading,'restoration retains heading announcement');
+topicButton.dataset.seq='2';composer.focus();list.emit('click',{target:topicButton,isTrusted:true});await flush();
+assert.equal(document.activeElement,chatHeading,'search results retain heading announcement');
+delete topicButton.dataset.seq;topicButton.dataset.tid='unknown';composer.focus();
+list.emit('click',{target:topicButton,isTrusted:true});await flush();
+assert.equal(document.activeElement,chatHeading,'read-only selection excludes composer focus');
+topicButton.dataset.tid='1.2';composer.focus();list.emit('click',{target:topicButton,isTrusted:false});await flush();
+assert.equal(document.activeElement,chatHeading,'synthetic clicks exclude composer focus');
 topics.selectTopic('1.2');await flush();assert.equal(topicRows[0].seen,205);
 assert.equal(document.querySelector('#outboxCount').textContent,3);
 assert.ok(document.querySelector('#outboxRows').innerHTML.includes('Result &lt;img&gt;'));
@@ -2115,7 +2131,7 @@ if(scenario==='rename'||scenario==='rename-stale'){
  const topic={tid:'-123.4',name:'Original topic',group:'telegram',renamable:true,count:1,preview:'Unchanged conversation',last_ts:null};
  const requests=[];let failure=false,rows=[topic];
  const api=async(url,options={})=>{requests.push({url,...options});if(options.method==='PATCH'){if(failure)throw {code:'telegram_unavailable'};topic.name=options.body.name;return {topic:{...topic}}}assert.equal(url,'/topics');return {topics:rows.map(row=>({...row}))}};
- const topics=await load('topics.js',{'./api.js':{api},'./i18n.js':{t:key=>key},'./router.js':{go:()=>{throw Error('Rename must retain the chat route')}},'./auth.js':{notify:()=>{}},'./md.js':{esc:value=>String(value)}});
+ const topics=await load('topics.js',{'./api.js':{api},'./i18n.js':{t:key=>key},'./router.js':{renderRoute:()=>{},go:()=>{throw Error('Rename must retain the chat route')}},'./auth.js':{notify:()=>{}},'./md.js':{esc:value=>String(value)}});
  topics.initTopics();document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));await topics.refreshTopics();
  if(scenario==='rename-stale'){
   const other={...topic,tid:'-123.5',name:'Other topic'};
@@ -2164,7 +2180,7 @@ if(scenario==='unread'){
   const limit=Number(new URL(url,'https://test').searchParams.get('limit'));
   return {entries:entries.get(tid).slice(-limit),has_more:false};
  };
- const topics=await load('topics.js',{'./api.js':{api},'./i18n.js':{t:(key,args)=>key==='topic.unread'?`${args.n} unread`:key},'./router.js':{go:()=>{}},'./auth.js':{notify:()=>{throw Error('unexpected notice')}},'./md.js':{esc:value=>String(value)}});
+ const topics=await load('topics.js',{'./api.js':{api},'./i18n.js':{t:(key,args)=>key==='topic.unread'?`${args.n} unread`:key},'./router.js':{renderRoute:()=>{},go:()=>{}},'./auth.js':{notify:()=>{throw Error('unexpected notice')}},'./md.js':{esc:value=>String(value)}});
  storage.set('dtw-seen:0','999');storage.set('dtw-seen:8','-5');
  topics.initTopics();document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));await topics.refreshTopics();
  for(let i=0;i<4;i++)await new Promise(setImmediate);
@@ -2209,7 +2225,7 @@ if(scenario==='migration-failure'){
   }
   return {entries:[{seq:-5},{seq:-2}],has_more:false};
  };
- const topics=await load('topics.js',{'./api.js':{api},'./i18n.js':{t:key=>key},'./router.js':{go:()=>{}},'./auth.js':{notify:key=>notices.push(key)},'./md.js':{esc:value=>String(value)}});
+ const topics=await load('topics.js',{'./api.js':{api},'./i18n.js':{t:key=>key},'./router.js':{renderRoute:()=>{},go:()=>{}},'./auth.js':{notify:key=>notices.push(key)},'./md.js':{esc:value=>String(value)}});
  for(const row of rows)storage.set('dtw-seen:'+row.tid,'-5');
  topics.initTopics();document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));
  await topics.refreshTopics();assert.equal(topics.getTopic().tid,'0');assert.equal(topics.getTopic().name,'topic.general');
@@ -2235,7 +2251,7 @@ if(scenario==='rollback-forward'||scenario==='rollback-reverse'){
   if(options.method==='PUT')return await new Promise((resolve,reject)=>pending.push({resolve,reject}));
   return {entries:[{seq:-9},{seq:-5},{seq:-2}],has_more:false};
  };
- const topics=await load('topics.js',{'./api.js':{api},'./i18n.js':{t:(key,args)=>key==='topic.unread'?`${args.n} unread`:key},'./router.js':{go:()=>{}},'./auth.js':{notify:key=>notices.push(key)},'./md.js':{esc:value=>String(value)}});
+ const topics=await load('topics.js',{'./api.js':{api},'./i18n.js':{t:(key,args)=>key==='topic.unread'?`${args.n} unread`:key},'./router.js':{renderRoute:()=>{},go:()=>{}},'./auth.js':{notify:key=>notices.push(key)},'./md.js':{esc:value=>String(value)}});
  topics.initTopics();
  for(const confirmed of [-9,null]){
   saved=confirmed;pending.length=0;notices.length=0;
@@ -2256,7 +2272,7 @@ if(scenario==='topic-labels'){
  {tid:'unknown',topic_id:null,name:'토픽 미상',name_key:'topic.unknown_name',group:'unknown',count:0},
  {tid:'-456',topic_id:null,name:'일반',name_key:null,group:'telegram',count:0},
  {tid:'-123.7',topic_id:7,name:'User topic 그대로',name_key:null,group:'telegram',count:0}];
- const topics=await load('topics.js',{'./api.js':{api:async()=>({topics:rows.map(row=>({...row}))})},'./i18n.js':{t:key=>translations[lang][key]},'./router.js':{go:()=>{}},'./auth.js':{notify:()=>{}},'./md.js':{esc:value=>String(value)}});
+ const topics=await load('topics.js',{'./api.js':{api:async()=>({topics:rows.map(row=>({...row}))})},'./i18n.js':{t:key=>translations[lang][key]},'./router.js':{renderRoute:()=>{},go:()=>{}},'./auth.js':{notify:()=>{}},'./md.js':{esc:value=>String(value)}});
  topics.initTopics();document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));await topics.refreshTopics();
  const verify=()=>{const actual=new Map(topics.getTopics().map(topic=>[topic.tid,topic.name]));assert.equal(actual.get('-123'),translations[lang]['topic.general']);assert.equal(actual.get('unknown'),translations[lang]['topic.unknown_name']);assert.equal(actual.get('-456'),'일반');assert.equal(actual.get('-123.7'),'User topic 그대로')};
  for(const selected of Object.keys(translations)){lang=selected;document.dispatchEvent(new CustomEvent('language-changed',{detail:{lang}}));verify();await topics.refreshTopics();verify();}
