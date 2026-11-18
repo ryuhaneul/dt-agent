@@ -236,8 +236,8 @@ function scheduleStreamRender(turnId) {
       const element = [...thread.querySelectorAll('[data-turn]')].find(node => node.dataset.turn === id);
       if (element) {
         if (turn.renderedActivityRevision !== turn.activityRevision) {
-          element.querySelector('.bubble').innerHTML = streamContent(turn, true) + '<span class="caret" aria-hidden="true"></span>';
-          continue;
+          renderThread();
+          return;
         }
         turn.markdown.render(turn.text.slice(turn.markdownOffset || 0));
         const complete = element.querySelector('[data-stream-complete]');

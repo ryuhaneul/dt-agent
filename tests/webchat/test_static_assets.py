@@ -965,7 +965,7 @@ assert.ok(thread.innerHTML.indexOf('<strong>Hello</strong>')<thread.innerHTML.in
 for(let i=0;i<100;i++)await chat.namespace.handleEvent({type:'delta',tid:'1.2',turn_id:'turn1',text:' x'});
 assert.equal(frames.size,1,'a delta burst queues only one frame');
 chat.namespace.renderThread();assert.equal(frames.size,0,'a full render cancels pending stream work');
-assert.ok(thread.innerHTML.includes(' x'.repeat(100)),'the full render includes every buffered delta');
+assert.ok(thread.innerHTML.includes(markdown.md(' x'.repeat(100))),'the full render includes every buffered delta');
 // A held command must not block control submissions or release the ordinary send guard.
 let releaseCommand;slowCommandHold=new Promise(resolve=>{releaseCommand=resolve});
 input.value='/usage';input.emit('input');input.emit('keydown',{key:'Enter',shiftKey:false,isComposing:false});await flush();
