@@ -67,6 +67,7 @@ from ductor_bot.webchat.secret import WebSecrets
 from ductor_bot.webchat.settings import resolve_default_chat_id
 from ductor_bot.webchat.topics import TopicBusyError, TopicDeleteError, WebTopics
 from ductor_bot.webchat.turns import WebTurns
+from ductor_bot.webchat.uploads import register_upload_routes
 from ductor_bot.webchat.vault import register_vault_routes
 
 if TYPE_CHECKING:
@@ -237,6 +238,7 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
 ) -> None:
     turns = WebTurns(bot, runtime)
     topics = WebTopics(bot, runtime, turns)
+    register_upload_routes(app, bot._orch.paths.workspace / "webchat_files", topics.lookup)
     read_state = ReadState(bot._orch.paths.webchat_dir / "read_state.json")
     dispatcher = WebCommandDispatcher(
         bot,
