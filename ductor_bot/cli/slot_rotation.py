@@ -29,10 +29,14 @@ from zoneinfo import ZoneInfo
 
 from ductor_bot.cli.claude_accounts import (
     CONTAINER_DUCTOR_MOUNT,
+    SUBSCRIPTION_RETRY_INITIAL_SECONDS,
+    SUBSCRIPTION_RETRY_MAX_SECONDS,
+    AuthFailureDetails,
+    AuthFailureKind,
     SlotRegistry,
     SlotSnapshot,
     container_slot_config_dir,
-    detect_auth_failure,
+    detect_auth_failure_kind,
     detect_rate_limit,
     host_slot_config_dir,
     parse_reset_time,
@@ -175,14 +179,22 @@ async def hot_slots(
     registry: SlotRegistry | None,
     accounts: Sequence[str],
 ) -> list[str]:
-    """Return priority-ordered slots without a cooldown or failed login."""
+    """Return ready slots, including subscription retries whose backoff has elapsed."""
     async with _get_lock():
         snapshot = await asyncio.to_thread(registry.load) if registry else SlotSnapshot()
     now = time.time()
     return [
         s
         for s in accounts
-        if s not in snapshot.auth_failures and snapshot.cooldowns.get(s, 0.0) <= now
+        if snapshot.cooldowns.get(s, 0.0) <= now
+        and (
+            s not in snapshot.auth_failures
+            or (
+                (detail := snapshot.auth_failure_details.get(s)) is not None
+                and detail.kind == "subscription_unavailable"
+                and detail.failed_at + detail.retry_delay <= now
+            )
+        )
     ]
 
 
@@ -193,7 +205,11 @@ async def fallback_slot(registry: SlotRegistry | None, accounts: Sequence[str]) 
 
 
 async def record_auth_failure(
-    registry: SlotRegistry | None, slot: str, credential_mtimes: dict[str, int | None]
+    registry: SlotRegistry | None,
+    slot: str,
+    credential_mtimes: dict[str, int | None],
+    *,
+    kind: AuthFailureKind = "login_expired",
 ) -> None:
     """Quarantine only the credentials fingerprinted before the failed attempt."""
     if registry is None or slot_is_api_key(registry.state_path.parent / slot):
@@ -205,10 +221,50 @@ async def record_auth_failure(
             and registry.credential_mtimes(slot) == credential_mtimes
             and snapshot.auth_failures.get(slot, credential_mtimes) == credential_mtimes
         ):
+            previous = snapshot.auth_failure_details.get(slot)
+            delay = float(SUBSCRIPTION_RETRY_INITIAL_SECONDS)
+            if previous is not None and previous.kind == "subscription_unavailable":
+                delay = min(previous.retry_delay * 2, SUBSCRIPTION_RETRY_MAX_SECONDS)
             snapshot.auth_failures[slot] = credential_mtimes
+            snapshot.auth_failure_details[slot] = (
+                AuthFailureDetails(kind, time.time(), delay)
+                if kind == "subscription_unavailable"
+                else AuthFailureDetails()
+            )
 
     async with _get_lock():
         await asyncio.to_thread(registry.update, record)
+
+
+async def record_subscription_retry_failure(
+    registry: SlotRegistry | None, slot: str, credential_mtimes: dict[str, int | None]
+) -> bool:
+    """Defer a subscription retry after an unrelated error without increasing backoff."""
+    if registry is None:
+        return False
+
+    def record(snapshot: SlotSnapshot) -> None:
+        detail = snapshot.auth_failure_details.get(slot)
+        if (
+            detail is not None
+            and detail.kind == "subscription_unavailable"
+            and snapshot.auth_failures.get(slot) == credential_mtimes
+        ):
+            snapshot.auth_failure_details[slot] = AuthFailureDetails(
+                detail.kind, time.time(), detail.retry_delay
+            )
+
+    async with _get_lock():
+        snapshot = await asyncio.to_thread(registry.load)
+        detail = snapshot.auth_failure_details.get(slot)
+        if (
+            detail is None
+            or detail.kind != "subscription_unavailable"
+            or snapshot.auth_failures.get(slot) != credential_mtimes
+        ):
+            return False
+        await asyncio.to_thread(registry.update, record)
+        return True
 
 
 async def clear_auth_failure(
@@ -221,6 +277,7 @@ async def clear_auth_failure(
     def clear(snapshot: SlotSnapshot) -> None:
         if snapshot.auth_failures.get(slot) == credential_mtimes:
             snapshot.auth_failures.pop(slot, None)
+            snapshot.auth_failure_details.pop(slot, None)
 
     async with _get_lock():
         snapshot = await asyncio.to_thread(registry.load)
@@ -316,7 +373,7 @@ def build_unparsable_prefix(raw_stderr: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def run_with_rotation(  # noqa: C901, PLR0915 -- auth/quota rotation shares one state machine
+async def run_with_rotation(  # noqa: C901, PLR0912, PLR0915 -- auth/quota rotation shares one state machine
     *,
     accounts: Sequence[str],
     registry: SlotRegistry | None,
@@ -356,16 +413,23 @@ async def run_with_rotation(  # noqa: C901, PLR0915 -- auth/quota rotation share
         mtimes = await asyncio.to_thread(registry.credential_mtimes, top) if registry else {}
         outcome, payload = await attempt(top)
         api_key_slot = bool(registry and slot_is_api_key(registry.state_path.parent / top))
-        if not api_key_slot and detect_auth_failure(
-            returncode=outcome.returncode,
-            is_error=outcome.is_error,
-            stderr=outcome.stderr,
-            result=outcome.result_text,
-        ):
-            await record_auth_failure(registry, top, mtimes)
+        failure_kind = (
+            None
+            if api_key_slot
+            else detect_auth_failure_kind(
+                returncode=outcome.returncode,
+                is_error=outcome.is_error,
+                stderr=outcome.stderr,
+                result=outcome.result_text,
+            )
+        )
+        if failure_kind is not None:
+            await record_auth_failure(registry, top, mtimes, kind=failure_kind)
             return RotationResult(payload=payload, slot=top, all_cooling=True, reauth_required=True)
         if outcome.returncode == 0 and not outcome.is_error:
             await clear_auth_failure(registry, top, mtimes)
+        elif outcome.returncode not in (0, None) or outcome.is_error:
+            await record_subscription_retry_failure(registry, top, mtimes)
         if detect_rate_limit(
             returncode=outcome.returncode,
             is_error=outcome.is_error,
@@ -404,16 +468,27 @@ async def run_with_rotation(  # noqa: C901, PLR0915 -- auth/quota rotation share
         last_slot = slot
 
         api_key_slot = bool(registry and slot_is_api_key(registry.state_path.parent / slot))
-        if not api_key_slot and detect_auth_failure(
-            returncode=outcome.returncode,
-            is_error=outcome.is_error,
-            stderr=outcome.stderr,
-            result=outcome.result_text,
-        ):
-            await record_auth_failure(registry, slot, mtimes)
+        failure_kind = (
+            None
+            if api_key_slot
+            else detect_auth_failure_kind(
+                returncode=outcome.returncode,
+                is_error=outcome.is_error,
+                stderr=outcome.stderr,
+                result=outcome.result_text,
+            )
+        )
+        if failure_kind is not None:
+            await record_auth_failure(registry, slot, mtimes, kind=failure_kind)
             if first_auth_slot is None:
                 first_auth_slot = slot
             continue
+
+        retry_failed = False
+        if outcome.returncode == 0 and not outcome.is_error:
+            await clear_auth_failure(registry, slot, mtimes)
+        elif outcome.returncode not in (0, None) or outcome.is_error:
+            retry_failed = await record_subscription_retry_failure(registry, slot, mtimes)
 
         is_rate_limited = detect_rate_limit(
             returncode=outcome.returncode,
@@ -423,6 +498,8 @@ async def run_with_rotation(  # noqa: C901, PLR0915 -- auth/quota rotation share
         )
 
         if not is_rate_limited:
+            if retry_failed:
+                continue
             return RotationResult(
                 payload=payload,
                 slot=slot,

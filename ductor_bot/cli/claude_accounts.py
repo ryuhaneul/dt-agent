@@ -16,9 +16,10 @@ import os
 import re
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ductor_bot.infra.file_lock import exclusive_file_lock
@@ -31,6 +32,19 @@ SHARED_PROJECTS_DIRNAME = "_shared-projects"
 STATE_FILENAME = "_claude-slots.json"
 CLI_AUTH_DIRNAME = ".cli-auth"
 CONTAINER_DUCTOR_MOUNT = "/ductor"
+SUBSCRIPTION_RETRY_INITIAL_SECONDS = 30 * 60
+SUBSCRIPTION_RETRY_MAX_SECONDS = 6 * 60 * 60
+
+AuthFailureKind = Literal["login_expired", "subscription_unavailable"]
+
+
+@dataclass(frozen=True, slots=True)
+class AuthFailureDetails:
+    """Reason and retry schedule accompanying the credential fingerprint."""
+
+    kind: AuthFailureKind = "login_expired"
+    failed_at: float = 0.0
+    retry_delay: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +62,7 @@ class SlotSnapshot:
     cooldowns: dict[str, float] = field(default_factory=dict)
     last_used: str | None = None
     auth_failures: dict[str, dict[str, int | None]] = field(default_factory=dict)
+    auth_failure_details: dict[str, AuthFailureDetails] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +172,7 @@ _AUTH_FAILURE_TOKENS = re.compile(
     r"Not logged in · Please run /login|"
     r"Not logged in\. Run claude auth login to authenticate\.|"
     r"Session expired\. Please run /login to sign in again\.|"
-    r"Claude Code can't use your Claude subscription, usually because a payment is past due\b"
+    r"(?P<subscription>Claude Code can't use your Claude subscription, usually because a payment is past due\b)"
     r")",
     re.IGNORECASE | re.MULTILINE,
 )
@@ -175,10 +190,25 @@ def detect_auth_failure(
     As with rate-limit detection, result text is trusted only on error results;
     normal assistant prose about authentication must never disable a slot.
     """
+    return (
+        detect_auth_failure_kind(
+            returncode=returncode, is_error=is_error, stderr=stderr, result=result
+        )
+        is not None
+    )
+
+
+def detect_auth_failure_kind(
+    *, returncode: int | None, is_error: bool, stderr: str, result: str = ""
+) -> AuthFailureKind | None:
+    """Distinguish permanent login expiry from retryable subscription failure."""
     if returncode in (0, None):
-        return False
+        return None
     haystack = (stderr or "") + ("\n" + (result or "") if is_error else "")
-    return bool(_AUTH_FAILURE_TOKENS.search(haystack))
+    match = _AUTH_FAILURE_TOKENS.search(haystack)
+    if match is None:
+        return None
+    return "subscription_unavailable" if match.group("subscription") else "login_expired"
 
 
 # ---------------------------------------------------------------------------
@@ -379,6 +409,28 @@ def pick_slot(
 # ---------------------------------------------------------------------------
 
 
+def _load_auth_failure_details(raw: object) -> AuthFailureDetails | None:
+    """Ignore malformed metadata; missing kinds retain legacy login quarantine."""
+    if isinstance(raw, dict) and raw.get("kind") == "login_expired":
+        return AuthFailureDetails()
+    if not isinstance(raw, dict) or raw.get("kind") != "subscription_unavailable":
+        return None
+    failed_at, retry_delay = raw.get("failed_at"), raw.get("retry_delay")
+    if not isinstance(failed_at, (int, float)) or not isinstance(retry_delay, (int, float)):
+        return None
+    try:
+        failed_at, retry_delay = float(failed_at), float(retry_delay)
+    except OverflowError:
+        return None
+    if (
+        not math.isfinite(failed_at)
+        or failed_at < 0
+        or not SUBSCRIPTION_RETRY_INITIAL_SECONDS <= retry_delay <= SUBSCRIPTION_RETRY_MAX_SECONDS
+    ):
+        return None
+    return AuthFailureDetails("subscription_unavailable", failed_at, retry_delay)
+
+
 class SlotRegistry:
     """File-backed cooldown registry.
 
@@ -439,7 +491,18 @@ class SlotRegistry:
             and not slot_is_api_key(self._state_path.parent / slot)
             and mtimes == self.credential_mtimes(slot)
         }
-        return SlotSnapshot(cooldowns=cooldowns, last_used=last_used, auth_failures=auth_failures)
+        details_raw = raw.get("auth_failure_details", {})
+        details = {
+            slot: detail
+            for slot, entry in (details_raw.items() if isinstance(details_raw, dict) else [])
+            if slot in auth_failures and (detail := _load_auth_failure_details(entry)) is not None
+        }
+        return SlotSnapshot(
+            cooldowns=cooldowns,
+            last_used=last_used,
+            auth_failures=auth_failures,
+            auth_failure_details=details,
+        )
 
     def update(self, fn: Callable[[SlotSnapshot], None]) -> None:
         """Read, transform, and persist under one file lock."""
@@ -449,6 +512,13 @@ class SlotRegistry:
             payload: dict[str, object] = {"cooldowns": snapshot.cooldowns}
             if snapshot.auth_failures:
                 payload["auth_failures"] = snapshot.auth_failures
+                details = {
+                    slot: asdict(detail)
+                    for slot, detail in snapshot.auth_failure_details.items()
+                    if slot in snapshot.auth_failures
+                }
+                if details:
+                    payload["auth_failure_details"] = details
             if snapshot.last_used is not None:
                 payload["last_used"] = snapshot.last_used
             atomic_json_save(self._state_path, payload)
@@ -462,6 +532,7 @@ class SlotRegistry:
             current.auth_failures = {
                 slot: dict(mtimes) for slot, mtimes in snapshot.auth_failures.items()
             }
+            current.auth_failure_details = dict(snapshot.auth_failure_details)
 
         self.update(replace)
 

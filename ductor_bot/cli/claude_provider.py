@@ -24,7 +24,7 @@ from ductor_bot.cli.base import (
 )
 from ductor_bot.cli.claude_accounts import (
     SlotRegistry,
-    detect_auth_failure,
+    detect_auth_failure_kind,
     detect_rate_limit,
     slot_is_api_key,
 )
@@ -52,6 +52,7 @@ from ductor_bot.cli.slot_rotation import (
     parse_reset_from_text,
     record_auth_failure,
     record_cooldown,
+    record_subscription_retry_failure,
     run_with_rotation,
     slot_extra_env,
 )
@@ -419,15 +420,19 @@ class ClaudeCodeCLI(BaseCLI):
                 result_text=final.result if final is not None else "",
             )
 
-            if not (
-                self._registry and slot_is_api_key(self._registry.state_path.parent / slot)
-            ) and detect_auth_failure(
-                returncode=attempt.returncode,
-                is_error=attempt.is_error,
-                stderr=attempt.stderr,
-                result=attempt.result_text,
+            if (
+                not (self._registry and slot_is_api_key(self._registry.state_path.parent / slot))
+                and (
+                    failure_kind := detect_auth_failure_kind(
+                        returncode=attempt.returncode,
+                        is_error=attempt.is_error,
+                        stderr=attempt.stderr,
+                        result=attempt.result_text,
+                    )
+                )
+                is not None
             ):
-                await record_auth_failure(self._registry, slot, mtimes)
+                await record_auth_failure(self._registry, slot, mtimes, kind=failure_kind)
                 if first_auth_slot is None:
                     first_auth_slot = slot
                 if is_last and final is not None:
@@ -438,6 +443,12 @@ class ClaudeCodeCLI(BaseCLI):
                     )
                 continue
 
+            retry_failed = False
+            if returncode == 0 and not attempt.is_error:
+                await clear_auth_failure(self._registry, slot, mtimes)
+            elif returncode not in (0, None) or attempt.is_error:
+                retry_failed = await record_subscription_retry_failure(self._registry, slot, mtimes)
+
             is_rl = detect_rate_limit(
                 returncode=attempt.returncode,
                 is_error=attempt.is_error,
@@ -446,6 +457,10 @@ class ClaudeCodeCLI(BaseCLI):
             )
 
             if not is_rl:
+                if retry_failed:
+                    if is_last and final is not None:
+                        yield final
+                    continue
                 if final is None:
                     return
                 if first_auth_slot is not None and returncode == 0 and not final.is_error:
@@ -606,18 +621,23 @@ class ClaudeCodeCLI(BaseCLI):
         returncode = capture.returncode
         if returncode is None and final is not None:
             returncode = final.returncode
-        is_auth_failure = not (
-            self._registry and slot_is_api_key(self._registry.state_path.parent / slot_name)
-        ) and detect_auth_failure(
-            returncode=returncode,
-            is_error=bool(final.is_error) if final is not None else False,
-            stderr=capture.stderr_text,
-            result=final.result if final is not None else "",
+        failure_kind = (
+            None
+            if (self._registry and slot_is_api_key(self._registry.state_path.parent / slot_name))
+            else detect_auth_failure_kind(
+                returncode=returncode,
+                is_error=bool(final.is_error) if final is not None else False,
+                stderr=capture.stderr_text,
+                result=final.result if final is not None else "",
+            )
         )
-        if is_auth_failure:
-            await record_auth_failure(self._registry, slot_name, mtimes)
+        is_auth_failure = failure_kind is not None
+        if failure_kind is not None:
+            await record_auth_failure(self._registry, slot_name, mtimes, kind=failure_kind)
         elif returncode == 0 and final is not None and not final.is_error:
             await clear_auth_failure(self._registry, slot_name, mtimes)
+        elif returncode not in (0, None) or (final is not None and final.is_error):
+            await record_subscription_retry_failure(self._registry, slot_name, mtimes)
         if final is not None:
             if is_auth_failure:
                 final = final.model_copy(

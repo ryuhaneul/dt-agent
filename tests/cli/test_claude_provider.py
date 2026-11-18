@@ -2254,3 +2254,192 @@ async def test_subscription_failure_reuses_login_quarantine_policy(
     calls.write_text("")
     assert await send() == ("ok", True)
     assert [Path(row["auth"]).name for row in _read_slot_calls(calls)] == ["claude-a"]
+
+
+@pytest.mark.parametrize("driver", ["send", "streaming", "task"])
+@pytest.mark.parametrize("retry_outcome", ["success", "subscription", "login", "network", "529"])
+async def test_subscription_retry_after_payment_with_hot_alternative(
+    tmp_path, monkeypatch, driver, retry_outcome
+):
+    from types import SimpleNamespace
+
+    from ductor_bot.cli import slot_rotation
+    from ductor_bot.cli.claude_accounts import SlotRegistry
+    from ductor_bot.cli.param_resolver import resolve_cli_config
+    from ductor_bot.config import AgentConfig
+    from ductor_bot.infra.task_runner import TaskRunOptions, run_oneshot_task
+    from tests.cli.test_claude_accounts import _AUTH_EXPIRED, _SUBSCRIPTION_UNAVAILABLE
+
+    clock = [1800000000.0]
+    monkeypatch.setattr(slot_rotation, "time", SimpleNamespace(time=lambda: clock[0]))
+    home, control, calls = _install_slot_cli(tmp_path, monkeypatch)
+    accounts = ["claude-a", "claude-b"]
+    state_path = home / ".cli-auth" / "_claude-slots.json"
+    credential = home / ".cli-auth" / "claude-a" / ".credentials.json"
+    original_mtime = credential.stat().st_mtime_ns
+    control.write_text(json.dumps({"limited": ["claude-a"], "error": _SUBSCRIPTION_UNAVAILABLE}))
+
+    async def send():
+        # Every request reconstructs the file-backed provider, including retry metadata.
+        calls.write_text("")
+        config = AgentConfig(
+            ductor_home=str(home),
+            provider="claude",
+            model="opus",
+            claude_accounts=accounts,
+            user_timezone="UTC",
+        )
+        if driver == "task":
+            response = await run_oneshot_task(
+                resolve_cli_config(config, None),
+                "hello",
+                TaskRunOptions(cwd=tmp_path, timeout_seconds=10, timeout_label="test"),
+            )
+            assert response.status == "success"
+            result = response.result_text
+        else:
+            cli = ClaudeCodeCLI(
+                CLIConfig(
+                    provider="claude",
+                    model="opus",
+                    ductor_home=home,
+                    working_dir=str(tmp_path),
+                    claude_accounts=accounts,
+                    user_timezone="UTC",
+                )
+            )
+            if driver == "streaming":
+                events = [event async for event in cli.send_streaming("hello")]
+                response = next(event for event in events if isinstance(event, ResultEvent))
+            else:
+                response = await cli.send("hello")
+            assert not response.is_error
+            result = response.result
+        assert result.endswith("ok")
+        return [Path(row["auth"]).name for row in _read_slot_calls(calls)]
+
+    assert await send() == accounts
+    details = SlotRegistry(state_path).load().auth_failure_details["claude-a"]
+    assert (details.kind, details.failed_at, details.retry_delay) == (
+        "subscription_unavailable",
+        clock[0],
+        1800,
+    )
+    clock[0] += 1799
+    assert await send() == ["claude-b"]
+    assert SlotRegistry(state_path).load().auth_failure_details["claude-a"] == details
+    clock[0] += 1
+    errors = {
+        "subscription": _SUBSCRIPTION_UNAVAILABLE,
+        "login": _AUTH_EXPIRED,
+        "network": "Network error: connection reset",
+        "529": "API Error: 529 overloaded",
+    }
+    control.write_text(
+        json.dumps(
+            {
+                "limited": [] if retry_outcome == "success" else ["claude-a"],
+                "error": errors.get(retry_outcome, ""),
+            }
+        )
+    )
+    assert await send() == (["claude-a"] if retry_outcome == "success" else accounts)
+    snapshot = SlotRegistry(state_path).load()
+    assert credential.stat().st_mtime_ns == original_mtime
+    if retry_outcome == "success":
+        assert snapshot.auth_failures == snapshot.auth_failure_details == {}
+        assert await send() == ["claude-a"]
+        return
+    details = snapshot.auth_failure_details["claude-a"]
+    if retry_outcome == "login":
+        assert details.kind == "login_expired"
+        clock[0] += 30 * 86400
+        assert await send() == ["claude-b"]
+        return
+    expected_delay = 3600 if retry_outcome == "subscription" else 1800
+    assert (details.kind, details.failed_at, details.retry_delay) == (
+        "subscription_unavailable",
+        clock[0],
+        expected_delay,
+    )
+    control.write_text(json.dumps({"limited": []}))
+    clock[0] += expected_delay - 1
+    assert await send() == ["claude-b"]
+    clock[0] += 1
+    assert await send() == ["claude-a"]
+    assert SlotRegistry(state_path).load().auth_failures == {}
+
+
+@pytest.mark.parametrize("driver", ["send", "streaming", "task"])
+@pytest.mark.parametrize("failure", ["subscription", "login", "general"])
+async def test_subscription_single_probe_updates_quarantine(tmp_path, monkeypatch, driver, failure):
+    from types import SimpleNamespace
+
+    from ductor_bot.cli import slot_rotation
+    from ductor_bot.cli.claude_accounts import SlotRegistry
+    from ductor_bot.cli.param_resolver import resolve_cli_config
+    from ductor_bot.cli.slot_rotation import record_auth_failure
+    from ductor_bot.config import AgentConfig
+    from ductor_bot.infra.task_runner import TaskRunOptions, run_oneshot_task
+    from tests.cli.test_claude_accounts import _AUTH_EXPIRED, _SUBSCRIPTION_UNAVAILABLE
+
+    clock = [1800000000.0]
+    monkeypatch.setattr(slot_rotation, "time", SimpleNamespace(time=lambda: clock[0]))
+    home, control, calls = _install_slot_cli(tmp_path, monkeypatch)
+    registry = SlotRegistry(home / ".cli-auth" / "_claude-slots.json")
+    accounts = ["claude-a", "claude-b"]
+    for slot in accounts:
+        await record_auth_failure(
+            registry, slot, registry.credential_mtimes(slot), kind="subscription_unavailable"
+        )
+    clock[0] += 60  # Existing all-unavailable probing can run before retry backoff expires.
+    error = {
+        "subscription": _SUBSCRIPTION_UNAVAILABLE,
+        "login": _AUTH_EXPIRED,
+        "general": "API Error: 529 overloaded",
+    }[failure]
+    control.write_text(json.dumps({"limited": accounts, "error": error}))
+    if driver == "task":
+        response = await run_oneshot_task(
+            resolve_cli_config(
+                AgentConfig(
+                    ductor_home=str(home),
+                    provider="claude",
+                    model="opus",
+                    claude_accounts=accounts,
+                    user_timezone="UTC",
+                ),
+                None,
+            ),
+            "hello",
+            TaskRunOptions(cwd=tmp_path, timeout_seconds=10, timeout_label="test"),
+        )
+        assert response.status != "success"
+        result = response.result_text
+    else:
+        cli = ClaudeCodeCLI(
+            CLIConfig(
+                provider="claude",
+                model="opus",
+                ductor_home=home,
+                working_dir=str(tmp_path),
+                claude_accounts=accounts,
+                user_timezone="UTC",
+            )
+        )
+        if driver == "streaming":
+            events = [event async for event in cli.send_streaming("hello")]
+            response = next(event for event in events if isinstance(event, ResultEvent))
+        else:
+            response = await cli.send("hello")
+        assert response.is_error
+        result = response.result
+    assert error in result
+    assert [Path(row["auth"]).name for row in _read_slot_calls(calls)] == ["claude-a"]
+    snapshot = SlotRegistry(registry.state_path).load()
+    details = snapshot.auth_failure_details["claude-a"]
+    assert details.kind == ("login_expired" if failure == "login" else "subscription_unavailable")
+    if failure != "login":
+        assert details.failed_at == clock[0]
+        assert details.retry_delay == (3600 if failure == "subscription" else 1800)
+    assert snapshot.auth_failure_details["claude-b"].failed_at == 1800000000

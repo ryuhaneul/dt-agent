@@ -608,3 +608,90 @@ async def test_credit_exhaustion_uses_hour_cooldown_and_probes_again(registry, u
     assert result.all_cooling
     assert probe.calls == ["claude-api"]
     assert not result.reauth_required
+
+
+async def test_subscription_retry_backoff_cap_and_restart(registry, utc, monkeypatch):
+    import asyncio
+    import json
+    import subprocess
+    import sys
+    from types import SimpleNamespace
+
+    from ductor_bot.cli import slot_rotation
+    from ductor_bot.cli.slot_rotation import hot_slots
+    from tests.cli.test_claude_accounts import _SUBSCRIPTION_UNAVAILABLE
+
+    clock = [1800000000.0]
+    monkeypatch.setattr(slot_rotation, "time", SimpleNamespace(time=lambda: clock[0]))
+    failure = AttemptOutcome(1, True, _SUBSCRIPTION_UNAVAILABLE, "")
+    for delay in [1800, 3600, 7200, 14400, 21600, 21600]:
+        attempter = _ScriptedAttempter([(failure, _Payload("billing")), _ok()])
+        result = await run_with_rotation(
+            accounts=["claude-a", "claude-b"],
+            registry=SlotRegistry(registry.state_path),
+            default_tz=utc,
+            attempt=attempter,
+        )
+        assert attempter.calls == ["claude-a", "claude-b"]
+        assert result.slot == "claude-b"
+        details = SlotRegistry(registry.state_path).load().auth_failure_details["claude-a"]
+        assert (details.failed_at, details.retry_delay) == (clock[0], delay)
+        clock[0] += delay - 1
+        assert await hot_slots(registry, ["claude-a", "claude-b"]) == ["claude-b"]
+        clock[0] += 1
+        assert await hot_slots(registry, ["claude-a", "claude-b"]) == ["claude-a", "claude-b"]
+    child = await asyncio.to_thread(
+        subprocess.run,
+        [
+            sys.executable,
+            "-c",
+            """
+import asyncio, json, sys
+from pathlib import Path
+from types import SimpleNamespace
+from ductor_bot.cli import slot_rotation
+from ductor_bot.cli.claude_accounts import SlotRegistry
+registry = SlotRegistry(Path(sys.argv[1]))
+detail = registry.load().auth_failure_details['claude-a']
+slot_rotation.time = SimpleNamespace(time=lambda: detail.failed_at + detail.retry_delay - 1)
+assert asyncio.run(slot_rotation.hot_slots(registry, ['claude-a', 'claude-b'])) == ['claude-b']
+slot_rotation.time = SimpleNamespace(time=lambda: detail.failed_at + detail.retry_delay)
+assert asyncio.run(slot_rotation.hot_slots(registry, ['claude-a', 'claude-b'])) == ['claude-a', 'claude-b']
+print(json.dumps([detail.kind, detail.failed_at, detail.retry_delay]))
+""",
+            str(registry.state_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert json.loads(child.stdout) == ["subscription_unavailable", details.failed_at, 21600]
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_login_quarantine_never_becomes_time_retryable(registry, utc, monkeypatch, legacy):
+    import json
+    from types import SimpleNamespace
+
+    from ductor_bot.cli import slot_rotation
+    from ductor_bot.cli.slot_rotation import hot_slots, record_auth_failure
+
+    mtimes = registry.credential_mtimes("claude-a")
+    if legacy:
+        registry.state_path.write_text(json.dumps({"auth_failures": {"claude-a": mtimes}}))
+    else:
+        await record_auth_failure(registry, "claude-a", mtimes)
+        assert registry.load().auth_failure_details["claude-a"].kind == "login_expired"
+    monkeypatch.setattr(slot_rotation, "time", SimpleNamespace(time=lambda: 9999999999.0))
+    assert await hot_slots(SlotRegistry(registry.state_path), ["claude-a", "claude-b"]) == [
+        "claude-b"
+    ]
+    attempter = _ScriptedAttempter([_ok()])
+    await run_with_rotation(
+        accounts=["claude-a", "claude-b"],
+        registry=registry,
+        default_tz=utc,
+        attempt=attempter,
+    )
+    assert attempter.calls == ["claude-b"]
+    assert registry.load().auth_failures == {"claude-a": mtimes}
