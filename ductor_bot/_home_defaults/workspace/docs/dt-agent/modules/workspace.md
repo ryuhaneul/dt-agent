@@ -83,6 +83,11 @@ Special case:
 
 - all other files: copied only when missing.
 
+The Git credential shell helper has a narrow upgrade exception: installed bytes matching a
+known historical framework SHA-256 are replaced with the current Python-backed wrapper.
+Already-current copies are unchanged. Customized files or symlinks are preserved with a warning;
+review them manually to enable encrypted-store access. Other seed-once shell scripts stay user-owned.
+
 Skipped template files (handled by `RulesSelector`):
 
 - `RULES.md`

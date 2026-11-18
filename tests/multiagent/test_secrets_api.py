@@ -6,6 +6,7 @@ import asyncio
 import importlib.util
 import json
 import os
+import runpy
 import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -244,3 +245,30 @@ async def test_rpc_ignores_proxy_environment(
     monkeypatch.setenv("NO_PROXY", "")
     monkeypatch.setenv("no_proxy", "")
     assert await asyncio.to_thread(loader.store_secrets, "GH_TOKEN") == {"GH_TOKEN": VALUE}
+
+
+def test_status_tool_projects_only_public_metadata(monkeypatch, capsys):
+    module = ModuleType("_secrets")
+    module.SecretsError = RuntimeError
+    module.secret_status = lambda: {
+        "state": "locked",
+        "ttl_seconds": 900,
+        "remaining_seconds": None,
+        "value": VALUE,
+        "master_key": MASTER,
+        "token": "synthetic-boot-token",
+    }
+    monkeypatch.setitem(sys.modules, "_secrets", module)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    script = runpy.run_path(str(TOOLS / "secret_tools/secret_status.py"))
+    assert script["main"]() == 0
+    output = capsys.readouterr()
+    assert json.loads(output.out) == {
+        "state": "locked",
+        "ttl_seconds": 900,
+        "remaining_seconds": None,
+    }
+    assert output.err == ""
+    assert VALUE not in output.out
+    assert MASTER not in output.out
+    assert "synthetic-boot-token" not in output.out

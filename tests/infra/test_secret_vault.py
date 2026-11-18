@@ -447,22 +447,15 @@ async def test_invalid_secret_encoding_is_value_free(vault: SecretVault) -> None
     assert vault.encrypted_path.read_bytes() == before
 
 
-@pytest.mark.parametrize("placement", ["file", "parent", "ancestor", "dangling"])
+@pytest.mark.parametrize("placement", ["file", "dangling"])
 async def test_setup_rejects_symlink_paths_without_touching_source(tmp_path: Path, placement):
     original = tmp_path / "original/nested/secrets.env"
     original.parent.mkdir(parents=True)
     original.write_text("TOKEN=synthetic-symlink-value\n")
     before = original.read_bytes(), original.stat().st_mtime_ns
     link = tmp_path / "linked"
-    if placement in {"file", "dangling"}:
-        link.symlink_to(original if placement == "file" else tmp_path / "missing.env")
-        path = link
-    elif placement == "parent":
-        link.symlink_to(original.parent, target_is_directory=True)
-        path = link / "secrets.env"
-    else:
-        link.symlink_to(original.parent.parent, target_is_directory=True)
-        path = link / "nested/secrets.env"
+    link.symlink_to(original if placement == "file" else tmp_path / "missing.env")
+    path = link
     vault = SecretVault(path)
     with pytest.raises(VaultError, match=r"^SECRETS_FILE_SYMLINK$"):
         await vault.setup(MASTER)
@@ -489,3 +482,30 @@ async def test_regular_file_setup_still_removes_plaintext_and_unlocks(tmp_path: 
     await vault.unlock(MASTER)
     assert await vault.get("TOKEN") == "synthetic-regular-value"
     await vault.lock()
+
+
+@pytest.mark.parametrize("placement", ["parent", "ancestor"])
+async def test_setup_allows_parent_symlinks_without_leaving_plaintext(tmp_path: Path, placement):
+    original = tmp_path / "original/nested/secrets.env"
+    original.parent.mkdir(parents=True)
+    original.write_text("TOKEN=synthetic-parent-link-value\n")
+    link = tmp_path / "linked"
+    if placement == "parent":
+        link.symlink_to(original.parent, target_is_directory=True)
+        path = link / "secrets.env"
+    else:
+        link.symlink_to(original.parent.parent, target_is_directory=True)
+        path = link / "nested/secrets.env"
+    vault = SecretVault(path)
+    await vault.setup(MASTER)
+    assert link.is_symlink()
+    assert not path.exists()
+    assert not original.exists()
+    assert vault.encrypted_path.resolve().is_file()
+    assert b"synthetic-parent-link-value" not in vault.encrypted_path.read_bytes()
+    await vault.lock()
+    restarted = SecretVault(path)
+    assert (await restarted.status()).state is VaultState.LOCKED
+    await restarted.unlock(MASTER)
+    assert await restarted.get("TOKEN") == "synthetic-parent-link-value"
+    await restarted.lock()

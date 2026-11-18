@@ -11,7 +11,7 @@ import shutil
 import time
 from pathlib import Path
 
-from ductor_bot.infra.atomic_io import atomic_text_save
+from ductor_bot.infra.atomic_io import atomic_bytes_save, atomic_text_save
 from ductor_bot.workspace.cron_tasks import ensure_task_rule_files
 from ductor_bot.workspace.paths import DuctorPaths
 from ductor_bot.workspace.rules_selector import RulesSelector
@@ -175,6 +175,14 @@ def _handle_zone2_file(entry: Path, target: Path, dst: Path) -> None:
             logger.debug("Zone 2 copy: %s", mirror_target)
 
 
+# SHA-256 of every pre-vault helper shipped in repository history (dcfbcde).
+# Only exact originals may be upgraded; shell scripts otherwise remain user-owned.
+_GIT_CREDENTIAL_HELPER = "workspace/tools/git_credential_from_ductor_env.sh"
+_LEGACY_GIT_HELPER_HASHES = frozenset(
+    {"021d1a54273b48b00b51130fca678975eb952a0b3554b712384625f3c0979930"}
+)
+
+
 _ZONE2_RECORD_NAME = ".zone2_installed.json"
 
 
@@ -266,6 +274,29 @@ def _backup_user_modified_zone2(entry: Path, target: Path, record: _Zone2Record,
     return True
 
 
+def _upgrade_git_credential_helper(entry: Path, target: Path) -> None:
+    """Upgrade exact shipped originals without overwriting user customizations."""
+    if target.is_symlink() or not target.is_file():
+        logger.warning("Git credential helper left unchanged: customized path %s", target)
+        return
+    try:
+        installed = _digest(target)
+        if installed == _digest(entry):
+            return
+        if installed not in _LEGACY_GIT_HELPER_HASHES:
+            logger.warning(
+                "Git credential helper left unchanged: customized file %s; "
+                "review the bundled helper to enable encrypted-secret access",
+                target,
+            )
+            return
+        atomic_bytes_save(target, entry.read_bytes())
+        target.chmod(entry.stat().st_mode & 0o777)
+        logger.info("Upgraded original Git credential helper: %s", target)
+    except OSError:
+        logger.warning("Git credential helper upgrade failed: %s", target)
+
+
 def _handle_regular_file(
     entry: Path, target: Path, src: Path, root_src: Path, record: _Zone2Record
 ) -> None:
@@ -288,6 +319,10 @@ def _handle_regular_file(
         # Framework-managed reference tree: always current, no backups.
         _copy_with_symlink_check(entry, target)
         logger.debug("Zone 2 copy (managed tree): %s", target)
+    elif entry.relative_to(root_src).as_posix() == _GIT_CREDENTIAL_HELPER and (
+        target.exists() or target.is_symlink()
+    ):
+        _upgrade_git_credential_helper(entry, target)
     elif not target.exists():
         # Zone 3: seed only (user-owned, never overwritten)
         shutil.copy2(entry, target)

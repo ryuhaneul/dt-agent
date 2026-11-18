@@ -321,8 +321,7 @@ class SecretVault:
 
     def _setup_store(self, master_key: str) -> tuple[bytes, bytes, str]:
         # Unlinking a symlink would leave its original plaintext behind.
-        path = self.plaintext_path.absolute()
-        if any(part.is_symlink() for part in (path, *path.parents)):
+        if self.plaintext_path.is_symlink():
             raise VaultError("SECRETS_FILE_SYMLINK")
         with exclusive_file_lock(self.plaintext_path):
             if self.encrypted_path.exists():
