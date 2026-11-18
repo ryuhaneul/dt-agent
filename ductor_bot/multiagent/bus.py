@@ -1403,22 +1403,37 @@ class InterAgentBus:
         )
 
     async def _park_and_notify(
-        self, result: AsyncInterAgentResult, target: str, *, not_ready: bool = False
+        self,
+        result: AsyncInterAgentResult,
+        target: str,
+        *,
+        not_ready: bool = False,
+        notify: bool = True,
     ) -> None:
-        self._park_record(result, target, not_ready=not_ready)
-        if not_ready or self._record_store is None:
-            return
-        # Announce preservation only after the complete record is actually parked.
-        try:
-            self._record_store.load(target, result.task_id, area="undelivered")
-        except Exception:
-            return
         stack = self._agents.get(target)
         message_bus = getattr(stack.bot, "_bus", None) if stack is not None else None
         from ductor_bot.bus.bus import MessageBus
 
-        if isinstance(message_bus, MessageBus):
-            await message_bus.notify_interagent_undelivered(result.task_id)
+        try:
+            self._park_record(result, target, not_ready=not_ready)
+            current_task = asyncio.current_task()
+            if not notify or (current_task is not None and current_task.cancelling()):
+                logger.info(
+                    "Async result notice skipped during cancellation task=%s", result.task_id
+                )
+                return
+            if not_ready or self._record_store is None:
+                return
+            # Announce preservation only after the complete record is actually parked.
+            try:
+                self._record_store.load(target, result.task_id, area="undelivered")
+            except Exception:
+                return
+            if isinstance(message_bus, MessageBus):
+                await message_bus.notify_interagent_undelivered(result.task_id)
+        finally:
+            if isinstance(message_bus, MessageBus):
+                message_bus.forget_interagent_notices(result.task_id)
 
     async def _attempt_delivery(
         self, result: AsyncInterAgentResult, target: str, *, retry: bool = False
@@ -1529,6 +1544,13 @@ class InterAgentBus:
             self._delivering_results.pop(result.task_id, None)
             self._injected_responses.pop(result.task_id, None)
             self._delivery_claims.discard(result.task_id)
+            target = result.reply_to or result.sender
+            stack = self._agents.get(target)
+            message_bus = getattr(stack.bot, "_bus", None) if stack is not None else None
+            from ductor_bot.bus.bus import MessageBus
+
+            if isinstance(message_bus, MessageBus):
+                message_bus.forget_interagent_notices(result.task_id)
 
     async def _deliver_async_result_active(self, result: AsyncInterAgentResult) -> None:
         target = result.reply_to or result.sender
@@ -2025,11 +2047,13 @@ class InterAgentBus:
         for task in tasks:
             if task.asyncio_task and not task.asyncio_task.done():
                 waiting_result = self._retry_waiting.get(task.task_id)
+                task.asyncio_task.cancel()
                 if waiting_result is not None:
                     await self._park_and_notify(
-                        waiting_result, waiting_result.reply_to or waiting_result.sender
+                        waiting_result,
+                        waiting_result.reply_to or waiting_result.sender,
+                        notify=False,
                     )
-                task.asyncio_task.cancel()
                 cancelled += 1
                 logger.warning(
                     "Cancelled in-flight async task=%s (%s -> %s)",

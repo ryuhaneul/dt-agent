@@ -104,7 +104,7 @@ class MessageBus:
         self._wake_hook: Callable[[Envelope], Awaitable[None]] | None = None
         self._on_injected: Callable[[Envelope], Awaitable[None]] | None = None
         self._delivery_observer: Callable[[Envelope], Awaitable[None]] | None = None
-        # Process-local only: after a restart the same failure can be announced once again.
+        # Notice deduplication lasts only for the current delivery cycle.
         self._injection_notices: dict[str, Envelope] = {}
         self._noticed_errors: set[tuple[str, str]] = set()
 
@@ -170,6 +170,8 @@ class MessageBus:
 
         injected = envelope.injected
         delivered = envelope.delivered
+        if envelope.origin == Origin.INTERAGENT and injected and delivered:
+            self.forget_interagent_notices(envelope.metadata.get("ia_task_id", ""))
         error = envelope.delivery_error
         if (
             not injected
@@ -239,6 +241,11 @@ class MessageBus:
             logger.warning(
                 "Inter-agent failure notice not delivered task=%s kind=%s", task_id, kind
             )
+
+    def forget_interagent_notices(self, task_id: str) -> None:
+        """Release notice state once a result is delivered or its delivery cycle ends."""
+        self._injection_notices.pop(task_id, None)
+        self._noticed_errors = {key for key in self._noticed_errors if key[0] != task_id}
 
     async def notify_interagent_undelivered(self, task_id: str) -> None:
         """Announce a preserved result only if its injection failed with a CLI response."""

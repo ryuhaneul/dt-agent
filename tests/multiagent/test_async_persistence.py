@@ -3956,12 +3956,16 @@ async def test_cli_injection_failure_notifies_once_then_redelivers(
     assert record["result"]["result_text"] == "PRIVATE WORK RESULT"
     assert record["stage"] == "received"
     assert record["main_response"] == ""
+    assert not bus._injection_notices
+    assert not bus._noticed_errors
     assert await ia.redeliver_undelivered("main") == 0
-    assert transport.deliver.await_count == 2
+    assert transport.deliver.await_count == 4
+    assert not bus._injection_notices
+    assert not bus._noticed_errors
 
     bus._injector.inject_prompt.side_effect = None
     assert await ia.redeliver_undelivered("main") == 1
-    assert transport.deliver.await_count == 3
+    assert transport.deliver.await_count == 5
     assert transport.deliver.await_args.args[0].result_text == "Final report"
     assert not store.path_for("main", task.task_id, area="undelivered").exists()
 
@@ -3981,7 +3985,9 @@ async def test_cli_notice_dedup_resets_on_restart(tmp_path: Path) -> None:
     assert await restarted.redeliver_undelivered("main") == 0
     assert fresh_transport.deliver.await_count == 2
     assert await restarted.redeliver_undelivered("main") == 0
-    assert fresh_transport.deliver.await_count == 2
+    assert fresh_transport.deliver.await_count == 4
+    assert not fresh_bus._injection_notices
+    assert not fresh_bus._noticed_errors
 
 
 async def test_cli_notice_new_error_kind_is_announced_once(tmp_path: Path) -> None:
@@ -3994,7 +4000,9 @@ async def test_cli_notice_new_error_kind_is_announced_once(tmp_path: Path) -> No
     _cli_failure(bus, "You've hit your usage limit. Please try again later.")
     assert await ia.redeliver_undelivered("main") == 0
     assert await ia.redeliver_undelivered("main") == 0
-    assert transport.deliver.await_count == 3  # error, preservation, new rate-limit cause
+    assert transport.deliver.await_count == 6  # Two notices per completed delivery cycle.
+    assert not bus._injection_notices
+    assert not bus._noticed_errors
 
 
 async def test_cli_notice_send_failure_does_not_loop(tmp_path: Path) -> None:
@@ -4007,7 +4015,9 @@ async def test_cli_notice_send_failure_does_not_loop(tmp_path: Path) -> None:
     store.create(task)
     await ia._deliver_async_result(_result(task))
     assert await ia.redeliver_undelivered("main") == 0
-    assert transport.deliver.await_count == 2
+    assert transport.deliver.await_count == 4
+    assert not bus._injection_notices
+    assert not bus._noticed_errors
     assert store.load("main", task.task_id, area="undelivered")["result"] is not None
 
 
@@ -4071,14 +4081,109 @@ async def test_cli_notice_telegram_adapter_sends_raw_text_in_origin_topic(
     ) as send:
         await ia._deliver_async_result(_result(task, result_text="PRIVATE WORK RESULT"))
         assert await ia.redeliver_undelivered("main") == 0
-    assert send.await_count == 2
+    assert send.await_count == 4
     assert [call.args[2] for call in send.await_args_list] == [
         session_error_text("opus", _SUBSCRIPTION_ERROR),
         t("notice.ia_result_preserved"),
-    ]
+    ] * 2
+    assert not bus._injection_notices
+    assert not bus._noticed_errors
     assert all(call.args[1] == 123 for call in send.await_args_list)
     assert all(call.args[3].thread_id == 8 for call in send.await_args_list)
     record = store.load("main", task.task_id, area="undelivered")
     assert record["delivered_chunks"] == 0
     assert record["main_response"] == ""
     assert record["result"]["result_text"] == "PRIVATE WORK RESULT"
+
+
+async def test_successful_retry_releases_notice_memory(tmp_path: Path) -> None:
+    ia, bus, transport = _setup_bus(tmp_path)
+    ia._retry_delays = (0,)
+    _cli_failure(bus)
+    failure = bus._injector.inject_prompt.side_effect
+    bus._injector.inject_prompt.side_effect = [failure, "Final report"]
+    task = _task()
+    store = AsyncRecordStore(tmp_path)
+    store.create(task)
+    await ia._deliver_async_result(_result(task))
+    assert transport.deliver.await_count == 2  # Initial error notice, then the final report.
+    assert not bus._injection_notices
+    assert not bus._noticed_errors
+    assert not store.path_for("main", task.task_id).exists()
+
+
+async def test_cancel_retry_skips_stalled_notice_and_releases_memory(tmp_path: Path) -> None:
+    ia, bus, transport = _setup_bus(tmp_path)
+    ia._retry_delays = (3600,)
+    _cli_failure(bus)
+    task_id = ia.send_async("main", "alpha.v2", "Original request")
+    assert task_id is not None
+    running = ia._async_tasks[task_id].asyncio_task
+    for _ in range(100):
+        if task_id in ia._retry_waiting:
+            break
+        await asyncio.sleep(0)
+    assert task_id in ia._retry_waiting
+    assert task_id in bus._injection_notices
+    send_started = asyncio.Event()
+    stalled = asyncio.Event()
+
+    async def stalled_send(_env: object) -> None:
+        send_started.set()
+        await stalled.wait()
+
+    transport.deliver.side_effect = stalled_send
+    try:
+        assert await asyncio.wait_for(ia.cancel_all_async(), timeout=2) == 1
+        with contextlib.suppress(asyncio.CancelledError):
+            await running
+    finally:
+        stalled.set()
+        running.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await running
+    assert not send_started.is_set()
+    assert transport.deliver.await_count == 1
+    assert running.cancelled()
+    assert not bus._injection_notices
+    assert not bus._noticed_errors
+    record = AsyncRecordStore(tmp_path).load("main", task_id, area="undelivered")
+    assert record["result"]["result_text"] == "Completed"
+
+
+async def test_cancel_inflight_recovery_skips_stalled_notice(tmp_path: Path) -> None:
+    ia, bus, transport = _setup_bus(tmp_path)
+    ia._retry_delays = (3600,)
+    _cli_failure(bus)
+    task = _task()
+    store = AsyncRecordStore(tmp_path)
+    store.create(task)
+    store.update("main", task.task_id, result=_result(task))
+    initial_notice = asyncio.Event()
+    stalled_notice = asyncio.Event()
+    blocked = asyncio.Event()
+
+    async def send_notice(_env: object) -> None:
+        if initial_notice.is_set():
+            stalled_notice.set()
+            await blocked.wait()
+        else:
+            initial_notice.set()
+
+    transport.deliver.side_effect = send_notice
+    recovery = asyncio.create_task(ia.recover_inflight("main"))
+    try:
+        await asyncio.wait_for(initial_notice.wait(), timeout=2)
+        recovery.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(recovery, timeout=2)
+    finally:
+        blocked.set()
+        recovery.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await recovery
+    assert not stalled_notice.is_set()
+    assert transport.deliver.await_count == 1
+    assert not bus._injection_notices
+    assert not bus._noticed_errors
+    assert store.load("main", task.task_id, area="undelivered")["result"] is not None
