@@ -1,6 +1,7 @@
 # Deskripsi perintah bot (maks 22 karakter untuk klien Telegram mobile).
 
 [bot]
+masterkey = "Kelola kunci utama"
 start = "Panduan awal"
 where = "Daftar obrolan"
 leave = "Keluar dari grup"

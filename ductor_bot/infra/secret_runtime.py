@@ -84,7 +84,8 @@ def secret_environment(ductor_home: Path | None = None) -> dict[str, str]:
     }
 
 
-def _vault_for(path: Path) -> SecretVault | None:
+def get_secret_vault(path: Path) -> SecretVault | None:
+    """Return the process-owned vault; never open an encrypted store independently."""
     if _current is not None and path.absolute() == _current.vault.plaintext_path.absolute():
         return _current.vault
     if path.with_name(path.name + ".enc").exists():
@@ -98,7 +99,7 @@ async def vault_list_keys(
     """Use the main vault, with legacy plaintext fallback only for unencrypted stores."""
     import asyncio
 
-    vault = _vault_for(path)
+    vault = get_secret_vault(path)
     return await vault.list_keys() if vault else await asyncio.to_thread(plain, path)
 
 
@@ -108,7 +109,7 @@ async def vault_set_secret(
     """Route bot writes through the vault without creating plaintext while encrypted."""
     import asyncio
 
-    vault = _vault_for(path)
+    vault = get_secret_vault(path)
     if vault:
         await vault.set(key, value)
     else:
@@ -121,5 +122,5 @@ async def vault_delete_secret(
     """Route bot deletion through the vault when that store is managed."""
     import asyncio
 
-    vault = _vault_for(path)
+    vault = get_secret_vault(path)
     return await vault.delete(key) if vault else await asyncio.to_thread(plain, path, key)

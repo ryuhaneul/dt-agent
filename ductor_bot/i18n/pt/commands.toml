@@ -1,6 +1,7 @@
 # Descrições de comandos do bot em Português (≤22 caracteres para Telegram).
 
 [bot]
+masterkey = "Chave mestra"
 start = "Boas-vindas"
 where = "Conversas registradas"
 leave = "Sair de um grupo"

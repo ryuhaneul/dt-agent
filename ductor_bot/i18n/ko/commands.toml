@@ -1,6 +1,7 @@
 # Bot command descriptions (≤22 chars for Telegram mobile clients).
 
 [bot]
+masterkey = "마스터키 관리"
 start = "시작 안내"
 where = "참여 채팅 목록"
 leave = "그룹 나가기"

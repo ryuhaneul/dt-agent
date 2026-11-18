@@ -211,6 +211,7 @@ class SecretVault:
         self._expiry_task: asyncio.Task[None] | None = None
         self._failures = 0
         self._retry_at = 0.0
+        self._expiry_callback: Callable[[], None] | None = None
 
     @staticmethod
     def _validate_ttl(ttl_seconds: int) -> None:
@@ -232,10 +233,16 @@ class SecretVault:
             return None
         return max(0.0, self._unlocked_at + self._ttl_seconds - self._clock())
 
+    def set_expiry_callback(self, callback: Callable[[], None] | None) -> None:
+        """Register a value-free notification for each transition caused by TTL expiry."""
+        self._expiry_callback = callback
+
     def _expire(self) -> None:
         remaining = self._remaining()
         if remaining is not None and remaining <= 0:
             self._clear_unlocked()
+            if self._expiry_callback is not None:
+                self._expiry_callback()
 
     def _require_unlocked(self) -> None:
         self._expire()

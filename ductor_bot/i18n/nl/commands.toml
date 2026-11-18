@@ -1,6 +1,7 @@
 # Nederlandse botcommandobeschrijvingen (≤22 tekens voor Telegram).
 
 [bot]
+masterkey = "Hoofdsleutel beheren"
 start = "Welkom"
 where = "Gevolgde chats"
 leave = "Groep verlaten"

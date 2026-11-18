@@ -42,7 +42,11 @@ def get_bot_commands() -> list[tuple[str, str]]:
 
 def get_main_only_commands() -> list[tuple[str, str]]:
     """Return commands shown only by the main agent."""
-    return [("secret", t_cmd("bot.secret")), ("accounts", t_cmd("bot.accounts"))]
+    return [
+        ("secret", t_cmd("bot.secret")),
+        ("masterkey", t_cmd("bot.masterkey")),
+        ("accounts", t_cmd("bot.accounts")),
+    ]
 
 
 def get_multiagent_sub_commands() -> list[tuple[str, str]]:

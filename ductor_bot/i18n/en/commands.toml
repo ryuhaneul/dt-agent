@@ -1,6 +1,7 @@
 # Bot command descriptions (≤22 chars for Telegram mobile clients).
 
 [bot]
+masterkey = "Manage master key"
 start = "Welcome & quick start"
 where = "Tracked chats"
 leave = "Leave a group"

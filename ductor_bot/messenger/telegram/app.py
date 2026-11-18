@@ -149,7 +149,11 @@ _BOT_COMMANDS: list[BotCommand] = [
     BotCommand(command=cmd, description=desc) for cmd, desc in _COMMAND_DEFS
 ]
 
-_CMD_DESC: dict[str, str] = {**dict(_COMMAND_DEFS), **dict(_MA_SUB_DEFS)}
+_CMD_DESC: dict[str, str] = {
+    **dict(_COMMAND_DEFS),
+    **dict(_MA_SUB_DEFS),
+    **{cmd: desc for cmd, desc in get_main_only_commands() if cmd == "masterkey"},
+}
 
 
 def _rebuild_commands() -> None:
@@ -161,7 +165,13 @@ def _rebuild_commands() -> None:
     ma_defs = get_multiagent_sub_commands()
     _BOT_COMMANDS = [BotCommand(command=cmd, description=desc) for cmd, desc in cmd_defs]
     _CMD_DESC.clear()
-    _CMD_DESC.update({**dict(cmd_defs), **dict(ma_defs)})
+    _CMD_DESC.update(
+        {
+            **dict(cmd_defs),
+            **dict(ma_defs),
+            **{cmd: desc for cmd, desc in get_main_only_commands() if cmd == "masterkey"},
+        }
+    )
 
 
 def _help_line(command: str) -> str:
@@ -170,7 +180,7 @@ def _help_line(command: str) -> str:
     return f"/{command} -- {description}" if description else f"/{command}"
 
 
-def _build_help_text() -> str:
+def _build_help_text(*, main_only: bool = False) -> str:
     return fmt(
         t("help.header"),
         SEP,
@@ -182,7 +192,8 @@ def _build_help_text() -> str:
         f"{t('help.cat_multiagent')}\n{_help_line('agent_commands')}",
         f"{t('help.cat_browse')}\n{_help_line('where')}\n{_help_line('leave')}\n"
         f"{_help_line('showfiles')}\n{_help_line('info')}\n{_help_line('help')}",
-        f"{t('help.cat_maintenance')}\n{_help_line('diagnose')}\n{_help_line('restart')}",
+        f"{t('help.cat_maintenance')}\n{_help_line('diagnose')}\n{_help_line('restart')}"
+        + (f"\n{_help_line('masterkey')}" if main_only else ""),
         SEP,
         t("help.footer"),
     )
@@ -870,7 +881,7 @@ class TelegramBot:
             return
         await self._send_command_response(
             message.chat.id,
-            _build_help_text(),
+            _build_help_text(main_only=self._agent_name == "main"),
             SendRichOpts(reply_to_message_id=message.message_id, thread_id=get_thread_id(message)),
         )
 
@@ -1451,7 +1462,7 @@ class TelegramBot:
         """
         from aiogram.types import InaccessibleMessage
 
-        if (callback.data or "").startswith("sec:"):
+        if (callback.data or "").startswith(("sec:", "mk:ttl:")):
             await self._secret_input.handle_callback(callback)
             return
 
@@ -2389,6 +2400,7 @@ class TelegramBot:
                 return self._exit_code
         else:
             await self._bot.delete_webhook(drop_pending_updates=False)
+        await self._secret_input.start()
         allowed_updates = self._dp.resolve_used_update_types()
         logger.info("Polling allowed_updates=%s", ",".join(allowed_updates))
         self._dp.startup.register(self._honour_stop_request)

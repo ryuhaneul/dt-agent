@@ -27,6 +27,7 @@ from ductor_bot.i18n import t
 from ductor_bot.infra.atomic_io import atomic_text_save
 from ductor_bot.infra.env_secrets import load_env_secrets, main_home_of
 from ductor_bot.infra.secret_runtime import (
+    get_secret_vault,
     vault_delete_secret,
     vault_list_keys,
     vault_set_secret,
@@ -38,6 +39,9 @@ from ductor_bot.infra.secret_store import (
     validate_key,
     validate_value,
 )
+from ductor_bot.infra.secret_vault import VaultError, VaultState
+from ductor_bot.messenger.telegram.masterkey_input import STAGES, MasterKeyInput
+from ductor_bot.messenger.telegram.masterkey_input import text as masterkey_text
 from ductor_bot.messenger.telegram.topic import get_thread_id
 
 if TYPE_CHECKING:
@@ -97,13 +101,19 @@ class SecretInput:
         self._guarded: dict[tuple[int, int], _Guarded] = {}
         self._lock = asyncio.Lock()
         self._delete_tasks: set[asyncio.Task[None]] = set()
+        self._masterkey = MasterKeyInput(self)
         if is_main:
             self._load()
+
+    async def start(self) -> None:
+        """Attach security-state notifications once the bot is ready."""
+        await self._masterkey.start()
 
     async def close(self, budget_seconds: float = 5.0) -> None:
         """Cancel expiry waits and finish or reap deletions before closing the bot."""
         loop = asyncio.get_running_loop()
         deadline = loop.time() + max(0.0, min(budget_seconds, 5.0))
+        await self._masterkey.close(max(0.0, deadline - loop.time()))
         expiry = [task for task in self._delete_tasks if task.get_name() == "secret-prompt-expiry"]
         for task in expiry:
             task.cancel()
@@ -130,7 +140,7 @@ class SecretInput:
         async with self._lock:
             return await self._intercept_message(message)
 
-    async def _intercept_message(self, message: Message) -> bool:
+    async def _intercept_message(self, message: Message) -> bool:  # noqa: C901
         parts = self._command_parts(message.text)
         command = bool(parts)
         reply = message.reply_to_message
@@ -165,6 +175,13 @@ class SecretInput:
             return False
         extra = len(parts) > 3 and parts[1] in {"set", "delete"}
         denial = self._denial(message, user_id)
+        if parts and parts[0] == "/masterkey":
+            await self._delete(
+                message.chat.id,
+                message.message_id,
+                notify=denial is None,
+                thread_id=get_thread_id(message),
+            )
         if extra:
             await self._delete(
                 message.chat.id,
@@ -182,7 +199,9 @@ class SecretInput:
                 )
             if command and denial:
                 await self._send(
-                    message.chat.id, _text(f"{denial}"), thread_id=get_thread_id(message)
+                    message.chat.id,
+                    masterkey_text(denial) if parts[0] == "/masterkey" else _text(denial),
+                    thread_id=get_thread_id(message),
                 )
             return True
         if quoted and reply is not None:
@@ -198,7 +217,11 @@ class SecretInput:
                 message.chat.id, message.message_id, thread_id=get_thread_id(message)
             )
             await self._send(
-                message.chat.id, _text("expired_value"), thread_id=get_thread_id(message)
+                message.chat.id,
+                masterkey_text("expired")
+                if pending is not None and pending.key in STAGES
+                else _text("expired_value"),
+                thread_id=get_thread_id(message),
             )
         elif command:
             if extra:
@@ -221,9 +244,13 @@ class SecretInput:
     @staticmethod
     def _command_parts(text: str | None) -> list[str]:
         parts = (text or "").split(maxsplit=3)
-        if not parts or re.fullmatch(r"/secret(?:@[a-z0-9_]+)?", parts[0], re.IGNORECASE) is None:
+        if (
+            not parts
+            or re.fullmatch(r"/(?:secret|masterkey)(?:@[a-z0-9_]+)?", parts[0], re.IGNORECASE)
+            is None
+        ):
             return []
-        parts[0] = "/secret"
+        parts[0] = parts[0].split("@", 1)[0].lower()
         return parts
 
     def _denial(self, message: Message, user_id: int) -> str | None:
@@ -235,7 +262,10 @@ class SecretInput:
             return "main_only"
         return None
 
-    async def _command(self, message: Message, parts: list[str], user_id: int) -> None:
+    async def _command(self, message: Message, parts: list[str], user_id: int) -> None:  # noqa: C901
+        if parts[0] == "/masterkey":
+            await self._masterkey.command(message, parts, user_id)
+            return
         chat_id = message.chat.id
         action = parts[1] if len(parts) > 1 else ""
         if action == "cancel" and len(parts) == 2:
@@ -258,6 +288,8 @@ class SecretInput:
                 thread_id=get_thread_id(message),
             )
         elif action in {"set", "delete"} and len(parts) in {2, 3}:
+            if await self._locked(chat_id):
+                return
             key = parts[2] if len(parts) == 3 else ""
             if validate_key(key):
                 await self._send(chat_id, _text("invalid_key"), thread_id=get_thread_id(message))
@@ -266,7 +298,7 @@ class SecretInput:
                 exists = key in await vault_list_keys(self._store_path, plain=list_keys)
             except Exception as exc:
                 self._failure("list_failed", exc)
-                await self._send(chat_id, _text("save_failed"), thread_id=get_thread_id(message))
+                await self._send(chat_id, self._store_error(exc), thread_id=get_thread_id(message))
                 return
             if action == "delete" or exists:
                 if action == "set":
@@ -287,7 +319,13 @@ class SecretInput:
             await self._send(chat_id, _text("usage"), thread_id=get_thread_id(message))
 
     async def _request(
-        self, chat_id: int, user_id: int, key: str, *, thread_id: int | None = None
+        self,
+        chat_id: int,
+        user_id: int,
+        key: str,
+        *,
+        thread_id: int | None = None,
+        prompt_text: str | None = None,
     ) -> None:
         identity = (chat_id, user_id)
         pending = _Pending(chat_id, user_id, key, 0, self._clock() + PENDING_SECONDS)
@@ -303,7 +341,7 @@ class SecretInput:
             return
         prompt = await self._send(
             chat_id,
-            f"{PROMPT_MARKER}\n{_text('prompt', key=key)}",
+            f"{PROMPT_MARKER}\n{prompt_text or _text('prompt', key=key)}",
             force_reply=True,
             thread_id=thread_id,
         )
@@ -327,7 +365,19 @@ class SecretInput:
         if pending is None or pending.expires_at <= self._clock():
             if pending is not None and self._clock() >= pending.expires_at + 120:
                 self._remove_pending(pending.chat_id, pending.user_id)
-            await self._send(message.chat.id, _text("expired"), thread_id=get_thread_id(message))
+            await self._send(
+                message.chat.id,
+                masterkey_text("expired")
+                if pending is not None and pending.key in STAGES
+                else _text("expired"),
+                thread_id=get_thread_id(message),
+            )
+            return
+        if pending.key in STAGES:
+            await self._masterkey.value(message, pending)
+            return
+        if await self._locked(message.chat.id):
+            self._remove_pending(pending.chat_id, pending.user_id)
             return
         if message.text is None:
             await self._send(message.chat.id, _text("not_text"), thread_id=get_thread_id(message))
@@ -348,7 +398,7 @@ class SecretInput:
         except Exception as exc:
             self._failure("save_failed", exc, pending.key)
             await self._send(
-                message.chat.id, _text("save_failed"), thread_id=get_thread_id(message)
+                message.chat.id, self._store_error(exc), thread_id=get_thread_id(message)
             )
             return
         self._remove_pending(pending.chat_id, pending.user_id)
@@ -361,13 +411,17 @@ class SecretInput:
     async def handle_callback(self, callback_query: CallbackQuery) -> bool:
         """Handle secret buttons, checking the actor's authorization again."""
         data = callback_query.data or ""
-        if not data.startswith("sec:"):
+        if not data.startswith(("sec:", "mk:ttl:")):
             return False
         async with self._lock:
             message = callback_query.message
             if isinstance(message, Message):
                 denial = self._denial(message, callback_query.from_user.id)
-                if denial is None:
+                if denial is None and data.startswith("mk:ttl:"):
+                    await self._masterkey.callback(
+                        message.chat.id, callback_query.from_user.id, data
+                    )
+                elif denial is None:
                     await self._callback_action(
                         message.chat.id,
                         callback_query.from_user.id,
@@ -391,6 +445,8 @@ class SecretInput:
             self._remove_pending(chat_id, user_id)
             await self._send(chat_id, _text("cancelled"), thread_id=thread_id)
             return
+        if await self._locked(chat_id):
+            return
         parts = data.split(":", 2)
         if len(parts) != 3 or parts[1] not in {"ow", "del"}:
             return
@@ -404,13 +460,29 @@ class SecretInput:
                 deleted = await vault_delete_secret(self._store_path, key, plain=delete_secret)
             except Exception as exc:
                 self._failure("delete_failed", exc, key)
-                await self._send(chat_id, _text("save_failed"), thread_id=thread_id)
+                await self._send(chat_id, self._store_error(exc), thread_id=thread_id)
                 return
             await self._send(
                 chat_id,
                 _text("deleted" if deleted else "delete_missing", key=key),
                 thread_id=thread_id,
             )
+
+    @staticmethod
+    def _store_error(exc: Exception) -> str:
+        if isinstance(exc, VaultError) and exc.code == "SECRETS_LOCKED":
+            return masterkey_text("locked")
+        return _text("save_failed")
+
+    async def _locked(self, chat_id: int) -> bool:
+        try:
+            vault = get_secret_vault(self._store_path)
+            locked = vault is not None and (await vault.status()).state is VaultState.LOCKED
+        except VaultError as exc:
+            locked = exc.code == "SECRETS_LOCKED"
+        if locked:
+            await self._send(chat_id, masterkey_text("locked"))
+        return locked
 
     @staticmethod
     def _keyboard(operation: str, key: str) -> InlineKeyboardMarkup:
@@ -531,7 +603,12 @@ class SecretInput:
                     if edit_at_expiry:
                         try:
                             await self._bot.edit_message_text(
-                                f"{PROMPT_MARKER}\n{_text('expired')}",
+                                f"{PROMPT_MARKER}\n"
+                                + (
+                                    masterkey_text("expired")
+                                    if pending.key in STAGES
+                                    else _text("expired")
+                                ),
                                 chat_id=pending.chat_id,
                                 message_id=pending.prompt_message_id,
                                 parse_mode=None,
@@ -550,6 +627,7 @@ class SecretInput:
             await self._delete(pending.chat_id, message_id, notify=False)
 
     def _remove_pending(self, chat_id: int, user_id: int) -> bool:
+        self._masterkey.clear((chat_id, user_id))
         pending = self._pending.pop((chat_id, user_id), None)
         if pending is None:
             return False
@@ -636,7 +714,7 @@ class SecretInput:
                     raise ValueError("metadata_shape")
                 if any(not isinstance(row[key], expected) for key, expected in types.items()):
                     raise ValueError("metadata_shape")
-                if field == "pending" and validate_key(row["key"]):
+                if field == "pending" and row["key"] not in STAGES and validate_key(row["key"]):
                     raise ValueError("metadata_key")
 
     @staticmethod
