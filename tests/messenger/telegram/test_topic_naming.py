@@ -1528,7 +1528,9 @@ async def test_automatic_title_records_web_title_without_service_edit(
     assert (await orch._sessions.get_active(key)).topic_name == "시스템 점검"
     tg._topic_names = type(tg._topic_names)()
     orch.is_chat_busy = lambda *_: False
-    turns = SimpleNamespace(active_turn_id=lambda _: None, busy=lambda _: False)
+    turns = SimpleNamespace(
+        active_turn_id=lambda _: None, busy=lambda _: False, snapshot=lambda _: []
+    )
     topics = await WebTopics(tg, runtime, turns).list()
     assert topics[0]["name"] == "시스템 점검"
 

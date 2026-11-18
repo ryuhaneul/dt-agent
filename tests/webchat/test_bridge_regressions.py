@@ -28,6 +28,7 @@ from ductor_bot.chat_log.recorder import HistoryRecorder
 from ductor_bot.cli.process_registry import ProcessRegistry
 from ductor_bot.cli.types import AgentRequest, AgentResponse
 from ductor_bot.config import AgentConfig
+from ductor_bot.i18n.loader import TranslationStore
 from ductor_bot.messenger.telegram.topic import TopicNameCache
 from ductor_bot.messenger.telegram.transport import TelegramTransport
 from ductor_bot.multiagent.shared_knowledge import _sync_agent_io
@@ -442,7 +443,7 @@ async def test_next_preparing_turn_does_not_inherit_completed_state(
         await app.cleanup()
 
 
-def journal_admission(turns, text="original\n한글 😀 <literal>"):
+def journal_admission(turns, text="original\ncafé 😀 <literal>"):
     identity = {"turn_id": new_id(), "user_entry_id": new_id(), "reply_entry_id": new_id()}
     state = _QueuedTurn("-123.7", text, identity)
     turns._journal.accept(state)
@@ -456,7 +457,7 @@ async def test_queue_restart_cancels_two_real_waiters_once(tmp_path):
     lock = bot._orch._lock_pool.get((-123, 7))
     await lock.acquire()
     queue = runtime.events.subscribe()
-    identities = [turns.submit("-123.7", text) for text in ["first\n한글", "second <body>"]]
+    identities = [turns.submit("-123.7", text) for text in ["first\ncafé", "second <body>"]]
     snapshot = turns.snapshot("-123.7")
     try:
         prepared = set()
@@ -475,7 +476,7 @@ async def test_queue_restart_cancels_two_real_waiters_once(tmp_path):
     entries = await restarted_runtime.history.read("-123.7")
     assert [entry.turn_id for entry in entries] == identities
     assert [entry.id for entry in entries] == [row["user_entry_id"] for row in snapshot]
-    assert [entry.text for entry in entries] == ["first\n한글", "second <body>"]
+    assert [entry.text for entry in entries] == ["first\ncafé", "second <body>"]
     assert all(entry.role == "user" and entry.status == "cancelled" for entry in entries)
     retained = await restarted_runtime.outbox.retained_items()
     for entry in entries:
@@ -566,7 +567,7 @@ async def test_queue_restart_finishes_partial_cancel_without_duplicate_notice(tm
             kind="user_mirror",
             chat_id=-123,
             topic_id=7,
-            text="<i>[메시지가 취소됐어요.]</i>"
+            text=TranslationStore("ko").chat("notice.queue_cancelled")
             if notice == "legacy"
             else "notice in a previous locale",
             history_id=state.identity["user_entry_id"],
@@ -628,7 +629,7 @@ async def test_queue_restart_warns_on_corruption_without_logging_payload(tmp_pat
 async def test_queue_compaction_preserves_unresolved_admission_verbatim(tmp_path, monkeypatch):
     _, bot, runtime = harness(tmp_path)
     turns = WebTurns(bot, runtime)
-    unresolved = journal_admission(turns, "newlines\n{} <>& 한글 😀")
+    unresolved = journal_admission(turns, "newlines\n{} <>& café 😀")
     finished = journal_admission(turns, "finished")
     turns._journal.mark(finished.identity["turn_id"], "started")
     before = turns._journal.path.stat().st_ino
