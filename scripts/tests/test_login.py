@@ -692,6 +692,8 @@ os.execv(sys.executable, [sys.executable] + args)
     def test_api_invalid_names_and_oauth_aliases_do_not_call_docker(self):
         for args in (('claude-api', ''), ('claude-api', 'bad-name'),
                      ('claude-api', '9BAD'), ('claude-api', 'HAS SPACE'),
+                     ('claude-api', '_KEY'), ('claude-api', 'A' * 57),
+                     ('claude-api', 'A\n'),
                      ('claude-api', 'BAD;command'), ('claude-api', self.key, 'extra'),
                      ('claude', 'api'), ('claude', 'claude-api')):
             with self.subTest(args=args):
@@ -719,15 +721,35 @@ os.execv(sys.executable, [sys.executable] + args)
                 self.assertFalse((self.slot / 'settings.json').exists())
                 credential.unlink()
 
-    def test_api_missing_key_keeps_order_and_leaves_slot_for_retry(self):
+    def test_api_missing_key_keeps_order_without_creating_slot(self):
         self.store.write_text('')
         before = self.config.read_bytes()
         result = self.run_login('claude-api')
         self.assertEqual(result.returncode, 1)
         self.assertIn('/secret set ' + self.key, result.stderr)
         self.assertEqual(self.config.read_bytes(), before)
-        self.assertTrue((self.slot / 'settings.json').is_file())
+        self.assertFalse(self.slot.exists())
+        self.assertFalse((self.home / '.cli-auth/_shared-projects').exists())
         self.assertFalse(self.audit.exists())
+
+    def test_api_key_names_match_secret_store_boundaries(self):
+        for key in ('A', 'A' * 56):
+            with self.subTest(key=key):
+                self.store.write_text(key + '=' + self.value + '\n')
+                result = self.run_login('claude-api', key)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_api_missing_replacement_key_preserves_existing_slot(self):
+        result = self.run_login('claude-api')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        before = {name: (self.slot / name).read_bytes()
+                  for name in ('settings.json', 'api-key-helper.sh')}
+        config = self.config.read_bytes()
+        result = self.run_login('claude-api', 'MISSING_KEY')
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(self.config.read_bytes(), config)
+        for name, contents in before.items():
+            self.assertEqual((self.slot / name).read_bytes(), contents)
 
     def test_api_settings_fallback_does_not_modify_default(self):
         settings = self.default / 'settings.json'

@@ -1110,7 +1110,7 @@ PYREGISTER
 
 login_claude_api() {
     local key_name="${1-ANTHROPIC_CREDIT_API_KEY}"
-    if [ $# -gt 1 ] || [[ ! "$key_name" =~ ^[A-Z_][A-Z0-9_]*$ ]]; then
+    if [ $# -gt 1 ] || [[ ! "$key_name" =~ ^[A-Z][A-Z0-9_]{0,55}$ ]]; then
         say_err err_api_key_name
         return 1
     fi
@@ -1120,11 +1120,6 @@ login_claude_api() {
         say_err err_api_oauth
         return 1
     fi
-    ensure_shared_projects || return 1
-    ensure_slot_dir "$slot" || return 1
-    write_api_slot_helper "$slot" "$key_name" || return 1
-    write_api_slot_settings "$slot" "/ductor/.cli-auth/claude-api/api-key-helper.sh" || return 1
-    share_slot_from_default "$slot" || return 1
     # Plaintext: inspect names only. Encrypted: defer verification to the helper;
     # docker compose exec has no process-owned vault credentials, even when unlocked.
     local key_status=0
@@ -1137,6 +1132,11 @@ login_claude_api() {
         say_err err_api_secret "$key_name"
         return 1
     fi
+    ensure_shared_projects || return 1
+    ensure_slot_dir "$slot" || return 1
+    write_api_slot_helper "$slot" "$key_name" || return 1
+    write_api_slot_settings "$slot" "/ductor/.cli-auth/claude-api/api-key-helper.sh" || return 1
+    share_slot_from_default "$slot" || return 1
     local position
     position="$(register_api_slot)" || return 1
     say ok_api "$key_name" "$position"

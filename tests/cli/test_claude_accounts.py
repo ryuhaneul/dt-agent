@@ -763,6 +763,28 @@ def test_api_key_slot_rejects_link_missing_and_directory_settings(tmp_path):
     assert not slot_is_api_key(tmp_path)
 
 
+@pytest.mark.parametrize("target_name", ["outside", "slot-sibling"])
+def test_api_key_slot_rejects_settings_outside_slot(tmp_path, target_name):
+    from ductor_bot.cli.claude_accounts import slot_is_api_key
+
+    slot = tmp_path / "slot"
+    slot.mkdir()
+    outside = tmp_path / target_name
+    outside.mkdir()
+    target = outside / "settings.json"
+    target.write_text('{"apiKeyHelper": "helper.sh"}')
+    (slot / "settings.json").symlink_to(target)
+    assert not slot_is_api_key(slot)
+
+
+def test_api_key_slot_rejects_symlink_loop(tmp_path):
+    from ductor_bot.cli.claude_accounts import slot_is_api_key
+
+    settings = tmp_path / "settings.json"
+    settings.symlink_to(settings)
+    assert not slot_is_api_key(tmp_path)
+
+
 @pytest.mark.parametrize(
     "text",
     [

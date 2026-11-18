@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
 import time
 from collections.abc import Callable
@@ -471,12 +472,16 @@ class SlotRegistry:
 
 def slot_is_api_key(config_dir: Path) -> bool:
     """Recognize a slot-local API key helper without following settings links."""
-    settings = config_dir / "settings.json"
-    if settings.is_symlink() or not settings.is_file():
-        return False
     try:
+        config_dir = config_dir.resolve()
+        settings_path = os.path.normpath(config_dir / "settings.json")
+        if not settings_path.startswith(str(config_dir) + os.sep):
+            return False
+        settings = Path(settings_path)
+        if settings.is_symlink() or not settings.is_file():
+            return False
         data = json.loads(settings.read_text(encoding="utf-8"))
-    except (ValueError, RecursionError, OSError):
+    except (ValueError, RecursionError, OSError, RuntimeError):
         return False
     helper = data.get("apiKeyHelper") if isinstance(data, dict) else None
     return isinstance(helper, str) and bool(helper)
