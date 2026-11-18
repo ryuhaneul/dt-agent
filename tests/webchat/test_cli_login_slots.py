@@ -656,3 +656,23 @@ def test_api_shared_settings_recreated_when_default_directory_is_missing(tmp_pat
     (alternate / "settings.json").write_text('{"apiKeyHelper": "helper.sh", "old": true}')
     share_slot_from_default(tmp_path, "claude-api")
     assert json.loads((alternate / "settings.json").read_text()) == {"apiKeyHelper": "helper.sh"}
+
+
+@pytest.mark.parametrize("operation", ["share", "resolve"])
+@pytest.mark.parametrize(
+    "name", ["..", "../escape", "../.cli-auth-sibling/claude", "/escape", "claude/../../escape"]
+)
+def test_web_slot_paths_reject_escape_before_api_probe(paths, operation, name):
+    before = tree(paths.ductor_home)
+    # Exercise the path boundary independently of the slot-name regex.
+    with (
+        patch("ductor_bot.webchat.cli_login_slots.resolve_slot_name", return_value=name),
+        patch("ductor_bot.webchat.cli_login_slots.slot_is_api_key") as probe,
+        pytest.raises(ValueError, match="invalid_slot"),
+    ):
+        if operation == "share":
+            share_slot_from_default(paths.ductor_home, name)
+        else:
+            ClaudeLoginSlots(paths).resolve_oauth_slot(name)
+    probe.assert_not_called()
+    assert tree(paths.ductor_home) == before

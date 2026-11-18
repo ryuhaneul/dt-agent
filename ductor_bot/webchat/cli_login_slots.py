@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shutil
 from dataclasses import dataclass
@@ -62,7 +63,11 @@ def share_slot_from_default(ductor_home: Path, slot: str) -> None:  # noqa: C901
     """Port share_slot_from_default and _link_alt_to_default, after successful auth."""
     slot = resolve_slot_name(slot, allow_api_key=True)
     default = host_slot_config_dir(ductor_home, "claude")
-    alternate = host_slot_config_dir(ductor_home, slot)
+    root = os.fspath(host_cli_auth_dir(ductor_home))
+    candidate = os.path.normpath(os.path.join(root, slot))  # noqa: PTH118 -- explicit CodeQL path normalization
+    if not candidate.startswith(root + os.sep):
+        raise ValueError("invalid_slot")
+    alternate = Path(candidate)
     if slot == "claude" or not alternate.is_dir():
         return
     api_key = slot_is_api_key(alternate)
@@ -119,7 +124,11 @@ class ClaudeLoginSlots:
     def resolve_oauth_slot(self, name: str | None) -> str:
         """Reject API key slots before reserving a web OAuth login job."""
         slot = resolve_slot_name(name)
-        if slot_is_api_key(host_slot_config_dir(self._paths.ductor_home, slot)):
+        root = os.fspath(host_cli_auth_dir(self._paths.ductor_home))
+        candidate = os.path.normpath(os.path.join(root, slot))  # noqa: PTH118 -- explicit CodeQL path normalization
+        if not candidate.startswith(root + os.sep):
+            raise ValueError("invalid_slot")
+        if slot_is_api_key(Path(candidate)):
             raise ValueError("api_key_slot")
         return slot
 
