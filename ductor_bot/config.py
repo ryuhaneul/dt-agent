@@ -69,7 +69,7 @@ _DEFAULT_FLUSH_PROMPT = (
     "nothing new worth saving, reply exactly: FLUSH_NOOP"
 )
 
-# Exact pre-reporting default, retained for config upgrades and transcript imports.
+# Exact pre-reporting default, retained to strip it from imported transcripts.
 LEGACY_MEMORY_REFLECTION_PROMPT = (
     "## MEMORY REFLECTION\n"
     "Review the last several messages in this conversation.\n"

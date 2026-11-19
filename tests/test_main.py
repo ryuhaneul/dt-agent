@@ -22,55 +22,8 @@ _LIFECYCLE = "ductor_bot.cli_commands.lifecycle"
 _STATUS = "ductor_bot.cli_commands.status"
 
 
-_LEGACY_MEMORY_REFLECTION_PROMPT = (
-    "## MEMORY REFLECTION\n"
-    "Review the last several messages in this conversation.\n"
-    "Check: were there any new decisions, corrections, error solutions, user preferences, or "
-    "important facts that you did NOT yet write to memory?\n"
-    "If yes -- update memory_system/MAINMEMORY.md silently.\n"
-    "If everything is already recorded -- do nothing."
-)
-
-
 class TestLoadConfig:
     """Test config loading, creation, and smart-merge."""
-
-    @pytest.mark.parametrize(
-        "prompt",
-        [
-            _LEGACY_MEMORY_REFLECTION_PROMPT,
-            "My custom reflection prompt",
-            _LEGACY_MEMORY_REFLECTION_PROMPT + "\n",
-        ],
-        ids=["legacy-default", "custom", "edited-legacy-default"],
-    )
-    def test_migrates_only_exact_legacy_reflection_prompt(
-        self, tmp_path: Path, prompt: str
-    ) -> None:
-        from ductor_bot.__main__ import load_config
-        from ductor_bot.config import MemoryReflectionConfig
-
-        paths = DuctorPaths(ductor_home=tmp_path / "home", framework_root=tmp_path / "framework")
-        paths.config_path.parent.mkdir(parents=True)
-        data = AgentConfig().model_dump(mode="json")
-        data["gemini_api_key"] = "null"
-        data["memory_reflection"]["prompt"] = prompt
-        paths.config_path.write_text(json.dumps(data), encoding="utf-8")
-        expected = (
-            MemoryReflectionConfig().prompt
-            if prompt == _LEGACY_MEMORY_REFLECTION_PROMPT
-            else prompt
-        )
-
-        with (
-            patch("ductor_bot.__main__.resolve_paths", return_value=paths),
-            patch("ductor_bot.__main__.init_workspace"),
-        ):
-            assert load_config().memory_reflection.prompt == expected
-            assert load_config().memory_reflection.prompt == expected
-
-        saved = json.loads(paths.config_path.read_text(encoding="utf-8"))
-        assert saved["memory_reflection"]["prompt"] == expected
 
     def test_creates_config_from_example(self, tmp_path: Path) -> None:
         from ductor_bot.__main__ import load_config
