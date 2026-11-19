@@ -80,6 +80,7 @@ class TelegramWebchatOps:
                 allowed_roots=self._bot.file_roots(self._bot._orch.paths),
                 reply_markup=markup,
                 skip_unavailable_files=True,
+                outbox_chunk_layout=True,
                 on_keyboard=on_keyboard,
                 web_attachment_name=web_attachment_name,
                 literal_text=literal_text,

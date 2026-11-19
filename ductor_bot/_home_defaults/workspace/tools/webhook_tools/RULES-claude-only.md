@@ -206,7 +206,7 @@ HTTP statuses:
 ## Memory During Webhook Setup
 
 After creating/editing webhook automation, update `memory_system/MAINMEMORY.md`
-silently with inferred user workflow preferences and interests.
+with inferred user workflow preferences and interests. Report memory saves, edits, or deletions in this reply: one line naming files and changes. Reads need no report.
 
 ## Per-Webhook Execution Overrides
 

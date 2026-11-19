@@ -418,7 +418,7 @@ main 설정은 `$DUCTOR_HOME/config/config.json`입니다. [설정 스키마](do
 | `claude_accounts` | 인증된 계정 슬롯 순서. 자격은 .cli-auth에 유지됩니다. |
 | `timeouts/cli_timeout/tasks` | 경로별 CLI 제한·작업 동작. 모든 경로가 동일한 global timeout을 쓰지는 않습니다. |
 | `streaming/heartbeat/cleanup` | 스트리밍 출력·정기 확인·보관 기간. 예시는 heartbeat 활성, 수동 그룹 대상은 빈 목록. 끄려면 `config.json`의 `heartbeat.enabled`를 `false`로 설정합니다. 자동 대상 선정은 기본 켜짐으로, 최근 7일 안에 대화한 허용 Telegram DM·그룹 토픽 세션을 각각 선택합니다(사용자의 마지막 활동 기준, 추적·복구 대상은 이후에도 포함될 수 있음). suspend_on_ack도 기본 켜짐으로, 할 말 없이 ACK만 답한 세션은 다음 대화까지 쉽니다. 수락된 사용자·태스크·버스 활동이나 사용자 활동 횟수 변경도 다시 깨웁니다. 메모리 린트 보고와 크론 결과만으로는 heartbeat 대상이 되거나 깨어나지 않습니다. 조용한 시간 기본값은 꺼짐(0/0)이며, 최근 활동 쿨다운과 세션 조건은 계속 적용됩니다. |
-| `cron_delivery_retry/cron_preflight` | 선택 cron 재시도(기본 꺼짐·300초·12회) / 결정적 건너뛰기 조건(기본 꺼짐·15초·HEARTBEAT_OK). |
+| `cron_delivery_retry/cron_preflight` | 선택 cron 재시도(기본 꺼짐·300초·12회) / 결정적 건너뛰기 조건(기본 켜짐·15초·HEARTBEAT_OK). |
 | cron job `delivery_mode` | cron 도구로 job 마다 지정(`config.json` 아님): `separate`(별도 실행, 결과는 메시지로 도착; 전달 방식이 지정되지 않은 job), `inject`(chat/topic 에서 만든 job 의 기본값: 결과를 그 토픽 세션에 주입하고 세션 응답을 전달) 또는 `in_session`(별도 실행 없이 그 세션의 턴으로 지시를 수행). 둘은 chat 이 필요하며, 에이전트가 크론을 만들거나 고치기 전에 항목별로 설명합니다. [cron 전달 방식](docs/modules/cron.md#delivery-modes-inject-and-in_session) 참고. |
 | `chat_log` | 기본 꺼짐. main Telegram 기록·복구 큐. 기록·백업 자동 보관 정리는 기본 꺼짐(`0` 또는 `null`). 재시작 필요. |
 | `webchat` | 기본 꺼짐. 기록 활성화·도메인·접근 설정 필요. 비밀번호·TOTP, Telegram 토픽 공유와 main Markdown 4종 편집 제공. 재시작 필요. |

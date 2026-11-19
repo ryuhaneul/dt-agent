@@ -74,7 +74,9 @@ _DEFAULT_MEMORY_REFLECTION_PROMPT = (
     "Review the last several messages in this conversation.\n"
     "Check: were there any new decisions, corrections, error solutions, user "
     "preferences, or important facts that you did NOT yet write to memory?\n"
-    "If yes -- update memory_system/MAINMEMORY.md silently.\n"
+    "If yes -- update memory_system/MAINMEMORY.md. "
+    "Report memory saves, edits, or deletions in this reply: one line naming files and changes. "
+    "Reads need no report.\n"
     "If everything is already recorded -- do nothing."
 )
 
@@ -348,7 +350,7 @@ class CronDeliveryRetryConfig(BaseModel):
 class CronPreflightConfig(BaseModel):
     """Task-local deterministic gate that can skip a cron agent run."""
 
-    enabled: bool = False
+    enabled: bool = True
     timeout_seconds: float = Field(default=15.0, gt=0)
     skip_marker: str = "HEARTBEAT_OK"
 

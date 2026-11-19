@@ -130,10 +130,15 @@ Each job owns `cron_tasks/<name>/TASK_DESCRIPTION.md`.
 Edit that file to change task behavior.
 Do not edit task-folder `GEMINI.md` manually.
 
+To run the agent only when there is work to do, add `scripts/preflight.py` in the
+job's task folder. When there is nothing to do, print `HEARTBEAT_OK` as the last
+line of stdout and exit with code 0. The script's time limit is set by
+`cron_preflight.timeout_seconds` (15 seconds by default).
+
 ## After Cron Setup
 
-Update `memory_system/MAINMEMORY.md` silently with inferred preference signals
-from the user's requested automation (not just "created job").
+Update `memory_system/MAINMEMORY.md` with inferred preference signals
+from the user's requested automation (not just "created job"). Report memory saves, edits, or deletions in this reply: one line naming files and changes. Reads need no report.
 
 ## Pitfalls
 

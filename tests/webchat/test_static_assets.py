@@ -772,41 +772,89 @@ class Element {
   close(){this.open=false;}
   focus(){document.activeElement=this;}
   closest(selector){return (selector==='[data-tid]'&&this.dataset.tid)||(selector==='[data-response-entry]'&&this.dataset.responseEntry)||(selector==='[data-callback-entry]'&&this.dataset.callbackEntry)||(selector==='[data-cancel-turn]'&&this.dataset.cancelTurn)?this:null;}
-  querySelector(selector){
-    if(selector.startsWith('[data-entry-seq=')){
-      const seq=Number(selector.match(/"(-?\d+)"/)[1]);
-      return this.html.includes(`data-entry-seq="${seq}"`)?{scrollIntoView(){scrolled=seq}}:null;
-    }
-    return (this.nodes ||= {})[selector] ||= new Element();
-  }
-  querySelectorAll(selector){
-    if(selector!=='[data-turn]')return [];
-    const parent=this;
-    return [...this.html.matchAll(/<div class="msg bot" [^>]*data-turn="([^"]+)">[\s\S]*?(?=<div class="msg bot" [^>]*data-turn=|$)/g)].map(match=>{
-      let html=match[0];const update=value=>{parent.html=parent.html.replace(html,value);html=value;};
-      return {dataset:{turn:match[1]},querySelector(selector){
-        const name=selector.slice(1,-1),tag=name==='data-stream-tool'?'span':'div';
-        const pattern=new RegExp(`(<${tag} ${name}[^>]*>)([\\s\\S]*?)(</${tag}>)`);
-        return {dataset:{get length(){return /data-length="(\d+)"/.exec(html)?.[1]||'0';},set length(value){update(html.replace(/data-length="\d+"/,`data-length="${value}"`));}},
-          get innerHTML(){return pattern.exec(html)?.[2]||'';},
-          set innerHTML(value){update(html.replace(pattern,(_all,start,_body,end)=>start+value+end));},
-          insertAdjacentHTML(position,value){assert.equal(position,'beforeend');this.innerHTML=this.innerHTML+value;},
-          set textContent(value){this.innerHTML=value.replace(/[&<>]/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;'})[char]);}
-        };
-      }};
-    });
-  }
-  get firstElementChild(){const match=/^<div class="day">[\s\S]*?<\/div>/.exec(this.html);return match?{remove:()=>{this.html=this.html.slice(match[0].length);}}:null;}
-  insertAdjacentHTML(position,value){assert.ok(['beforeend','afterbegin'].includes(position));this.html=position==='afterbegin'?value+this.html:this.html+value;}
+  querySelector(selector){return (this.nodes ||= {})[selector] ||= new Element();}
+  querySelectorAll(){return [];}
   get innerHTML(){return this.html;}
   set innerHTML(value){this.html=value;}
 }
+// Only the thread needs a DOM tree. Its rendered, escaped markup has div roots.
+function threadRows(html){
+  const rows=[];let depth=0,start=0;
+  for(const match of html.matchAll(/<\/?div\b[^>]*>/g)){
+    if(match[0].startsWith('</')){
+      if(--depth===0)rows.push(new ThreadRow(html.slice(start,match.index+match[0].length)));
+    }else if(depth++===0)start=match.index;
+  }
+  assert.equal(depth,0);
+  return rows;
+}
+class ThreadRow extends Element {
+  constructor(html){
+    super();this.html=html;this.parentNode=null;
+    const opening=html.slice(0,html.indexOf('>'));
+    for(const [,name,value] of opening.matchAll(/data-([\w-]+)="([^"]*)"/g)){
+      this.dataset[name.replace(/-([a-z])/g,(_,part)=>part.toUpperCase())]=value;
+    }
+  }
+  getBoundingClientRect(){
+    const top=this.parentNode.children.indexOf(this)*50-this.parentNode.scrollTop;
+    return {top,bottom:top+50};
+  }
+  get nextElementSibling(){return this.parentNode?.children[this.parentNode.children.indexOf(this)+1]??null;}
+  scrollIntoView(){scrolled=Number(this.dataset.entrySeq);}
+  remove(){
+    if(this.parentNode)this.parentNode.children.splice(this.parentNode.children.indexOf(this),1);
+    this.parentNode=null;
+  }
+  replaceWith(row){this.parentNode.insertBefore(row,this);this.remove();}
+  querySelector(selector){
+    const name=selector.slice(1,-1);
+    const pattern=new RegExp(`(<div ${name}[^>]*>)([\\s\\S]*?)(</div>)`);
+    if(!pattern.test(this.html))return null;
+    const row=this;
+    const attribute=key=>new RegExp(`data-${key}="(\\d+)"`);
+    const dataset=Object.fromEntries(['length','revision'].map(key=>[key,attribute(key).exec(row.html)?.[1]]));
+    return {
+      dataset,
+      get innerHTML(){return pattern.exec(row.html)[2];},
+      set innerHTML(value){
+        row.html=row.html.replace(pattern,(_all,start,_body,end)=>start+value+end);
+        for(const key of ['length','revision'])if(dataset[key]!==undefined){
+          row.html=row.html.replace(attribute(key),`data-${key}="${dataset[key]}"`);
+        }
+      },
+      insertAdjacentHTML(position,value){assert.equal(position,'beforeend');this.innerHTML+=value;},
+    };
+  }
+}
+class Thread extends Element {
+  constructor(){super();this.style.removeProperty=()=>{};}
+  getBoundingClientRect(){return {top:0,bottom:500};}
+  get firstElementChild(){return this.children[0]??null;}
+  get innerHTML(){return this.children.map(row=>row.html).join('');}
+  set innerHTML(html){this.replaceChildren();this.insertAdjacentHTML('beforeend',html);}
+  querySelector(selector){
+    const [,key,value]=selector.match(/^\[data-(entry-seq|turn)="([^"]+)"\]$/)||[];
+    return key ? this.children.find(row=>row.dataset[key==='turn'?'turn':'entrySeq']===value)??null : null;
+  }
+  insertBefore(row,next){
+    row.remove();
+    this.children.splice(next===null?this.children.length:this.children.indexOf(next),0,row);
+    row.parentNode=this;
+  }
+  insertAdjacentHTML(position,html){
+    const next=position==='afterbegin'?this.firstElementChild:null;
+    for(const row of threadRows(html))this.insertBefore(row,next);
+  }
+}
 const document=new Element();document.documentElement={lang:'en'};document.hidden=false;
 const nodes=new Map();
-document.querySelector=selector=>{if(!nodes.has(selector))nodes.set(selector,new Element());return nodes.get(selector)};
+document.querySelector=selector=>{if(!nodes.has(selector))nodes.set(selector,selector==='#thread'?new Thread():new Element());return nodes.get(selector)};
 const infoValues=Array.from({length:3},()=>new Element());
 document.querySelectorAll=selector=>selector==='#topicPanel dd'?infoValues:[];
-document.createElement=()=>new Element();
+document.createElement=tag=>tag==='template'
+  ? {content:{},set innerHTML(html){this.content.firstElementChild=threadRows(html)[0];}}
+  : new Element();
 document.dispatchEvent=event=>{document.emit(event.type,{detail:event.detail});return true;};
 class CustomEvent{constructor(type,options={}){this.type=type;this.detail=options.detail}}
 const sockets=[], timers=new Map();let timerId=0,scrolled=null;
@@ -898,7 +946,7 @@ const context=vm.createContext({document,window:document,CustomEvent,WebSocket,f
   location:{href:'https://chat.example.com/#list',hash:'#list'},
   setTimeout:(callback,delay)=>{const id=++timerId;timers.set(id,{callback,delay});return id},
   clearTimeout:id=>timers.delete(id),
-  matchMedia:()=>({matches:!coarse}),crypto:{randomUUID:()=>`client-${calls.length}`}});
+  matchMedia:()=>({matches:!coarse}),CSS:{escape:String},crypto:{randomUUID:()=>`client-${calls.length}`}});
 const modules=new Map();
 for(const [name,exports] of Object.entries({
  'router.js':{renderRoute:()=>document.querySelector('[data-view="chat"] h2').focus(),go:route=>{context.location.hash=`#${route}`;routes.push(route);document.dispatchEvent(new CustomEvent('route-change',{detail:{route,view:route==='manage'?'manage':'chat'}}))}},
@@ -958,8 +1006,11 @@ assert.ok(document.querySelector('#outboxRows').innerHTML.includes(strings['outb
 assert.ok(document.querySelector('#hb').innerHTML.includes('data-s="pending"'));
 assert.equal(document.querySelector('.composer .line').hidden,false);
 assert.equal(document.querySelector('#webSessions').textContent,2);
-// Older pages prepend and preserve scroll position; searching jumps to an earlier seq.
-thread.scrollTop=0;thread.emit('scroll');await flush();assert.ok(thread.innerHTML.includes('Entry 6</p>'));
+// Older pages shift the bounded window; searching jumps to an earlier seq.
+thread.scrollTop=0;thread.emit('scroll');await flush();
+assert.ok(calls.some(call=>call.url==='/api/topics/1.2/messages?limit=100&before=106'));
+assert.equal(thread.children.find(node=>node.dataset.entrySeq).dataset.entrySeq,'56');
+assert.equal((thread.innerHTML.match(/data-entry-seq=/g)||[]).length,100);
 const q=document.querySelector('#q');q.value='entry';q.emit('input');await runTimer(300);
 assert.ok(list.innerHTML.includes('Found &lt;script&gt;'));assert.ok(calls.some(call=>call.url==='/api/search?q=entry'));
 topics.selectTopic('1.2',2);await flush();assert.equal(scrolled,2);assert.ok(thread.innerHTML.includes('Entry 1</p>'));
@@ -1243,13 +1294,17 @@ historyA.splice(0,historyA.length,...Array.from({length:600},(_,index)=>makeEntr
 topicRows[0].turns=[];topicRows[0].busy=false;
 document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));await flush();topics.selectTopic('1.2');await flush();
 await document.querySelector('#threadTop').emit('click');await flush();
-assert.equal((thread.innerHTML.match(/data-entry-seq=/g)||[]).length,600);assert.equal(thread.scrollTop,0);
+assert.equal((thread.innerHTML.match(/data-entry-seq=/g)||[]).length,100);
+assert.equal(thread.children.find(node=>node.dataset.entrySeq).dataset.entrySeq,'1');
+assert.equal(thread.scrollTop,0);
 document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:false}}));
 document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));await flush();topics.selectTopic('1.2');await flush();
 let finishOlder;historyHold=new Promise(resolve=>finishOlder=resolve);
 document.querySelector('#threadTop').emit('click');await new Promise(setImmediate);
 thread.scrollTop=123;thread.emit('wheel');finishOlder();historyHold=null;await flush();
-assert.equal((thread.innerHTML.match(/data-entry-seq=/g)||[]).length,200);assert.equal(thread.scrollTop,123);
+assert.equal((thread.innerHTML.match(/data-entry-seq=/g)||[]).length,100);
+assert.equal(thread.children.find(node=>node.dataset.entrySeq).dataset.entrySeq,'501');
+assert.equal(thread.scrollTop,123);
 document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:false}}));
 
 // No topic means no send target: keep the composer hidden rather than accepting a lost draft.
@@ -2457,7 +2512,9 @@ for(const [index,state] of ['authenticated','unauthenticated','expired','unused'
  assert.equal(rows[index].children[1].className,'badge '+(index===0?'badge-ok':index===2?'badge-warn':'badge-off'));
  assert.equal(rows[index].children[2].textContent,'ko:cli_login.'+(index===1?'login':'relogin'));
 }
-assert.equal(rows[4].children.length,2,'API key slots must not offer an OAuth login button');
+assert.equal(rows[4].children.length,3,'API key slots have a badge and delete control');
+assert.equal(rows[4].children[2].dataset.delete,'claude-api');
+assert.equal(rows[0].children.length,3,'the default slot has no delete control');
 assert.equal(rows[4].children[1].textContent,'ko:cli_login.api_key');
 assert.equal(rows[4].children[1].dataset.i18n,'cli_login.api_key');
 assert.equal(rows[4].children[1].className,'badge badge-ok');

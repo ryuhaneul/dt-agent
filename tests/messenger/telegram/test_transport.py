@@ -12,6 +12,7 @@ from ductor_bot.bus.cron_sanitize import (
     sanitize_cron_result_text,
 )
 from ductor_bot.bus.envelope import Envelope, Origin
+from ductor_bot.messenger.telegram.sender import SendProgress
 from ductor_bot.messenger.telegram.transport import TelegramTransport
 
 if TYPE_CHECKING:
@@ -325,8 +326,8 @@ class TestInteragentDelivery:
         )
 
         with patch(
-            "ductor_bot.messenger.telegram.transport.send_rich_checked_progress",
-            new_callable=AsyncMock, return_value=(True, 1),
+            "ductor_bot.messenger.telegram.transport.send_rich_progress_detailed",
+            new_callable=AsyncMock, return_value=SendProgress(True, 1, None, "", None),
         ) as mock_send:
             await transport.deliver(env)
 
@@ -347,8 +348,8 @@ class TestInteragentDelivery:
         bus = MessageBus()
         bus.register_transport(transport)
         with patch(
-            "ductor_bot.messenger.telegram.transport.send_rich_checked_progress",
-            new_callable=AsyncMock, return_value=(True, 1),
+            "ductor_bot.messenger.telegram.transport.send_rich_progress_detailed",
+            new_callable=AsyncMock, return_value=SendProgress(True, 1, None, "", None),
         ) as mock_send:
             outcome = await bus.submit(env)
         assert mock_send.call_args.args[2] == text
@@ -368,9 +369,9 @@ class TestInteragentDelivery:
             order.append("notice")
             return True
 
-        async def send_report(*_args: object, **_kwargs: object) -> tuple[bool, int]:
+        async def send_report(*_args: object, **_kwargs: object) -> SendProgress:
             order.append("report")
-            return True, 1
+            return SendProgress(True, 1, None, "", None)
 
         with (
             patch(
@@ -378,7 +379,7 @@ class TestInteragentDelivery:
                 new_callable=AsyncMock, side_effect=send_notice,
             ) as notice_send,
             patch(
-                "ductor_bot.messenger.telegram.transport.send_rich_checked_progress",
+                "ductor_bot.messenger.telegram.transport.send_rich_progress_detailed",
                 new_callable=AsyncMock, side_effect=send_report,
             ) as report_send,
         ):

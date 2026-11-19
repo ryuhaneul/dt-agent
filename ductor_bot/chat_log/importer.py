@@ -23,7 +23,6 @@ from ductor_bot.heartbeat.models import HeartbeatStatus
 from ductor_bot.infra.atomic_io import atomic_text_save
 from ductor_bot.infra.file_lock import exclusive_file_lock
 from ductor_bot.messenger.queue_context import without_queue_context
-from ductor_bot.orchestrator import hooks
 from ductor_bot.orchestrator.flows import _classify_heartbeat_response
 from ductor_bot.session.key import SessionKey
 from ductor_bot.workspace.paths import DuctorPaths
@@ -37,6 +36,35 @@ _INJECTION = re.compile(
     r"^\[(?:[A-Z][A-Z0-9 _-]{2,}(?::|\])"
     r"|ASYNC INTER-AGENT (?:RESPONSE|FAILURE|RESULT LOST) from ')"
 )
+
+
+# MessageHookRegistry.apply and named-session setup append these after "\n\n".
+_HOOK_HEADINGS = frozenset(
+    {
+        "## FIRST-RUN SETUP",
+        "## MEMORY CHECK",
+        "## BACKGROUND TASKS",
+        "## TASK REMINDER",
+        "## MEMORY REFLECTION",
+    }
+)
+_CODE_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+
+
+def _without_hook_suffix(text: str) -> str:
+    lines = text.split("\n")
+    fence = ""
+    for index, line in enumerate(lines):
+        match = _CODE_FENCE.match(line)
+        if match is not None:
+            marker, rest = match.groups()
+            if not fence:
+                fence = marker
+            elif marker.startswith(fence) and not rest.strip():
+                fence = ""
+        elif not fence and index >= 2 and lines[index - 1] == "" and line in _HOOK_HEADINGS:
+            return "\n".join(lines[: index - 1])
+    return text
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,9 +123,6 @@ class TranscriptImporter:
         self.config = config
         self.history = HistoryStore(paths.chat_log_dir / "history")
         self.state_path = paths.chat_log_dir / "import_refs.json"
-        self._suffixes = [
-            value.suffix for value in vars(hooks).values() if isinstance(value, hooks.MessageHook)
-        ] + [config.memory_reflection.prompt]
         self._heartbeats = {config.heartbeat.prompt: config.heartbeat.ack_token}
         self._heartbeats.update(
             {
@@ -109,15 +134,11 @@ class TranscriptImporter:
 
     def _clean_user(self, text: str) -> tuple[str | None, str | None]:
         text = without_queue_context(text)
-        # Hooks are appended in registration order, sometimes several at once.
-        changed = True
-        while changed:
-            changed = False
-            for suffix in self._suffixes:
-                if suffix and text.endswith("\n\n" + suffix):
-                    text = text[: -len("\n\n" + suffix)]
-                    changed = True
-        text = text.strip()
+        prompt = self.config.memory_reflection.prompt
+        suffix = "\n\n" + prompt
+        while prompt and text.endswith(suffix):
+            text = text.removesuffix(suffix)
+        text = _without_hook_suffix(text).strip()
         ack = self._heartbeats.get(text)
         if not text or ack is not None or _INJECTION.match(text) or text.startswith("<"):
             return None, ack

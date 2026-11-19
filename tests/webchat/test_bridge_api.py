@@ -298,6 +298,7 @@ async def conversation(tmp_path, monkeypatch):
     orch = SimpleNamespace(
         paths=paths,
         _sessions=sessions,
+        _autocompact_global_lock=asyncio.Lock(),
         _lock_pool=pool,
         _process_registry=registry,
         is_chat_busy=lambda chat, topic: pool.is_locked((chat, topic)),
@@ -774,6 +775,42 @@ async def test_websocket_disconnect_does_not_cancel_turn(conversation):
             break
     assert len(await h.runtime.history.read("-123.7")) == 2
     h.runtime.events.unsubscribe(queue)
+
+
+async def test_outbox_events_include_combined_history_receipt(conversation):
+    h = conversation
+    row = await h.runtime.history.append(
+        "-123.7", Entry(role="user", source="web", text="with two mirror parts")
+    )
+    async with h.client.ws_connect(f"{_PREFIX}/events", headers=headers()) as ws:
+        first = await h.runtime.outbox.enqueue(
+            kind="user_mirror", chat_id=-123, topic_id=7, text="first", history_id=row.id
+        )
+        frame = await ws.receive_json(timeout=2)
+        assert frame == {
+            "type": "outbox",
+            "pending": 1,
+            "item": first.view(),
+            "history_id": row.id,
+            "mirror": "pending",
+        }
+        second = await h.runtime.outbox.enqueue(
+            kind="user_mirror", chat_id=-123, topic_id=7, text="second", history_id=row.id
+        )
+        assert (await ws.receive_json(timeout=2))["mirror"] == "pending"
+        await h.runtime.outbox.mark_sent(first.id)
+        frame = await ws.receive_json(timeout=2)
+        assert frame["item"]["state"] == "sent"
+        assert frame["mirror"] == "pending"
+        await h.runtime.outbox.mark_failed(second.id)
+        assert (await ws.receive_json(timeout=2))["mirror"] == "failed"
+
+        await h.runtime.outbox.enqueue(kind="bus", chat_id=-123, topic_id=7, text="no history")
+        frame = await ws.receive_json(timeout=2)
+        assert frame["history_id"] is None and frame["mirror"] is None
+        legacy = {"type": "outbox", "pending": 0}
+        h.runtime.events.publish(legacy)
+        assert await ws.receive_json(timeout=2) == legacy
 
 
 async def test_events_ignore_client_frames_and_disconnect_on_overflow(conversation):
@@ -3498,6 +3535,7 @@ async def test_cli_status_returns_ordered_slots_and_cache_without_auth_wait(cli_
 
     manager._auth_checker = slow
     bot.config.claude_accounts = ["claude-work", "claude"]
+    paths.config_path.write_text(json.dumps({"claude_accounts": bot.config.claude_accounts}))
     root = paths.ductor_home / ".cli-auth"
     (root / "claude-work").mkdir()
     (root / "claude-work/credentials.json").write_text("fake")
@@ -3547,6 +3585,7 @@ async def test_cli_status_preserves_slots_when_expiration_metadata_cannot_load(c
 
     client, bot, _, paths, _ = cli_bridge
     bot.config.claude_accounts = ["claude", "claude-empty"]
+    paths.config_path.write_text(json.dumps({"claude_accounts": bot.config.claude_accounts}))
     root = paths.ductor_home / ".cli-auth"
     (root / "claude/.credentials.json").write_text("fake")
     (root / "claude-unused").mkdir()
@@ -3576,6 +3615,7 @@ async def test_cli_slot_expiration_tracks_rotation_fingerprint(cli_bridge):
 
     client, bot, _, paths, _ = cli_bridge
     bot.config.claude_accounts = ["claude-work"]
+    paths.config_path.write_text(json.dumps({"claude_accounts": bot.config.claude_accounts}))
     directory = paths.ductor_home / ".cli-auth/claude-work"
     directory.mkdir()
     credentials = directory / ".credentials.json"
@@ -3738,8 +3778,9 @@ async def test_cli_slot_request_reaches_preparation_and_shutdown_cleans_it(cli_b
 
 
 async def test_cli_status_empty_config_still_lists_default_slot(cli_bridge):
-    client, bot, _, _, _ = cli_bridge
+    client, bot, _, paths, _ = cli_bridge
     bot.config.claude_accounts = []
+    paths.config_path.write_text(json.dumps({"claude_accounts": bot.config.claude_accounts}))
     response = await client.get(f"{_PREFIX}/cli-login/status", headers=cli_headers())
     assert (await response.json())["claude_slots"] == [
         {"name": "claude", "priority": 1, "authenticated": False, "kind": "oauth", "auth_expired": False}
@@ -3749,6 +3790,7 @@ async def test_cli_status_empty_config_still_lists_default_slot(cli_bridge):
 async def test_cli_status_default_slot_excluded_from_nonempty_priority(cli_bridge):
     client, bot, _, paths, _ = cli_bridge
     bot.config.claude_accounts = ["claude-work"]
+    paths.config_path.write_text(json.dumps({"claude_accounts": bot.config.claude_accounts}))
     default = paths.ductor_home / ".cli-auth/claude"
     default.mkdir(exist_ok=True)
     (default / ".credentials.json").write_text("fake")
@@ -4955,6 +4997,7 @@ async def test_cli_status_includes_api_kind_and_ignores_stale_expiry(cli_bridge,
     (slot / "settings.json").write_text('{"apiKeyHelper": "helper.sh"}')
     if configured:
         bot.config.claude_accounts = ["claude", "claude-api"]
+        paths.config_path.write_text(json.dumps({"claude_accounts": bot.config.claude_accounts}))
     registry = SlotRegistry(state_file_path(paths.ductor_home))
     registry.state_path.write_text(json.dumps({
         "auth_failures": {"claude-api": registry.credential_mtimes("claude-api")},

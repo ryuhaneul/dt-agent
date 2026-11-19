@@ -208,7 +208,14 @@ class Outbox:
 
     def _publish(self, item: OutboxItem, pending: int) -> None:
         if self._events is not None:
-            self._events.publish({"type": "outbox", "pending": pending, "item": item.view()})
+            self._events.publish(
+                {
+                    "type": "outbox",
+                    "pending": pending,
+                    "item": item.view(),
+                    "history_id": item.history_id,
+                }
+            )
 
     async def enqueue(  # noqa: PLR0913 - the persisted item fields form the enqueue contract
         self,

@@ -438,8 +438,10 @@ class SlotRegistry:
     atomic snapshot; read-modify-write callers use ``update``.
     """
 
-    def __init__(self, state_path: Path) -> None:
+    def __init__(self, state_path: Path, *, requires_main_config: bool = False) -> None:
         self._state_path = state_path
+        # Sub-agents must verify registration against the shared main config.
+        self.requires_main_config = requires_main_config
 
     @property
     def state_path(self) -> Path:
@@ -455,17 +457,28 @@ class SlotRegistry:
                 mtimes[name] = None
         return mtimes
 
-    def load(self) -> SlotSnapshot:
-        """Load cooldown state; return empty snapshot on any error."""
-        if not self._state_path.is_file():
-            return SlotSnapshot()
+    def _read_state(self, *, strict: bool) -> dict[str, object]:
+        """Read cooldown state, optionally raising on file I/O errors."""
+        if not strict and not self._state_path.is_file():
+            return {}
         try:
             raw = json.loads(self._state_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            if strict and self._state_path.is_symlink():
+                raise
+            return {}
         except (ValueError, RecursionError, OSError) as exc:
+            if strict and isinstance(exc, OSError):
+                raise
             logger.warning("Failed to read %s: %s", self._state_path, exc)
-            return SlotSnapshot()
+            return {}
         if not isinstance(raw, dict):
-            return SlotSnapshot()
+            return {}
+        return raw
+
+    def load(self, *, strict: bool = False) -> SlotSnapshot:
+        """Load cooldown state, optionally raising on file I/O errors."""
+        raw = self._read_state(strict=strict)
         cooldowns_raw = raw.get("cooldowns", {})
         cooldowns: dict[str, float] = {}
         if isinstance(cooldowns_raw, dict):
@@ -504,10 +517,10 @@ class SlotRegistry:
             auth_failure_details=details,
         )
 
-    def update(self, fn: Callable[[SlotSnapshot], None]) -> None:
+    def update(self, fn: Callable[[SlotSnapshot], None], *, strict: bool = False) -> None:
         """Read, transform, and persist under one file lock."""
         with exclusive_file_lock(self._state_path):
-            snapshot = self.load()
+            snapshot = self.load(strict=True) if strict else self.load()
             fn(snapshot)
             payload: dict[str, object] = {"cooldowns": snapshot.cooldowns}
             if snapshot.auth_failures:

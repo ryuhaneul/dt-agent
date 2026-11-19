@@ -26,6 +26,12 @@ async def test_oneshot_slot_paths_and_shared_cooldowns(tmp_path, monkeypatch, su
         claude_accounts=["claude-a", "claude-b"],
         user_timezone="UTC",
     )
+    if suffix:
+        config_dir = home / "config"
+        config_dir.mkdir()
+        (config_dir / "config.json").write_text(
+            json.dumps({"claude_accounts": config.claude_accounts}), encoding="utf-8"
+        )
     exec_config = resolve_cli_config(config, None)
     cwd = tmp_path / "project"
     cwd.mkdir()

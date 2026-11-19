@@ -12,7 +12,7 @@ from ductor_bot.bus.envelope import Envelope, Origin
 from ductor_bot.cli.auth import AuthResult, AuthStatus
 from ductor_bot.cli.stream_events import ResultEvent
 from ductor_bot.cli.types import AgentRequest, AgentResponse
-from ductor_bot.config import AgentConfig
+from ductor_bot.config import AgentConfig, update_config_file
 from ductor_bot.errors import CLIError, CronError, SessionError, StreamError, WorkspaceError
 from ductor_bot.heartbeat.models import HeartbeatOutcome, HeartbeatStatus
 from ductor_bot.orchestrator.core import NamedSessionRequest, Orchestrator
@@ -1016,6 +1016,7 @@ async def test_startup_cli_uses_configured_claude_account(
 ) -> None:
     paths, config = workspace
     config = config.model_copy(update={"claude_accounts": ["claude-main"]})
+    update_config_file(paths.config_path, claude_accounts=config.claude_accounts)
     monkeypatch.setenv("HOME", str(paths.ductor_home))
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     auth_dir = paths.ductor_home / ".cli-auth" / "claude-main"
@@ -1125,6 +1126,7 @@ async def test_timezone_only_reload_updates_slot_reset_time(workspace, tmp_path,
         auth.mkdir(parents=True, exist_ok=True)
         (auth / ".credentials.json").write_text("{}")
     config.claude_accounts = ["claude-a", "claude-b"]
+    update_config_file(paths.config_path, claude_accounts=config.claude_accounts)
     config.user_timezone = "Asia/Tokyo"
     orchestrator = Orchestrator(config, paths)
     reloader = ConfigReloader(

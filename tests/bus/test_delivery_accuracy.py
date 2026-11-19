@@ -11,6 +11,7 @@ from ductor_bot.bus.bus import MessageBus
 from ductor_bot.bus.envelope import DeliveryMode, Envelope, LockMode, Origin
 from ductor_bot.messenger.matrix.transport import MatrixTransport
 from ductor_bot.messenger.slack.transport import SlackTransport
+from ductor_bot.messenger.telegram.sender import SendProgress
 from ductor_bot.messenger.telegram.transport import TelegramTransport
 
 
@@ -41,9 +42,9 @@ async def test_telegram_checked_send_false_marks_report_undelivered() -> None:
     bus = _bus_with_injector()
     bus.register_transport(TelegramTransport(bot))
     with patch(
-        "ductor_bot.messenger.telegram.transport.send_rich_checked_progress",
+        "ductor_bot.messenger.telegram.transport.send_rich_progress_detailed",
         new_callable=AsyncMock,
-        return_value=(False, 0),
+        return_value=SendProgress(False, 0, "transient", "timeout", None),
     ) as send:
         outcome = await bus.submit(_ia_envelope("tg"))
     send.assert_awaited_once()
@@ -174,9 +175,9 @@ async def test_ia_final_report_controls_delivery_independently_of_notice(
             with (
                 patch(send_path, new_callable=AsyncMock, return_value=responses[0]) as notice_send,
                 patch(
-                    "ductor_bot.messenger.telegram.transport.send_rich_checked_progress",
+                    "ductor_bot.messenger.telegram.transport.send_rich_progress_detailed",
                     new_callable=AsyncMock,
-                    return_value=(responses[1], 1 if expected else 0),
+                    return_value=SendProgress(expected, int(expected), None, "", None),
                 ) as report_send,
                 caplog.at_level(logging.WARNING),
             ):
@@ -206,7 +207,7 @@ async def test_ia_final_report_controls_delivery_independently_of_notice(
     ("transport_name", "transport_class", "send_path"),
     [
         ("tg", TelegramTransport,
-         "ductor_bot.messenger.telegram.transport.send_rich_checked_progress"),
+         "ductor_bot.messenger.telegram.transport.send_rich_progress_detailed"),
         ("mx", MatrixTransport, "ductor_bot.messenger.matrix.transport.matrix_send_rich_checked_progress"),
         ("sl", SlackTransport, "ductor_bot.messenger.slack.transport.slack_send_rich_checked_progress"),
     ],

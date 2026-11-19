@@ -10,9 +10,9 @@ import logging
 import secrets
 import time
 from collections.abc import Awaitable, Callable, Iterator
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from ductor_bot.bus.envelope import IA_CHUNK_SCHEMES, DeliveryOutcome
 from ductor_bot.bus.failure_reason import QUEUE_WAIT_TIMEOUT, RECIPIENT_GONE
@@ -29,6 +29,7 @@ from ductor_bot.multiagent.failure_ledger import FailureLedger
 from ductor_bot.multiagent.persistence import (
     AsyncRecordStore,
     CorruptAsyncRecordError,
+    async_result_payload,
     merge_redelivery_state,
     progress_reset_reason,
 )
@@ -43,7 +44,7 @@ from ductor_bot.session.named import (
 )
 
 if TYPE_CHECKING:
-    from ductor_bot.bus.envelope import Envelope
+    from ductor_bot.bus.envelope import Envelope, TelegramBroadcastOutcomes
     from ductor_bot.multiagent.stack import AgentStack
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,7 @@ SYNC_SELF_SESSION_REJECTED = (
 )
 REDELIVERY_BACKOFF_BASE = 300
 REDELIVERY_BACKOFF_MAX = 6 * 3600
+DeliveryStage = Literal["delivered", "abandoned", "pending"]
 
 
 class HeadlessAsyncRejected(ValueError):  # noqa: N818 — planned public error name
@@ -243,6 +245,9 @@ class AsyncInterAgentResult:
     delivery_retry: bool = False
     recipient_headless: bool = False  # Derived from the registry at delivery time.
     received_at: float = field(default_factory=_receipt_time)  # First receipt, not replay.
+    telegram_broadcast_outcomes: TelegramBroadcastOutcomes = field(
+        default_factory=dict, kw_only=True
+    )
 
 
 AsyncResultCallback = Callable[["AsyncInterAgentResult"], Awaitable[DeliveryOutcome]]
@@ -322,7 +327,7 @@ class InterAgentBus:
         self._parked_results: dict[str, AsyncInterAgentResult] = {}
         self._delivery_claims: set[str] = set()
         # Delivery acknowledgements survive failed cleanup until both copies are gone.
-        self._delivered_results: set[str] = set()
+        self._terminal_results: dict[str, str] = {}
 
     def _session_chat(self, recipient: str) -> int:
         """Chat id under which the recipient stores its inter-agent sessions."""
@@ -1090,6 +1095,7 @@ class InterAgentBus:
         delivered_chunks: int | None = None,
         delivered_text_sha256: str | None = None,
         chunk_scheme: str | None = None,
+        telegram_broadcast_outcomes: TelegramBroadcastOutcomes | None = None,
     ) -> bool:
         store = self._record_store
         result = self._delivering_results.get(task_id)
@@ -1110,7 +1116,7 @@ class InterAgentBus:
             )
             known_stage = (
                 stage
-                if stage in {"injected", "delivered"} and response.strip()
+                if stage in {"delivered", "abandoned"}
                 else ("injected" if response.strip() else "received")
             )
             task = self._async_tasks.get(task_id)
@@ -1153,6 +1159,7 @@ class InterAgentBus:
                     delivered_chunks=delivered_chunks or 0,
                     delivered_text_sha256=delivered_text_sha256 or "",
                     chunk_scheme=chunk_scheme or "",
+                    telegram_broadcast_outcomes=telegram_broadcast_outcomes,
                 )
             except Exception as exc:
                 logger.error(  # noqa: TRY400
@@ -1186,6 +1193,7 @@ class InterAgentBus:
         delivered_text_sha256: str | None = None,
         chunk_scheme: str | None = None,
         reset_progress: bool = False,
+        telegram_broadcast_outcomes: TelegramBroadcastOutcomes | None = None,
     ) -> bool:
         if self._record_store is None:
             return True
@@ -1206,6 +1214,7 @@ class InterAgentBus:
                 chunk_scheme=chunk_scheme,
                 reset_progress=reset_progress,
                 redelivery_state=pending,
+                telegram_broadcast_outcomes=telegram_broadcast_outcomes,
             )
         except Exception as exc:
             logger.error(  # noqa: TRY400
@@ -1221,6 +1230,7 @@ class InterAgentBus:
                 delivered_chunks=delivered_chunks,
                 delivered_text_sha256=delivered_text_sha256,
                 chunk_scheme=chunk_scheme,
+                telegram_broadcast_outcomes=telegram_broadcast_outcomes,
             ):
                 return False
             if pending is not None:
@@ -1274,6 +1284,7 @@ class InterAgentBus:
                 result.task_id,
             )
             return replace(result, main_response=response, delivered_chunks=0)
+        telegram_broadcast_outcomes = record.get("telegram_broadcast_outcomes", {})
         transport = record["transport"]
         if not transport:
             stack = self._agents.get(target)
@@ -1299,11 +1310,13 @@ class InterAgentBus:
                 result,
                 main_response=record["main_response"] if record["stage"] == "injected" else "",
                 delivered_chunks=0,
+                telegram_broadcast_outcomes=telegram_broadcast_outcomes,
             )
         return replace(
             result,
             main_response=record["main_response"],
             delivered_chunks=record["delivered_chunks"],
+            telegram_broadcast_outcomes=telegram_broadcast_outcomes,
         )
 
     def _redelivery_state(
@@ -1367,7 +1380,8 @@ class InterAgentBus:
                 self._defer_redelivery(result.task_id, target, record)
             redelivery_state = self._redelivery_state(result.task_id, record)
             if (
-                record["result"] != asdict(result) or result.task_id in self._unpersisted_redelivery
+                record["result"] != async_result_payload(result)
+                or result.task_id in self._unpersisted_redelivery
             ) and not self._update_record(target, result.task_id, result=result):
                 self._unpersisted_results[result.task_id] = result
                 logger.error("Async result cannot be persisted before parking path=%s", path)
@@ -1437,7 +1451,7 @@ class InterAgentBus:
 
     async def _attempt_delivery(
         self, result: AsyncInterAgentResult, target: str, *, retry: bool = False
-    ) -> bool:
+    ) -> DeliveryStage:
         """Re-read the current handler on every attempt."""
         stack = self._agents.get(target)
         handler = self._async_result_handlers.get(target)
@@ -1448,7 +1462,7 @@ class InterAgentBus:
                 self._record_store is not None and (stack is None or self.is_headless_agent(target))
             )
         ):
-            return False
+            return "pending"
         try:
             delivery_result = replace(
                 self._delivery_result(result, target),
@@ -1464,7 +1478,19 @@ class InterAgentBus:
                 target,
                 type(exc).__name__,
             )
-            return False
+            return "pending"
+        if isinstance(outcome, DeliveryOutcome) and outcome.delivery_failure == "permanent":
+            terminal = self._finish_delivery(target, result.task_id, "abandoned")
+            message_bus = getattr(stack.bot, "_bus", None) if stack is not None else None
+            from ductor_bot.bus.bus import MessageBus
+
+            if isinstance(message_bus, MessageBus):
+                # Replaying an unmarked record after a crash could send a second notice.
+                if terminal:
+                    await message_bus.notify_interagent_delivery_failed(result.task_id)
+                else:
+                    message_bus.forget_interagent_notices(result.task_id)
+            return "abandoned"
         if isinstance(outcome, DeliveryOutcome) and not outcome.ok:
             self._update_record(
                 target,
@@ -1472,6 +1498,7 @@ class InterAgentBus:
                 delivered_chunks=outcome.delivered_chunks,
                 delivered_text_sha256=outcome.delivered_text_sha256,
                 chunk_scheme=outcome.chunk_scheme,
+                telegram_broadcast_outcomes=outcome.telegram_broadcast_outcomes,
             )
         if not isinstance(outcome, DeliveryOutcome) or not outcome.ok:
             logger.error(
@@ -1480,24 +1507,36 @@ class InterAgentBus:
                 target,
                 outcome.error if isinstance(outcome, DeliveryOutcome) else "no outcome",
             )
-            return False
-        self._delivered_results.add(result.task_id)
-        if not self._update_record(target, result.task_id, stage="delivered"):
-            logger.error(
-                "Delivered async result retained unreadable record task=%s", result.task_id
-            )
-        self._cleanup_delivered_record(target, result.task_id)
-        self._unpersisted_results.pop(result.task_id, None)
-        self._unpersisted_redelivery.pop(result.task_id, None)
-        self._parked_results.pop(result.task_id, None)
-        logger.info("Async result delivered task=%s to '%s'", result.task_id, target)
-        return True
+            return "pending"
+        self._finish_delivery(target, result.task_id, "delivered")
+        return "delivered"
 
-    def _cleanup_delivered_record(self, target: str, task_id: str) -> None:
-        """Clean acknowledged copies without ever delivering them again."""
+    def _finish_delivery(self, target: str, task_id: str, stage: str) -> bool:
+        self._terminal_results[task_id] = stage
+        marked = self._update_record(target, task_id, stage=stage)
+        if not marked:
+            logger.error(
+                "Async result terminal stage not persisted task=%s stage=%s", task_id, stage
+            )
+        self._cleanup_terminal_record(target, task_id)
+        self._unpersisted_results.pop(task_id, None)
+        self._unpersisted_redelivery.pop(task_id, None)
+        self._parked_results.pop(task_id, None)
+        logger.log(
+            logging.INFO if stage == "delivered" else logging.ERROR,
+            "Async result %s task=%s target=%s",
+            stage,
+            task_id,
+            target,
+        )
+        return marked or task_id not in self._terminal_results
+
+    def _cleanup_terminal_record(self, target: str, task_id: str) -> None:
+        """Clean terminal copies without ever delivering them again."""
+        stage = self._terminal_results[task_id]
         store = self._record_store
         if store is None:
-            self._delivered_results.discard(task_id)
+            self._terminal_results.pop(task_id, None)
             return
         for area in ("inflight", "undelivered"):
             path = "(unresolved)"
@@ -1508,17 +1547,17 @@ class InterAgentBus:
                 record = store.load(target, task_id, area=area)
                 if area == "undelivered":
                     store.move_to_inflight(target, task_id)
-                if record["stage"] != "delivered" and not self._update_record(
+                if record["stage"] not in {"delivered", "abandoned"} and not self._update_record(
                     target,
                     task_id,
-                    stage="delivered",
+                    stage=stage,
                 ):
                     continue
                 store.delete(target, task_id)
-                logger.info("Async delivered record cleaned task=%s target=%s", task_id, target)
+                logger.info("Async %s record cleaned task=%s target=%s", stage, task_id, target)
             except Exception as exc:
                 logger.error(  # noqa: TRY400
-                    "Async delivered record cleanup failed path=%s error=%s",
+                    "Async terminal record cleanup failed path=%s error=%s",
                     path,
                     type(exc).__name__,
                 )
@@ -1527,7 +1566,7 @@ class InterAgentBus:
                 store.path_for(target, task_id, area=area).exists()
                 for area in ("inflight", "undelivered")
             ):
-                self._delivered_results.discard(task_id)
+                self._terminal_results.pop(task_id, None)
         except (OSError, ValueError):
             pass
 
@@ -1563,7 +1602,7 @@ class InterAgentBus:
         if not self._delivery_ready(target) and not self.is_headless_agent(target):
             self._park_record(result, target, not_ready=True)
             return
-        if await self._attempt_delivery(result, target):
+        if await self._attempt_delivery(result, target) != "pending":
             return
         if self._record_store is None:
             return
@@ -1576,9 +1615,18 @@ class InterAgentBus:
             if not self._delivery_ready(target) and not self.is_headless_agent(target):
                 self._park_record(result, target, not_ready=True)
                 return
-            if await self._attempt_delivery(result, target, retry=True):
+            if await self._attempt_delivery(result, target, retry=True) != "pending":
                 return
         await self._park_and_notify(result, target)
+
+    async def _replay_delivery(self, result: AsyncInterAgentResult, target: str) -> DeliveryStage:
+        stage = await self._attempt_delivery(result, target)
+        for delay in self._retry_delays:
+            if stage != "pending" or not self._delivery_ready(target):
+                break
+            await asyncio.sleep(delay)
+            stage = await self._attempt_delivery(result, target, retry=True)
+        return stage
 
     async def redeliver_undelivered(  # noqa: C901, PLR0912, PLR0915
         self,
@@ -1618,8 +1666,8 @@ class InterAgentBus:
             ):
                 continue
             seen.add(task_id)
-            if task_id in self._delivered_results:
-                self._cleanup_delivered_record(target, task_id)
+            if task_id in self._terminal_results:
+                self._cleanup_terminal_record(target, task_id)
                 continue
             try:
                 record = store.load(target, task_id, area="undelivered")
@@ -1684,9 +1732,9 @@ class InterAgentBus:
                 )
                 continue
 
-            if record["stage"] == "delivered":
-                self._delivered_results.add(task_id)
-                self._cleanup_delivered_record(target, task_id)
+            if record["stage"] in {"delivered", "abandoned"}:
+                self._terminal_results[task_id] = record["stage"]
+                self._cleanup_terminal_record(target, task_id)
                 continue
             if respect_backoff:
                 _, next_at = self._redelivery_state(task_id, record)
@@ -1744,7 +1792,7 @@ class InterAgentBus:
                 continue
 
             attempted.add(task_id)
-            delivered = False
+            stage: DeliveryStage = "pending"
             self._delivering_results[task_id] = result
             try:
                 if record["result"] is None:
@@ -1761,19 +1809,10 @@ class InterAgentBus:
                 elif memory_result is not None:
                     # A live result is authoritative if the parked file is stale.
                     self._update_record(target, task_id, result=result)
-                if await self._attempt_delivery(result, target):
-                    delivered = True
-                else:
-                    for delay in self._retry_delays:
-                        if not self._delivery_ready(target):
-                            break
-                        await asyncio.sleep(delay)
-                        if await self._attempt_delivery(result, target, retry=True):
-                            delivered = True
-                            break
-                if delivered:
+                stage = await self._replay_delivery(result, target)
+                if stage == "delivered":
                     delivered_count += 1
-                else:
+                elif stage == "pending":
                     await self._park_and_notify(
                         result, target, not_ready=not self._delivery_ready(target)
                     )
@@ -1783,7 +1822,7 @@ class InterAgentBus:
                 self._delivery_claims.discard(task_id)
                 # A cancellation or storage error must not strand an undelivered
                 # result in the active directory after this replay returns.
-                if not delivered:
+                if stage == "pending" and task_id not in self._terminal_results:
                     try:
                         if store.path_for(target, task_id).exists():
                             store.move_to_undelivered(target, task_id)
@@ -1813,18 +1852,10 @@ class InterAgentBus:
             self._delivery_claims.add(task_id)
             self._delivering_results[task_id] = result
             try:
-                delivered = await self._attempt_delivery(result, target)
-                if not delivered:
-                    for delay in self._retry_delays:
-                        if not self._delivery_ready(target):
-                            break
-                        await asyncio.sleep(delay)
-                        if await self._attempt_delivery(result, target, retry=True):
-                            delivered = True
-                            break
-                if delivered:
+                stage = await self._replay_delivery(result, target)
+                if stage == "delivered":
                     delivered_count += 1
-                else:
+                elif stage == "pending":
                     await self._park_and_notify(
                         result, target, not_ready=not self._delivery_ready(target)
                     )
@@ -1868,12 +1899,12 @@ class InterAgentBus:
                 live is not None and live.asyncio_task is not None and not live.asyncio_task.done()
             ):
                 continue
-            if task_id in self._delivered_results:
-                self._cleanup_delivered_record(target, task_id)
+            if task_id in self._terminal_results:
+                self._cleanup_terminal_record(target, task_id)
                 continue
             self._delivery_claims.add(task_id)
             result: AsyncInterAgentResult | None = None
-            delivered = False
+            stage: DeliveryStage = "pending"
             try:
                 try:
                     record = store.load(target, task_id)
@@ -1947,9 +1978,9 @@ class InterAgentBus:
                     )
                     continue
 
-                if record["stage"] == "delivered":
-                    self._delivered_results.add(task_id)
-                    self._cleanup_delivered_record(target, task_id)
+                if record["stage"] in {"delivered", "abandoned"}:
+                    self._terminal_results[task_id] = record["stage"]
+                    self._cleanup_terminal_record(target, task_id)
                     continue
                 memory_result = self._unpersisted_results.get(task_id) or self._parked_results.get(
                     task_id
@@ -2005,20 +2036,15 @@ class InterAgentBus:
                     reset_progress=True,
                 ):
                     continue
-                if await self._attempt_delivery(result, target):
-                    delivered = True
-                else:
-                    for delay in self._retry_delays:
-                        if not self._delivery_ready(target):
-                            break
-                        await asyncio.sleep(delay)
-                        if await self._attempt_delivery(result, target, retry=True):
-                            delivered = True
-                            break
-                if delivered:
+                stage = await self._replay_delivery(result, target)
+                if stage == "delivered":
                     delivered_count += 1
             finally:
-                if result is not None and not delivered:
+                if (
+                    result is not None
+                    and stage == "pending"
+                    and task_id not in self._terminal_results
+                ):
                     try:
                         if store.path_for(target, task_id).exists():
                             if newly_parked is not None:

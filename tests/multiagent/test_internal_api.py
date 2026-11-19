@@ -1086,15 +1086,16 @@ async def test_isolated_broadcast_redelegation_preserves_origin(
 
     injector.inject_prompt = AsyncMock(side_effect=inject)
     message_bus.set_injector(injector)
+    from ductor_bot.messenger.telegram.sender import SendProgress
     from ductor_bot.messenger.telegram.transport import TelegramTransport
 
     bot = MagicMock()
     bot._agent_name = "main"
     bot._config.allowed_user_ids = [999, 1000]
     bot._bus = message_bus
-    sent = AsyncMock(return_value=(True, 1))
+    sent = AsyncMock(return_value=SendProgress(True, 1, None, "", None))
     monkeypatch.setattr(
-        "ductor_bot.messenger.telegram.transport.send_rich_checked_progress", sent
+        "ductor_bot.messenger.telegram.transport.send_rich_progress_detailed", sent
     )
     message_bus.register_transport(TelegramTransport(bot))
 

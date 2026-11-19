@@ -24,7 +24,7 @@ Envoie un message pour continuer."""
 
 age_warning = "[Session vieille de {age}. Utilise /new pour repartir de zéro.]"
 
-empty_turn = "_(L'agent a mis à jour sa mémoire en silence — renvoie un message pour continuer.)_"
+empty_turn = "_(L'agent a mis à jour sa mémoire — renvoie un message pour continuer.)_"
 
 recovered = "_La session précédente n'a pas pu être restaurée. Une nouvelle session a été démarrée automatiquement._"
 recovery_failed = "Impossible de récupérer ta session après un nouveau départ. Réessaie ou utilise /new pour repartir de zéro."
@@ -518,6 +518,7 @@ extras_hint = "extras de l'image : '{extras}'. Ajoute la fonction à DUCTOR_EXTR
 only_sub = "seul le sous-agent '{sub}' est exclu"
 
 [notice]
+ia_delivery_failed = "Le résultat de la tâche déléguée n’a pas pu être transmis. Les tentatives d’envoi ont cessé."
 ia_result_preserved = "Le résultat est conservé. Corrige l’erreur CLI et attends la livraison automatique, ou redémarre le bot pour réessayer immédiatement."
 session_cancelled = "**[{name}] Annulé**"
 session_failed = "**[{name}] Échec** ({elapsed})"
@@ -708,6 +709,15 @@ stale = "Ce contrôle est obsolète. Affichage du dernier état."
 btn_prefer = "{name} : Prioritaire"
 btn_clear = "{name} : Lever l’attente"
 btn_refresh = "Actualiser"
+btn_delete = "Supprimer {name}"
+btn_cancel_delete = "Annuler"
+btn_confirm_delete = "Supprimer"
+delete_confirm = "Supprimer {name} ? Le slot sera retiré de la liste et son dossier de connexion ainsi que ses données de délai seront supprimés."
+deleted = "Slot {name} supprimé."
+delete_busy = "Le slot est utilisé et ne peut pas être supprimé."
+delete_default = "Le slot par défaut ne peut pas être supprimé."
+delete_failed = "Impossible de supprimer le dossier de connexion restant {path} : {reason}"
+unused = "Inutilisé"
 
 [usage]
 title = "📊 Utilisation des comptes · {time}"

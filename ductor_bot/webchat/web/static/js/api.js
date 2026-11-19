@@ -29,6 +29,7 @@ export class ApiError extends Error {
     this.status = status;
     this.code = body.error || 'generic';
     this.retryAfter = body.retry_after;
+    if (this.code === 'slot_delete_failed') this.details = { path: body.path, reason: body.reason };
   }
 }
 
