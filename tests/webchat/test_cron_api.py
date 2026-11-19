@@ -251,7 +251,8 @@ async def test_json_failure_rolls_back_files_and_returns_503(api, monkeypatch, a
             assert not list(api.paths.cron_tasks_dir.glob(".staging-*"))
         raise OSError("synthetic-private-path")
 
-    monkeypatch.setattr(definitions, "save_definitions", fail)
+    method = "update_jobs_file" if action == "update" else "save_definitions"
+    monkeypatch.setattr(definitions, method, fail)
     if action == "create":
         response = await api.client.post(PATH, json=payload(), headers=headers())
     elif action == "archive":

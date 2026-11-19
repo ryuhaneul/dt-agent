@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from cronsim import CronSim, CronSimError
 
 from ductor_bot.cli.autocompact import validate_autocompact
-from ductor_bot.cron.jobs_file import read_jobs_data, save_definitions
+from ductor_bot.cron.jobs_file import read_jobs_data, save_definitions, update_jobs_file
 from ductor_bot.cron.manager import DELIVERY_MODES
 from ductor_bot.infra.atomic_io import atomic_bytes_save, atomic_text_save
 from ductor_bot.infra.file_lock import exclusive_file_lock
@@ -543,24 +543,32 @@ def _kst_stamp() -> str:
     return datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d-%H%M%S-%f")
 
 
-def _save_body(folder: Path, body: str, expected_sha256: str | None) -> tuple[Path, bytes]:
-    path = folder / "TASK_DESCRIPTION.md"
-    if path.is_symlink():
-        raise ValueError("Linked task descriptions cannot be modified")
-    previous = path.read_bytes()
-    if expected_sha256 is None or hashlib.sha256(previous).hexdigest() != expected_sha256:
-        raise DefinitionConflictError("Task description changed; reload before saving")
-    history = folder / ".history"
-    if history.is_symlink():
-        raise ValueError("Linked task history cannot be modified")
-    history.mkdir(exist_ok=True)
-    backup = history / f"{_kst_stamp()}.md"
-    atomic_bytes_save(backup, previous)
-    if path.is_symlink() or path.read_bytes() != previous:
-        backup.unlink()
-        raise DefinitionConflictError("Task description changed; reload before saving")
-    atomic_text_save(path, body)
-    return path, previous
+def _save_body(
+    jobs_path: Path, job_id: str, folder: Path, body: str, expected_sha256: str | None
+) -> tuple[Path, bytes]:
+    # CLI removal drops the definition under this lock before deleting the folder.
+    with exclusive_file_lock(jobs_path):
+        _job_by_id(read_jobs_data(jobs_path), job_id)
+        path = folder / "TASK_DESCRIPTION.md"
+        if path.is_symlink():
+            raise ValueError("Linked task descriptions cannot be modified")
+        previous = path.read_bytes()
+        if expected_sha256 is None or hashlib.sha256(previous).hexdigest() != expected_sha256:
+            raise DefinitionConflictError("Task description changed; reload before saving")
+        history = folder / ".history"
+        if history.is_symlink():
+            raise ValueError("Linked task history cannot be modified")
+        history.mkdir(exist_ok=True)
+        backup = history / f"{_kst_stamp()}.md"
+        atomic_bytes_save(backup, previous)
+        if path.is_symlink() or path.read_bytes() != previous:
+            backup.unlink()
+            raise DefinitionConflictError("Task description changed; reload before saving")
+        # Bound history before replacing the body, even if the replacement fails.
+        for old in sorted(history.glob("*.md"), reverse=True)[10:]:
+            old.unlink()
+        atomic_text_save(path, body)
+        return path, previous
 
 
 def update_job(  # noqa: PLR0913
@@ -584,19 +592,32 @@ def update_job(  # noqa: PLR0913
         job.update(fields)
         _validate_job(job)
         folder = _workspace_job_dir(job, tasks_dir)
-        saved_body = _save_body(folder, body, expected_sha256) if body is not None else None
-        data["jobs"] = [job if entry.get("id") == job_id else entry for entry in data["jobs"]]
+        saved_body = (
+            _save_body(jobs_path, job_id, folder, body, expected_sha256)
+            if body is not None
+            else None
+        )
+
+        def update_existing(current: dict[str, Any]) -> dict[str, Any]:
+            for entry in current["jobs"]:
+                if entry.get("id") == job_id:
+                    entry.update(fields)
+                    _validate_job(entry)
+                    return dict(entry)
+            raise KeyError(job_id)
+
         try:
-            save_definitions(jobs_path, data, upsert=[(job_id, job_id)])
+            return update_jobs_file(jobs_path, update_existing)
         except BaseException:
             if saved_body is not None:
-                atomic_bytes_save(*saved_body)
+                with exclusive_file_lock(jobs_path):
+                    if any(
+                        entry.get("id") == job_id for entry in read_jobs_data(jobs_path)["jobs"]
+                    ):
+                        path, previous = saved_body
+                        if path.is_file() and not path.is_symlink():
+                            atomic_bytes_save(path, previous)
             raise
-        finally:
-            if saved_body is not None:
-                for old in sorted((folder / ".history").glob("*.md"), reverse=True)[10:]:
-                    old.unlink()
-    return job
 
 
 def archive_job(jobs_path: Path, tasks_dir: Path, job_id: str) -> Path:
@@ -616,6 +637,8 @@ def archive_job(jobs_path: Path, tasks_dir: Path, job_id: str) -> Path:
         try:
             save_definitions(jobs_path, data, remove=[job_id])
         except BaseException:
-            destination.rename(folder)
+            with exclusive_file_lock(jobs_path):
+                if any(entry.get("id") == job_id for entry in read_jobs_data(jobs_path)["jobs"]):
+                    destination.rename(folder)
             raise
     return destination

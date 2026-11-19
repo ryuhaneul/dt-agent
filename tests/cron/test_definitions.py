@@ -183,7 +183,7 @@ def test_update_rolls_back_body_when_json_save_fails(paths, monkeypatch):
     jobs, tasks = paths
     create(paths)
     before = jobs.read_bytes()
-    with patch.object(defs, "save_definitions", side_effect=OSError("save failed")):
+    with patch.object(defs, "update_jobs_file", side_effect=OSError("save failed")):
         for index in range(12):
             monkeypatch.setattr(defs, "_kst_stamp", lambda: f"20261119-160000-{index:06d}")
             with pytest.raises(OSError, match="save failed"):
@@ -212,7 +212,7 @@ def test_body_size_checked_before_changes(paths):
             jobs,
             tasks,
             {"id": "large", "title": "Large", "schedule": "* * * * *"},
-            "\u20AC" * (defs.BODY_LIMIT // 3 + 1),
+            "\u20ac" * (defs.BODY_LIMIT // 3 + 1),
             ductor_home=jobs.parent,
         )
     assert not tasks.exists()
@@ -303,7 +303,7 @@ def test_body_backup_and_rollback_preserve_original_bytes(paths):
     body_path = tasks / "daily/TASK_DESCRIPTION.md"
     original = b"First line\r\nSecond line\r\n"
     body_path.write_bytes(original)
-    with patch.object(defs, "save_definitions", side_effect=OSError("save failed")):
+    with patch.object(defs, "update_jobs_file", side_effect=OSError("save failed")):
         with pytest.raises(OSError):
             defs.update_job(
                 jobs,
@@ -367,3 +367,96 @@ def test_static_scan_of_unsaved_body_includes_existing_scripts(paths):
     result = defs.scan_secrets(tasks / "daily", set(), None, body=body)
     assert result["keys"] == ["PROPOSED_TOKEN", "SCRIPT_TOKEN"]
     assert (tasks / "daily/TASK_DESCRIPTION.md").read_text() == "Original assignment.\n"
+
+
+@pytest.mark.parametrize("action", ["before_body", "body", "toggle", "archive", "archive_failure"])
+def test_cli_remove_during_web_write_does_not_revive_job(paths, monkeypatch, action):
+    jobs, tasks = paths
+    create(paths)
+
+    def remove_with_cli():
+        result = subprocess.run(
+            [sys.executable, str(TOOLS / "cron_remove.py"), "daily"],
+            env={**os.environ, "DUCTOR_HOME": str(jobs.parent)},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert json.loads(result.stdout)["json_entry_removed"] is True
+        assert read_jobs_data(jobs)["jobs"] == []
+
+    if action == "body":
+        save = defs._save_body
+
+        def pause_after_body(*args, **kwargs):
+            result = save(*args, **kwargs)
+            remove_with_cli()
+            return result
+
+        monkeypatch.setattr(defs, "_save_body", pause_after_body)
+    elif action in {"before_body", "toggle"}:
+        resolve = defs._workspace_job_dir
+
+        def pause_before_json(*args, **kwargs):
+            folder = resolve(*args, **kwargs)
+            remove_with_cli()
+            return folder
+
+        monkeypatch.setattr(defs, "_workspace_job_dir", pause_before_json)
+    else:
+        save = defs.save_definitions
+
+        def pause_after_archive(*args, **kwargs):
+            remove_with_cli()
+            if action == "archive_failure":
+                raise OSError("save failed")
+            return save(*args, **kwargs)
+
+        monkeypatch.setattr(defs, "save_definitions", pause_after_archive)
+    if action.startswith("archive"):
+        if action == "archive_failure":
+            with pytest.raises(OSError, match="save failed"):
+                defs.archive_job(jobs, tasks, "daily")
+        else:
+            defs.archive_job(jobs, tasks, "daily")
+    else:
+        with pytest.raises(KeyError):
+            defs.update_job(
+                jobs,
+                tasks,
+                "daily",
+                {"enabled": False},
+                body=None if action == "toggle" else "Updated",
+                expected_sha256=defs.body_sha256("Original assignment.\n"),
+            )
+    assert read_jobs_data(jobs)["jobs"] == []
+    assert not (tasks / "daily").exists()
+
+
+def test_body_write_failures_keep_ten_backups_and_original_state(paths):
+    jobs, tasks = paths
+    create(paths)
+    body = "Original assignment.\n"
+    for index in range(10):
+        updated = f"Body {index}\n"
+        defs.update_job(
+            jobs, tasks, "daily", {}, body=updated, expected_sha256=defs.body_sha256(body)
+        )
+        body = updated
+    before = jobs.read_bytes()
+    history = tasks / "daily/.history"
+    assert len(list(history.glob("*.md"))) == 10
+    with patch.object(defs, "atomic_text_save", side_effect=OSError("body write failed")):
+        for _ in range(12):
+            with pytest.raises(OSError, match="body write failed"):
+                defs.update_job(
+                    jobs,
+                    tasks,
+                    "daily",
+                    {"title": "Changed"},
+                    body="Failed",
+                    expected_sha256=defs.body_sha256(body),
+                )
+            assert (tasks / "daily/TASK_DESCRIPTION.md").read_text() == body
+            assert jobs.read_bytes() == before
+            assert len(list(history.glob("*.md"))) <= 10
