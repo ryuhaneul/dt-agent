@@ -286,11 +286,9 @@ Requires the Slack image extra; the first allowed channel is the default chat fo
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `enabled` | `bool` | `true` | Run the task folder's `scripts/preflight.py` before the cron agent when present. The agent runs if the script is missing, fails, or times out. |
+| `enabled` | `bool` | `true` | Run the task folder's `scripts/preflight.py` before the cron agent when present. The agent runs if the script is missing, fails, or times out. An explicit `false` disables preflight. |
 | `timeout_seconds` | `float` (> 0) | `15.0` | Time limit for the preflight script |
 | `skip_marker` | `str` | `"HEARTBEAT_OK"` | Exit 0 with this as the last stdout line skips the agent run (recorded as `success:preflight`) |
-
-Upgrades automatically enable preflight when the saved settings exactly match the old defaults. To disable preflight, set `cron_preflight` to `{"enabled": false}` in `config.json`.
 
 ## `CLIParametersConfig`
 

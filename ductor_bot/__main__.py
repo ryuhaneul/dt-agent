@@ -28,9 +28,7 @@ from ductor_bot.cli_commands.status import (
 )
 from ductor_bot.config import (
     DEFAULT_EMPTY_GEMINI_API_KEY,
-    LEGACY_CRON_PREFLIGHT_DEFAULTS,
     AgentConfig,
-    CronPreflightConfig,
     deep_merge_config,
 )
 from ductor_bot.i18n import init as init_i18n
@@ -185,31 +183,14 @@ def load_config() -> AgentConfig:
         user_data["transport"] = normalized_transports[0]
         normalized_existing = True
 
-    preflight = user_data.get("cron_preflight")
-    if (
-        isinstance(preflight, dict)
-        and preflight.get("enabled") is False
-        and preflight == LEGACY_CRON_PREFLIGHT_DEFAULTS
-    ):
-        preflight["enabled"] = CronPreflightConfig().enabled
-        normalized_existing = True
-
     defaults = AgentConfig().model_dump(mode="json")
     defaults["gemini_api_key"] = DEFAULT_EMPTY_GEMINI_API_KEY
     defaults.pop("api", None)  # Written by scripts/onboard.sh
     merged, changed = deep_merge_config(user_data, defaults)
-    saved = merged
-    if (
-        isinstance(preflight, dict)
-        and preflight.get("enabled") is False
-        and not LEGACY_CRON_PREFLIGHT_DEFAULTS.keys() <= preflight.keys()
-    ):
-        # Backfilling a partial opt-out could make it look like the old default on restart.
-        saved = {**merged, "cron_preflight": preflight}
-        changed = saved != user_data
+    changed = changed or normalized_existing
 
-    if changed or normalized_existing:
-        atomic_json_save(config_path, saved)
+    if changed:
+        atomic_json_save(config_path, merged)
         logger.info("Extended config with new default fields")
 
     init_workspace(paths)
