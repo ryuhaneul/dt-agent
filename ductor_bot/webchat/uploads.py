@@ -412,15 +412,29 @@ class UploadStore:
         self.chunk_bytes = chunk_bytes
         self.idle_timeout = idle_timeout
         self._locks: dict[str, asyncio.Lock] = {}
+        self._lock_users: dict[str, int] = {}
         self._space_lock = threading.RLock()
         self._reservations: dict[str, int] = {}
         self._ledger_ready = False
         self._free_bytes = free_bytes or (lambda path: shutil.disk_usage(path).free)
 
-    def _lock(self, upload_id: str) -> asyncio.Lock:
+    @contextlib.asynccontextmanager
+    async def _lock(self, upload_id: str) -> AsyncIterator[None]:
         if _ID.fullmatch(upload_id) is None:
             raise UploadError("not_found", 404)
-        return self._locks.setdefault(upload_id, asyncio.Lock())
+        lock = self._locks.setdefault(upload_id, asyncio.Lock())
+        # Count waiters before awaiting so all concurrent users retain the same lock.
+        self._lock_users[upload_id] = self._lock_users.get(upload_id, 0) + 1
+        try:
+            async with lock:
+                yield
+        finally:
+            remaining = self._lock_users[upload_id] - 1
+            if remaining:
+                self._lock_users[upload_id] = remaining
+            else:
+                del self._lock_users[upload_id]
+                del self._locks[upload_id]
 
     def _prepare(self) -> None:
         with self._space_lock:
@@ -809,10 +823,15 @@ class UploadStore:
 
     async def cancel(self, upload_id: str, tid: str, owner: str) -> None:
         async with self._lock(upload_id):
-            session = await complete_write(self._load, upload_id, tid, owner)
-            if session.path is not None:
-                raise UploadError("already_complete", 409)
-            await complete_write(self._discard, upload_id)
+            await complete_write(self._cancel, upload_id, tid, owner)
+
+    def _cancel(self, upload_id: str, tid: str, owner: str) -> None:
+        session = self._load(upload_id, tid, owner)
+        if session.used_by is not None:
+            raise UploadError("already_complete", 409)
+        if session.path is not None:
+            self.completed_path(session).unlink()
+        self._discard(upload_id)
 
     async def cleanup(self, *, now: float | None = None) -> int:
         """Discard only expired partial uploads; completed files are retained."""

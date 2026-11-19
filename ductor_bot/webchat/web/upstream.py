@@ -96,7 +96,7 @@ class BridgeClient:
                 data=chunks,
                 headers=headers,
                 allow_redirects=False,
-                timeout=aiohttp.ClientTimeout(total=120, sock_connect=5, sock_read=30),
+                timeout=aiohttp.ClientTimeout(total=None, sock_connect=5, sock_read=30),
             ) as response:
                 data = await response.json()
                 status = response.status

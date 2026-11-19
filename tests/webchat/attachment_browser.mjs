@@ -245,5 +245,25 @@ try{
     }
     results.checks.push('Web text-only history and attachment-only message cards; Telegram photo and bot file cards; outside user path has no card; native overlay focus/Escape/zoom');
   }
+  // Exercise the completed draft state before message admission using the public controller.
+  await page.route('**/static/js/main.js',route=>route.fulfill({contentType:'application/javascript',body:''}));
+  await page.goto(origin);
+  await page.evaluate(async()=>{
+    const {setCsrf}=await import('/static/js/api.js');setCsrf('fixture-csrf');
+    const {initAttachments}=await import('/static/js/attachments.js');
+    document.querySelector('#app').classList.remove('hidden');
+    window.draftController=initAttachments({getTopic:()=>({tid:'123.7'}),changed:()=>{},resume:()=>{}});
+    window.draftController.render();
+  });
+  await addFile('notes.txt');
+  const completedDraft=await page.evaluate(async()=>{
+    const result=await window.draftController.upload('123.7');
+    window.draftController.finish(result.run);return result.ids[0];
+  });
+  assert.equal(sessions.get(completedDraft).state,'complete');
+  const deleted=page.waitForResponse(response=>response.request().method()==='DELETE'&&response.url().endsWith('/uploads/'+completedDraft));
+  await page.locator('[data-remove]').click();await deleted;
+  assert(!sessions.has(completedDraft));assert.equal(await page.locator('.attach-draft').count(),0);
+  results.checks.push('removing a completed unused draft sends DELETE');
   assert.deepEqual(errors,[]);console.log(JSON.stringify(results));
 }finally{await browser.close();await new Promise(resolve=>server.close(resolve));}

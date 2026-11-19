@@ -1104,3 +1104,117 @@ async def test_streamed_image_structure_rejects_corruption(tmp_path, format_name
     await store.put(session.id, "123", "session-one", 0, chunks(payload))
     with pytest.raises(UploadError, match="invalid_image"):
         await store.complete(session.id, "123", "session-one", hashlib.sha256(payload).hexdigest())
+
+
+async def test_completed_unused_upload_can_be_deleted(client):
+    payload = b"completed draft"
+    response = await client.post(
+        _BASE, json={"size": len(payload), "name": "draft.txt"}, headers=_HEADERS
+    )
+    upload_id = (await response.json())["id"]
+    url = f"{_BASE}/{upload_id}"
+    assert (
+        await client.put(url, data=payload, headers={**_HEADERS, "Upload-Offset": "0"})
+    ).status == 200
+    assert (
+        await client.post(
+            url + "/complete",
+            json={"sha256": hashlib.sha256(payload).hexdigest()},
+            headers=_HEADERS,
+        )
+    ).status == 200
+    store = client.app[UPLOADS]
+    session = await store.status(upload_id, "123", "session-one")
+    path = store.completed_path(session)
+    metadata = store.incoming / f"{upload_id}.json"
+    foreign = {**_HEADERS, "X-Dtw-Owner": "other-browser"}
+    assert (await client.delete(url, headers=foreign)).status == 404
+    assert path.exists()
+    assert metadata.exists()
+    assert (await client.delete(url, headers=_HEADERS)).status == 200
+    assert not path.exists()
+    assert not metadata.exists()
+    assert (await client.get(url, headers=_HEADERS)).status == 404
+
+
+async def test_used_upload_cannot_be_deleted(tmp_path):
+    store = UploadStore(tmp_path / "files")
+    payload = b"accepted attachment"
+    session = await begin(store, payload)
+    await store.put(session.id, "123", "session-one", 0, chunks(payload))
+    session = await store.complete(
+        session.id, "123", "session-one", hashlib.sha256(payload).hexdigest()
+    )
+    path = store.completed_path(session)
+    await store.claim([session.id], "123", "session-one", "accepted-entry", lambda _files: None)
+    with pytest.raises(UploadError, match="already_complete"):
+        await store.cancel(session.id, "123", "session-one")
+    assert path.read_bytes() == payload
+    assert (await store.status(session.id, "123", "session-one")).used_by == "accepted-entry"
+
+
+async def test_missing_upload_queries_do_not_retain_locks(tmp_path):
+    store = UploadStore(tmp_path / "files")
+    for number in range(2000):
+        with pytest.raises(UploadError, match="not_found"):
+            await store.status(f"{number:032x}", "123", "session-one")
+    assert not store._locks
+    assert not store._lock_users
+
+
+async def test_upload_lock_retains_waiters_and_releases_cancelled_waiter(tmp_path):
+    store = UploadStore(tmp_path / "files")
+    upload_id = "a" * 32
+    entered = asyncio.Event()
+
+    async def wait():
+        async with store._lock(upload_id):
+            entered.set()
+
+    async with store._lock(upload_id):
+        lock = store._locks[upload_id]
+        cancelled = asyncio.create_task(wait())
+        waiter = asyncio.create_task(wait())
+        await asyncio.sleep(0)
+        cancelled.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await cancelled
+        assert store._locks[upload_id] is lock
+        assert store._lock_users[upload_id] == 2
+        assert not entered.is_set()
+    # The waiting request still owns a reference when the previous holder exits.
+    assert store._locks[upload_id] is lock
+    await waiter
+    assert entered.is_set()
+    assert not store._locks
+    assert not store._lock_users
+
+
+async def test_upload_chunk_uses_inactivity_timeout_only():
+    from unittest.mock import Mock
+
+    from ductor_bot.webchat.web.upstream import BridgeClient
+
+    class Response:
+        status = 200
+        headers = {"Upload-Offset": "4"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            pass
+
+        async def json(self):
+            return {"offset": 4}
+
+    client = Mock()
+    client.put.return_value = Response()
+    bridge = BridgeClient("http://bridge.invalid", "fixture-token", client)
+    assert await bridge.upload_chunk(
+        "/topics/123/uploads/fixture", chunks(b"data"), owner="browser", offset="0", length=4
+    ) == (200, {"offset": 4}, "4")
+    timeout = client.put.call_args.kwargs["timeout"]
+    assert timeout.total is None
+    assert timeout.sock_read == 30
+    assert timeout.sock_connect == 5

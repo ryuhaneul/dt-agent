@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from aiohttp import ServerDisconnectedError
 
 from ductor_bot.chat_log.ids import history_filename
 from ductor_bot.config import WebchatConfig
@@ -341,8 +342,9 @@ async def test_attachments_join_existing_fifo_queue(conversation):
 
 
 @pytest.mark.parametrize("restart", [False, True])
+@pytest.mark.parametrize("cancelled", [False, True])
 async def test_rejected_attachment_admission_allows_same_upload_retry(
-    conversation, monkeypatch, restart
+    conversation, monkeypatch, restart, cancelled
 ):
     from ductor_bot.webchat.turns import _QueueJournal
 
@@ -351,12 +353,18 @@ async def test_rejected_attachment_admission_allows_same_upload_retry(
     with monkeypatch.context() as failing:
 
         def reject(*_args):
+            if cancelled:
+                raise asyncio.CancelledError
             raise OSError("journal unavailable")
 
         failing.setattr(_QueueJournal, "accept", reject)
-        response = await attachment_post(h, [upload_id])
-        assert response.status == 503
-        assert await response.json() == {"error": "generic"}
+        if cancelled:
+            with pytest.raises(ServerDisconnectedError):
+                await attachment_post(h, [upload_id])
+        else:
+            response = await attachment_post(h, [upload_id])
+            assert response.status == 503
+            assert await response.json() == {"error": "generic"}
     rows, damaged = AttachmentIndex(h.paths.webchat_dir / "attachments.jsonl")._rows()
     assert not damaged
     assert rows[-1]["attachments"] == []

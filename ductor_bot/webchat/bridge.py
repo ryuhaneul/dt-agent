@@ -565,7 +565,7 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
             turn_id = await turns.submit(
                 tid, prepared.text, turn=prepared.turn, attachments=prepared
             )
-        except OSError:
+        except (OSError, asyncio.CancelledError):
             try:
                 await attachments.rollback(tid, owner, prepared)
             except (OSError, UploadError):

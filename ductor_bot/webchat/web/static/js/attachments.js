@@ -185,7 +185,7 @@ export function initAttachments({ getTopic, changed, resume }) {
       const item = current().find(item=>item.id===remove.dataset.remove);
       if (!item) return;
       closeMenu(false); free(item);
-      if(item.upload?.id && item.state!=='complete')void api(`/topics/${encodeURIComponent(getTopic().tid)}/uploads/${item.upload.id}`,{method:'DELETE'}).catch(()=>{});
+      if(item.upload?.id)void api(`/topics/${encodeURIComponent(getTopic().tid)}/uploads/${item.upload.id}`,{method:'DELETE'}).catch(()=>{});
       topics.set(getTopic().tid,current().filter(value=>value!==item)); render(); changed(); input.focus();
     }
     if (option) { const item=current().find(item=>item.id===option.dataset.options); if(item) openMenu(item); }
