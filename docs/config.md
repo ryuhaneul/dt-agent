@@ -455,7 +455,7 @@ Runtime behavior:
 |---|---|---|---|
 | `enabled` | `bool` | `false` | Registers the reflection hook only when enabled |
 | `every_n_messages` | `int` | `10` | Hook cadence; fires on the N-th outbound prompt for a session |
-| `prompt` | `str` | default prompt | Silent reflection prompt appended through `MessageHookRegistry` |
+| `prompt` | `str` | default prompt | Memory reflection prompt appended through `MessageHookRegistry` |
 
 Runtime behavior:
 

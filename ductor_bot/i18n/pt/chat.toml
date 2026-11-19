@@ -24,7 +24,7 @@ Envie uma mensagem para continuar."""
 
 age_warning = "[Sessão tem {age} de vida. Use /new para um recomeço.]"
 
-empty_turn = "_(O agente atualizou a memória em silêncio — envie outra mensagem para continuar.)_"
+empty_turn = "_(O agente atualizou a memória — envie outra mensagem para continuar.)_"
 
 recovered = "_A sessão anterior não pôde ser restaurada. Uma nova sessão foi iniciada automaticamente._"
 recovery_failed = "Não foi possível recuperar sua sessão após um novo início. Tente novamente ou use /new para recomeçar."

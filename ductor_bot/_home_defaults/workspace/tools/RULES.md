@@ -73,4 +73,4 @@ No tool script needed — just create the file.
 ## Output and Memory
 
 - Save user deliverables in `../output_to_user/`.
-- Update `../memory_system/MAINMEMORY.md` silently for durable user facts/preferences.
+- Update `../memory_system/MAINMEMORY.md` for durable user facts/preferences. Report memory saves, edits, or deletions in this reply: one line naming files and changes. Reads need no report.

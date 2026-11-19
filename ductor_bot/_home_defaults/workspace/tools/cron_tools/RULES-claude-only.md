@@ -133,8 +133,8 @@ Do not edit task-folder `CLAUDE.md` manually.
 
 ## After Cron Setup
 
-Update `memory_system/MAINMEMORY.md` silently with inferred preference signals
-from the user's requested automation (not just "created job").
+Update `memory_system/MAINMEMORY.md` with inferred preference signals
+from the user's requested automation (not just "created job"). Report memory saves, edits, or deletions in this reply: one line naming files and changes. Reads need no report.
 
 ## Pitfalls
 

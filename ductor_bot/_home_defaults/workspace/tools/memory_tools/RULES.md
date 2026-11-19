@@ -19,8 +19,7 @@ pages it points to. Do not search the workspace root recursively and do not gues
 ## After you edit memory_system
 
 Run `python3 tools/memory_tools/memory_lint.py check` after creating or editing pages in
-`memory_system/`, and fix every finding yourself (silently -- memory work is invisible to the
-user). Do not delete content just to satisfy the lint: merge or correct it instead.
+`memory_system/`, and fix every finding yourself. Report memory saves, edits, or deletions in this reply: one line naming files and changes. Reads need no report. Do not delete content just to satisfy the lint: merge or correct it instead.
 
 ## Page conventions the lint expects
 

@@ -41,4 +41,4 @@ To customize one, replace the symlink with a real directory of the same name.
 ## Memory
 
 When the user creates or customizes skills, update `memory_system/MAINMEMORY.md`
-silently with inferred interests and workflow preferences.
+with inferred interests and workflow preferences. Report memory saves, edits, or deletions in this reply: one line naming files and changes. Reads need no report.

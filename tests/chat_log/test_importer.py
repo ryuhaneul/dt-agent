@@ -167,6 +167,26 @@ def test_unknown_only_main_workspace_and_duplicate_roots(setup_import) -> None:
     assert not any(file.session_id in {"synthetic-other", "synthetic-outside"} for file in files)
 
 
+@pytest.mark.parametrize("prompt", ["Synthetic reflection", "## Reflect\nSynthetic reflection"])
+def test_import_strips_configured_reflection_suffix(setup_import, prompt) -> None:
+    paths, config = setup_import
+    config.memory_reflection.prompt = prompt
+    importer = TranscriptImporter(paths, config)
+    source = next(file.path for file in importer.plan() if file.provider == "claude")
+    suffix = "\n\n" + prompt
+    followed_by_user_text = "Synthetic body" + suffix + "\n\nMore user text."
+    add_rows(
+        source,
+        [
+            {"type": "user", "message": {"content": "Synthetic body" + suffix}},
+            {"type": "user", "message": {"content": followed_by_user_text}},
+        ],
+    )
+
+    entries = next(file.entries for file in importer.plan() if file.provider == "claude")
+    assert [entry.text for entry in entries[-2:]] == ["Synthetic body", followed_by_user_text]
+
+
 def test_suffixes_queue_context_and_heartbeat_filter(setup_import) -> None:
     paths, config = setup_import
     importer = TranscriptImporter(paths, config)
@@ -1088,3 +1108,44 @@ async def test_short_bot_reply_is_not_consumed_by_unrelated_live_prefix(
     history = await importer.history.read("111.7")
     assert [entry.text for entry in history if entry.imported] == [reply]
     assert sum(len(file.entries) for file in importer.run()) == 0
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        hooks.MAINMEMORY_REMINDER.suffix,
+        AgentConfig().memory_reflection.prompt,
+        "## MEMORY CHECK\nSave it silently in the workspace memory (memory_system/).",
+        "## MEMORY REFLECTION\nIf yes -- update memory_system/MAINMEMORY.md silently.",
+        "## MEMORY CHECK\nChanged wording.\n\n## MEMORY REFLECTION\nAnother update.",
+    ],
+    ids=["current-check", "current-reflection", "old-check", "old-reflection", "changed-multiple"],
+)
+def test_import_strips_memory_hooks_by_heading(setup_import, suffix) -> None:
+    paths, config = setup_import
+    importer = TranscriptImporter(paths, config)
+    source = next(file.path for file in importer.plan() if file.provider == "claude")
+    add_rows(source, [{"type": "user", "message": {"content": "Old question\n\n" + suffix}}])
+
+    entries = next(file.entries for file in importer.plan() if file.provider == "claude")
+    assert entries[-1].text == "Old question"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "A regular question\n\nA second paragraph.",
+        "## MEMORY CHECK\nA user heading at the start.",
+        "Question mentions ## MEMORY CHECK inline.\nNext line.",
+        "Question\n## MEMORY CHECK\nNo separating blank line.",
+        "Question\n\n## MEMORY CHECK notes\nUser text.",
+        "Question\n\n> ## MEMORY REFLECTION\n> A quoted heading.\n\nUser ending.",
+        "Question\n\n```md\n\n## MEMORY CHECK\nQuoted text.\n```\n\nUser ending.",
+        "Question\n\n~~~~md\n~~~\n\n## MEMORY CHECK\nQuoted text.\n~~~~",
+    ],
+)
+def test_import_preserves_user_content_near_hook_boundaries(setup_import, body) -> None:
+    paths, config = setup_import
+    importer = TranscriptImporter(paths, config)
+    assert importer._clean_user(body) == (body, None)
+    assert importer._clean_user(body + "\n\n## TASK REMINDER\nFramework text.") == (body, None)
