@@ -184,17 +184,25 @@ def test_update_rolls_back_body_when_json_save_fails(paths, monkeypatch):
     create(paths)
     before = jobs.read_bytes()
     with patch.object(defs, "save_definitions", side_effect=OSError("save failed")):
-        with pytest.raises(OSError):
-            defs.update_job(
-                jobs,
-                tasks,
-                "daily",
-                {"title": "Changed"},
-                body="New body",
-                expected_sha256=defs.body_sha256("Original assignment.\n"),
-            )
-    assert jobs.read_bytes() == before
-    assert (tasks / "daily/TASK_DESCRIPTION.md").read_text() == "Original assignment.\n"
+        for index in range(12):
+            monkeypatch.setattr(defs, "_kst_stamp", lambda: f"20261119-160000-{index:06d}")
+            with pytest.raises(OSError, match="save failed"):
+                defs.update_job(
+                    jobs,
+                    tasks,
+                    "daily",
+                    {"title": "Changed"},
+                    body="New body",
+                    expected_sha256=defs.body_sha256("Original assignment.\n"),
+                )
+            assert jobs.read_bytes() == before
+            assert (tasks / "daily/TASK_DESCRIPTION.md").read_text() == "Original assignment.\n"
+            assert len(list((tasks / "daily/.history").glob("*.md"))) <= 10
+    history = list((tasks / "daily/.history").glob("*.md"))
+    assert {file.name for file in history} == {
+        f"20261119-160000-{index:06d}.md" for index in range(2, 12)
+    }
+    assert all(file.read_text() == "Original assignment.\n" for file in history)
 
 
 def test_body_size_checked_before_changes(paths):

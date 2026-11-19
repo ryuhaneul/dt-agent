@@ -592,9 +592,10 @@ def update_job(  # noqa: PLR0913
             if saved_body is not None:
                 atomic_bytes_save(*saved_body)
             raise
-        if saved_body is not None:
-            for old in sorted((folder / ".history").glob("*.md"), reverse=True)[10:]:
-                old.unlink()
+        finally:
+            if saved_body is not None:
+                for old in sorted((folder / ".history").glob("*.md"), reverse=True)[10:]:
+                    old.unlink()
     return job
 
 
