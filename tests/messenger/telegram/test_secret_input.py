@@ -484,6 +484,7 @@ async def test_length_boundary_env_note_and_metadata(h):
             "key": "TEST_KEY",
             "prompt_message_id": h.prompt().message_id,
             "expires_at": 1120.0,
+            "thread_id": None,
         }
     ]
     assert stat.S_IMODE(h.state.stat().st_mode) == 0o600
@@ -1885,3 +1886,20 @@ async def test_prompt_expiry_edit_failure_has_no_notice(h, monkeypatch, caplog):
     assert "prompt_edit_failed" in caplog.text
     assert VALUE not in caplog.text
     assert h.input._pending[(USER, USER)].prompt_message_id == prompt.message_id
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_pending_topic_metadata_survives_restart(h, legacy):
+    await h.command(thread=707)
+    state = json.loads(h.state.read_text())
+    assert state["pending"][0]["thread_id"] == 707
+    if legacy:
+        state["pending"][0].pop("thread_id")
+        h.state.write_text(json.dumps(state))
+    h.restart()
+    expected = None if legacy else 707
+    assert h.input._pending[(USER, USER)].thread_id == expected
+    await settled_intercept(h.input, update(message(VALUE, mid=2, reply=h.prompt())))
+    assert h.bot.sent[-1][1]["message_thread_id"] == expected
+    assert not list(h.home.glob("secret_input_state.json.corrupt-*"))
+    await h.input.close()

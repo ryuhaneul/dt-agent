@@ -458,3 +458,85 @@ async def test_invalid_config_startup_alert_includes_recovery(mk):
     await mk.command("/masterkey unlock")
     await enter(mk, KEY)
     assert "INVALID_VAULT_CONFIG" in mk.texts()[-1]
+
+
+@pytest.mark.parametrize("thread", [None, 707])
+async def test_masterkey_flow_preserves_command_topic(mk, thread):
+    async def command(text):
+        await mk.command(text, thread=thread)
+
+    # Value messages intentionally have no topic metadata: the pending request
+    # must retain the command topic through every stage.
+    await command("/masterkey setup")
+    await enter(mk, KEY)
+    await enter(mk, KEY, mid=11)
+    await command("/masterkey")
+    await command("/masterkey lock")
+    await command("/masterkey unlock")
+    await enter(mk, "incorrect-master-key")
+    assert "incorrect" in mk.texts()[-1]
+    mk.clock.now += 2
+    await command("/masterkey unlock")
+    await enter(mk, KEY)
+    await command("/masterkey change")
+    await enter(mk, KEY)
+    await enter(mk, NEW_KEY, mid=12)
+    await enter(mk, NEW_KEY, mid=13)
+    await command("/masterkey ttl")
+    await mk.input.handle_callback(callback("mk:ttl:15", thread=thread))
+    await mk.input.handle_callback(callback("mk:ttl:custom", thread=thread))
+    await enter(mk, "60")
+    await command("/masterkey lock")
+    await mk.input.handle_callback(callback("mk:ttl:0", thread=thread))
+    await enter(mk, NEW_KEY)
+    await command("/masterkey ttl -1")
+    await command("/masterkey unlock")
+    await command("/masterkey cancel")
+    await command("/masterkey nonsense")
+    await command("/masterkey unlock extra")
+    assert all(kwargs["message_thread_id"] == thread for _, kwargs in mk.bot.sent)
+    assert mk.bot.answered
+
+
+@pytest.mark.parametrize("expiry", ["timer", "deadline", "restart"])
+async def test_masterkey_expiry_preserves_pending_topic(mk, expiry):
+    await mk.command("/masterkey setup", thread=707)
+    await enter(mk, KEY)
+    assert mk.input._pending[(USER, USER)].thread_id == 707
+    if expiry == "timer":
+        mk.input._masterkey._timers[(USER, USER)]._run()
+    elif expiry == "deadline":
+        mk.clock.now += PENDING_SECONDS
+    else:
+        await mk.input.close()
+        mk.restart()
+    await enter(mk, KEY, mid=12)
+    assert "expired" in mk.texts()[-1]
+    assert all(kwargs["message_thread_id"] == 707 for _, kwargs in mk.bot.sent)
+
+
+@pytest.mark.parametrize("source", ["command", "callback", "value"])
+async def test_locked_secret_notice_preserves_topic(mk, source):
+    if source == "value":
+        await mk.command("/secret set TOOL_TOKEN", thread=707)
+    await mk.vault.setup(KEY)
+    await mk.vault.lock()
+    if source == "command":
+        await mk.command("/secret set TOOL_TOKEN", thread=707)
+    elif source == "callback":
+        await mk.input.handle_callback(callback("sec:ow:TOOL_TOKEN", thread=707))
+    else:
+        await enter(mk, SECRET)
+    assert "/masterkey unlock" in mk.texts()[-1]
+    assert all(kwargs["message_thread_id"] == 707 for _, kwargs in mk.bot.sent)
+
+
+@pytest.mark.parametrize("thread", [None, 707])
+async def test_masterkey_group_denial_preserves_topic(mk, thread):
+    await mk.command("/masterkey unlock", chat=-123, kind="supergroup", thread=thread)
+    await mk.input.handle_callback(
+        callback("mk:ttl:15", chat=-123, kind="supergroup", thread=thread)
+    )
+    assert not mk.input._pending
+    assert (await mk.vault.status()).state is VaultState.UNCONFIGURED
+    assert all(kwargs["message_thread_id"] == thread for _, kwargs in mk.bot.sent)
