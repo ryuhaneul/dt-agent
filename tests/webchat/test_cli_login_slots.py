@@ -838,3 +838,123 @@ async def test_delete_preserves_unreadable_cooldowns_and_allows_retry(
     assert registry.load().cooldowns == {"claude-other": 200}
     assert json.loads(paths.config_path.read_text())["claude_accounts"] == ["claude-other"]
     assert not folder.exists()
+
+
+@pytest.mark.parametrize("mode", ["cancel", "timeout"])
+@pytest.mark.parametrize(
+    ("leader_exits", "inherits_output"), [(False, True), (True, True), (False, False)]
+)
+async def test_interrupted_slot_can_be_deleted_and_recreated_by_detached_child(
+    cli_bridge, monkeypatch, mode, leader_exits, inherits_output
+):
+    import contextlib
+    import signal
+
+    from ductor_bot.cli.base import CLIConfig
+    from ductor_bot.cli.claude_provider import ClaudeCodeCLI
+
+    client, _, _, paths, _ = cli_bridge
+    slot = "claude-work"
+    paths.config_path.write_text(json.dumps({"claude_accounts": [slot]}))
+    folder = paths.ductor_home / ".cli-auth" / slot
+    folder.mkdir()
+    pids = paths.ductor_home / "pids.json"
+    write_slot = paths.ductor_home / "write-slot"
+    marker = folder / "child-wrote"
+    child_script = """import os, sys, time
+from pathlib import Path
+trigger = Path(sys.argv[1])
+deadline = time.monotonic() + 10
+while not trigger.exists() and time.monotonic() < deadline:
+    time.sleep(0.01)
+if trigger.exists():
+    folder = Path(os.environ["CLAUDE_CONFIG_DIR"])
+    folder.mkdir(exist_ok=True)
+    (folder / "child-wrote").touch()
+"""
+    fake = paths.ductor_home / "fake-claude"
+    fake.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, subprocess, sys, time\n"
+        "from pathlib import Path\n"
+        f"output = None if {inherits_output!r} else subprocess.DEVNULL\n"
+        f"child = subprocess.Popen([sys.executable, '-c', {child_script!r}, {str(write_slot)!r}], "
+        "start_new_session=True, stdin=subprocess.DEVNULL, stdout=output, stderr=output)\n"
+        f"Path({str(pids)!r}).write_text(json.dumps([os.getpid(), child.pid]))\n"
+        "print(json.dumps({'type':'system','subtype':'init','session_id':'fixture'}), flush=True)\n"
+        f"if not {leader_exits!r}: time.sleep(10)\n"
+    )
+    fake.chmod(0o700)
+    monkeypatch.setattr(ClaudeCodeCLI, "_find_cli", staticmethod(lambda: str(fake)))
+    cli = ClaudeCodeCLI(CLIConfig(
+        working_dir=paths.ductor_home, ductor_home=paths.ductor_home, claude_accounts=[slot]
+    ))
+
+    def alive(pid):
+        try:
+            status = (Path("/proc") / str(pid) / "stat").read_text().rpartition(") ")[2]
+        except (FileNotFoundError, ProcessLookupError):
+            return False
+        return not status.startswith("Z ")
+
+    stream = cli.send_streaming("fixture", timeout_seconds=1 if mode == "timeout" else 10)
+    initialized = asyncio.Event()
+
+    async def consume():
+        events = []
+        async for event in stream:
+            events.append(event)
+            if event.type == "system":
+                initialized.set()
+        return events
+
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    reader = asyncio.create_task(consume())
+    route = f"{_PREFIX}/cli-login/slots/{slot}"
+    try:
+        await asyncio.wait_for(initialized.wait(), 5)
+        leader, child = json.loads(pids.read_text())
+        if leader_exits:
+            await until(lambda: not alive(leader))
+        else:
+            assert alive(leader)
+        assert os.getpgid(child) == child
+        response = await client.delete(route, headers=cli_headers())
+        assert (response.status, await response.json()) == (409, {"error": "slot_busy"})
+
+        if mode == "cancel":
+            reader.cancel()
+            done, _ = await asyncio.wait({reader}, timeout=0.5)
+            assert reader in done, "cancellation waited for a detached writer"
+            with pytest.raises(asyncio.CancelledError):
+                await reader
+        else:
+            done, _ = await asyncio.wait({reader}, timeout=max(0, start + 1.5 - loop.time()))
+            assert reader in done, "timeout waited for a detached writer"
+            result = (await reader)[-1]
+            assert result.is_error and result.result == "__TIMEOUT__1"
+
+        assert alive(child)
+        response = await client.delete(route, headers=cli_headers())
+        assert (response.status, await response.json()) == (200, {"ok": True})
+        assert not folder.exists()
+
+        write_slot.touch()
+        await until(marker.exists)
+        listing = await client.get(f"{_PREFIX}/cli-login/status", headers=cli_headers())
+        slots = (await listing.json())["claude_slots"]
+        assert next(item for item in slots if item["name"] == slot)["priority"] is None
+        response = await client.delete(route, headers=cli_headers())
+        assert (response.status, await response.json()) == (200, {"ok": True})
+        assert not folder.exists()
+    finally:
+        if pids.exists():
+            for pid in reversed(json.loads(pids.read_text())):
+                if alive(pid):
+                    with contextlib.suppress(ProcessLookupError):
+                        os.kill(pid, signal.SIGKILL)
+        if not reader.done():
+            reader.cancel()
+            await asyncio.gather(reader, return_exceptions=True)
+        await stream.aclose()

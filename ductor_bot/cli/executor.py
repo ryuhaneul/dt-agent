@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_INTERRUPTED_PIPE_WAIT_SECONDS = 0.25
 
 _CleanupResult = TypeVar("_CleanupResult")
 
@@ -234,18 +235,30 @@ def _stream_group_is_live(pgid: int) -> bool:
     return False
 
 
+async def _finish_interrupted_stream_pipes(process: asyncio.subprocess.Process) -> None:
+    # asyncio.subprocess.Process has no public API to close its output pipes.
+    with contextlib.suppress(AttributeError, NotImplementedError):
+        transport = getattr(process, "_transport", None)
+        if transport is not None:
+            for fd in (1, 2):
+                pipe = transport.get_pipe_transport(fd)
+                if pipe is not None:
+                    pipe.close()
+    # Give local pipe callbacks and process reaping a bounded window.
+    with contextlib.suppress(TimeoutError):
+        async with asyncio.timeout(_INTERRUPTED_PIPE_WAIT_SECONDS):
+            await process.wait()
+
+
 async def _terminate_stream_group(process: asyncio.subprocess.Process) -> None:
     """Stop the dedicated stream group and wait until its members cannot access the slot."""
-    while True:
-        try:
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGKILL)
+    await _finish_interrupted_stream_pipes(process)
+    while await asyncio.to_thread(_stream_group_is_live, process.pid):
+        with contextlib.suppress(ProcessLookupError):
             os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            break
-        if not await asyncio.to_thread(_stream_group_is_live, process.pid):
-            break
         await asyncio.sleep(0.05)
-    # Drain the pipes as asyncio also waits for them to close when reaping the child.
-    await process.communicate()
 
 
 async def _cleanup_interrupted_stream(

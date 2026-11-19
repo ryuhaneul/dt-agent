@@ -104,9 +104,12 @@ def slot_use_lock(root: Path, slot: str, *, deleting: bool = False) -> Iterator[
 
 
 def _read_configured_slots(home: Path) -> list[str] | None:
+    path = home / "config" / "config.json"
     try:
-        data = json.loads((home / "config" / "config.json").read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
+        if path.parent.is_dir():
+            raise
         # Standalone callers can supply accounts without an on-disk bot config.
         return None
     accounts = (data.get("claude_accounts") or []) if isinstance(data, dict) else None
@@ -120,7 +123,10 @@ async def current_slot_candidates(agent_home: Path, accounts: Sequence[str]) -> 
     """Refresh inherited candidates from the same home that owns the slot directories."""
     if agent_home.parent.name == "agents":
         main_home = resolve_ductor_home(agent_home / "workspace")
-        current = await asyncio.to_thread(_read_configured_slots, main_home)
+        try:
+            current = await asyncio.to_thread(_read_configured_slots, main_home)
+        except (OSError, ValueError, RecursionError):
+            current = None
         if current is not None:
             return current
     return list(accounts)
@@ -134,8 +140,16 @@ def reserve_slot(registry: SlotRegistry | None, slot: str) -> Iterator[bool]:
         return
     root = registry.state_path.parent
     with slot_use_lock(root, slot) as reserved:
-        current = _read_configured_slots(root.parent) if reserved else []
-        yield current is None or slot in current
+        if not reserved:
+            yield False
+            return
+        try:
+            current = _read_configured_slots(root.parent)
+        except (OSError, ValueError, RecursionError):
+            logger.warning("Skipping non-default Claude slot: current configuration is unreadable")
+            yield False
+        else:
+            yield current is None or slot in current
 
 
 @dataclass(slots=True)

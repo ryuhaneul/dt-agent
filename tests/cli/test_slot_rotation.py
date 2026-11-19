@@ -968,7 +968,7 @@ def test_slot_locks_coordinate_with_other_processes(deletion_home):
 @pytest.mark.parametrize("model_override", [False, True])
 @pytest.mark.parametrize("driver", ["regular", "streaming", "one-shot"])
 async def test_subagent_executes_replacement_main_slot(
-    deletion_home, monkeypatch, model_override, driver
+    deletion_home, monkeypatch, caplog, model_override, driver
 ):
     import json
     import sys
@@ -1004,7 +1004,11 @@ async def test_subagent_executes_replacement_main_slot(
     assert child.model == ("sonnet" if model_override else main.model)
 
     calls = deletion_home / "calls"
-    (deletion_home / ".cli-auth" / "claude-a" / ".credentials.json").write_text("{}")
+    auth = deletion_home / ".cli-auth"
+    default = auth / "claude"
+    default.mkdir()
+    (default / ".credentials.json").write_text("{}")
+    (auth / "claude-a" / ".credentials.json").write_text("{}")
     fake = deletion_home / "fake-claude"
     fake.write_text(
         f"#!{sys.executable}\n"
@@ -1052,8 +1056,30 @@ async def test_subagent_executes_replacement_main_slot(
     remove(deletion_home, "claude-a")
 
     assert child.claude_accounts == ["claude-a"]
+    # A leftover or recreated directory does not restore registration.
+    stale = auth / "claude-a"
+    stale.mkdir()
+    (stale / ".credentials.json").write_text("{}")
+    known_config = main_paths.config_path.read_text()
+    read_text = Path.read_text
+
+    def unreadable(path, *args, **kwargs):
+        if path == main_paths.config_path:
+            raise PermissionError(13, "Permission denied", path)
+        return read_text(path, *args, **kwargs)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(Path, "read_text", unreadable)
+        assert await execute() == str(default)
+    main_paths.config_path.write_text("{")
+    assert await execute() == str(default)
+    main_paths.config_path.unlink()
+    assert await execute() == str(default)
+
+    assert "Skipping non-default Claude slot: current configuration is unreadable" in caplog.text
+    main_paths.config_path.write_text(known_config)
     assert await execute() == str(prepared.path)
-    assert calls.read_text().splitlines() == ["claude-a", "claude-b"]
+    assert calls.read_text().splitlines() == ["claude-a", "claude", "claude", "claude", "claude-b"]
 
 
 @pytest.mark.parametrize("mode", ["cancel", "timeout", "normal"])
@@ -1161,3 +1187,16 @@ async def test_stream_handles_child_after_leader_exits(deletion_home, monkeypatc
             reader.cancel()
             await asyncio.gather(reader, return_exceptions=True)
         await stream.aclose()
+
+
+@pytest.mark.parametrize("has_transport", [False, True])
+async def test_interrupted_pipe_wait_is_bounded_without_transport_access(has_transport):
+    import asyncio
+    from types import SimpleNamespace
+
+    from ductor_bot.cli.executor import _finish_interrupted_stream_pipes
+
+    process = SimpleNamespace(wait=asyncio.Event().wait)
+    if has_transport:
+        process._transport = SimpleNamespace()
+    await asyncio.wait_for(_finish_interrupted_stream_pipes(process), 0.75)
