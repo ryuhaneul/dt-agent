@@ -52,9 +52,12 @@ export function initCron(getTopic) {
   function card(job) {
     return `<article class="cron-job ${selected?.id === job.id ? 'is-selected' : ''}"><div class="cron-row"><button class="cron-job-title grow" type="button" data-cron-id="${esc(job.id)}">${esc(job.title)}</button><div class="cron-switch-wrap"><span>${esc(t(job.enabled ? 'cron.enabled' : 'cron.disabled'))}</span><button class="cron-switch" type="button" role="switch" aria-checked="${!!job.enabled}" aria-label="${esc(t('cron.toggle_named', { name: job.title }))}" data-cron-toggle="${esc(job.id)}"></button></div></div><p class="${scheduleClass(job)}">${scheduleText(job)} <span class="hint">· ${esc(job.timezone)}</span></p><dl class="cron-meta"><div><dt>${esc(t('cron.last_run'))}</dt><dd>${esc(job.last_run_at ? `${new Date(job.last_run_at).toLocaleString(document.documentElement.lang)} · ${job.last_run_status?.startsWith('success') ? t('cron.run_success') : job.last_run_status?.startsWith('error') ? t('cron.run_failed') : job.last_run_status || '—'}` : t('cron.never'))}</dd></div><div><dt>${esc(t('cron.target'))}</dt><dd>${esc(target(job))}</dd></div><div><dt>${esc(t('autocompact.title'))}</dt><dd>${esc(acLabel(job.autocompact))}</dd></div><div><dt>${esc(t('cron.delivery'))}</dt><dd>${esc(delivery(job.delivery_mode))}</dd></div></dl></article>`;
   }
+  const hasTaskDetails = job => 'content' in job;
   function detail() {
-    const job = selected;
-    return `<section class="cron-detail"><div class="cron-body"><button class="cron-back" type="button" data-cron-action="list">← ${esc(t('cron.list'))}</button><div class="cron-detail-title"><div class="cron-row"><h3 class="grow">${esc(job.title)}</h3><span class="tag">${esc(t(job.enabled ? 'cron.enabled' : 'cron.disabled'))}</span></div><p class="${scheduleClass(job)}">${scheduleText(job)}</p><p class="hint mono">${esc(job.schedule)}</p></div><h3>${esc(t('cron.instruction'))}</h3><div class="cron-instruction">${esc(job.content)}</div><dl class="cron-summary"><div><dt>${esc(t('cron.timezone'))}</dt><dd>${esc(job.timezone)}</dd></div><div><dt>${esc(t('cron.target'))}</dt><dd>${esc(target(job))}</dd></div><div><dt>${esc(t('cron.delivery'))}</dt><dd>${esc(delivery(job.delivery_mode))}</dd></div><div><dt>${esc(t('autocompact.title'))}</dt><dd>${esc(acLabel(job.autocompact))}</dd></div></dl><h3>${esc(t('cron.scripts'))}</h3><div class="cron-files mono">${job.scripts.length ? job.scripts.map(esc).join('<br>') : esc(t('cron.none'))}</div>${secret(job.secret_warning)}</div><footer class="cron-foot">${button('common.delete', 'delete', 'btn-danger')}${button('cron.list', 'list')}${button('cron.edit', 'edit', 'btn-primary')}</footer></section>`;
+    const job = selected, complete = hasTaskDetails(job);
+    const instruction = complete ? `<h3>${esc(t('cron.instruction'))}</h3><div class="cron-instruction">${esc(job.content)}</div>` : '';
+    const scripts = complete ? `<h3>${esc(t('cron.scripts'))}</h3><div class="cron-files mono">${job.scripts.length ? job.scripts.map(esc).join('<br>') : esc(t('cron.none'))}</div>${secret(job.secret_warning)}` : '';
+    return `<section class="cron-detail"><div class="cron-body"><button class="cron-back" type="button" data-cron-action="list">← ${esc(t('cron.list'))}</button><div class="cron-detail-title"><div class="cron-row"><h3 class="grow">${esc(job.title)}</h3><span class="tag">${esc(t(job.enabled ? 'cron.enabled' : 'cron.disabled'))}</span></div><p class="${scheduleClass(job)}">${scheduleText(job)}</p><p class="hint mono">${esc(job.schedule)}</p></div>${instruction}<dl class="cron-summary"><div><dt>${esc(t('cron.timezone'))}</dt><dd>${esc(job.timezone)}</dd></div><div><dt>${esc(t('cron.target'))}</dt><dd>${esc(target(job))}</dd></div><div><dt>${esc(t('cron.delivery'))}</dt><dd>${esc(delivery(job.delivery_mode))}</dd></div><div><dt>${esc(t('autocompact.title'))}</dt><dd>${esc(acLabel(job.autocompact))}</dd></div></dl>${scripts}</div><footer class="cron-foot">${button('common.delete', 'delete', 'btn-danger')}${button('cron.list', 'list')}${complete ? button('cron.edit', 'edit', 'btn-primary') : ''}</footer></section>`;
   }
   function form() {
     const preset = draft.preset;
@@ -64,7 +67,7 @@ export function initCron(getTopic) {
     document.querySelector('#cronTitle').textContent = t(view === 'edit' ? creating ? 'cron.create' : 'cron.edit' : view === 'delete' ? 'cron.delete' : 'cron.title');
     document.querySelector('#cronContext').textContent = topic?.name || '';
     if (view === 'delete') {
-      content.innerHTML = `<section class="cron-detail"><div class="cron-body cron-confirm"><h3>${esc(t('cron.confirm_delete', { name: selected.title }))}</h3><p>${esc(t('cron.archive_notice'))}</p></div><footer class="cron-foot">${button('common.cancel', 'cancel-delete')}${button('common.delete', 'confirm-delete', 'btn-danger')}</footer></section>`;
+      content.innerHTML = `<section class="cron-detail"><div class="cron-body cron-confirm"><h3>${esc(t('cron.confirm_delete', { name: selected.title }))}</h3>${hasTaskDetails(selected) ? `<p>${esc(t('cron.archive_notice'))}</p>` : ''}</div><footer class="cron-foot">${button('common.cancel', 'cancel-delete')}${button('common.delete', 'confirm-delete', 'btn-danger')}</footer></section>`;
     } else {
       content.innerHTML = `<div class="cron-listbar"><b>${esc(t('cron.title'))} <span class="hint">${jobs.length}</span></b>${button('cron.create', 'create', 'btn-primary')}</div><div class="cron-split ${view !== 'list' ? 'has-detail' : ''}"><div class="cron-list scroll">${jobs.map(card).join('') || `<p class="cron-empty">${esc(t('cron.empty'))}</p>`}</div>${view === 'edit' ? form() : view === 'detail' && selected ? detail() : ''}</div>`;
     }
@@ -115,10 +118,15 @@ export function initCron(getTopic) {
     const generation = version, request = ++detailVersion;
     error(); setBusy(true);
     try {
-      const state = await api(jobPath(id));
+      const job = await api(jobPath(id)).then(state => state.job, failure => {
+        if (failure.status !== 404 || failure.code !== 'not_found') throw failure;
+        const listed = jobs.find(entry => entry.id === id);
+        if (!listed) throw failure;
+        return listed;
+      });
       if (!alive(generation) || request !== detailVersion) return;
-      selected = state.job; view = 'detail'; draft = null; render();
-    } catch { if (alive(generation)) error('error.generic'); }
+      selected = job; view = 'detail'; draft = null; render();
+    } catch { if (alive(generation) && request === detailVersion) error('error.generic'); }
     finally { if (alive(generation) && request === detailVersion) setBusy(false); }
   }
   function edit(fresh = false) {
