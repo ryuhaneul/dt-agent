@@ -17,7 +17,7 @@ let view = 'chat', selection = 0, commandMenu = null, secretDialog = null, autoc
 let streamFrame = null, historyRender = null, composerFiles = null, attachmentView = null;
 const streamUpdates = new Set();
 const HISTORY_PAGE_SIZE = 100, MESSAGE_WINDOW_SIZE = 100, WINDOW_STEP = 50;
-let renderedTopic = null;
+let renderedTopic = null, pinnedDay = null;
 function history(tid) {
   if (!histories.has(tid)) histories.set(tid, { entries: new Map(), meta: new Map(), choices: new Map(), mirrorReaders: new Set(), hasMore: false, loaded: false, rendered: false, renderStart: null, range: null, markdown: createMarkdownCache(`entry:${tid}`) });
   return histories.get(tid);
@@ -137,7 +137,7 @@ function queueStatus(turnId, status = null) {
   return `<div class="queue-status${cancelled ? ' stopped' : ''}" role="status"><span>${esc(label)}</span>${cancel}</div>`;
 }
 function queuedMarkup(turn) {
-  return `<div class="msg me" data-queue-turn="${esc(turn.id)}"><div class="meta"><span class="tag">${esc(t('tag.web'))}</span><span class="tm">${esc(formatTime(turn.received))}</span></div><div class="bubble md">${md(turn.userText)}</div>${queueStatus(turn.id)}</div>`;
+  return `<div class="msg me" data-queue-turn="${esc(turn.id)}"><div class="meta"><span class="tag">${esc(t('tag.web'))}</span>${messageTime(turn.received)}</div><div class="bubble md">${md(turn.userText)}</div>${queueStatus(turn.id)}</div>`;
 }
 async function cancelQueued(turnId) {
   const turn = turns.get(turnId), generation = epoch;
@@ -208,22 +208,22 @@ function streamContent(turn, live) {
 function entryMarkup(entry) {
   const displayText=attachmentView?.text(getTopic().tid,entry)??entry.text;
   const attachmentCards=attachmentView?.markup(getTopic().tid,entry)||'';
-  const time = esc(formatTime(entry.ts));
+  const time = messageTime(entry.ts);
   const delegated = entry.role === 'event' && entry.kind === 'interagent';
   if (entry.role === 'event' && !delegated) {
     const failed = ['failed', 'error', 'cancelled'].includes(entry.status);
     const key = entry.kind === 'task_result' && failed ? 'task_failed' : entry.kind;
     const kind = ['task_result', 'task_failed', 'task_question', 'heartbeat', 'interagent', 'cron', 'webhook', 'background'].includes(key) ? key : 'background';
-    return `<div class="event${entry.imported ? ' old' : ''}" data-entry-seq="${entry.seq}"><span class="badge ${kind === 'task_result' ? 'badge-ok' : kind === 'task_failed' ? 'badge-down' : 'badge-off'}">${esc(t(`event.${kind}`))}</span><div><div class="meta">${sourceTag(entry)}<span class="tm">${time}</span>${entry.title ? `<b>${esc(entry.title)}</b>` : ''}</div><div class="md">${history(getTopic().tid).markdown({ ...entry, text: displayText })}</div>${attachmentCards}${responseButtons(entry)}${mirror(entry)}</div></div>`;
+    return `<div class="event${entry.imported ? ' old' : ''}" data-entry-seq="${entry.seq}"><span class="badge ${kind === 'task_result' ? 'badge-ok' : kind === 'task_failed' ? 'badge-down' : 'badge-off'}">${esc(t(`event.${kind}`))}</span><div><div class="meta">${sourceTag(entry)}${time}${entry.title ? `<b>${esc(entry.title)}</b>` : ''}</div><div class="md">${history(getTopic().tid).markdown({ ...entry, text: displayText })}</div>${attachmentCards}${responseButtons(entry)}${mirror(entry)}</div></div>`;
   }
   const turn = turns.get(entry.turn_id);
   const stopped = entry.status === 'aborted' || (entry.role === 'bot' && turn?.phase === 'aborted');
-  return `<div class="msg ${entry.role === 'user' ? 'me' : 'bot'}${entry.imported ? ' old' : ''}${entry.kind === 'command' ? ' command-message' : ''}" data-entry-seq="${entry.seq}"><div class="meta">${sourceTag(entry)}${delegated ? `<span class="tag">${esc(t('chat.delegated_response'))}</span>` : ''}<span class="tm">${time}</span>${delegated && entry.title ? `<span>${esc(entry.title)}</span>` : ''}</div><div class="bubble md">${entry.role === 'bot' ? activitySummary(turn) : ''}${entry.kind === 'command' ? esc(entry.text || '') : history(getTopic().tid).markdown({ ...entry, text: displayText })}${attachmentCards}${responseButtons(entry)}</div>${entry.role === 'user' ? queueStatus(entry.turn_id, entry.status) : ''}${stopped ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : ''}${mirror(entry)}</div>`;
+  return `<div class="msg ${entry.role === 'user' ? 'me' : 'bot'}${entry.imported ? ' old' : ''}${entry.kind === 'command' ? ' command-message' : ''}" data-entry-seq="${entry.seq}"><div class="meta">${sourceTag(entry)}${delegated ? `<span class="tag">${esc(t('chat.delegated_response'))}</span>` : ''}${time}${delegated && entry.title ? `<span>${esc(entry.title)}</span>` : ''}</div><div class="bubble md">${entry.role === 'bot' ? activitySummary(turn) : ''}${entry.kind === 'command' ? esc(entry.text || '') : history(getTopic().tid).markdown({ ...entry, text: displayText })}${attachmentCards}${responseButtons(entry)}</div>${entry.role === 'user' ? queueStatus(entry.turn_id, entry.status) : ''}${stopped ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : ''}${mirror(entry)}</div>`;
 }
 function streamMarkup(turn) {
   const live = ['queued', 'started'].includes(turn.phase);
   const dots = live ? '<span class="typing" aria-hidden="true"><i></i><i></i><i></i></span>' : '';
-  return `<div class="msg bot" ${live ? 'id="streamMsg"' : ''} data-turn="${esc(turn.id)}"><div class="meta"><span class="tag">${esc(t('tag.web'))}</span><span>${esc(live ? t('chat.answering') : formatTime(turn.finished))}</span>${dots}</div><div class="bubble md">${streamContent(turn, live)}${live ? '<span class="caret" aria-hidden="true"></span>' : ''}</div>${turn.phase === 'aborted' ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : turn.phase === 'error' ? `<div class="stopped">${esc(t('error.generic'))}</div>` : ''}</div>`;
+  return `<div class="msg bot" ${live ? 'id="streamMsg"' : ''} data-turn="${esc(turn.id)}"><div class="meta"><span class="tag">${esc(t('tag.web'))}</span>${messageTime(streamTimestamp(turn))}${live ? `<span>${esc(t('chat.answering'))}</span>` : ''}${dots}</div><div class="bubble md">${streamContent(turn, live)}${live ? '<span class="caret" aria-hidden="true"></span>' : ''}</div>${turn.phase === 'aborted' ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : turn.phase === 'error' ? `<div class="stopped">${esc(t('error.generic'))}</div>` : ''}</div>`;
 }
 function cancelStreamRender() {
   if (streamFrame !== null) cancelAnimationFrame(streamFrame);
@@ -303,40 +303,88 @@ function updateThreadNavigation() {
   const top = document.querySelector('#threadTop'), bottom = document.querySelector('#threadBottom');
   const topic = getTopic(), state = topic ? history(topic.tid) : null;
   top.hidden = !state || (!state.range?.older && !state.hasMore && thread.scrollTop < 80);
-  bottom.hidden = !state || (!state.range?.newer && thread.scrollHeight - thread.clientHeight - thread.scrollTop < 80);
+  const gap = thread.scrollHeight - thread.clientHeight - thread.scrollTop;
+  bottom.hidden = !state || (!state.range?.newer && gap < 80);
+  const readingHistory = !!state && (state.range?.newer || gap > 2);
+  if (thread.dataset.readingHistory !== String(readingHistory)) {
+    thread.dataset.readingHistory = String(readingHistory);
+  }
+  let divider = null;
+  if (readingHistory) {
+    const stickyTop = thread.getBoundingClientRect().top + parseFloat(getComputedStyle(thread).paddingTop);
+    for (const group of thread.children) {
+      if (group.getBoundingClientRect().bottom <= stickyTop) continue;
+      const day = group.firstElementChild;
+      if (!day.hidden && day.getBoundingClientRect().top <= stickyTop + 1) divider = day;
+      break;
+    }
+  }
+  if (pinnedDay !== divider) {
+    if (pinnedDay) delete pinnedDay.dataset.pinned;
+    if (divider) divider.dataset.pinned = '';
+    pinnedDay = divider;
+  }
+}
+let dateLocale, messageFormatters;
+function messageDate(ts) {
+  const date = ts ? new Date(ts) : null;
+  return date && Number.isFinite(+date) ? date : null;
+}
+function messageFormats() {
+  const locale = document.documentElement.lang;
+  if (dateLocale !== locale) {
+    dateLocale = locale;
+    messageFormatters = {
+      day: new Intl.DateTimeFormat(locale, { dateStyle: 'medium' }),
+      clock: new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit' }),
+    };
+  }
+  return messageFormatters;
+}
+function messageTime(ts) {
+  const date = messageDate(ts);
+  if (!date) return '<span class="tm">—</span>';
+  const { day, clock } = messageFormats();
+  return `<time class="tm" datetime="${date.toISOString()}">${esc(day.format(date))} · ${esc(clock.format(date))}</time>`;
+}
+function streamTimestamp(turn) {
+  return turn.finished ?? turn.startedAt ?? turn.received;
 }
 function localDay(date) {
-  return Number.isNaN(+date) ? '' : `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+  return date ? `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}` : '';
 }
-function entryDayKey(entry) {
-  const day = entry.ts ? localDay(new Date(entry.ts)) : '';
-  return `${day}:${!!entry.imported}`;
-}
-function threadItems(rows) {
-  const items = [], todayPrefix = `${localDay(new Date())}:`;
-  let previousDay;
+function threadGroups(rows) {
+  const groups = [], today = localDay(new Date());
+  let group;
   for (const row of rows) {
-    if (row.kind === 'entry' && !row.waiting) {
-      const entry = row.entry, day = entryDayKey(entry);
-      if (day !== previousDay) {
-        const today = day.startsWith(todayPrefix);
-        items.push({ kind: 'day', entry, today, key: `day:${entry.seq}:${day}:${today}` });
+    if (row.kind !== 'busy' || !group) {
+      const ts = row.entry ? row.entry.ts : row.kind === 'stream' ? streamTimestamp(row.turn) : row.received;
+      const date = messageDate(ts);
+      const day = localDay(date), imported = !!row.entry?.imported;
+      const dayKey = `${day}:${imported}:${day === today}`;
+      if (dayKey !== group?.dayKey) {
+        const label = day === today ? t('chat.today') : date ? messageFormats().day.format(date) : '—';
+        const divider = imported ? `${label} · ${t('chat.imported_day')}` : label;
+        group = { dayKey, key: `${dayKey}:${row.key}`, divider, rows: [] };
+        groups.push(group);
       }
-      previousDay = day;
     }
-    items.push(row);
+    group.rows.push(row);
   }
-  return items;
+  return groups;
+}
+function groupStart(group) {
+  return `<div class="date-group" data-date-group="${esc(group.key)}"><div class="day"${group.rows[0].kind === 'busy' ? ' hidden' : ''}>${esc(group.divider)}</div>`;
 }
 function itemMarkup(item) {
-  const { kind, key, entry, turn } = item;
+  const { kind, entry, turn } = item;
   if (kind === 'entry') return entryMarkup(entry);
   if (kind === 'queue') return queuedMarkup(turn);
   if (kind === 'stream') return streamMarkup(turn);
-  if (kind === 'busy') return `<div class="meta" data-thread-key="busy">${esc(t('chat.answering'))}<span class="typing" aria-hidden="true"><i></i><i></i><i></i></span></div>`;
-  const date = entry.ts && !Number.isNaN(Date.parse(entry.ts)) ? new Date(entry.ts) : null;
-  const label = item.today ? t('chat.today') : date ? date.toLocaleDateString(document.documentElement.lang) : '—';
-  return `<div class="day" data-thread-key="${key}">${esc(label)}${entry.imported ? ` · ${esc(t('chat.imported_day'))}` : ''}</div>`;
+  return `<div class="meta" data-thread-key="busy">${esc(t('chat.answering'))}<span class="typing" aria-hidden="true"><i></i><i></i><i></i></span></div>`;
+}
+function threadRows(thread) {
+  return [...thread.children].flatMap(group => [...group.children].slice(1));
 }
 function nodeKey(node) {
   const { entrySeq, queueTurn, turn, threadKey } = node.dataset;
@@ -351,31 +399,46 @@ function rememberActivity(node) {
     if (turn) turn.activityOpen = element.open;
   }
 }
-function patchThread(thread, items, changes) {
-  // History and queued turns share one order. Keep unchanged nodes in place as that order evolves.
-  const wanted = new Set(items.map(item => item.key)), existing = new Map();
-  for (const node of thread.children) existing.set(nodeKey(node), node);
+function patchThread(thread, groups, changes) {
+  // Keep unchanged messages in place, including when a window starts partway through a day.
+  const existing = new Map(threadRows(thread).map(node => [nodeKey(node), node]));
+  const oldGroups = new Map([...thread.children].map(node => [node.dataset.dateGroup, node]));
+  const wanted = new Set(groups.flatMap(group => group.rows.map(row => row.key)));
   for (const [key, node] of existing) {
     if (!wanted.has(key)) { rememberActivity(node); node.remove(); }
   }
   const template = document.createElement('template');
-  let next = null;
-  for (let index = items.length - 1; index >= 0; index--) {
-    const item = items[index], { entry, turn } = item;
-    let node = existing.get(item.key);
-    const dirty = item.kind === 'entry'
-      ? changes.entries?.has(entry.id) || changes.turns?.has(entry.turn_id)
-      : turn && changes.turns?.has(turn.id);
-    if (!node || dirty) {
-      if (node) rememberActivity(node);
-      template.innerHTML = itemMarkup(item);
-      const replacement = template.content.firstElementChild;
-      if (node) node.replaceWith(replacement);
-      node = replacement;
+  let nextGroup = null;
+  for (const group of [...groups].reverse()) {
+    let parent = oldGroups.get(group.key);
+    if (!parent) {
+      template.innerHTML = groupStart(group) + '</div>';
+      parent = template.content.firstElementChild;
     }
-    if (node.parentNode !== thread || node.nextElementSibling !== next) thread.insertBefore(node, next);
-    next = node;
+    if (parent.parentNode !== thread || parent.nextElementSibling !== nextGroup) {
+      thread.insertBefore(parent, nextGroup);
+    }
+    let next = null;
+    for (let index = group.rows.length - 1; index >= 0; index--) {
+      const item = group.rows[index], { entry, turn } = item;
+      let node = existing.get(item.key);
+      const dirty = item.kind === 'entry'
+        ? changes.entries?.has(entry.id) || changes.turns?.has(entry.turn_id)
+        : turn && changes.turns?.has(turn.id);
+      if (!node || dirty) {
+        if (node) rememberActivity(node);
+        template.innerHTML = itemMarkup(item);
+        const replacement = template.content.firstElementChild;
+        if (node) node.replaceWith(replacement);
+        node = replacement;
+      }
+      if (node.parentNode !== parent || node.nextElementSibling !== next) parent.insertBefore(node, next);
+      next = node;
+    }
+    oldGroups.delete(group.key);
+    nextGroup = parent;
   }
+  for (const node of oldGroups.values()) node.remove();
 }
 function updateEntries(tid, entries) {
   if (!active || tid !== getTopic()?.tid) return;
@@ -394,7 +457,7 @@ function cancelHistoryRender() {
 function loadWindowAttachments(tid, rows) {
   attachmentView?.load(tid, rows.filter(row => row.kind === 'entry').map(row => row.entry));
 }
-function scheduleHistoryRender(topic, rows, start, limit) {
+function scheduleHistoryRender(topic, rows, start, limit, end, showBusy) {
   const state = history(topic.tid), thread = document.querySelector('#thread');
   const job = { tid: topic.tid, start, idle: typeof requestIdleCallback === 'function', id: null };
   historyRender = job;
@@ -406,14 +469,10 @@ function scheduleHistoryRender(topic, rows, start, limit) {
     const next = Math.max(limit, job.start - 12), batch = rows.slice(next, job.start);
     const top = thread.scrollTop, height = thread.scrollHeight;
     const pinned = !state.range.newer && height - thread.clientHeight - top < 80;
-    const previous = rows[job.start];
-    if (previous.kind === 'entry' && !previous.waiting && batch.at(-1).kind === 'entry' &&
-        !batch.at(-1).waiting && entryDayKey(batch.at(-1).entry) === entryDayKey(previous.entry)) {
-      thread.firstElementChild?.remove();
-    }
-    thread.insertAdjacentHTML('afterbegin', threadItems(batch).map(itemMarkup).join(''));
-    const newHeight = thread.scrollHeight;
-    thread.scrollTop = pinned ? newHeight : top + newHeight - height;
+    const viewport = pinned ? null : viewportMessages(thread);
+    patchThread(thread, threadGroups(mountedRows(rows, next, end, showBusy)), {});
+    if (pinned) thread.scrollTop = thread.scrollHeight;
+    else restoreViewport(thread, viewport, top, null);
     loadWindowAttachments(topic.tid, batch);
     updateThreadNavigation();
     job.start = next; state.renderStart = rows[next].key;
@@ -434,7 +493,7 @@ function orderedMessages(entries, liveTurns, topicTurns) {
     if (entry.role === 'user' && boundary !== null && (
       turn?.phase === 'queued' || (entry.status === 'cancelled' && Date.parse(entry.ts) >= boundary)
     )) {
-      waiting.push({ ...row, waiting: true, received: turn?.received || entry.ts });
+      waiting.push({ ...row, received: turn?.received || entry.ts });
     } else rows.push(row);
   }
   for (const turn of topicTurns) {
@@ -455,7 +514,7 @@ function orderedMessages(entries, liveTurns, topicTurns) {
 function viewportMessages(thread) {
   const bounds = thread.getBoundingClientRect();
   let first = null, last = null;
-  for (const node of thread.children) {
+  for (const node of threadRows(thread)) {
     if (node.dataset.threadKey !== undefined) continue;
     const key = nodeKey(node), rect = node.getBoundingClientRect();
     if (rect.top >= bounds.bottom) break;
@@ -466,7 +525,7 @@ function viewportMessages(thread) {
   return { first, last };
 }
 function restoreViewport(thread, viewport, previousTop, changes) {
-  const anchor = viewport.first && [...thread.children].find(node => nodeKey(node) === viewport.first.key);
+  const anchor = viewport.first && threadRows(thread).find(node => nodeKey(node) === viewport.first.key);
   if (!anchor) {
     if (!changes) thread.scrollTop = previousTop;
     return;
@@ -512,6 +571,11 @@ function messageRange(state, rows, { seq, bottom, move, viewport, keepReading })
   state.range = { first: rows[start]?.key, last: rows[end - 1]?.key, older: start > 0, newer: end < length };
   return { start, end };
 }
+function mountedRows(rows, start, end, showBusy) {
+  const mounted = rows.slice(start, end);
+  if (showBusy) mounted.push({ kind: 'busy', key: 'busy' });
+  return mounted;
+}
 export function renderThread({ bottom = false, seq = null, changes = null, move = null } = {}) {
   if (!changes) cancelStreamRender();
   cancelHistoryRender();
@@ -541,12 +605,10 @@ export function renderThread({ bottom = false, seq = null, changes = null, move 
     start = resumed >= limit && resumed < end ? resumed : end - 12;
   }
   if (!sameTopic || bottom || seq !== null || move === 'top') thread.style.removeProperty('--thread-anchor-offset');
-  const mounted = rows.slice(start, end), items = threadItems(mounted);
-  if (!state.range.newer && (busy.get(topic.tid) ?? topic.busy) && !liveTurns.length) {
-    items.push({ kind: 'busy', key: 'busy' });
-  }
-  if (changes) patchThread(thread, items, changes);
-  else thread.innerHTML = items.map(itemMarkup).join('');
+  const showBusy = !state.range.newer && (busy.get(topic.tid) ?? topic.busy) && !liveTurns.length;
+  const mounted = mountedRows(rows, start, end, showBusy), groups = threadGroups(mounted);
+  if (changes) patchThread(thread, groups, changes);
+  else thread.innerHTML = groups.map(group => groupStart(group) + group.rows.map(itemMarkup).join('') + '</div>').join('');
   loadWindowAttachments(topic.tid, mounted);
   const pinned = !move && (bottom || nearBottom) && !state.range.newer;
   if (seq !== null) {
@@ -558,7 +620,7 @@ export function renderThread({ bottom = false, seq = null, changes = null, move 
   if (visibleChat() && pinned && entries.length) markSeen(topic.tid, entries.at(-1).seq);
   if (start > limit) {
     state.renderStart = rows[start].key;
-    scheduleHistoryRender(topic, rows, start, limit);
+    scheduleHistoryRender(topic, rows, start, limit, end, showBusy);
   } else if (rows.length) { state.rendered = true; state.renderStart = null; }
 }
 async function loadHistory(tid, { older = false, target = null, turnId = null } = {}) {
