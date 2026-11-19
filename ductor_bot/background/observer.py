@@ -78,9 +78,9 @@ class BackgroundObserver:
         self._cli_service = cli_service
         self._config = config
         self._on_result: BgResultCallback | None = None
-        self._autocompact_resolver: Callable[[SessionKey], Awaitable[AutocompactValue | None]] | None = (
-            None
-        )
+        self._autocompact_resolver: (
+            Callable[[SessionKey], Awaitable[AutocompactValue | None]] | None
+        ) = None
         self._tasks: dict[str, BackgroundTask] = {}
         # Inter-agent sessions resumed by hand queue in the same FIFO gate as inter-agent requests.
         self._reserve: Callable[[int, str], Reservation | None] | None = None

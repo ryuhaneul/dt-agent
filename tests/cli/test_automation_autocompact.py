@@ -457,7 +457,10 @@ async def test_creation_copies_raw_topic_setting(orch, tmp_path, monkeypatch, se
 
 
 @pytest.mark.parametrize("mode", ["separate", "inject", "in_session"])
-async def test_inherited_cron_uses_current_global_on_each_execution(tmp_path, mode):
+async def test_inherited_cron_uses_current_global_on_each_execution(tmp_path, mode, monkeypatch):
+    monkeypatch.setattr(
+        "ductor_bot.cron.execution.claude_autocompact_flag_supported", lambda _: True
+    )
     world = World(tmp_path, autocompact=300000)
     job = world.add(_job("daily", delivery_mode=mode, autocompact=None))
     for global_value in [300000, 700000]:
