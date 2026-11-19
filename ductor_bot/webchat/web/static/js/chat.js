@@ -1103,7 +1103,7 @@ export function initChat() {
     input.value = drafts.get(topic.tid) || ''; renderThread({ bottom: true }); resizeComposer();
     try {
       const cached = seq === null ? [] : sorted(topic.tid);
-      if (!cached.some(entry => entry.seq === seq)) {
+      if (!state.loaded || !cached.some(entry => entry.seq === seq)) {
         await loadHistory(topic.tid, { target: seq, older: seq !== null && seq < cached[0]?.seq });
       }
       if (active && generation === epoch && selected === selection && getTopic()?.tid === topic.tid) {
