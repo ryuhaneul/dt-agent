@@ -19,6 +19,7 @@ from ductor_bot.bus.failure_reason import (
     english_reason,
 )
 from ductor_bot.i18n import init, t
+from ductor_bot.messenger.telegram.sender import SendProgress
 from ductor_bot.multiagent.persistence import AsyncRecordStore
 from tests.messenger.matrix.test_transport import _env as matrix_env
 from tests.messenger.matrix.test_transport import _make_transport as matrix_transport
@@ -103,8 +104,8 @@ async def _error_line(transport_name: str, error: str) -> str:
     if transport_name == "telegram":
         transport, _, _ = telegram_transport()
         env = telegram_env(origin=Origin.INTERAGENT, is_error=True, metadata=metadata)
-        target = "ductor_bot.messenger.telegram.transport.send_rich_checked_progress"
-        sent: Any = (True, 1)
+        target = "ductor_bot.messenger.telegram.transport.send_rich_progress_detailed"
+        sent: Any = SendProgress(True, 1, None, "", None)
     elif transport_name == "matrix":
         transport, _ = matrix_transport()
         env = matrix_env(origin=Origin.INTERAGENT, is_error=True, metadata=metadata)

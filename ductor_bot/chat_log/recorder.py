@@ -172,7 +172,7 @@ class HistoryRecorder:
 
     async def on_delivered(self, envelope: Envelope) -> None:
         kind = _BUS_KINDS.get(envelope.origin)
-        if envelope.transport != "tg" or kind is None:
+        if not envelope.delivered or envelope.transport != "tg" or kind is None:
             return
         key = SessionKey.telegram(envelope.chat_id, envelope.topic_id)
         if envelope.delivery == DeliveryMode.BROADCAST and envelope.chat_id == 0:

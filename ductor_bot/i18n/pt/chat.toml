@@ -516,6 +516,7 @@ extras_hint = "extras da imagem: '{extras}'. Adicione o recurso a DUCTOR_EXTRAS 
 only_sub = "somente o subagente '{sub}' é excluído"
 
 [notice]
+ia_delivery_failed = "Não foi possível entregar o resultado da tarefa delegada. As tentativas de entrega foram encerradas."
 ia_result_preserved = "O resultado foi guardado. Resolva o erro da CLI e aguarde a entrega automática, ou reinicie o bot para tentar novamente de imediato."
 session_cancelled = "**[{name}] Cancelado**"
 session_failed = "**[{name}] Falhou** ({elapsed})"

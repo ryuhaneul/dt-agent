@@ -63,6 +63,7 @@ def harness(tmp_path):
     orch = SimpleNamespace(
         paths=paths,
         _sessions=sessions,
+        _autocompact_global_lock=asyncio.Lock(),
         _lock_pool=LockPool(),
         _process_registry=registry,
         _history_recorder=runtime.recorder,

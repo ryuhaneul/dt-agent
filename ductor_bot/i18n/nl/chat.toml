@@ -514,6 +514,7 @@ extras_hint = "image-build-extras: '{extras}'. Voeg de functie toe aan DUCTOR_EX
 only_sub = "alleen sub-agent '{sub}' wordt uitgesloten"
 
 [notice]
+ia_delivery_failed = "Het resultaat van de gedelegeerde taak kon niet worden bezorgd. De bezorgpogingen zijn gestopt."
 ia_result_preserved = "Het resultaat is bewaard. Los de CLI-fout op en wacht op automatische bezorging, of herstart de bot om het meteen opnieuw te proberen."
 session_cancelled = "**[{name}] Geannuleerd**"
 session_failed = "**[{name}] Mislukt** ({elapsed})"

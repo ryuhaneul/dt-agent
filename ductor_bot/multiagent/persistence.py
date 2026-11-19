@@ -128,7 +128,9 @@ def _valid_result(record: dict[str, Any]) -> bool:
     result = record.get("result")
     if result is None:
         # Delivery acknowledgement can outlive an earlier result write failure.
-        return cast("bool", record["status"] == "inflight" or record["stage"] == "delivered")
+        return cast(
+            "bool", record["status"] == "inflight" or record["stage"] in {"delivered", "abandoned"}
+        )
     if not isinstance(result, dict) or set(result) != _RESULT_REQUIRED_FIELDS:
         return False
     return (
@@ -307,7 +309,9 @@ class AsyncRecordStore:
         )
         record["status"] = "completed" if normalized.success else "failed"
         record["result"] = asdict(normalized)
-        if stage in {"injected", "delivered"} and main_response.strip():
+        if stage in {"delivered", "abandoned"}:
+            record["stage"] = stage
+        if main_response.strip() and stage in {"injected", "delivered", "abandoned"}:
             record["stage"] = stage
             record["main_response"] = main_response
             record["injected_at"] = time.time()
@@ -391,7 +395,7 @@ class AsyncRecordStore:
             or not isinstance(record["status"], str)
             or record["status"] not in {"inflight", "completed", "failed"}
             or not isinstance(record["stage"], str)
-            or record["stage"] not in {"received", "injected", "delivered"}
+            or record["stage"] not in {"received", "injected", "delivered", "abandoned"}
             or type(record["main_response"]) is not str
             or (record["stage"] == "injected" and not record["main_response"].strip())
             or not _valid_result(record)
@@ -515,7 +519,7 @@ class AsyncRecordStore:
         return destination
 
     def delete(self, target: str, task_id: str) -> None:
-        """Remove a record only after the final report is delivered."""
+        """Remove a record after delivery or a permanent delivery failure."""
         self.path_for(target, task_id).unlink()
 
     @staticmethod

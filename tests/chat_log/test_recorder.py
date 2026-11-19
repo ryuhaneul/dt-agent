@@ -387,6 +387,32 @@ async def test_bus_observer_does_not_record_generated_transport_fallback(
     assert not store.directory.exists()
 
 
+async def test_bus_history_records_only_successful_interagent_delivery(
+    orch: Orchestrator,
+) -> None:
+    store, _, recorder = storage(orch)
+    bus = MessageBus()
+    transport = MagicMock(transport_name="tg")
+    transport.deliver = AsyncMock(side_effect=[OSError("synthetic failure")] * 2 + [None])
+    bus.register_transport(transport)
+    bus.set_delivery_observer(recorder.on_delivered)
+
+    for delivered in (False, False, True):
+        result = await bus.submit(
+            Envelope(
+                origin=Origin.INTERAGENT,
+                chat_id=1,
+                topic_id=7,
+                injected=True,
+                result_text="Completed report",
+            )
+        )
+        assert result.delivered is delivered
+        assert [row.text for row in await store.read("1.7")] == (
+            ["Completed report"] if delivered else []
+        )
+
+
 async def test_heartbeat_ack_path_never_calls_bus_or_history(orch: Orchestrator) -> None:
     store, _, recorder = storage(orch)
     bus = MessageBus()

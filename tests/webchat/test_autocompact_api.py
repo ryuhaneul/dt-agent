@@ -63,6 +63,47 @@ async def test_read_defaults_does_not_write_or_call_cli(api):
     api.bot._orch._cli_service.execute.assert_not_called()
 
 
+async def test_get_and_save_during_turn_takes_effect_on_next_turn(api):
+    orch = api.bot._orch
+    entered, release = asyncio.Event(), asyncio.Event()
+    configured = []
+
+    async def execute(request):
+        configured.append(orch._cli_service._make_cli(request)._config.autocompact)
+        entered.set()
+        await release.wait()
+        return AgentResponse(result="answer")
+
+    async def turn(text):
+        async with api.pool.get(api.key.lock_key):
+            return await orch.handle_message(api.key, text)
+
+    orch._cli_service.execute = AsyncMock(side_effect=execute)
+    assert (await _put(api, {"topic": 200000})).status == 200
+    active = asyncio.create_task(turn("first turn"))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        response = await asyncio.wait_for(api.client.get(PATH, headers=headers()), 2)
+        assert response.status == 200
+        assert (await response.json())["effective_value"] == 200000
+
+        response = await asyncio.wait_for(_put(api, {"topic": None, "global": 400000}), 2)
+        assert response.status == 200
+        assert (await response.json())["effective_value"] == 400000
+
+        response = await asyncio.wait_for(api.client.get(PATH, headers=headers()), 2)
+        assert response.status == 200
+        assert (await response.json())["effective_value"] == 400000
+        assert not active.done()
+        assert configured == [200000]
+    finally:
+        release.set()
+        await active
+
+    await turn("next turn")
+    assert configured == [200000, 400000]
+
+
 @pytest.mark.parametrize("method", ["get", "put"])
 @pytest.mark.parametrize("token", [None, "wrong"])
 async def test_bridge_token_required(api, method, token):

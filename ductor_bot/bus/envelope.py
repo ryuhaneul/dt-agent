@@ -5,10 +5,13 @@ from __future__ import annotations
 import enum
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 # Bump a transport value whenever IA chunk preparation or ordering changes.
-IA_CHUNK_SCHEMES = {"tg": "tg-ia-v4", "mx": "mx-ia-v1", "sl": "sl-ia-v1"}
+IA_CHUNK_SCHEMES = {"tg": "tg-ia-v5", "mx": "mx-ia-v1", "sl": "sl-ia-v1"}
+
+
+DeliveryFailure = Literal["transient", "permanent"]
 
 
 class Origin(enum.Enum):
@@ -48,6 +51,7 @@ class DeliveryOutcome:
     injected: bool
     delivered: bool
     error: str = ""
+    delivery_failure: DeliveryFailure | None = field(default=None, kw_only=True)
     injection_error_kind: str = field(default="", kw_only=True)
     injection_error_text: str = field(default="", kw_only=True)
     delivered_chunks: int = 0
@@ -90,6 +94,7 @@ class Envelope:
     # Broadcast delivery records each failed transport for targeted retries.
     delivered: bool = True
     delivery_error: str = ""
+    delivery_failure: DeliveryFailure | None = field(default=None, kw_only=True)
     injection_error_kind: str = field(default="", kw_only=True)
     injection_error_text: str = field(default="", kw_only=True)
     # IA final report: absolute count of leading chunks sent, and retry offset.

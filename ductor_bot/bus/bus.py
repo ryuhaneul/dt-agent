@@ -173,8 +173,18 @@ class MessageBus:
 
         injected = envelope.injected
         delivered = envelope.delivered
-        if envelope.origin == Origin.INTERAGENT and injected and delivered:
-            self.forget_interagent_notices(envelope.metadata.get("ia_task_id", ""))
+        if envelope.origin == Origin.INTERAGENT:
+            task_id = envelope.metadata.get("ia_task_id", "")
+            if injected and delivered:
+                self.forget_interagent_notices(task_id)
+            elif task_id and envelope.delivery_failure == "permanent":
+                self._injection_notices[task_id] = replace(
+                    envelope,
+                    prompt="",
+                    prompt_preview="",
+                    result_text="",
+                    metadata={"ia_task_id": task_id},
+                )
         error = envelope.delivery_error
         if (
             not injected
@@ -192,6 +202,7 @@ class MessageBus:
             injected=injected,
             delivered=delivered,
             error=error,
+            delivery_failure=envelope.delivery_failure,
             injection_error_kind=envelope.injection_error_kind,
             injection_error_text=envelope.injection_error_text,
             delivered_chunks=envelope.delivered_chunks,
@@ -224,6 +235,7 @@ class MessageBus:
             injected=True,
             delivered=True,
             delivery_error="",
+            delivery_failure=None,
             injection_error_kind="",
             injection_error_text="",
             delivered_chunks=0,
@@ -235,7 +247,7 @@ class MessageBus:
             envelope_id=secrets.token_hex(6),
             metadata={"ia_task_id": task_id},
         )
-        if kind != "undelivered":
+        if kind not in {"undelivered", "delivery_failed"}:
             # No prompt, task result, or original request is retained in this notice.
             self._injection_notices[task_id] = replace(notice, result_text="")
         await self._deliver(notice)
@@ -255,6 +267,17 @@ class MessageBus:
         notice = self._injection_notices.get(task_id)
         if notice is not None:
             await self._injection_notice(notice, t("notice.ia_result_preserved"), "undelivered")
+
+    async def notify_interagent_delivery_failed(self, task_id: str) -> None:
+        """Make one best-effort announcement after permanently dropping a report."""
+        notice = self._injection_notices.get(task_id)
+        try:
+            if notice is not None:
+                await self._injection_notice(
+                    notice, t("notice.ia_delivery_failed"), "delivery_failed"
+                )
+        finally:
+            self.forget_interagent_notices(task_id)
 
     @asynccontextmanager
     async def _injection_typing(self, envelope: Envelope) -> AsyncIterator[None]:
