@@ -25,6 +25,8 @@ from ductor_bot.webchat.cli_login_slots import (
     share_slot_from_default,
 )
 from ductor_bot.workspace.paths import DuctorPaths
+from tests.webchat.test_bridge_api import _PREFIX, bridge, cli_bridge, cli_headers  # noqa: F401
+from tests.webchat.test_web_app import CLIENT, login, site  # noqa: F401
 
 ROOT = Path(__file__).resolve().parents[2]
 OWNER = "fake-owner-hmac"
@@ -676,3 +678,337 @@ def test_web_slot_paths_reject_escape_before_api_probe(paths, operation, name):
             ClaudeLoginSlots(paths).resolve_oauth_slot(name)
     probe.assert_not_called()
     assert tree(paths.ductor_home) == before
+
+
+async def test_active_login_and_turn_share_slot_but_refuse_deletion(paths, manager_factory):
+    from ductor_bot.cli.claude_accounts import SlotRegistry, state_file_path
+    from ductor_bot.cli.claude_slots import remove
+    from ductor_bot.cli.slot_rotation import reserve_slot, slot_use_lock
+
+    directory = paths.ductor_home / ".cli-auth" / "claude-existing"
+    directory.mkdir()
+    manager, record = manager_factory("wait")
+    with slot_use_lock(directory.parent, directory.name, deleting=True) as deleting:
+        assert deleting
+        with pytest.raises(CliLoginError, match="slot_busy"):
+            manager.start("claude", OWNER, slot=directory.name)
+    registry = SlotRegistry(state_file_path(paths.ductor_home))
+    with reserve_slot(registry, directory.name) as turning:
+        assert turning
+        job = manager.start("claude", OWNER, slot=directory.name)
+        # Check immediately, before the new task can even start preparing its directory.
+        with pytest.raises(ValueError, match="slot_busy"):
+            remove(paths.ductor_home, directory.name)
+    await until(record.exists)
+    with reserve_slot(registry, directory.name) as turning, reserve_slot(
+        registry, directory.name
+    ) as second_turn:
+        assert turning and second_turn
+    with pytest.raises(ValueError, match="slot_busy"):
+        remove(paths.ductor_home, directory.name)
+    manager.cancel(job, OWNER)
+    assert (await settled(manager, job))["state"] == "cancelled"
+    remove(paths.ductor_home, directory.name)
+    assert not directory.exists()
+
+
+async def test_delete_route_enforces_bridge_auth_and_live_inventory(cli_bridge, monkeypatch):
+    from ductor_bot.cli import claude_slots
+    from ductor_bot.cli.claude_accounts import SlotRegistry, SlotSnapshot, state_file_path
+    from ductor_bot.cli.slot_rotation import reserve_slot, slot_use_lock
+
+    client, bot, _, paths, _ = cli_bridge
+    target = f"{_PREFIX}/cli-login/slots"
+    route = f"{target}/claude-work"
+    folder = paths.ductor_home / ".cli-auth" / "claude-work"
+    paths.config_path.write_text('{"claude_accounts":["claude","claude-work"]}')
+    bot.config.claude_accounts = ["claude", "claude-work"]
+    folder.mkdir()
+    registry = SlotRegistry(state_file_path(paths.ductor_home))
+    registry.save(SlotSnapshot(cooldowns={"claude-work": 100, "claude": 200}))
+
+    for headers in ({"X-Dtw-Owner": OWNER}, {
+        key: value for key, value in cli_headers().items() if key != "X-Dtw-Owner"
+    }):
+        response = await client.delete(route, headers=headers)
+        assert response.status == 403
+        assert "WWW-Authenticate" not in response.headers
+    response = await client.delete(f"{target}/claude", headers=cli_headers())
+    assert (response.status, await response.json()) == (400, {"error": "slot_default"})
+    with slot_use_lock(folder.parent, folder.name):
+        response = await client.delete(route, headers=cli_headers())
+        assert (response.status, await response.json()) == (409, {"error": "slot_busy"})
+
+    def refuse(directory):
+        assert directory == folder
+        raise PermissionError(13, "Denied", folder)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(claude_slots.shutil, "rmtree", refuse)
+        response = await client.delete(route, headers=cli_headers())
+    assert response.status == 500
+    assert await response.json() == {
+        "error": "slot_delete_failed", "path": ".cli-auth/claude-work", "reason": "Denied",
+    }
+    assert registry.load().cooldowns == {"claude": 200}
+    assert folder.is_dir()
+    with reserve_slot(registry, folder.name) as reserved:
+        assert not reserved
+    listing = await client.get(f"{_PREFIX}/cli-login/status", headers=cli_headers())
+    assert (await listing.json())["claude_slots"][-1]["priority"] is None
+    assert bot.config.claude_accounts == ["claude", "claude-work"]
+
+    response = await client.delete(route, headers=cli_headers())
+    assert (response.status, await response.json()) == (200, {"ok": True})
+    assert not folder.exists()
+    listing = await client.get(f"{_PREFIX}/cli-login/status", headers=cli_headers())
+    assert [slot["name"] for slot in (await listing.json())["claude_slots"]] == ["claude"]
+    response = await client.delete(route, headers=cli_headers())
+    assert (response.status, await response.json()) == (404, {"error": "slot_not_found"})
+
+
+async def test_browser_delete_requires_session_and_csrf_before_relay(site):
+    client, fake = site
+    route = "/api/cli-login/slots/claude-work"
+    response = await client.delete(route, headers=CLIENT)
+    assert response.status == 403
+    assert (await response.json())["error"] == "auth_required"
+    authorized, _ = await login(client)
+    for missing in ["X-Dtw-Client", "X-Dtw-Csrf"]:
+        headers = {key: value for key, value in authorized.items() if key != missing}
+        response = await client.delete(route, headers=headers)
+        assert response.status == 403
+        assert "WWW-Authenticate" not in response.headers
+    assert not any(call[1].startswith("/cli-login/") for call in fake.calls)
+    await client.delete(route, headers={**authorized, "X-Dtw-Owner": "forged-owner"})
+    assert fake.calls[-1][:2] == ("DELETE", "/cli-login/slots/claude-work")
+    path, owner = fake.owner_headers[-1]
+    assert path == "/cli-login/slots/claude-work"
+    assert owner and owner != "forged-owner"
+
+
+@pytest.mark.parametrize("has_directory", [True, False])
+async def test_delete_preserves_unreadable_cooldowns_and_allows_retry(
+    cli_bridge, monkeypatch, has_directory
+):
+    from ductor_bot.cli.claude_accounts import SlotRegistry, SlotSnapshot, state_file_path
+
+    client, _, _, paths, _ = cli_bridge
+    route = f"{_PREFIX}/cli-login/slots/claude-work"
+    paths.config_path.write_text('{"claude_accounts":["claude-work","claude-other"]}')
+    folder = paths.ductor_home / ".cli-auth" / "claude-work"
+    if has_directory:
+        folder.mkdir()
+    config_before = paths.config_path.read_bytes()
+    config_inode = paths.config_path.stat().st_ino
+    state = state_file_path(paths.ductor_home)
+    registry = SlotRegistry(state)
+    registry.save(SlotSnapshot(cooldowns={"claude-work": 100, "claude-other": 200}))
+    before = state.stat()
+    contents = state.read_bytes()
+
+    with monkeypatch.context() as patcher:
+        if os.geteuid() == 0:
+            read_text = Path.read_text
+
+            def deny_read(path, *args, **kwargs):
+                if path == state:
+                    raise PermissionError(13, "Permission denied", path)
+                return read_text(path, *args, **kwargs)
+
+            patcher.setattr(Path, "read_text", deny_read)
+        state.chmod(0)
+        try:
+            response = await client.delete(route, headers=cli_headers())
+            assert (response.status, await response.json()) == (
+                500, {"error": "slot_delete_error"}
+            )
+            assert state.stat().st_ino == before.st_ino
+        finally:
+            state.chmod(before.st_mode)
+
+    assert state.read_bytes() == contents
+    assert registry.load().cooldowns == {"claude-work": 100, "claude-other": 200}
+    assert paths.config_path.read_bytes() == config_before
+    assert paths.config_path.stat().st_ino == config_inode
+    assert folder.is_dir() == has_directory
+
+    response = await client.delete(route, headers=cli_headers())
+    assert (response.status, await response.json()) == (200, {"ok": True})
+    assert registry.load().cooldowns == {"claude-other": 200}
+    assert json.loads(paths.config_path.read_text())["claude_accounts"] == ["claude-other"]
+    assert not folder.exists()
+
+
+@pytest.mark.parametrize("contents", ["{not json", "[]", ""])
+async def test_delete_recovers_corrupt_cooldown_state(cli_bridge, contents):
+    from ductor_bot.cli.claude_accounts import state_file_path
+
+    client, _, _, paths, _ = cli_bridge
+    slot = "claude-work"
+    other = "claude-other"
+    paths.config_path.write_text(json.dumps({"claude_accounts": [slot, other]}))
+    folder = paths.ductor_home / ".cli-auth" / slot
+    folder.mkdir()
+    state = state_file_path(paths.ductor_home)
+    state.write_text(contents)
+
+    response = await client.delete(f"{_PREFIX}/cli-login/slots/{slot}", headers=cli_headers())
+    assert (response.status, await response.json()) == (200, {"ok": True})
+    assert json.loads(state.read_text()) == {"cooldowns": {}}
+    assert json.loads(paths.config_path.read_text())["claude_accounts"] == [other]
+    assert not folder.exists()
+
+
+@pytest.mark.parametrize("mode", ["cancel", "timeout", "managed-timeout"])
+@pytest.mark.parametrize(
+    ("leader_exits", "output", "sent_result"),
+    [
+        (False, "both", False),
+        (True, "both", False),
+        (True, "stdout", False),
+        (True, "stderr", False),
+        (True, "stderr", True),
+        (False, "none", False),
+    ],
+)
+async def test_interrupted_slot_can_be_deleted_with_detached_child(
+    cli_bridge, monkeypatch, mode, leader_exits, output, sent_result
+):
+    import contextlib
+    import signal
+
+    from ductor_bot.cli import executor
+    from ductor_bot.cli.base import CLIConfig
+    from ductor_bot.cli.claude_provider import ClaudeCodeCLI
+    from ductor_bot.cli.timeout_controller import TimeoutConfig, TimeoutController
+    from ductor_bot.infra.process_tree import force_kill_process_tree
+
+    client, _, _, paths, _ = cli_bridge
+    slot = "claude-work"
+    paths.config_path.write_text(json.dumps({"claude_accounts": [slot]}))
+    folder = paths.ductor_home / ".cli-auth" / slot
+    folder.mkdir()
+    pids = paths.ductor_home / "pids.json"
+
+    def kill_test_tree(pid):
+        assert pid == json.loads(pids.read_text())[0]
+        force_kill_process_tree(pid)
+
+    monkeypatch.setattr(executor, "force_kill_process_tree", kill_test_tree)
+    write_slot = paths.ductor_home / "write-slot"
+    marker = folder / "child-wrote"
+    child_script = """import os, sys, time
+from pathlib import Path
+trigger = Path(sys.argv[1])
+deadline = time.monotonic() + 10
+while not trigger.exists() and time.monotonic() < deadline:
+    time.sleep(0.01)
+if trigger.exists():
+    folder = Path(os.environ["CLAUDE_CONFIG_DIR"])
+    folder.mkdir(exist_ok=True)
+    (folder / "child-wrote").touch()
+"""
+    fake = paths.ductor_home / "fake-claude"
+    fake.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, subprocess, sys, time\n"
+        "from pathlib import Path\n"
+        f"stdout = None if {output in {'stdout', 'both'}!r} else subprocess.DEVNULL\n"
+        f"stderr = None if {output in {'stderr', 'both'}!r} else subprocess.DEVNULL\n"
+        f"child = subprocess.Popen([sys.executable, '-c', {child_script!r}, {str(write_slot)!r}], "
+        "start_new_session=True, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr)\n"
+        f"Path({str(pids)!r}).write_text(json.dumps([os.getpid(), child.pid]))\n"
+        "print(json.dumps({'type':'system','subtype':'init','session_id':'fixture'}), flush=True)\n"
+        f"if {sent_result!r}: "
+        "print(json.dumps({'type':'result','result':'OK'}), flush=True)\n"
+        f"if not {leader_exits!r}: time.sleep(10)\n"
+    )
+    fake.chmod(0o700)
+    monkeypatch.setattr(ClaudeCodeCLI, "_find_cli", staticmethod(lambda: str(fake)))
+    cli = ClaudeCodeCLI(CLIConfig(
+        working_dir=paths.ductor_home, ductor_home=paths.ductor_home, claude_accounts=[slot]
+    ))
+
+    def alive(pid):
+        try:
+            status = (Path("/proc") / str(pid) / "stat").read_text().rpartition(") ")[2]
+        except (FileNotFoundError, ProcessLookupError):
+            return False
+        return not status.startswith("Z ")
+
+    controller = (
+        TimeoutController(TimeoutConfig(timeout_seconds=1, extend_on_activity=output == "stderr"))
+        if mode == "managed-timeout"
+        else None
+    )
+    stream = cli.send_streaming(
+        "fixture", timeout_seconds=1 if mode == "timeout" else None, timeout_controller=controller
+    )
+    initialized = asyncio.Event()
+
+    async def consume():
+        events = []
+        async for event in stream:
+            events.append(event)
+            if event.type == "system":
+                initialized.set()
+        return events
+
+    loop = asyncio.get_running_loop()
+    reader = asyncio.create_task(consume())
+    route = f"{_PREFIX}/cli-login/slots/{slot}"
+    try:
+        await asyncio.wait_for(initialized.wait(), 5)
+        deadline = loop.time() + 1.25
+        leader, child = json.loads(pids.read_text())
+        if leader_exits:
+            await until(lambda: not alive(leader))
+        else:
+            assert alive(leader)
+        assert os.getpgid(child) == child
+        response = await client.delete(route, headers=cli_headers())
+        assert (response.status, await response.json()) == (409, {"error": "slot_busy"})
+
+        if mode == "cancel":
+            reader.cancel()
+            done, _ = await asyncio.wait({reader}, timeout=0.25)
+            assert reader in done, "cancellation waited for a detached writer"
+            with pytest.raises(asyncio.CancelledError):
+                await reader
+        else:
+            done, _ = await asyncio.wait({reader}, timeout=max(0, deadline - loop.time()))
+            assert reader in done, "timeout waited for a detached writer"
+            result = (await reader)[-1]
+            if sent_result:
+                assert not result.is_error and result.result == "OK"
+            else:
+                assert result.is_error and result.result == "__TIMEOUT__1"
+
+        response = await client.delete(route, headers=cli_headers())
+        assert (response.status, await response.json()) == (200, {"ok": True})
+        assert not folder.exists()
+
+        if not leader_exits:
+            assert not alive(child)
+            return
+
+        assert alive(child)
+        write_slot.touch()
+        await until(marker.exists)
+        listing = await client.get(f"{_PREFIX}/cli-login/status", headers=cli_headers())
+        slots = (await listing.json())["claude_slots"]
+        assert next(item for item in slots if item["name"] == slot)["priority"] is None
+        response = await client.delete(route, headers=cli_headers())
+        assert (response.status, await response.json()) == (200, {"ok": True})
+        assert not folder.exists()
+    finally:
+        if pids.exists():
+            for pid in reversed(json.loads(pids.read_text())):
+                if alive(pid):
+                    with contextlib.suppress(ProcessLookupError):
+                        os.kill(pid, signal.SIGKILL)
+        if not reader.done():
+            reader.cancel()
+            await asyncio.gather(reader, return_exceptions=True)
+        await stream.aclose()

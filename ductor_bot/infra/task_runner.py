@@ -147,8 +147,14 @@ async def run_oneshot_task(
     """
     from ductor_bot.cron.execution import apply_autocompact_env, build_cmd, execute_one_shot
 
-    if exec_config.provider == "claude" and exec_config.claude_accounts:
-        return await _run_claude_with_rotation(exec_config, prompt, options)
+    if exec_config.provider == "claude":
+        from ductor_bot.cli.slot_rotation import current_slot_candidates
+
+        accounts = await current_slot_candidates(
+            Path(exec_config.working_dir), exec_config.claude_accounts
+        )
+        if accounts:
+            return await _run_claude_with_rotation(exec_config, prompt, options, accounts)
 
     one_shot = await asyncio.to_thread(build_cmd, exec_config, prompt, working_dir=options.cwd)
     if one_shot is None:
@@ -196,6 +202,7 @@ async def _run_claude_with_rotation(  # noqa: C901 -- preserve real payloads for
     exec_config: TaskExecutionConfig,
     prompt: str,
     options: TaskRunOptions,
+    accounts: list[str],
 ) -> TaskResult:
     """Execute the Claude one-shot path through the shared rotation driver."""
     from ductor_bot.cli.slot_rotation import (
@@ -283,7 +290,7 @@ async def _run_claude_with_rotation(  # noqa: C901 -- preserve real payloads for
         return outcome, execution
 
     rotation = await run_with_rotation(
-        accounts=list(exec_config.claude_accounts),
+        accounts=accounts,
         registry=registry,
         default_tz=default_tz,
         attempt=_attempt,
