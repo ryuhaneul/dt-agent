@@ -23,9 +23,9 @@ Send a message to continue."""
 
 age_warning = "[Session is {age} old. Use /new for a fresh start.]"
 
-# #84: Tool-only turns (e.g. silent memory updates) surface this neutral
+# #84: Tool-only turns (e.g. memory updates) surface this neutral
 # status line instead of a blank message the user would never see.
-empty_turn = "_(Agent updated memory silently — send another message to continue.)_"
+empty_turn = "_(Agent updated memory — send another message to continue.)_"
 
 recovered = "_Previous session could not be restored. A new session was started automatically._"
 recovery_failed = "Could not recover your session after a fresh start. Please try again or use /new to start over."

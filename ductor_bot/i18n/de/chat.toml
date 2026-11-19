@@ -24,7 +24,7 @@ Schreib einfach los!"""
 
 age_warning = "[Session ist {age} alt. Mit /new gibt's einen frischen Start.]"
 
-empty_turn = "_(Der Agent hat im Hintergrund das Gedächtnis aktualisiert — schick noch eine Nachricht, um weiterzumachen.)_"
+empty_turn = "_(Der Agent hat das Gedächtnis aktualisiert — schick noch eine Nachricht, um weiterzumachen.)_"
 
 recovered = "_Die vorherige Session konnte nicht wiederhergestellt werden. Es wurde automatisch eine neue gestartet._"
 recovery_failed = "Deine Session konnte auch nach einem Neustart nicht wiederhergestellt werden. Versuch es noch einmal oder starte mit /new neu."

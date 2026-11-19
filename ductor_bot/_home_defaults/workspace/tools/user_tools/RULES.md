@@ -29,4 +29,4 @@ Do not background shell commands for results needed later in the conversation.
 ## Memory
 
 When creating scripts that indicate recurring user workflows or preferences,
-update `memory_system/MAINMEMORY.md` silently.
+update `memory_system/MAINMEMORY.md`. Report memory saves, edits, or deletions in this reply: one line naming files and changes. Reads need no report.

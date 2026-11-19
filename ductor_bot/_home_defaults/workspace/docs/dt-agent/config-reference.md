@@ -74,7 +74,7 @@ top-level key.
 | `memory_reflection` | `MemoryReflectionConfig` | `(nested keys below)` | restart | Optional periodic memory reflection hook |
 | `memory_reflection.enabled` | `bool` | `false` | restart | Registers the reflection hook only when enabled |
 | `memory_reflection.every_n_messages` | `int` | `10` | restart | Hook cadence; fires on the N-th outbound prompt for a session |
-| `memory_reflection.prompt` | `str` | `"## MEMORY REFLECTION\nReview the last several messages i...` | restart | Silent reflection prompt appended through `MessageHookRegistry` |
+| `memory_reflection.prompt` | `str` | `"## MEMORY REFLECTION\nReview the last several messages i...` | restart | Memory reflection prompt appended through `MessageHookRegistry` |
 | `memory_lint` | `MemoryLintConfig` | `(nested keys below)` | hot | Periodic framework lint of `memory_system/` (`mode` structure/full/off); hot-reloadable |
 | `memory_lint.mode` | `"structure" or "full" or "off"` | `"structure"` | hot | `structure`: script check; an agent turn only on problems, which also makes the safe fixes. `full`: check, then always one agent turn per period (semantic check, monthly stale check, fixes, report). `off`: nothing |
 | `memory_lint.every_hours` | `int` | `168` | hot | Period between checks; the first check happens one period after the home is first seen (state in `memory_lint_state.json`). Ignored while `schedule` is set |
