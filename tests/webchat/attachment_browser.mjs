@@ -132,20 +132,20 @@ try{
     for(const theme of ['light','dark']){
       await page.evaluate(theme=>{document.documentElement.dataset.theme=theme;},theme);
       await page.waitForTimeout(150);
-      const geometry=await page.evaluate(()=>{const b=document.querySelector('#stopBtn').getBoundingClientRect(),i=document.querySelector('#msgIn').getBoundingClientRect();return{overflow:Math.max(document.documentElement.scrollWidth,document.body.scrollWidth)-innerWidth,bottom:b.bottom,input:i.height,height:innerHeight,tray:document.querySelector('#attachmentWrap').clientHeight};});
+      const geometry=await page.evaluate(()=>{const b=document.querySelector('#sendBtn').getBoundingClientRect(),i=document.querySelector('#msgIn').getBoundingClientRect();return{overflow:Math.max(document.documentElement.scrollWidth,document.body.scrollWidth)-innerWidth,bottom:b.bottom,input:i.height,height:innerHeight,tray:document.querySelector('#attachmentWrap').clientHeight};});
       assert(geometry.overflow<=0,JSON.stringify(geometry));assert(geometry.bottom<=height,JSON.stringify(geometry));assert(geometry.input<=height*.4+1,JSON.stringify(geometry));
       const name=`4a-${width}-${theme}.png`;await page.screenshot({path:path.join(cfg.shots,name)});results.screens.push({name,width,height,theme,...geometry});
     }
   }
   await page.setViewportSize({width:390,height:844});
-  results.extraViewport=await page.evaluate(()=>({width:innerWidth,height:innerHeight,overflow:Math.max(document.documentElement.scrollWidth,document.body.scrollWidth)-innerWidth,bottom:document.querySelector('#stopBtn').getBoundingClientRect().bottom}));
+  results.extraViewport=await page.evaluate(()=>({width:innerWidth,height:innerHeight,overflow:Math.max(document.documentElement.scrollWidth,document.body.scrollWidth)-innerWidth,bottom:document.querySelector('#sendBtn').getBoundingClientRect().bottom}));
   assert.equal(results.extraViewport.overflow,0);assert(results.extraViewport.bottom<=844);
   await page.locator('[data-remove]').last().click();assert.equal(await page.locator('#msgIn').inputValue(),draft);results.checks.push('remove preserves draft');
   await popup();await selectMode('compress');await page.locator('[data-cancel]').click();assert((await page.locator('.attach-chip').first().innerText()).includes(cfg.strings['attach.original']));results.checks.push('cancel preserves mode');
   await page.evaluate(()=>{const data=new DataTransfer();data.items.add(new File(['dropped file'],'dropped-again.txt',{type:'text/plain'}));document.querySelector('[data-view="chat"]').dispatchEvent(new DragEvent('drop',{dataTransfer:data,bubbles:true,cancelable:true}));});
   await page.waitForFunction(()=>document.querySelectorAll('.attach-draft').length===3);
   const pasted=await page.evaluate(()=>Promise.all(window.pasted));
-  await page.locator('#stopBtn').click();await page.waitForFunction(()=>document.querySelectorAll('.attach-draft').length===0);
+  await page.locator('#sendBtn').click();await page.waitForFunction(()=>document.querySelectorAll('.attach-draft').length===0);
   const first=messages.at(-1);assert.equal(first.text,draft);assert.equal(first.attachment_ids.length,3);
   const firstFiles=first.attachment_ids.map(id=>sessions.get(id));
   for(const file of pasted){const stored=firstFiles.find(value=>value.name===file.name);assert(stored);assert.equal(crypto.createHash('sha256').update(stored.bytes).digest('hex'),file.hash);}
@@ -165,7 +165,7 @@ try{
       await page.locator('[data-apply]').click();await page.waitForSelector('#imageOptions[hidden]',{state:'attached'});
     }
     const before=messages.length;
-    await page.locator('#stopBtn').click();await page.waitForFunction(()=>document.querySelectorAll('.attach-draft').length===0);
+    await page.locator('#sendBtn').click();await page.waitForFunction(()=>document.querySelectorAll('.attach-draft').length===0);
     assert.equal(messages.length,before+1);assert.equal(messages.at(-1).text,'');
     const state=sessions.get(messages.at(-1).attachment_ids[0]);
     const filename=`uploaded-${mode}.${state.mime.split('/')[1]}`;await fs.writeFile(path.join(cfg.directory,filename),state.bytes);
@@ -180,19 +180,19 @@ try{
   await page.waitForSelector('#toasts [role="alert"]');assert.equal(await page.locator('.attach-draft').count(),0);
   settings={...settings,max_file_bytes:5};await reset();await page.locator('#filePick').setInputFiles(path.join(cfg.directory,'notes.txt'));await page.waitForSelector('#toasts [role="alert"]');assert.equal(await page.locator('.attach-draft').count(),0);results.checks.push('count cap','size cap');
   settings={...settings,max_file_bytes:2*1024**3,max_files_per_message:10};await reset();await addFile();
-  await page.locator('#msgIn').fill('Draft after transfer failure');failPut=true;await page.locator('#stopBtn').click();await page.waitForSelector('#toasts [role="alert"]');assert.equal(await page.locator('.attach-draft').count(),1);assert.equal(await page.locator('#msgIn').inputValue(),'Draft after transfer failure');results.checks.push('transfer failure preserves draft');
+  await page.locator('#msgIn').fill('Draft after transfer failure');failPut=true;await page.locator('#sendBtn').click();await page.waitForSelector('#toasts [role="alert"]');assert.equal(await page.locator('.attach-draft').count(),1);assert.equal(await page.locator('#msgIn').inputValue(),'Draft after transfer failure');results.checks.push('transfer failure preserves draft');
   if(cfg.scenario==='4b'){
     await reset();await addFile();await page.locator('#msgIn').fill('Resume upload check');dropAfterAck=true;
-    await page.locator('#stopBtn').click();await page.waitForSelector('[data-upload-state="failed"]');
+    await page.locator('#sendBtn').click();await page.waitForSelector('[data-upload-state="failed"]');
     const failed=[...sessions.values()].at(-1);assert(failed.offset>=2*settings.chunk_bytes);
     const accepted=failed.offset;await page.locator('[data-resume]').click();await page.waitForFunction(()=>document.querySelectorAll('.attach-draft').length===0);
     assert.equal(messages.at(-1).text,'Resume upload check');
     const offsets=putOffsets.filter(value=>value.id===failed.id);assert.equal(offsets[2].offset,accepted);assert.equal(failed.bytes.length,failed.size);
     results.checks.push('lost chunk acknowledgement resumes at server offset and SHA matches');
     await reset();await addFile();await page.locator('#msgIn').fill('Draft after cancellation');holdPut=true;
-    await page.locator('#stopBtn').click();
+    await page.locator('#sendBtn').click();
     for(let i=0;!releasePut&&i<300;i++)await new Promise(resolve=>setTimeout(resolve,10));assert(releasePut);
-    for(const [width,height] of [[375,667],[768,960],[1280,720]]){await page.setViewportSize({width,height});for(const theme of ['light','dark']){await page.evaluate(value=>document.documentElement.dataset.theme=value,theme);const metrics=await page.evaluate(()=>({overflow:Math.max(document.documentElement.scrollWidth,document.body.scrollWidth)-innerWidth,bottom:document.querySelector('#stopBtn').getBoundingClientRect().bottom}));assert(metrics.overflow<=0);assert(metrics.bottom<=height);await page.screenshot({path:path.join(cfg.shots,`4b-progress-${width}-${theme}.png`)});}}
+    for(const [width,height] of [[375,667],[768,960],[1280,720]]){await page.setViewportSize({width,height});for(const theme of ['light','dark']){await page.evaluate(value=>document.documentElement.dataset.theme=value,theme);const metrics=await page.evaluate(()=>({overflow:Math.max(document.documentElement.scrollWidth,document.body.scrollWidth)-innerWidth,bottom:document.querySelector('#sendBtn').getBoundingClientRect().bottom}));assert(metrics.overflow<=0);assert(metrics.bottom<=height);await page.screenshot({path:path.join(cfg.shots,`4b-progress-${width}-${theme}.png`)});}}
     await page.locator('[data-cancel-upload]:visible').click();await page.waitForSelector('[data-upload-state="cancelled"]');
     assert.equal(await page.locator('#msgIn').inputValue(),'Draft after cancellation');
     const cancelled=[...sessions.values()].at(-1);releasePut();await page.locator('[data-remove]').click();await page.waitForFunction(()=>document.querySelectorAll('.attach-draft').length===0);

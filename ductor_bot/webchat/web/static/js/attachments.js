@@ -254,6 +254,7 @@ export function initAttachments({ getTopic, changed, resume }) {
     return hash.hex();
   }
   return {
+    render,
     has:tid=>items(tid).length>0,
     async upload(tid) {
       if(busy)throw failure('attach.failed');
