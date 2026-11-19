@@ -1075,11 +1075,17 @@ async def test_subagent_executes_replacement_main_slot(
     assert await execute() == str(default)
     main_paths.config_path.unlink()
     assert await execute() == str(default)
-
+    main_paths.config_path.parent.rename(deletion_home / "config-offline")
+    caplog.clear()
+    assert await execute() == str(default)
     assert "Skipping non-default Claude slot: current configuration is unreadable" in caplog.text
+
+    (deletion_home / "config-offline").rename(main_paths.config_path.parent)
     main_paths.config_path.write_text(known_config)
     assert await execute() == str(prepared.path)
-    assert calls.read_text().splitlines() == ["claude-a", "claude", "claude", "claude", "claude-b"]
+    assert calls.read_text().splitlines() == [
+        "claude-a", "claude", "claude", "claude", "claude", "claude-b",
+    ]
 
 
 @pytest.mark.parametrize("mode", ["cancel", "timeout", "normal"])
@@ -1089,6 +1095,7 @@ async def test_stream_handles_child_after_leader_exits(deletion_home, monkeypatc
     import signal
     import sys
 
+    from ductor_bot.cli import claude_provider
     from ductor_bot.cli.base import CLIConfig
     from ductor_bot.cli.claude_provider import ClaudeCodeCLI
     from ductor_bot.cli.claude_slots import remove
@@ -1100,7 +1107,7 @@ async def test_stream_handles_child_after_leader_exits(deletion_home, monkeypatc
     write_slot = deletion_home / "write-slot"
     marker = folder / "child-wrote"
     fake = deletion_home / "fake-claude"
-    result_line = "    print(json.dumps({'type':'result','result':'OK'}), flush=True)\n"
+    result_line = "    print(json.dumps({'type':'result','result':'OK'}), end='', flush=True)\n"
     fake.write_text(
         f"#!{sys.executable}\n"
         "import json, os, time\n"
@@ -1114,8 +1121,10 @@ async def test_stream_handles_child_after_leader_exits(deletion_home, monkeypatc
         f"release = Path({str(release_pipes)!r})\n"
         f"write = Path({str(write_slot)!r})\n"
         "deadline = time.monotonic() + 15\n"
+        f"if {mode == 'normal'!r}: os.close(1)\n"
         "while not release.exists() and time.monotonic() < deadline: time.sleep(0.01)\n"
-        "os.close(1)\n"
+        f"if {mode == 'normal'!r}: os.write(2, b'late stderr')\n"
+        "else: os.close(1)\n"
         "os.close(2)\n"
         "while not write.exists() and time.monotonic() < deadline: time.sleep(0.01)\n"
         "if write.exists():\n"
@@ -1125,6 +1134,20 @@ async def test_stream_handles_child_after_leader_exits(deletion_home, monkeypatc
     )
     fake.chmod(0o700)
     monkeypatch.setattr(ClaudeCodeCLI, "_find_cli", staticmethod(lambda: str(fake)))
+    stderr = []
+    make_post_handler = claude_provider._make_capturing_post_handler
+
+    def observe_stderr(capture):
+        post_handler = make_post_handler(capture)
+
+        async def observe(result):
+            stderr.append(result.stderr_bytes)
+            async for event in post_handler(result):
+                yield event
+
+        return observe
+
+    monkeypatch.setattr(claude_provider, "_make_capturing_post_handler", observe_stderr)
     cli = ClaudeCodeCLI(CLIConfig(
         working_dir=deletion_home, ductor_home=deletion_home, claude_accounts=["claude-a"]
     ))
@@ -1159,6 +1182,7 @@ async def test_stream_handles_child_after_leader_exits(deletion_home, monkeypatc
             assert (await asyncio.wait_for(reader, 5)).result == "OK"
             with pytest.raises(StopAsyncIteration):
                 await anext(stream)
+            assert stderr == [b"late stderr"]
             assert alive(pid)
             write_slot.touch()
             await until(marker.exists)
@@ -1200,3 +1224,16 @@ async def test_interrupted_pipe_wait_is_bounded_without_transport_access(has_tra
     if has_transport:
         process._transport = SimpleNamespace()
     await asyncio.wait_for(_finish_interrupted_stream_pipes(process), 0.75)
+
+
+async def test_standalone_slot_rotation_without_config_directory(tmp_path, utc):
+    from ductor_bot.cli.slot_rotation import make_registry
+
+    attempt = _ScriptedAttempter([_ok()])
+    registry = make_registry(working_dir=tmp_path / "workspace")
+    assert not (tmp_path / "config").exists()
+    result = await run_with_rotation(
+        accounts=["claude-standalone"], registry=registry, default_tz=utc, attempt=attempt,
+    )
+    assert attempt.calls == ["claude-standalone"]
+    assert result.slot == "claude-standalone"

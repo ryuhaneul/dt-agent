@@ -103,12 +103,12 @@ def slot_use_lock(root: Path, slot: str, *, deleting: bool = False) -> Iterator[
         os.close(fd)
 
 
-def _read_configured_slots(home: Path) -> list[str] | None:
+def _read_configured_slots(home: Path, *, required: bool = False) -> list[str] | None:
     path = home / "config" / "config.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        if path.parent.is_dir():
+        if required or path.parent.is_dir():
             raise
         # Standalone callers can supply accounts without an on-disk bot config.
         return None
@@ -124,7 +124,7 @@ async def current_slot_candidates(agent_home: Path, accounts: Sequence[str]) -> 
     if agent_home.parent.name == "agents":
         main_home = resolve_ductor_home(agent_home / "workspace")
         try:
-            current = await asyncio.to_thread(_read_configured_slots, main_home)
+            current = await asyncio.to_thread(_read_configured_slots, main_home, required=True)
         except (OSError, ValueError, RecursionError):
             current = None
         if current is not None:
@@ -144,7 +144,7 @@ def reserve_slot(registry: SlotRegistry | None, slot: str) -> Iterator[bool]:
             yield False
             return
         try:
-            current = _read_configured_slots(root.parent)
+            current = _read_configured_slots(root.parent, required=registry.requires_main_config)
         except (OSError, ValueError, RecursionError):
             logger.warning("Skipping non-default Claude slot: current configuration is unreadable")
             yield False
@@ -249,11 +249,13 @@ def make_registry(
     Host-mode callers derive ductor home from working_dir; cron/webhook
     one-shots that lack working_dir fall back to the container mount.
     """
-    if not working_dir:
-        ductor_home = Path(CONTAINER_DUCTOR_MOUNT)
-    else:
-        ductor_home = resolve_ductor_home(working_dir)
-    return SlotRegistry(state_file_path(ductor_home))
+    agent_home = Path(working_dir or CONTAINER_DUCTOR_MOUNT).expanduser()
+    if agent_home.name == "workspace":
+        agent_home = agent_home.parent
+    ductor_home = resolve_ductor_home(working_dir) if working_dir else agent_home
+    return SlotRegistry(
+        state_file_path(ductor_home), requires_main_config=agent_home != ductor_home
+    )
 
 
 async def hot_slots(

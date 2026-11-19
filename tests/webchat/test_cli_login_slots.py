@@ -840,18 +840,27 @@ async def test_delete_preserves_unreadable_cooldowns_and_allows_retry(
     assert not folder.exists()
 
 
-@pytest.mark.parametrize("mode", ["cancel", "timeout"])
+@pytest.mark.parametrize("mode", ["cancel", "timeout", "managed-timeout"])
 @pytest.mark.parametrize(
-    ("leader_exits", "inherits_output"), [(False, True), (True, True), (False, False)]
+    ("leader_exits", "output", "sent_result"),
+    [
+        (False, "both", False),
+        (True, "both", False),
+        (True, "stdout", False),
+        (True, "stderr", False),
+        (True, "stderr", True),
+        (False, "none", False),
+    ],
 )
 async def test_interrupted_slot_can_be_deleted_and_recreated_by_detached_child(
-    cli_bridge, monkeypatch, mode, leader_exits, inherits_output
+    cli_bridge, monkeypatch, mode, leader_exits, output, sent_result
 ):
     import contextlib
     import signal
 
     from ductor_bot.cli.base import CLIConfig
     from ductor_bot.cli.claude_provider import ClaudeCodeCLI
+    from ductor_bot.cli.timeout_controller import TimeoutConfig, TimeoutController
 
     client, _, _, paths, _ = cli_bridge
     slot = "claude-work"
@@ -877,11 +886,14 @@ if trigger.exists():
         f"#!{sys.executable}\n"
         "import json, os, subprocess, sys, time\n"
         "from pathlib import Path\n"
-        f"output = None if {inherits_output!r} else subprocess.DEVNULL\n"
+        f"stdout = None if {output in {'stdout', 'both'}!r} else subprocess.DEVNULL\n"
+        f"stderr = None if {output in {'stderr', 'both'}!r} else subprocess.DEVNULL\n"
         f"child = subprocess.Popen([sys.executable, '-c', {child_script!r}, {str(write_slot)!r}], "
-        "start_new_session=True, stdin=subprocess.DEVNULL, stdout=output, stderr=output)\n"
+        "start_new_session=True, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr)\n"
         f"Path({str(pids)!r}).write_text(json.dumps([os.getpid(), child.pid]))\n"
         "print(json.dumps({'type':'system','subtype':'init','session_id':'fixture'}), flush=True)\n"
+        f"if {sent_result!r}: "
+        "print(json.dumps({'type':'result','result':'OK'}), flush=True)\n"
         f"if not {leader_exits!r}: time.sleep(10)\n"
     )
     fake.chmod(0o700)
@@ -897,7 +909,14 @@ if trigger.exists():
             return False
         return not status.startswith("Z ")
 
-    stream = cli.send_streaming("fixture", timeout_seconds=1 if mode == "timeout" else 10)
+    controller = (
+        TimeoutController(TimeoutConfig(timeout_seconds=1, extend_on_activity=output == "stderr"))
+        if mode == "managed-timeout"
+        else None
+    )
+    stream = cli.send_streaming(
+        "fixture", timeout_seconds=1 if mode == "timeout" else None, timeout_controller=controller
+    )
     initialized = asyncio.Event()
 
     async def consume():
@@ -909,11 +928,11 @@ if trigger.exists():
         return events
 
     loop = asyncio.get_running_loop()
-    start = loop.time()
     reader = asyncio.create_task(consume())
     route = f"{_PREFIX}/cli-login/slots/{slot}"
     try:
         await asyncio.wait_for(initialized.wait(), 5)
+        deadline = loop.time() + 1.25
         leader, child = json.loads(pids.read_text())
         if leader_exits:
             await until(lambda: not alive(leader))
@@ -925,15 +944,18 @@ if trigger.exists():
 
         if mode == "cancel":
             reader.cancel()
-            done, _ = await asyncio.wait({reader}, timeout=0.5)
+            done, _ = await asyncio.wait({reader}, timeout=0.25)
             assert reader in done, "cancellation waited for a detached writer"
             with pytest.raises(asyncio.CancelledError):
                 await reader
         else:
-            done, _ = await asyncio.wait({reader}, timeout=max(0, start + 1.5 - loop.time()))
+            done, _ = await asyncio.wait({reader}, timeout=max(0, deadline - loop.time()))
             assert reader in done, "timeout waited for a detached writer"
             result = (await reader)[-1]
-            assert result.is_error and result.result == "__TIMEOUT__1"
+            if sent_result:
+                assert not result.is_error and result.result == "OK"
+            else:
+                assert result.is_error and result.result == "__TIMEOUT__1"
 
         assert alive(child)
         response = await client.delete(route, headers=cli_headers())

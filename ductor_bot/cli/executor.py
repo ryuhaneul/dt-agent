@@ -330,10 +330,17 @@ async def run_streaming_subprocess(
 
     try:
         try:
-            async for event in _stream_with_timeout(process, spec, line_handler):
+            async for event in _stream_with_timeout(
+                process,
+                spec,
+                line_handler,
+                stderr_drain=stderr_drain if spec.terminate_on_close else None,
+            ):
                 yield _flag_stale(event, tracked)
             stderr_bytes = await stderr_drain
         except TimeoutError:
+            controller = spec.timeout_controller if spec.terminate_on_close else None
+            timeout_s = controller.timeout_seconds if controller else (spec.timeout_seconds or 0)
             if spec.terminate_on_close:
                 await _cancel_drain(stderr_drain)
                 await await_process_cleanup(_terminate_stream_group(process))
@@ -341,7 +348,6 @@ async def run_streaming_subprocess(
             else:
                 force_kill_process_tree(process.pid)
                 await process.wait()
-            timeout_s = spec.timeout_seconds or 0
             logger.warning("%s stream timed out after %.0fs", provider_label, timeout_s)
             yield ResultEvent(
                 type="result",
@@ -380,15 +386,19 @@ async def _stream_with_timeout(
     process: asyncio.subprocess.Process,
     spec: SubprocessSpec,
     line_handler: LineHandler,
+    *,
+    stderr_drain: asyncio.Task[bytes] | None = None,
 ) -> AsyncGenerator[StreamEvent, None]:
-    """Read stdout lines with either a plain timeout or a managed controller.
+    """Read stdout lines and optionally wait for stderr under the same timeout.
 
     When ``spec.timeout_controller`` is set, the controller manages deadline
     extensions triggered by output activity and fires warning callbacks.
     Otherwise a plain ``asyncio.timeout`` is used (backward-compatible).
     """
     if spec.timeout_controller:
-        async for event in _stream_with_controller(process, spec.timeout_controller, line_handler):
+        async for event in _stream_with_controller(
+            process, spec.timeout_controller, line_handler, stderr_drain=stderr_drain
+        ):
             yield event
     else:
         async with asyncio.timeout(spec.timeout_seconds):
@@ -400,12 +410,16 @@ async def _stream_with_timeout(
                 logger.debug("Stream line: %s", line[:120])
                 async for event in line_handler(line):
                     yield event
+            if stderr_drain is not None:
+                await asyncio.shield(stderr_drain)
 
 
 async def _stream_with_controller(
     process: asyncio.subprocess.Process,
     tc: TimeoutController,
     line_handler: LineHandler,
+    *,
+    stderr_drain: asyncio.Task[bytes] | None = None,
 ) -> AsyncGenerator[StreamEvent, None]:
     """Streaming read loop managed by a :class:`TimeoutController`.
 
@@ -418,20 +432,24 @@ async def _stream_with_controller(
 
     try:
         timeout_secs = tc.timeout_seconds
+        stdout_finished = False
         while True:
             try:
                 async with asyncio.timeout(timeout_secs):
                     while True:
                         line_bytes = await process.stdout.readline()  # type: ignore[union-attr]
                         if not line_bytes:
-                            return  # EOF
+                            stdout_finished = True
+                            if stderr_drain is not None:
+                                await asyncio.shield(stderr_drain)
+                            return
                         tc.record_activity()
                         line = line_bytes.decode(errors="replace").rstrip()
                         logger.debug("Stream line: %s", line[:120])
                         async for event in line_handler(line):
                             yield event
             except TimeoutError:
-                if tc.try_extend():
+                if not stdout_finished and tc.try_extend():
                     timeout_secs = tc.activity_extension_seconds
                     continue
                 raise

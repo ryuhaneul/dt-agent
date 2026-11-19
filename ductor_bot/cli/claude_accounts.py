@@ -438,8 +438,10 @@ class SlotRegistry:
     atomic snapshot; read-modify-write callers use ``update``.
     """
 
-    def __init__(self, state_path: Path) -> None:
+    def __init__(self, state_path: Path, *, requires_main_config: bool = False) -> None:
         self._state_path = state_path
+        # Sub-agents must verify registration against the shared main config.
+        self.requires_main_config = requires_main_config
 
     @property
     def state_path(self) -> Path:

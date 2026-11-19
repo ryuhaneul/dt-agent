@@ -1288,6 +1288,12 @@ async def test_auth_slots_use_bot_home_independent_of_request_directory(
     working_dir.mkdir(parents=True)
     agent_home.mkdir(parents=True, exist_ok=True)
     slots = ["claude-alt", "claude"] if fallback else ["claude"]
+    if home_suffix:
+        config_dir = home / "config"
+        config_dir.mkdir()
+        (config_dir / "config.json").write_text(
+            json.dumps({"claude_accounts": slots}), encoding="utf-8"
+        )
     for slot in slots:
         directory = home / ".cli-auth" / slot
         directory.mkdir(parents=True)
