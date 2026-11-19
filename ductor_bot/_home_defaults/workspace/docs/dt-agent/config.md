@@ -290,6 +290,9 @@ Requires the Slack image extra; the first allowed channel is the default chat fo
 | `timeout_seconds` | `float` (> 0) | `15.0` | Time limit for the preflight script |
 | `skip_marker` | `str` | `"HEARTBEAT_OK"` | Exit 0 with this as the last stdout line skips the agent run (recorded as `success:preflight`) |
 
+Existing installations keep their saved setting after an upgrade. To enable preflight if it is set to `false`,
+set `cron_preflight.enabled` to `true` in `config.json` and restart the bot.
+
 ## `CLIParametersConfig`
 
 | Field | Type | Default | Notes |
