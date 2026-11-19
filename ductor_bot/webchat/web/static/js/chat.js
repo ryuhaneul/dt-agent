@@ -13,11 +13,13 @@ import { getTopic, getTopics, selectTopic, refreshTopics, noteEntry, markSeen, f
 const histories = new Map(), turns = new Map(), busy = new Map(), drafts = new Map(), topicVersions = new Map(), busyVersions = new Map();
 let active = false, epoch = 0, stopEvents = null, telegram = { state: 'unknown' };
 let botUp = false, webSessions = null, pending = 0, outbox = [], sending = false;
-let view = 'chat', loading = false, selection = 0, commandMenu = null, secretDialog = null, autocompactDialog = null;
+let view = 'chat', selection = 0, commandMenu = null, secretDialog = null, autocompactDialog = null;
 let streamFrame = null, historyRender = null, composerFiles = null, attachmentView = null;
 const streamUpdates = new Set();
+const HISTORY_PAGE_SIZE = 100, MESSAGE_WINDOW_SIZE = 100, WINDOW_STEP = 50;
+let renderedTopic = null;
 function history(tid) {
-  if (!histories.has(tid)) histories.set(tid, { entries: new Map(), meta: new Map(), choices: new Map(), mirrorReaders: new Set(), hasMore: false, loaded: false, rendered: false, renderStart: null, markdown: createMarkdownCache(`entry:${tid}`) });
+  if (!histories.has(tid)) histories.set(tid, { entries: new Map(), meta: new Map(), choices: new Map(), mirrorReaders: new Set(), hasMore: false, loaded: false, rendered: false, renderStart: null, range: null, markdown: createMarkdownCache(`entry:${tid}`) });
   return histories.get(tid);
 }
 export function mergeEntries(entries, incoming) {
@@ -236,7 +238,7 @@ function scheduleStreamRender(turnId) {
     const topic = getTopic();
     if (!active || !topic) return;
     const thread = document.querySelector('#thread'), previousTop = thread.scrollTop;
-    const nearBottom = thread.scrollHeight - thread.clientHeight - previousTop < 80;
+    const nearBottom = !history(topic.tid).range?.newer && thread.scrollHeight - thread.clientHeight - previousTop < 80;
     for (const id of updates) {
       const turn = turns.get(id);
       if (!turn || turn.tid !== topic.tid) continue;
@@ -255,7 +257,7 @@ function scheduleStreamRender(turnId) {
         complete.dataset.length = turn.markdown.completeHTML.length;
         complete.dataset.revision = turn.markdown.revision;
         tail.innerHTML = turn.markdown.tailHTML;
-      } else if (!hasTurnEntry(turn, 'bot')) {
+      } else if (!history(topic.tid).range?.newer && !hasTurnEntry(turn, 'bot')) {
         updateTurn(turn);
       }
     }
@@ -299,9 +301,9 @@ function updateSendButton() {
 function updateThreadNavigation() {
   const thread = document.querySelector('#thread');
   const top = document.querySelector('#threadTop'), bottom = document.querySelector('#threadBottom');
-  const hasTopic = !!getTopic();
-  top.hidden = !hasTopic || thread.scrollTop < 80;
-  bottom.hidden = !hasTopic || thread.scrollHeight - thread.clientHeight - thread.scrollTop < 80;
+  const topic = getTopic(), state = topic ? history(topic.tid) : null;
+  top.hidden = !state || (!state.range?.older && !state.hasMore && thread.scrollTop < 80);
+  bottom.hidden = !state || (!state.range?.newer && thread.scrollHeight - thread.clientHeight - thread.scrollTop < 80);
 }
 function localDay(date) {
   return Number.isNaN(+date) ? '' : `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
@@ -310,17 +312,19 @@ function entryDayKey(entry) {
   const day = entry.ts ? localDay(new Date(entry.ts)) : '';
   return `${day}:${!!entry.imported}`;
 }
-function entryItems(entries, start, end) {
+function threadItems(rows) {
   const items = [], todayPrefix = `${localDay(new Date())}:`;
   let previousDay;
-  for (let index = start; index < end; index++) {
-    const entry = entries[index], day = entryDayKey(entry);
-    if (day !== previousDay) {
-      const today = day.startsWith(todayPrefix);
-      items.push({ kind: 'day', entry, today, key: `day:${entry.seq}:${day}:${today}` });
+  for (const row of rows) {
+    if (row.kind === 'entry' && !row.waiting) {
+      const entry = row.entry, day = entryDayKey(entry);
+      if (day !== previousDay) {
+        const today = day.startsWith(todayPrefix);
+        items.push({ kind: 'day', entry, today, key: `day:${entry.seq}:${day}:${today}` });
+      }
+      previousDay = day;
     }
-    items.push({ kind: 'entry', entry, key: `entry:${entry.seq}` });
-    previousDay = day;
+    items.push(row);
   }
   return items;
 }
@@ -387,7 +391,10 @@ function cancelHistoryRender() {
   else cancelAnimationFrame(historyRender.id);
   historyRender = null;
 }
-function scheduleHistoryRender(topic, entries, start) {
+function loadWindowAttachments(tid, rows) {
+  attachmentView?.load(tid, rows.filter(row => row.kind === 'entry').map(row => row.entry));
+}
+function scheduleHistoryRender(topic, rows, start, limit) {
   const state = history(topic.tid), thread = document.querySelector('#thread');
   const job = { tid: topic.tid, start, idle: typeof requestIdleCallback === 'function', id: null };
   historyRender = job;
@@ -396,59 +403,40 @@ function scheduleHistoryRender(topic, entries, start) {
   }
   function appendOlder() {
     if (historyRender !== job || !active || getTopic()?.tid !== job.tid) return;
-    const next = Math.max(0, job.start - 12), html = entryItems(entries, next, job.start).map(itemMarkup).join('');
+    const next = Math.max(limit, job.start - 12), batch = rows.slice(next, job.start);
     const top = thread.scrollTop, height = thread.scrollHeight;
-    const pinned = height - thread.clientHeight - top < 80;
-    if (entryDayKey(entries[job.start - 1]) === entryDayKey(entries[job.start])) thread.firstElementChild?.remove();
-    thread.insertAdjacentHTML('afterbegin', html);
-    // All writes precede the single layout read; preserve the existing viewport.
+    const pinned = !state.range.newer && height - thread.clientHeight - top < 80;
+    const previous = rows[job.start];
+    if (previous.kind === 'entry' && !previous.waiting && batch.at(-1).kind === 'entry' &&
+        !batch.at(-1).waiting && entryDayKey(batch.at(-1).entry) === entryDayKey(previous.entry)) {
+      thread.firstElementChild?.remove();
+    }
+    thread.insertAdjacentHTML('afterbegin', threadItems(batch).map(itemMarkup).join(''));
     const newHeight = thread.scrollHeight;
     thread.scrollTop = pinned ? newHeight : top + newHeight - height;
+    loadWindowAttachments(topic.tid, batch);
     updateThreadNavigation();
-    job.start = next; state.renderStart = entries[next].seq;
-    if (next) schedule();
+    job.start = next; state.renderStart = rows[next].key;
+    if (next > limit) schedule();
     else { state.rendered = true; state.renderStart = null; historyRender = null; }
   }
   schedule();
 }
-export function renderThread({ bottom = false, seq = null, changes = null } = {}) {
-  if (!changes) cancelStreamRender();
-  cancelHistoryRender();
-  const topic = getTopic();
-  if (!changes || changes.header) renderHeader();
-  else if (changes.turns) updateStopButton(topic);
-  const thread = document.querySelector('#thread');
-  if (!changes) rememberActivity(thread);
-  const previousTop = thread.scrollTop;
-  const nearBottom = thread.scrollHeight - thread.clientHeight - previousTop < 80;
-  if (!topic) { thread.replaceChildren(); updateThreadNavigation(); return; }
-  const entries = sorted(topic.tid);
-  const topicTurns = [...turns.values()].filter(turn => turn.tid === topic.tid);
-  const liveTurns = topicTurns.filter(turn => ['queued', 'started'].includes(turn.phase));
+function orderedMessages(entries, liveTurns, topicTurns) {
   const received = liveTurns.map(turn => Date.parse(turn.received));
   const boundary = received.length && received.every(Number.isFinite) ? Math.min(...received) : null;
-  const waiting = [], userTurns = new Set(), botTurns = new Set();
+  const rows = [], waiting = [], userTurns = new Set(), botTurns = new Set();
   for (const entry of entries) {
     if (entry.role === 'user') userTurns.add(entry.turn_id);
     if (entry.role === 'bot') botTurns.add(entry.turn_id);
-  }
-  const visibleEntries = entries.filter(entry => {
+    const row = { kind: 'entry', entry, key: `entry:${entry.seq}` };
     const turn = turns.get(entry.turn_id);
     if (entry.role === 'user' && boundary !== null && (
       turn?.phase === 'queued' || (entry.status === 'cancelled' && Date.parse(entry.ts) >= boundary)
     )) {
-      waiting.push({ received: turn?.received || entry.ts, kind: 'entry', entry, key: `entry:${entry.seq}` });
-      return false;
-    }
-    return true;
-  });
-  const state = history(topic.tid);
-  let start = 0;
-  if (!state.rendered && seq === null && visibleEntries.length > 12) {
-    const resumed = visibleEntries.findIndex(entry => state.renderStart !== null && entry.seq >= state.renderStart);
-    start = resumed >= 0 ? resumed : visibleEntries.length - 12;
+      waiting.push({ ...row, waiting: true, received: turn?.received || entry.ts });
+    } else rows.push(row);
   }
-  const items = entryItems(visibleEntries, start, visibleEntries.length);
   for (const turn of topicTurns) {
     const userExists = userTurns.has(turn.id);
     const queued = { kind: 'queue', turn, key: `queue:${turn.id}`, received: turn.received };
@@ -456,28 +444,122 @@ export function renderThread({ bottom = false, seq = null, changes = null } = {}
       if (!userExists && turn.userText !== undefined) waiting.push(queued);
       continue;
     }
-    if (!userExists && turn.userText !== undefined) items.push(queued);
-    if (!botTurns.has(turn.id)) items.push({ kind: 'stream', turn, key: `stream:${turn.id}` });
+    if (!userExists && turn.userText !== undefined) rows.push(queued);
+    if (!botTurns.has(turn.id)) rows.push({ kind: 'stream', turn, key: `stream:${turn.id}` });
   }
   // Receipt times preserve the position of cancellations across reconnects.
   if (boundary !== null) waiting.sort((a, b) => Date.parse(a.received) - Date.parse(b.received));
-  items.push(...waiting);
-  if ((busy.get(topic.tid) ?? topic.busy) && !liveTurns.length) items.push({ kind: 'busy', key: 'busy' });
-  if (changes) patchThread(thread, items, changes);
-  else {
-    thread.innerHTML = items.map(itemMarkup).join('');
-    attachmentView?.load(topic.tid, entries);
+  rows.push(...waiting);
+  return rows;
+}
+function viewportMessages(thread) {
+  const bounds = thread.getBoundingClientRect();
+  let first = null, last = null;
+  for (const node of thread.children) {
+    if (node.dataset.threadKey !== undefined) continue;
+    const key = nodeKey(node), rect = node.getBoundingClientRect();
+    if (rect.top >= bounds.bottom) break;
+    if (rect.bottom <= bounds.top) continue;
+    if (!first) first = { key, top: rect.top };
+    last = key;
   }
+  return { first, last };
+}
+function restoreViewport(thread, viewport, previousTop, changes) {
+  const anchor = viewport.first && [...thread.children].find(node => nodeKey(node) === viewport.first.key);
+  if (!anchor) {
+    if (!changes) thread.scrollTop = previousTop;
+    return;
+  }
+  // Read scrollTop after layout so native scroll anchoring is included in the correction.
+  const shift = anchor.getBoundingClientRect().top - viewport.first.top;
+  if (!shift) return;
+  thread.scrollTop += shift;
+  // Chromium can quantize scrollTop even when row positions use fractional CSS pixels.
+  const remainder = anchor.getBoundingClientRect().top - viewport.first.top;
+  if (!remainder || Math.abs(remainder) >= 1) return;
+  const previous = parseFloat(thread.style.getPropertyValue('--thread-anchor-offset')) || 0;
+  const padding = previous - remainder, whole = Math.trunc(padding);
+  const top = thread.scrollTop;
+  thread.style.setProperty('--thread-anchor-offset', `${padding - whole}px`);
+  if (whole) thread.scrollTop = top - whole;
+}
+function messageRange(state, rows, { seq, bottom, move, viewport, keepReading }) {
+  const length = rows.length;
+  const indexOf = key => rows.findIndex(row => row.key === key);
+  const previousFirst = indexOf(state.range?.first);
+  const previousLast = indexOf(state.range?.last);
+  // If a queued/streaming row was replaced, keep the window around its surviving first message.
+  const previousEnd = previousLast >= 0 ? previousLast + 1
+    : previousFirst >= 0 ? Math.min(length, previousFirst + MESSAGE_WINDOW_SIZE) : length;
+  let end = state.range?.newer ? previousEnd : length;
+  const target = seq !== null ? indexOf(`entry:${seq}`) : -1;
+  if (bottom) end = length;
+  else if (target >= 0) end = Math.min(length, Math.max(MESSAGE_WINDOW_SIZE, target + WINDOW_STEP));
+  else if (move === 'top') end = Math.min(length, MESSAGE_WINDOW_SIZE);
+  else if (move === 'older') {
+    const lastVisible = indexOf(viewport.last);
+    end = Math.max(Math.min(length, MESSAGE_WINDOW_SIZE), previousEnd - WINDOW_STEP,
+      Math.min(lastVisible + 1, previousEnd - 1));
+  } else if (move === 'newer') {
+    const firstVisible = indexOf(viewport.first?.key);
+    end = Math.min(length, previousEnd + WINDOW_STEP,
+      firstVisible < 0 ? length : Math.max(previousEnd + 1, firstVisible + MESSAGE_WINDOW_SIZE));
+  } else if (keepReading && state.range && previousFirst >= 0 && length - MESSAGE_WINDOW_SIZE > previousFirst) {
+    end = previousEnd;
+  }
+  const start = Math.max(0, end - MESSAGE_WINDOW_SIZE);
+  state.range = { first: rows[start]?.key, last: rows[end - 1]?.key, older: start > 0, newer: end < length };
+  return { start, end };
+}
+export function renderThread({ bottom = false, seq = null, changes = null, move = null } = {}) {
+  if (!changes) cancelStreamRender();
+  cancelHistoryRender();
+  const topic = getTopic();
+  if (!changes || changes.header) renderHeader();
+  else if (changes.turns) updateStopButton(topic);
+  const thread = document.querySelector('#thread');
+  if (!changes) rememberActivity(thread);
+  const sameTopic = renderedTopic === topic?.tid;
+  renderedTopic = topic?.tid;
+  if (!topic) { thread.replaceChildren(); updateThreadNavigation(); return; }
+  const state = history(topic.tid);
+  const previousTop = thread.scrollTop;
+  const nearBottom = !state.range?.newer && thread.scrollHeight - thread.clientHeight - previousTop < 80;
+  const viewport = sameTopic && !bottom && seq === null && (move || !nearBottom)
+    ? viewportMessages(thread) : {};
+  const entries = sorted(topic.tid);
+  const topicTurns = [...turns.values()].filter(turn => turn.tid === topic.tid);
+  const liveTurns = topicTurns.filter(turn => ['queued', 'started'].includes(turn.phase));
+  const rows = orderedMessages(entries, liveTurns, topicTurns);
+  const { start: limit, end } = messageRange(state, rows, {
+    seq, bottom, move, viewport, keepReading: sameTopic && !nearBottom,
+  });
+  let start = limit;
+  if (!state.rendered && seq === null && !move && end - limit > 12) {
+    const resumed = rows.findIndex(row => row.key === state.renderStart);
+    start = resumed >= limit && resumed < end ? resumed : end - 12;
+  }
+  if (!sameTopic || bottom || seq !== null || move === 'top') thread.style.removeProperty('--thread-anchor-offset');
+  const mounted = rows.slice(start, end), items = threadItems(mounted);
+  if (!state.range.newer && (busy.get(topic.tid) ?? topic.busy) && !liveTurns.length) {
+    items.push({ kind: 'busy', key: 'busy' });
+  }
+  if (changes) patchThread(thread, items, changes);
+  else thread.innerHTML = items.map(itemMarkup).join('');
+  loadWindowAttachments(topic.tid, mounted);
+  const pinned = !move && (bottom || nearBottom) && !state.range.newer;
   if (seq !== null) {
     thread.querySelector(`[data-entry-seq="${Number(seq)}"]`)?.scrollIntoView({ block: 'center' });
-  } else if (bottom || nearBottom) thread.scrollTop = thread.scrollHeight;
-  else if (!changes) thread.scrollTop = previousTop;
+  } else if (move === 'top') thread.scrollTop = 0;
+  else if (pinned) thread.scrollTop = thread.scrollHeight;
+  else restoreViewport(thread, viewport, previousTop, changes);
   updateThreadNavigation();
-  if (visibleChat() && (bottom || nearBottom) && entries.length) markSeen(topic.tid, entries.at(-1).seq);
-  if (start) {
-    state.renderStart = visibleEntries[start].seq;
-    scheduleHistoryRender(topic, visibleEntries, start);
-  } else if (entries.length) { state.rendered = true; state.renderStart = null; }
+  if (visibleChat() && pinned && entries.length) markSeen(topic.tid, entries.at(-1).seq);
+  if (start > limit) {
+    state.renderStart = rows[start].key;
+    scheduleHistoryRender(topic, rows, start, limit);
+  } else if (rows.length) { state.rendered = true; state.renderStart = null; }
 }
 async function loadHistory(tid, { older = false, target = null, turnId = null } = {}) {
   const generation = epoch, state = history(tid), entries = sorted(tid);
@@ -489,7 +571,7 @@ async function loadHistory(tid, { older = false, target = null, turnId = null } 
     state.mirrorReaders.add(liveMirrors);
     let data;
     try {
-      data = await api(`/topics/${encodeURIComponent(tid)}/messages?limit=100${before}`);
+      data = await api(`/topics/${encodeURIComponent(tid)}/messages?limit=${HISTORY_PAGE_SIZE}${before}`);
     } finally {
       state.mirrorReaders.delete(liveMirrors);
     }
@@ -622,7 +704,7 @@ function updateMirror(item, historyId, status) {
   if (!node) return;
   const existing = node.querySelector('[data-mirror]'), html = mirror(entry);
   if (!existing && !html) return;
-  const pinned = thread.scrollHeight - thread.clientHeight - thread.scrollTop < 80;
+  const pinned = !state.range?.newer && thread.scrollHeight - thread.clientHeight - thread.scrollTop < 80;
   if (existing) existing.remove();
   if (html) (node.classList.contains('event') ? node.lastElementChild : node).insertAdjacentHTML('beforeend', html);
   if (pinned) thread.scrollTop = thread.scrollHeight;
@@ -797,9 +879,7 @@ async function sendMessage() {
       updateSendButton();
       if (sentTurn) updateTurn(sentTurn, true);
       else if (getTopic()?.tid === topic.tid) {
-        const thread = document.querySelector('#thread');
-        thread.scrollTop = thread.scrollHeight;
-        updateThreadNavigation();
+        renderThread({ bottom: true, changes: {} });
       }
     }
   }
@@ -816,21 +896,11 @@ export function initChat() {
   const thread = document.querySelector('#thread'), input = document.querySelector('#msgIn');
   let pagination = null, topRequest = null;
   function cancelTop() { topRequest = null; }
-  function loadOlder(tid) {
-    if (pagination) return pagination;
-    const height = thread.scrollHeight, generation = epoch;
-    loading = true;
-    pagination = (async () => {
-      try {
-        await loadHistory(tid, { older: true });
-        if (!active || generation !== epoch || getTopic()?.tid !== tid) return;
-        const previousTop = thread.scrollTop;
-        renderThread();
-        thread.scrollTop = topRequest?.tid === tid ? 0 : thread.scrollHeight - height + previousTop;
-        updateThreadNavigation();
-      } finally { loading = false; pagination = null; }
-    })();
-    return pagination;
+  function fetchOlder(tid) {
+    if (pagination?.tid === tid) return pagination.promise;
+    const request = { tid, promise: loadHistory(tid, { older: true }) };
+    pagination = request;
+    return request.promise.finally(() => { if (pagination === request) pagination = null; });
   }
   for (const type of ['wheel', 'touchmove', 'pointerdown']) thread.addEventListener(type, cancelTop, { passive: true });
   thread.addEventListener('keydown', event => {
@@ -842,16 +912,14 @@ export function initChat() {
       const topic = getTopic();
       if (!topic) return;
       thread.focus({ preventScroll: true });
-      if (toBottom) { thread.scrollTop = thread.scrollHeight; updateThreadNavigation(); return; }
-      const request = { tid: topic.tid }, generation = epoch;
+      if (toBottom) { renderThread({ bottom: true, changes: {} }); return; }
+      const request = { tid: topic.tid }, generation = epoch, selected = selection;
       topRequest = request;
-      history(topic.tid).rendered = true; renderThread();
+      const current = () => topRequest === request && active && generation === epoch &&
+        selected === selection && getTopic()?.tid === topic.tid;
       try {
-        while (topRequest === request && active && generation === epoch && getTopic()?.tid === topic.tid) {
-          if (pagination) await pagination;
-          else if (history(topic.tid).hasMore) await loadOlder(topic.tid);
-          else { thread.scrollTop = 0; break; }
-        }
+        while (current() && history(topic.tid).hasMore) await fetchOlder(topic.tid);
+        if (current()) renderThread({ move: 'top', changes: {} });
       } catch (error) { if (active && generation === epoch) errorNotice(error); }
       finally { if (topRequest === request) cancelTop(); updateThreadNavigation(); }
     });
@@ -889,21 +957,36 @@ export function initChat() {
   thread.addEventListener('scroll', async () => {
     updateThreadNavigation();
     const topic = getTopic();
-    if (!topic || loading) return;
-    if (thread.scrollHeight - thread.clientHeight - thread.scrollTop < 80) {
-      const entries = sorted(topic.tid); if (entries.length && visibleChat()) markSeen(topic.tid, entries.at(-1).seq);
+    if (!topic || topRequest || pagination?.tid === topic.tid) return;
+    const state = history(topic.tid);
+    if (!state.rendered || !state.range) return;
+    const gap = thread.scrollHeight - thread.clientHeight - thread.scrollTop;
+    if (state.range.newer && gap < 1 && thread.scrollTop > 0) {
+      renderThread({ move: 'newer', changes: {} });
+    } else if (thread.scrollTop <= 0 && (state.range.older || state.hasMore)) {
+      const generation = epoch, selected = selection;
+      try {
+        if (!state.range.older) await fetchOlder(topic.tid);
+        if (active && generation === epoch && selected === selection && !topRequest && thread.scrollTop <= 0) {
+          renderThread({ move: 'older', changes: {} });
+        }
+      } catch (error) { if (active && generation === epoch) errorNotice(error); }
+    } else if (gap < 80 && !state.range.newer) {
+      const entries = sorted(topic.tid);
+      if (entries.length && visibleChat()) markSeen(topic.tid, entries.at(-1).seq);
     }
-    if (thread.scrollTop > 0 || !history(topic.tid).hasMore || !history(topic.tid).rendered) return;
-    if (topRequest) return;
-    try { await loadOlder(topic.tid); }
-    catch (error) { errorNotice(error); }
   });
   document.addEventListener('topic-selected', async event => {
     cancelTop();
     const { topic, seq } = event.detail, generation = epoch, selected = ++selection;
-    input.value = drafts.get(topic.tid) || ''; renderThread(); resizeComposer();
+    const state = history(topic.tid);
+    state.range = null; state.renderStart = null;
+    input.value = drafts.get(topic.tid) || ''; renderThread({ bottom: true }); resizeComposer();
     try {
-      await loadHistory(topic.tid, { target: seq });
+      const cached = seq === null ? [] : sorted(topic.tid);
+      if (!cached.some(entry => entry.seq === seq)) {
+        await loadHistory(topic.tid, { target: seq, older: seq !== null && seq < cached[0]?.seq });
+      }
       if (active && generation === epoch && selected === selection && getTopic()?.tid === topic.tid) {
         renderThread({ bottom: seq === null, seq });
         if (location.hash === '#chat' && !event.detail.focusComposer) {
@@ -924,7 +1007,7 @@ export function initChat() {
     cancelTop();
     active = event.detail.authenticated; ++epoch;
     cancelStreamRender(); cancelHistoryRender();
-    stopEvents?.(); stopEvents = null;
+    stopEvents?.(); stopEvents = null; renderedTopic = null; pagination = null;
     histories.clear(); turns.clear(); busy.clear(); drafts.clear(); topicVersions.clear(); busyVersions.clear(); input.value = '';
     telegram = { state: 'unknown' }; botUp = false; webSessions = null;
     pending = 0; outbox = []; renderStatus(); renderHeader(); resizeComposer();

@@ -125,21 +125,26 @@ try{
   const newEntry = seq => ({type:'entry',tid:topic.tid,entry:{
     id:`live-${seq}`,seq,role:'bot',source:'web',text:`Live message ${seq}`,ts:'2026-11-18T10:00:00Z',
   }});
-  event(newEntry(101));
-  await page.locator('[data-entry-seq="101"]').waitFor({state:'attached'});
+  await page.evaluate(async entry=>{
+    const {handleEvent}=await import('/static/js/chat.js');
+    await handleEvent(entry);
+  },newEntry(101));
+  assert.equal(await page.locator('[data-entry-seq="101"]').count(),0);
   assert(await page.evaluate(()=>{
     const thread=document.querySelector('#thread');
     return window.initialEntry.isConnected&&Math.abs(thread.scrollTop-window.initialTop)<1;
   }));
-  await page.evaluate(()=>{const thread=document.querySelector('#thread');thread.scrollTop=thread.scrollHeight;});
+  await page.locator('#threadBottom').click();
+  await page.locator('[data-entry-seq="101"]').waitFor({state:'attached'});
   event(newEntry(102));
   await page.locator('[data-entry-seq="102"]').waitFor({state:'attached'});
   assert(await page.evaluate(()=>{
     const thread=document.querySelector('#thread');
     return thread.scrollHeight-thread.clientHeight-thread.scrollTop<2;
   }));
+  await page.evaluate(()=>{window.legacyAnchor=document.querySelector('[data-entry-seq="102"]');});
   event({type:'outbox',pending:0,item:queueItem});
-  await page.waitForFunction(()=>!window.initialEntry.isConnected);
+  await page.waitForFunction(()=>!window.legacyAnchor.isConnected);
   assert.equal(historyRequests(),readCount+1);
   results.checks.push('targeted mirror and entry events preserve message nodes and scroll; legacy receipt reloads');
   emptyHistoryEnabled=false;

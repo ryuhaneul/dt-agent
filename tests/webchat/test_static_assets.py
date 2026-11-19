@@ -796,6 +796,10 @@ class ThreadRow extends Element {
       this.dataset[name.replace(/-([a-z])/g,(_,part)=>part.toUpperCase())]=value;
     }
   }
+  getBoundingClientRect(){
+    const top=this.parentNode.children.indexOf(this)*50-this.parentNode.scrollTop;
+    return {top,bottom:top+50};
+  }
   get nextElementSibling(){return this.parentNode?.children[this.parentNode.children.indexOf(this)+1]??null;}
   scrollIntoView(){scrolled=Number(this.dataset.entrySeq);}
   remove(){
@@ -824,6 +828,8 @@ class ThreadRow extends Element {
   }
 }
 class Thread extends Element {
+  constructor(){super();this.style.removeProperty=()=>{};}
+  getBoundingClientRect(){return {top:0,bottom:500};}
   get firstElementChild(){return this.children[0]??null;}
   get innerHTML(){return this.children.map(row=>row.html).join('');}
   set innerHTML(html){this.replaceChildren();this.insertAdjacentHTML('beforeend',html);}
@@ -1000,8 +1006,11 @@ assert.ok(document.querySelector('#outboxRows').innerHTML.includes(strings['outb
 assert.ok(document.querySelector('#hb').innerHTML.includes('data-s="pending"'));
 assert.equal(document.querySelector('.composer .line').hidden,false);
 assert.equal(document.querySelector('#webSessions').textContent,2);
-// Older pages prepend and preserve scroll position; searching jumps to an earlier seq.
-thread.scrollTop=0;thread.emit('scroll');await flush();assert.ok(thread.innerHTML.includes('Entry 6</p>'));
+// Older pages shift the bounded window; searching jumps to an earlier seq.
+thread.scrollTop=0;thread.emit('scroll');await flush();
+assert.ok(calls.some(call=>call.url==='/api/topics/1.2/messages?limit=100&before=106'));
+assert.equal(thread.children.find(node=>node.dataset.entrySeq).dataset.entrySeq,'56');
+assert.equal((thread.innerHTML.match(/data-entry-seq=/g)||[]).length,100);
 const q=document.querySelector('#q');q.value='entry';q.emit('input');await runTimer(300);
 assert.ok(list.innerHTML.includes('Found &lt;script&gt;'));assert.ok(calls.some(call=>call.url==='/api/search?q=entry'));
 topics.selectTopic('1.2',2);await flush();assert.equal(scrolled,2);assert.ok(thread.innerHTML.includes('Entry 1</p>'));
@@ -1285,13 +1294,17 @@ historyA.splice(0,historyA.length,...Array.from({length:600},(_,index)=>makeEntr
 topicRows[0].turns=[];topicRows[0].busy=false;
 document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));await flush();topics.selectTopic('1.2');await flush();
 await document.querySelector('#threadTop').emit('click');await flush();
-assert.equal((thread.innerHTML.match(/data-entry-seq=/g)||[]).length,600);assert.equal(thread.scrollTop,0);
+assert.equal((thread.innerHTML.match(/data-entry-seq=/g)||[]).length,100);
+assert.equal(thread.children.find(node=>node.dataset.entrySeq).dataset.entrySeq,'1');
+assert.equal(thread.scrollTop,0);
 document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:false}}));
 document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));await flush();topics.selectTopic('1.2');await flush();
 let finishOlder;historyHold=new Promise(resolve=>finishOlder=resolve);
 document.querySelector('#threadTop').emit('click');await new Promise(setImmediate);
 thread.scrollTop=123;thread.emit('wheel');finishOlder();historyHold=null;await flush();
-assert.equal((thread.innerHTML.match(/data-entry-seq=/g)||[]).length,200);assert.equal(thread.scrollTop,123);
+assert.equal((thread.innerHTML.match(/data-entry-seq=/g)||[]).length,100);
+assert.equal(thread.children.find(node=>node.dataset.entrySeq).dataset.entrySeq,'501');
+assert.equal(thread.scrollTop,123);
 document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:false}}));
 
 // No topic means no send target: keep the composer hidden rather than accepting a lost draft.

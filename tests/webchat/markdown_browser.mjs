@@ -74,11 +74,13 @@ async function open(kind,width,entries) {
 }
 const entries=Array.from({length:600},(_,index)=>({id:`e${index+1}`,seq:index+1,role:'bot',source:'telegram',text:`Entry ${index+1}\n\n**Message** https://example.test/${index+1}\n\n- item\n- next`,ts:null}));
 async function loadAll(page){
-  for(let expected=200;expected<=600;expected+=100){
-    await page.evaluate(()=>{const thread=document.querySelector('#thread');thread.scrollTop=0;thread.dispatchEvent(new Event('scroll'));});
-    await page.waitForFunction(count=>document.querySelectorAll('[data-entry-seq]').length>=count,expected);
-  }
-  await page.evaluate(()=>{const thread=document.querySelector('#thread');thread.scrollTop=thread.scrollHeight;});
+  await page.locator('#threadTop').click();
+  await page.waitForFunction(()=>document.querySelector('[data-entry-seq]').dataset.entrySeq==='1');
+  await page.locator('#threadBottom').click();
+  await page.waitForFunction(()=>{
+    const thread=document.querySelector('#thread');
+    return !!thread.querySelector('[data-entry-seq="600"]') && thread.scrollHeight-thread.clientHeight-thread.scrollTop<1;
+  });
 }
 async function stream(page,text,phase,id){
   return page.evaluate(async({text,phase,id})=>{
@@ -206,8 +208,81 @@ async function navigation() {
   assert.deepEqual(failures,[]);assert.deepEqual(violations,[]);console.log(JSON.stringify({results,failures,violations}));
 }
 
+async function historyWindow() {
+  const results=[];
+  const rows=entries.map(entry=>({...entry,source:'web'}));
+  for(const width of [375,768,1280]){
+    const {page,context}=await open('current',width,rows);
+    const historyRequests=[];
+    page.on('request',request=>{
+      const url=new URL(request.url());
+      if(url.pathname==='/api/topics/1.2/messages')historyRequests.push(url.searchParams.get('before'));
+    });
+    await page.evaluate(async()=>{
+      const {selectTopic}=await import('/static/js/topics.js');
+      selectTopic('1.2');
+      const thread=document.querySelector('#thread');
+      window.maxMounted=0;
+      new MutationObserver(()=>{
+        window.maxMounted=Math.max(window.maxMounted,thread.querySelectorAll('[data-entry-seq]').length);
+      }).observe(thread,{childList:true});
+    });
+    await page.waitForFunction(()=>document.querySelector('#msgIn')===document.activeElement);
+    async function boundary(toOlder){
+      const snapshot=await page.evaluate(toOlder=>{
+        const thread=document.querySelector('#thread');
+        thread.scrollTop=toOlder?0:thread.scrollHeight;
+        const nodes=[...thread.querySelectorAll('[data-entry-seq]')], box=thread.getBoundingClientRect();
+        const anchor=nodes.find(node=>node.getBoundingClientRect().bottom>box.top);
+        window.windowTestAnchor=anchor;
+        return {first:nodes[0].dataset.entrySeq,top:anchor.getBoundingClientRect().top};
+      },toOlder);
+      await page.waitForFunction(first=>document.querySelector('[data-entry-seq]').dataset.entrySeq!==first,snapshot.first);
+      const drift=await page.evaluate(top=>{
+        if(!window.windowTestAnchor.isConnected)throw Error('Visible message was detached');
+        return Math.abs(window.windowTestAnchor.getBoundingClientRect().top-top);
+      },snapshot.top);
+      assert.equal(drift,0);
+      return drift;
+    }
+    await boundary(true);
+    assert(historyRequests.includes('501'));
+    await page.locator('#threadTop').click();
+    await page.waitForFunction(()=>document.querySelector('[data-entry-seq]').dataset.entrySeq==='1');
+    const afterFetch=historyRequests.length;
+    const down=await boundary(false), up=await boundary(true);
+    assert.equal(historyRequests.length,afterFetch);
+    await page.locator('#threadBottom').click();
+    await page.waitForFunction(()=>document.querySelector('[data-entry-seq]').dataset.entrySeq==='501');
+    assert.equal(await page.locator('[data-entry-seq="1"]').count(),0);
+    await page.evaluate(async()=>{
+      const {handleEvent}=await import('/static/js/chat.js');
+      await handleEvent({type:'outbox',pending:0,item:{id:'receipt',tid:'1.2',state:'sent'},history_id:'e1',mirror:'sent'});
+    });
+    await page.locator('#threadTop').click();
+    await page.waitForFunction(()=>document.querySelector('[data-entry-seq]').dataset.entrySeq==='1');
+    await page.locator('[data-entry-seq="1"] .deliv').waitFor();
+    assert.equal(historyRequests.length,afterFetch);
+    await page.evaluate(async()=>{const {selectTopic}=await import('/static/js/topics.js');selectTopic('1.2',260);});
+    await page.waitForFunction(()=>{
+      const node=document.querySelector('[data-entry-seq="260"]'), range=document.querySelector('#thread').getBoundingClientRect();
+      return node && node.getBoundingClientRect().top>=range.top && node.getBoundingClientRect().bottom<=range.bottom;
+    });
+    assert.equal(historyRequests.length,afterFetch);
+    const maxMounted=await page.evaluate(()=>window.maxMounted);
+    assert.equal(maxMounted,100);
+    results.push({width,maxMounted,down,up,olderRequests:historyRequests.filter(Boolean).length});
+    await context.close();
+  }
+  assert.deepEqual(failures,[]);
+  fs.mkdirSync(cfg.artifacts,{recursive:true});
+  fs.writeFileSync(path.join(cfg.artifacts,'window.json'),JSON.stringify(results,null,2));
+  console.log(JSON.stringify(results));
+}
+
 try {
-  if(cfg.mode==='navigation')await navigation();
+  if(cfg.mode==='window')await historyWindow();
+  else if(cfg.mode==='navigation')await navigation();
   else if(cfg.mode==='visual') await visual();
   else {
   const texts={
