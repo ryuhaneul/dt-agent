@@ -469,6 +469,7 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
         except LockTimeoutError:
             return _error("history_busy", 503)
         mirrors = await runtime.outbox.mirror_states([entry.id for entry in entries])
+        indexed = await attachments.index.get_many(tid, [entry.id for entry in entries])
         rendered = []
         metadata = await runtime.history.metadata(tid)
         for entry in entries:
@@ -486,6 +487,7 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
                     **metadata.get(entry.id, {}),
                     **selector_fields({**legacy, **metadata.get(entry.id, {})}),
                     "mirror": {"state": mirror} if mirror else None,
+                    "has_attachments": bool(indexed[entry.id]),
                 }
             )
         return web.json_response({"entries": rendered, "has_more": more})
@@ -951,6 +953,9 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
                         "entry": {
                             **event["entry"],
                             **selector_fields(event["entry"]),
+                            "has_attachments": bool(
+                                await attachments.index.get(tid, event["entry"]["id"])
+                            ),
                             "mirror": {"state": mirror} if mirror else None,
                         },
                     }

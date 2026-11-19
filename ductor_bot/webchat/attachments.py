@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,9 @@ class AttachmentIndex:
 
     def __init__(self, path: Path) -> None:
         self.path = path
+        self._cache_signature: tuple[int, ...] | None = None
+        self._cache_entries: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        self._cache_lock = asyncio.Lock()
 
     @staticmethod
     def _valid_attachment(raw: object) -> bool:
@@ -121,12 +125,56 @@ class AttachmentIndex:
             finally:
                 os.close(fd)
 
+    def _signature(self) -> tuple[int, ...] | None:
+        try:
+            info = self.path.lstat()
+        except OSError:
+            return None
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+    def _read_cache(
+        self,
+    ) -> tuple[tuple[int, ...] | None, dict[tuple[str, str], list[dict[str, Any]]], bool]:
+        try:
+            with exclusive_file_lock(self.path):
+                signature = self._signature()
+                if signature is None:
+                    return None, {}, False
+                rows, damaged = self._rows()
+                entries = {(row["tid"], row["entry_id"]): row["attachments"] for row in rows}
+                return signature, entries, damaged
+        except OSError:
+            logger.warning("Attachment index unavailable; history remains readable")
+            return None, {}, True
+
+    async def _snapshot(self) -> dict[tuple[str, str], list[dict[str, Any]]]:
+        signature = self._signature()
+        if signature is None:
+            self._cache_signature = None
+            self._cache_entries = {}
+            return {}
+        if signature == self._cache_signature:
+            return self._cache_entries
+        async with self._cache_lock:
+            if self._signature() == self._cache_signature:
+                return self._cache_entries
+            signature, entries, damaged = await asyncio.to_thread(self._read_cache)
+            if not damaged:
+                self._cache_entries = entries
+                self._cache_signature = signature
+            return entries
+
+    async def get_many(self, tid: str, entry_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+        entries = await self._snapshot()
+        return {
+            entry_id: [dict(item) for item in entries.get((tid, entry_id), [])]
+            for entry_id in entry_ids
+        }
+
     async def get(self, tid: str, entry_id: str) -> list[dict[str, Any]]:
-        rows, _ = await asyncio.to_thread(self._rows)
-        for row in reversed(rows):
-            if row["tid"] == tid and row["entry_id"] == entry_id:
-                return list(row["attachments"])
-        return []
+        return (await self.get_many(tid, [entry_id]))[entry_id]
 
 
 class MessageAttachments:

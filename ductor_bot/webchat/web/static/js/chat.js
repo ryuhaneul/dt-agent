@@ -531,9 +531,12 @@ export async function handleEvent(event) {
       if (!getTopics().some(item => item.tid === tid)) await refreshTopics();
       break;
     }
-    case 'attachments_changed':
+    case 'attachments_changed': {
+      const entry = history(tid).entries.get(event.entry_id);
+      if (entry) entry.has_attachments = true;
       attachmentView?.invalidate?.(tid,event.entry_id);
       break;
+    }
     case 'entry_meta': {
       const state = history(tid);
       mergeButtonMeta(state, event.entry_id, event.meta || {});

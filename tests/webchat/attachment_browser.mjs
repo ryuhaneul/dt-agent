@@ -22,7 +22,7 @@ const page=await context.newPage(), errors=[], sessions=new Map(), messages=[], 
 page.on('pageerror',error=>errors.push(error.message));
 const topic={tid:'123.7',chat_id:123,topic_id:7,name:'Attachment checks',group:'telegram',count:0,imported_count:0,read_only:false,renamable:true,deletable:true,busy:false,seen:0};
 let settings={max_file_bytes:2*1024**3,max_files_per_message:10,chunk_bytes:1024**2,server_max_file_bytes:2*1024**3,server_max_files_per_message:10}, failPut=false;
-let historyEnabled=false,dropAfterAck=false,holdPut=false,releasePut=null,settingsPuts=0;
+let emptyHistoryEnabled=false,historyEnabled=false,dropAfterAck=false,holdPut=false,releasePut=null,settingsPuts=0;
 const putOffsets=[];
 let wsPeer=null,backgroundReady=false;
 const incoming='[INCOMING FILE]\nThe user sent you a file via Telegram.\nPath: telegram_files/2026-11-18/photo.png\nType: image/png\nOriginal filename: photo.png\n\nCheck tools/media_tools/CLAUDE.md for file handling instructions.\n\nUser message: Please check the photo.';
@@ -53,7 +53,7 @@ await page.route('**/api/**',async route=>{
     if(attachmentPath[2])return route.fulfill({contentType:attachmentPath[1]==='bbbbbbbbbbbb'?'application/pdf':'image/png',body:await fs.readFile(path.join(cfg.directory,'sample.png'))});
     return response(route,{attachments:attachmentPath[1]==='aaaaaaaaaaaa'?[cardMeta(attachmentPath[1],'a'.repeat(32),'photo.png','image/png',true)]:attachmentPath[1]==='bbbbbbbbbbbb'?[cardMeta(attachmentPath[1],'b'.repeat(32),longName,'application/pdf',false)]:attachmentPath[1]==='dddddddddddd'?[cardMeta(attachmentPath[1],'d'.repeat(32),'web-notes.txt','text/plain',false)]:attachmentPath[1]==='eeeeeeeeeeee'?[cardMeta(attachmentPath[1],'e'.repeat(32),'attachment-only.txt','text/plain',false)]:attachmentPath[1]==='ffffffffffff'&&backgroundReady?[cardMeta(attachmentPath[1],'f'.repeat(32),'background.txt','text/plain',false)]:[]});
   }
-  if(p.endsWith('/messages') && method==='GET')return response(route,{entries:historyEnabled?entries:[],has_more:false});
+  if(p.endsWith('/messages') && method==='GET')return response(route,{entries:emptyHistoryEnabled?Array.from({length:100},(_,i)=>({id:i.toString(16).padStart(12,'0'),seq:i+1,role:'bot',source:'web',text:'Plain message '+i,has_attachments:false,ts:'2026-11-18T10:00:00Z'})):historyEnabled?entries.map(entry=>({...entry,has_attachments:['aaaaaaaaaaaa','bbbbbbbbbbbb','dddddddddddd','eeeeeeeeeeee'].includes(entry.id)||(entry.id==='ffffffffffff'&&backgroundReady)})):[],has_more:false});
   if(p.includes('/uploads')){
     const suffix=p.split('/uploads')[1];
     if(method==='POST' && suffix===''){
@@ -96,6 +96,16 @@ async function addFile(name='sample.png'){await page.locator('#filePick').setInp
 async function popup(){await page.locator('[data-options]').first().click();await page.waitForSelector('#imageOptions:not([hidden])');}
 async function selectMode(mode){await page.locator(`[data-mode="${mode}"]`).click();await page.waitForFunction(()=>!document.querySelector('[data-apply]').disabled);assert.equal(await page.evaluate(()=>document.activeElement.dataset.mode),mode);}
 try{
+  emptyHistoryEnabled=true;
+  await page.goto(origin+'/?empty-page=1');
+  await page.waitForSelector('#app:not(.hidden)');
+  await page.waitForFunction(()=>document.querySelectorAll('[data-entry-seq]').length===100);
+  await page.waitForTimeout(100);
+  results.emptyPage={entries:100,attachmentRequests:requests.filter(item=>/\/messages\/[^/]+\/attachments$/.test(item.p)).length};
+  assert.equal(results.emptyPage.attachmentRequests,0);
+  results.checks.push('100 attachment-free messages issue zero attachment requests');
+  await page.screenshot({path:path.join(cfg.shots,'attachment-free-100.png')});
+  emptyHistoryEnabled=false;
   // Keep the requested resize format; unsupported raster formats use PNG.
   await reset();
   const other={};for(const extension of ['gif','bmp'])other[extension]=(await fs.readFile(path.join(cfg.directory,'sample.'+extension))).toString('base64');

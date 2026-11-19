@@ -35,7 +35,7 @@ export function initAttachmentView({changed}) {
       return {...item,original_url:inline&&item.original_url===base+'?inline=1'?item.original_url:null,preview_url:inline&&item.preview_url===base+'/preview'?item.preview_url:null};
     });
   }
-  function list(tid,entry){return cache.get(key(tid,entry.id))?.files||[];}
+  function list(tid,entry){return entry.has_attachments?cache.get(key(tid,entry.id))?.files||[]:[];}
   function restore(){
     image.removeAttribute('src');image.classList.remove('zoomed');
     if(live){const target=opener?.isConnected?opener:[...thread.querySelectorAll('[data-open-attachment]')].find(node=>node.dataset.openAttachment===openKey);(target||document.querySelector('#msgIn')).focus();}
@@ -68,7 +68,7 @@ export function initAttachmentView({changed}) {
     load(tid,entries){
       const epoch=generation;
       for(const entry of entries){
-        const identity=key(tid,entry.id);if(cache.has(identity))continue;
+        const identity=key(tid,entry.id);if(!entry.has_attachments){cache.delete(identity);continue;}if(cache.has(identity))continue;
         const pending={files:[]};cache.set(identity,pending);
         void api(`/topics/${encodeURIComponent(tid)}/messages/${encodeURIComponent(entry.id)}/attachments`).then(result=>{
           if(epoch!==generation||cache.get(identity)!==pending)return;cache.set(identity,{files:validate(tid,entry,result.attachments)});changed();

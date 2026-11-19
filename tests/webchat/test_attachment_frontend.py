@@ -114,6 +114,7 @@ def test_attachment_browser_contract(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     evidence = json.loads(result.stdout.strip().splitlines()[-1])
     assert len(evidence["screens"]) == 6
+    assert evidence["emptyPage"] == {"entries": 100, "attachmentRequests": 0}
     assert [item["mode"] for item in evidence["uploads"]] == [
         "original",
         "resize",

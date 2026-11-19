@@ -430,3 +430,139 @@ async def test_rejecting_other_attachment_preserves_accepted_claim(conversation,
         )
     finally:
         await ws.close()
+
+
+def index_item(number=1):
+    return {
+        "id": f"{number:032x}",
+        "name": "file.txt",
+        "size": 1,
+        "mime": "text/plain",
+        "path": "webchat_files/file.txt",
+        "inline_allowed": False,
+    }
+
+
+async def test_index_cache_lookup_at_ten_thousand_rows_is_under_five_ms(tmp_path, monkeypatch):
+    import time
+
+    path = tmp_path / "attachments.jsonl"
+    path.write_text(
+        "".join(
+            json.dumps({"tid": "123", "entry_id": f"{i:012x}", "attachments": [index_item(i)]})
+            + "\n"
+            for i in range(10000)
+        )
+    )
+    index = AttachmentIndex(path)
+    expected = [index_item(9999)]
+    assert await index.get("123", f"{9999:012x}") == expected
+
+    def no_parse():
+        raise AssertionError("cache hit parsed the index again")
+
+    monkeypatch.setattr(index, "_rows", no_parse)
+    start = time.perf_counter()
+    actual = await index.get("123", f"{9999:012x}")
+    elapsed = time.perf_counter() - start
+    assert actual == expected
+    assert elapsed <= 0.005, elapsed
+    actual[0]["name"] = "caller mutation"
+    assert await index.get("123", f"{9999:012x}") == expected
+    print(json.dumps({"index_rows": 10000, "cache_hit_ms": elapsed * 1000}))
+
+
+async def test_index_cache_invalidates_for_external_append_and_replacement(tmp_path):
+    path = tmp_path / "attachments.jsonl"
+    writer = AttachmentIndex(path)
+    reader = AttachmentIndex(path)
+    writer.append("123", "entry", [index_item(1)])
+    assert await reader.get("123", "entry") == [index_item(1)]
+    writer.append("123", "entry", [index_item(2)])
+    assert await reader.get("123", "entry") == [index_item(2)]
+    writer.append("123", "entry", [])
+    assert await reader.get("123", "entry") == []
+    writer.append("123", "entry", [index_item(3)])
+    assert await reader.get("123", "entry") == [index_item(3)]
+    before = path.stat()
+    replacement = tmp_path / "replacement"
+    replacement.write_bytes(path.read_bytes().replace(b'"tid": "123"', b'"tid": "456"'))
+    os.utime(replacement, ns=(before.st_atime_ns, before.st_mtime_ns))
+    replacement.replace(path)
+    assert path.stat().st_size == before.st_size
+    assert path.stat().st_mtime_ns == before.st_mtime_ns
+    assert await reader.get("123", "entry") == []
+    assert await reader.get("456", "entry") == [index_item(3)]
+    path.unlink()
+    assert await reader.get("456", "entry") == []
+
+
+async def test_index_cache_publication_does_not_hide_concurrent_write(tmp_path, monkeypatch):
+    import threading
+
+    path = tmp_path / "attachments.jsonl"
+    writer, reader = AttachmentIndex(path), AttachmentIndex(path)
+    writer.append("123", "entry", [index_item(1)])
+    read_done, publish = threading.Event(), threading.Event()
+    original = reader._read_cache
+
+    def delayed():
+        snapshot = original()
+        read_done.set()
+        if not publish.wait(5):
+            raise AssertionError("cache publication was not released")
+        return snapshot
+
+    monkeypatch.setattr(reader, "_read_cache", delayed)
+    pending = asyncio.create_task(reader.get("123", "entry"))
+    try:
+        assert await asyncio.to_thread(read_done.wait, 5)
+        await asyncio.to_thread(writer.append, "123", "entry", [index_item(2)])
+    finally:
+        publish.set()
+    assert await pending == [index_item(1)]
+    assert await reader.get("123", "entry") == [index_item(2)]
+
+
+async def test_message_page_reports_indexed_attachments_without_entry_queries(
+    conversation, monkeypatch
+):
+    from ductor_bot.chat_log.history import Entry
+
+    h = conversation
+    entries = [
+        await h.runtime.history.append(h.key, Entry(role="user", source="web", text=f"plain {i}"))
+        for i in range(100)
+    ]
+
+    async def no_entry_query(*_args):
+        raise AssertionError("message page performed a per-entry history lookup")
+
+    monkeypatch.setattr(h.runtime.history, "get_entry", no_entry_query)
+    url = "/webchat/v1/topics/-123.7/messages?limit=100"
+    page = await (await h.client.get(url, headers=headers())).json()
+    assert len(page["entries"]) == 100
+    assert not any(entry["has_attachments"] for entry in page["entries"])
+    index = AttachmentIndex(h.paths.webchat_dir / "attachments.jsonl")
+    index.append("-123.7", entries[0].id, [index_item()])
+    page = await (await h.client.get(url, headers=headers())).json()
+    assert [entry["id"] for entry in page["entries"] if entry["has_attachments"]] == [entries[0].id]
+    index.append("-123.7", entries[0].id, [])
+    page = await (await h.client.get(url, headers=headers())).json()
+    assert not any(entry["has_attachments"] for entry in page["entries"])
+
+
+async def test_live_entry_event_reports_existing_attachment(conversation):
+    from ductor_bot.chat_log.history import Entry
+
+    h = conversation
+    entry = Entry(role="user", source="web", text="attached")
+    index = AttachmentIndex(h.paths.webchat_dir / "attachments.jsonl")
+    index.append("-123.7", entry.id, [index_item()])
+    ws = await h.client.ws_connect("/webchat/v1/events", headers=headers())
+    try:
+        await h.runtime.history.append(h.key, entry)
+        events = await receive_until(ws, lambda value: value.get("type") == "entry")
+        assert events[-1]["entry"]["has_attachments"] is True
+    finally:
+        await ws.close()
