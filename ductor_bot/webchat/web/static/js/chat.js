@@ -1,6 +1,7 @@
 import { api } from './api.js';
 import { initCommands } from './commands.js';
 import { initSecret } from './secret.js';
+import { initCron } from './cron.js';
 import { initAutocompact } from './autocompact.js';
 import { t } from './i18n.js';
 import { notify } from './auth.js';
@@ -11,7 +12,7 @@ import { getTopic, getTopics, selectTopic, refreshTopics, noteEntry, markSeen, f
 const histories = new Map(), turns = new Map(), busy = new Map(), drafts = new Map(), topicVersions = new Map(), busyVersions = new Map();
 let active = false, epoch = 0, stopEvents = null, telegram = { state: 'unknown' };
 let botUp = false, webSessions = null, pending = 0, outbox = [], sending = false;
-let view = 'chat', loading = false, selection = 0, commandMenu = null, secretDialog = null, autocompactDialog = null;
+let view = 'chat', loading = false, selection = 0, commandMenu = null, secretDialog = null, autocompactDialog = null, cronDialog = null;
 let streamFrame = null, historyRender = null;
 const streamUpdates = new Set();
 function history(tid) {
@@ -276,6 +277,7 @@ function renderHeader() {
   });
   document.querySelector('#topicRename').hidden = !topic?.renamable;
   document.querySelector('#headerRename').hidden = !topic?.renamable;
+  document.querySelector('#headerCron').disabled = !active || !topic || topic.read_only || topic.tid === 'unknown';
   document.querySelector('#headerAutocompact').disabled = !active || !topic || topic.read_only || topic.tid === 'unknown';
   document.querySelector('#topicDelete').hidden = !topic?.deletable;
   document.querySelector('.composer').hidden = !topic || topic.read_only || topic.tid === 'unknown';
@@ -601,6 +603,10 @@ async function sendMessage() {
   commandMenu?.close();
   const topic = getTopic(), input = document.querySelector('#msgIn');
   if (!active || !topic || topic.read_only) return;
+  if (/^\/cron(?:@[a-z0-9_]+)?\s*$/i.test(input.value.trim())) {
+    drafts.delete(topic.tid); input.value = ''; resizeComposer(); renderHeader();
+    void cronDialog.show(topic); return;
+  }
   if (/^\/autocompact(?:@[a-z0-9_]+)?\s*$/i.test(input.value.trim())) {
     drafts.delete(topic.tid); input.value = ''; resizeComposer(); renderHeader();
     void autocompactDialog.show(topic); return;
@@ -627,6 +633,7 @@ async function sendMessage() {
   finally { if (!control) sending = false; if (active && generation === epoch) { renderHeader(); renderThread({ bottom: true }); } }
 }
 export function initChat() {
+  cronDialog = initCron(getTopic);
   secretDialog = initSecret();
   autocompactDialog = initAutocompact(getTopic, () => {
     notify('autocompact.saved');
