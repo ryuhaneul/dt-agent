@@ -147,7 +147,7 @@ def render_nginx_config(source: str, config: dict[str, Any]) -> str:
     stripped = stripped.replace(
         "  real_ip_header X-Forwarded-For;\n", "  real_ip_header X-Forwarded-For;\n" + trusted
     )
-    # NPMplus 2026-07-24-r1 nginx.conf:176-178 defines this bouncer variable.
+    # NPMplus 2026-11-18-r1 nginx.conf:176-178 defines this bouncer variable.
     # Its pinned lua-cs-bouncer checks for "1" before calling AppSec.
     return stripped.replace(
         "  map $host $crowdsec_disable_appsec {\n    default 0;\n  }",
