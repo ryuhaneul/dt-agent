@@ -17,10 +17,15 @@ relied on:
 from __future__ import annotations
 
 import asyncio
+import fcntl
+import hashlib
+import json
 import logging
+import os
 import re
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -29,6 +34,7 @@ from zoneinfo import ZoneInfo
 
 from ductor_bot.cli.claude_accounts import (
     CONTAINER_DUCTOR_MOUNT,
+    DEFAULT_SLOT,
     SUBSCRIPTION_RETRY_INITIAL_SECONDS,
     SUBSCRIPTION_RETRY_MAX_SECONDS,
     AuthFailureDetails,
@@ -44,6 +50,7 @@ from ductor_bot.cli.claude_accounts import (
     slot_is_api_key,
     state_file_path,
 )
+from ductor_bot.cli.executor import await_process_cleanup
 from ductor_bot.i18n import t
 
 logger = logging.getLogger(__name__)
@@ -69,6 +76,51 @@ def _get_lock() -> asyncio.Lock:
     if _SLOT_LOCK is None:
         _SLOT_LOCK = asyncio.Lock()
     return _SLOT_LOCK
+
+
+@contextmanager
+def slot_use_lock(root: Path, slot: str, *, deleting: bool = False) -> Iterator[bool]:
+    """Reserve a slot across processes; deletion requires exclusive access.
+
+    The lock file stays outside the slot so deleting and recreating a slot
+    cannot replace the inode that other processes lock.
+    """
+    if slot == DEFAULT_SLOT and not deleting:
+        yield True
+        return
+    root.mkdir(parents=True, exist_ok=True)
+    key = hashlib.sha256(slot.encode()).hexdigest()
+    fd = os.open(root / f".slot-{key}.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        mode = fcntl.LOCK_EX if deleting else fcntl.LOCK_SH
+        try:
+            fcntl.flock(fd, mode | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+        else:
+            yield True
+    finally:
+        os.close(fd)
+
+
+def _slot_is_configured(home: Path, slot: str) -> bool:
+    try:
+        data = json.loads((home / "config" / "config.json").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        # Standalone callers can supply accounts without an on-disk bot config.
+        return True
+    return slot in (data.get("claude_accounts") or [])
+
+
+@contextmanager
+def reserve_slot(registry: SlotRegistry | None, slot: str) -> Iterator[bool]:
+    """Revalidate a copied candidate while holding the same lock as removal."""
+    if registry is None or slot == DEFAULT_SLOT:
+        yield True
+        return
+    root = registry.state_path.parent
+    with slot_use_lock(root, slot) as reserved:
+        yield reserved and _slot_is_configured(root.parent, slot)
 
 
 @dataclass(slots=True)
@@ -204,6 +256,22 @@ async def fallback_slot(registry: SlotRegistry | None, accounts: Sequence[str]) 
     return next((slot for slot in accounts if slot not in snapshot.auth_failures), accounts[0])
 
 
+@asynccontextmanager
+async def reserve_probe(
+    registry: SlotRegistry | None, accounts: Sequence[str]
+) -> AsyncIterator[str]:
+    """Reserve a fallback probe in priority order as candidates become unavailable."""
+    remaining = list(accounts)
+    while remaining:
+        slot = await fallback_slot(registry, remaining)
+        with reserve_slot(registry, slot) as reserved:
+            if reserved:
+                yield slot
+                return
+        remaining.remove(slot)
+    yield DEFAULT_SLOT
+
+
 async def record_auth_failure(
     registry: SlotRegistry | None,
     slot: str,
@@ -241,7 +309,7 @@ async def record_auth_failure(
             )
 
     async with _get_lock():
-        await asyncio.to_thread(registry.update, record)
+        await await_process_cleanup(asyncio.to_thread(registry.update, record))
 
 
 async def record_subscription_retry_failure(
@@ -271,7 +339,7 @@ async def record_subscription_retry_failure(
             or snapshot.auth_failures.get(slot) != credential_mtimes
         ):
             return False
-        await asyncio.to_thread(registry.update, record)
+        await await_process_cleanup(asyncio.to_thread(registry.update, record))
         return True
 
 
@@ -290,7 +358,7 @@ async def clear_auth_failure(
     async with _get_lock():
         snapshot = await asyncio.to_thread(registry.load)
         if snapshot.auth_failures.get(slot) == credential_mtimes:
-            await asyncio.to_thread(registry.update, clear)
+            await await_process_cleanup(asyncio.to_thread(registry.update, clear))
 
 
 async def record_cooldown(
@@ -306,7 +374,7 @@ async def record_cooldown(
 
     async with _get_lock():
         if registry:
-            await asyncio.to_thread(registry.update, record)
+            await await_process_cleanup(asyncio.to_thread(registry.update, record))
 
 
 def parse_reset_from_text(text: str, default_tz: ZoneInfo) -> datetime | None:
@@ -412,56 +480,6 @@ async def run_with_rotation(  # noqa: C901, PLR0912, PLR0915 -- auth/quota rotat
 
     hot = await hot_slots(registry, account_list)
 
-    if not hot:
-        # Every configured slot is cooling down — try the top priority
-        # once so the user still sees a response, but don't add a prefix
-        # (it would misleadingly imply a successful switch).
-        logger.info("Claude: all slots cooling down; attempting top slot once")
-        top = await fallback_slot(registry, account_list)
-        mtimes = await asyncio.to_thread(registry.credential_mtimes, top) if registry else {}
-        outcome, payload = await attempt(top)
-        api_key_slot = bool(registry and slot_is_api_key(registry.state_path.parent / top))
-        failure_kind = (
-            None
-            if api_key_slot
-            else detect_auth_failure_kind(
-                returncode=outcome.returncode,
-                is_error=outcome.is_error,
-                stderr=outcome.stderr,
-                result=outcome.result_text,
-            )
-        )
-        if failure_kind is not None:
-            await record_auth_failure(registry, top, mtimes, kind=failure_kind)
-            return RotationResult(payload=payload, slot=top, all_cooling=True, reauth_required=True)
-        if outcome.returncode == 0 and not outcome.is_error:
-            await clear_auth_failure(registry, top, mtimes)
-        elif outcome.returncode not in (0, None) or outcome.is_error:
-            await record_subscription_retry_failure(registry, top, mtimes)
-        if detect_rate_limit(
-            returncode=outcome.returncode,
-            is_error=outcome.is_error,
-            stderr=outcome.stderr,
-            result=outcome.result_text,
-        ):
-            reset_dt = parse_reset_from_text(
-                outcome.stderr + "\n" + outcome.result_text,
-                default_tz,
-            )
-            if reset_dt is None:
-                logger.warning(
-                    "Claude slot=%s reset time unparsable — cooling down for 1 hour", top
-                )
-                reset_dt = datetime.fromtimestamp(
-                    time.time() + UNPARSABLE_RESET_COOLDOWN_SECONDS, tz=default_tz
-                )
-            await record_cooldown(registry, top, reset_dt.timestamp())
-        return RotationResult(
-            payload=payload,
-            slot=top,
-            all_cooling=True,
-        )
-
     first_rl_slot: str | None = None
     first_auth_slot: str | None = None
     first_rl_reset: datetime | None = None
@@ -470,79 +488,137 @@ async def run_with_rotation(  # noqa: C901, PLR0912, PLR0915 -- auth/quota rotat
     last_slot: str | None = None
 
     for slot in hot:
-        mtimes = await asyncio.to_thread(registry.credential_mtimes, slot) if registry else {}
-        outcome, payload = await attempt(slot)
-        last_payload = payload
-        last_slot = slot
+        with reserve_slot(registry, slot) as reserved:
+            if not reserved:
+                continue
+            mtimes = await asyncio.to_thread(registry.credential_mtimes, slot) if registry else {}
+            outcome, payload = await attempt(slot)
+            last_payload = payload
+            last_slot = slot
 
-        api_key_slot = bool(registry and slot_is_api_key(registry.state_path.parent / slot))
-        failure_kind = (
-            None
-            if api_key_slot
-            else detect_auth_failure_kind(
+            api_key_slot = bool(registry and slot_is_api_key(registry.state_path.parent / slot))
+            failure_kind = (
+                None
+                if api_key_slot
+                else detect_auth_failure_kind(
+                    returncode=outcome.returncode,
+                    is_error=outcome.is_error,
+                    stderr=outcome.stderr,
+                    result=outcome.result_text,
+                )
+            )
+            if failure_kind is not None:
+                await record_auth_failure(registry, slot, mtimes, kind=failure_kind)
+                if first_auth_slot is None:
+                    first_auth_slot = slot
+                continue
+
+            retry_failed = False
+            if outcome.returncode == 0 and not outcome.is_error:
+                await clear_auth_failure(registry, slot, mtimes)
+            elif outcome.returncode not in (0, None) or outcome.is_error:
+                retry_failed = await record_subscription_retry_failure(registry, slot, mtimes)
+
+            is_rate_limited = detect_rate_limit(
                 returncode=outcome.returncode,
                 is_error=outcome.is_error,
                 stderr=outcome.stderr,
                 result=outcome.result_text,
             )
-        )
-        if failure_kind is not None:
-            await record_auth_failure(registry, slot, mtimes, kind=failure_kind)
-            if first_auth_slot is None:
-                first_auth_slot = slot
-            continue
 
-        retry_failed = False
-        if outcome.returncode == 0 and not outcome.is_error:
-            await clear_auth_failure(registry, slot, mtimes)
-        elif outcome.returncode not in (0, None) or outcome.is_error:
-            retry_failed = await record_subscription_retry_failure(registry, slot, mtimes)
+            if not is_rate_limited:
+                if retry_failed:
+                    continue
+                return RotationResult(
+                    payload=payload,
+                    slot=slot,
+                    first_auth_slot=first_auth_slot
+                    if outcome.returncode == 0 and not outcome.is_error
+                    else None,
+                    first_rl_slot=first_rl_slot,
+                    first_rl_reset=first_rl_reset,
+                    first_rl_reset_estimated=first_rl_reset_estimated,
+                )
 
-        is_rate_limited = detect_rate_limit(
-            returncode=outcome.returncode,
-            is_error=outcome.is_error,
-            stderr=outcome.stderr,
-            result=outcome.result_text,
-        )
+            reset_dt = parse_reset_from_text(
+                outcome.stderr + "\n" + outcome.result_text,
+                default_tz,
+            )
+            reset_estimated = reset_dt is None
+            if reset_dt is None:
+                logger.warning(
+                    "Claude slot=%s reset time unparsable — cooling down for 1 hour",
+                    slot,
+                )
+                reset_dt = datetime.fromtimestamp(
+                    time.time() + UNPARSABLE_RESET_COOLDOWN_SECONDS, tz=default_tz
+                )
 
-        if not is_rate_limited:
-            if retry_failed:
-                continue
+            await record_cooldown(registry, slot, reset_dt.timestamp())
+            if first_rl_slot is None:
+                first_rl_slot = slot
+                first_rl_reset = reset_dt
+                first_rl_reset_estimated = reset_estimated
+            logger.info(
+                "Claude slot=%s rate-limited (reset %s)",
+                slot,
+                reset_dt.isoformat(timespec="minutes"),
+            )
+
+    if last_slot is None:
+        # No hot candidate was reserved. Probe a cooling slot once without a switch notice.
+        remaining = [slot for slot in account_list if slot not in hot]
+        if not remaining:
+            _, payload = await attempt(DEFAULT_SLOT)
+            return RotationResult(payload=payload, slot=DEFAULT_SLOT)
+
+        logger.info("Claude: no hot slot available; probing one slot")
+        async with reserve_probe(registry, remaining) as top:
+            mtimes = await asyncio.to_thread(registry.credential_mtimes, top) if registry else {}
+            outcome, payload = await attempt(top)
+            api_key_slot = bool(registry and slot_is_api_key(registry.state_path.parent / top))
+            failure_kind = (
+                None
+                if api_key_slot
+                else detect_auth_failure_kind(
+                    returncode=outcome.returncode,
+                    is_error=outcome.is_error,
+                    stderr=outcome.stderr,
+                    result=outcome.result_text,
+                )
+            )
+            if failure_kind is not None:
+                await record_auth_failure(registry, top, mtimes, kind=failure_kind)
+                return RotationResult(
+                    payload=payload, slot=top, all_cooling=True, reauth_required=True
+                )
+            if outcome.returncode == 0 and not outcome.is_error:
+                await clear_auth_failure(registry, top, mtimes)
+            elif outcome.returncode not in (0, None) or outcome.is_error:
+                await record_subscription_retry_failure(registry, top, mtimes)
+            if detect_rate_limit(
+                returncode=outcome.returncode,
+                is_error=outcome.is_error,
+                stderr=outcome.stderr,
+                result=outcome.result_text,
+            ):
+                reset_dt = parse_reset_from_text(
+                    outcome.stderr + "\n" + outcome.result_text,
+                    default_tz,
+                )
+                if reset_dt is None:
+                    logger.warning(
+                        "Claude slot=%s reset time unparsable — cooling down for 1 hour", top
+                    )
+                    reset_dt = datetime.fromtimestamp(
+                        time.time() + UNPARSABLE_RESET_COOLDOWN_SECONDS, tz=default_tz
+                    )
+                await record_cooldown(registry, top, reset_dt.timestamp())
             return RotationResult(
                 payload=payload,
-                slot=slot,
-                first_auth_slot=first_auth_slot
-                if outcome.returncode == 0 and not outcome.is_error
-                else None,
-                first_rl_slot=first_rl_slot,
-                first_rl_reset=first_rl_reset,
-                first_rl_reset_estimated=first_rl_reset_estimated,
+                slot=top,
+                all_cooling=True,
             )
-
-        reset_dt = parse_reset_from_text(
-            outcome.stderr + "\n" + outcome.result_text,
-            default_tz,
-        )
-        reset_estimated = reset_dt is None
-        if reset_dt is None:
-            logger.warning(
-                "Claude slot=%s reset time unparsable — cooling down for 1 hour",
-                slot,
-            )
-            reset_dt = datetime.fromtimestamp(
-                time.time() + UNPARSABLE_RESET_COOLDOWN_SECONDS, tz=default_tz
-            )
-
-        await record_cooldown(registry, slot, reset_dt.timestamp())
-        if first_rl_slot is None:
-            first_rl_slot = slot
-            first_rl_reset = reset_dt
-            first_rl_reset_estimated = reset_estimated
-        logger.info(
-            "Claude slot=%s rate-limited (reset %s)",
-            slot,
-            reset_dt.isoformat(timespec="minutes"),
-        )
 
     # Every hot slot failed due to quota or login expiry; never imply success.
     logger.info("Claude: all %d hot slots unavailable; surfacing last error", len(hot))

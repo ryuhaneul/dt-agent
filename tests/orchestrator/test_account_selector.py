@@ -89,6 +89,11 @@ async def test_all_locales_and_empty_list_have_refresh_and_notice(page, language
     path = home / "config" / "config.json"
     path.write_text('{"claude_accounts": []}')
     response = await selector.account_selector_start(home, config)
+    assert t("accounts.unused") in response.text
+    assert _data(response) == ["acs:x:claude-a", "acs:r"]
+    (home / ".cli-auth" / "claude-a" / ".credentials.json").unlink()
+    (home / ".cli-auth" / "claude-a").rmdir()
+    response = await selector.account_selector_start(home, config)
     assert t("accounts.empty") in response.text
     assert _data(response) == ["acs:r"]
 
@@ -439,6 +444,54 @@ async def test_api_key_account_has_label_without_usage_or_login_warning(page, la
         )
     )
     response = await selector.account_selector_start(home, config)
-    assert f"1. claude-api  {t('accounts.api_key')} · {t('accounts.no_cooldown')}" in response.text
+    api_row, next_row = response.text.splitlines()[1:3]
+    assert api_row == f"1. claude-api  {t('accounts.api_key')} · {t('accounts.no_cooldown')}"
+    assert next_row.startswith("2. claude-a  ")
     for key in ("accounts.unauthenticated", "accounts.auth_expired", "usage.account_empty"):
-        assert t(key) not in response.text
+        assert t(key) not in api_row
+
+
+async def test_delete_confirmation_cancel_and_recreated_slot(page):
+    selector, home, config = page
+    folder = home / ".cli-auth" / "claude-a"
+    confirmed = await selector.handle_account_callback(home, config, "acs:x:claude-a")
+    cancel, delete = _data(confirmed)
+    assert t("accounts.delete_confirm", name="claude-a") == confirmed.text
+    await selector.handle_account_callback(home, config, cancel)
+    await selector.handle_account_callback(home, config, delete)
+    assert folder.is_dir()
+    assert "claude-a" in _names(home)
+
+    old = await selector.handle_account_callback(home, config, "acs:x:claude-a")
+    current = await selector.handle_account_callback(home, config, "acs:x:claude-a")
+    result = await selector.handle_account_callback(home, config, _data(current)[1])
+    assert t("accounts.deleted", name="claude-a") in result.text
+    assert "claude-a" not in _names(home)
+    assert not folder.exists()
+
+    folder.mkdir()
+    result = await selector.handle_account_callback(home, config, _data(old)[1])
+    assert t("accounts.stale") in result.text
+    assert t("accounts.unused") in result.text
+    assert folder.is_dir()
+
+
+async def test_long_unregistered_slot_has_short_delete_controls(page):
+    selector, home, config = page
+    name = "claude-" + "x" * 120
+    folder = home / ".cli-auth" / name
+    folder.mkdir()
+    (home / ".cli-auth" / "claude").mkdir()
+    result = await selector.account_selector_start(home, config)
+    delete = next(
+        button.callback_data for row in result.buttons.rows for button in row
+        if button.text == t("accounts.btn_delete", name=name)
+    )
+    assert t("accounts.unused") in result.text
+    assert "acs:x:claude" not in _data(result)
+    confirmed = await selector.handle_account_callback(home, config, delete)
+    for data in [delete, *_data(confirmed)]:
+        assert len(data.encode("utf-8")) <= 64
+    result = await selector.handle_account_callback(home, config, _data(confirmed)[1])
+    assert t("accounts.deleted", name=name) in result.text
+    assert not folder.exists()

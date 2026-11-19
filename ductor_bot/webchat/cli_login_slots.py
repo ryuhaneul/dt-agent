@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import shutil
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +17,8 @@ from ductor_bot.cli.claude_accounts import (
     slot_is_api_key,
     slot_is_authenticated,
 )
+from ductor_bot.cli.claude_slots import is_slot_name
+from ductor_bot.cli.slot_rotation import slot_use_lock
 from ductor_bot.config import transform_config_file
 from ductor_bot.infra.json_store import atomic_json_save
 from ductor_bot.workspace.paths import DuctorPaths
@@ -32,7 +34,7 @@ def resolve_slot_name(name: str | None, *, allow_api_key: bool = False) -> str:
         slot = "claude"
     else:
         slot = name if name.startswith("claude-") else f"claude-{name}"
-    if not re.fullmatch(r"claude(?:-[a-z0-9][a-z0-9_-]*)?", slot) or slot == "claude-slots":
+    if not is_slot_name(slot):
         raise ValueError("invalid_slot")
     if slot == "claude-api" and not allow_api_key:
         raise ValueError("api_key_slot")
@@ -120,6 +122,10 @@ class ClaudeLoginSlots:
 
     def __init__(self, paths: DuctorPaths) -> None:
         self._paths = paths
+
+    def reserve(self, slot: str) -> AbstractContextManager[bool]:
+        """Share the deletion interlock from job reservation through cleanup."""
+        return slot_use_lock(host_cli_auth_dir(self._paths.ductor_home), slot)
 
     def resolve_oauth_slot(self, name: str | None) -> str:
         """Reject API key slots before reserving a web OAuth login job."""

@@ -31,6 +31,7 @@ from ductor_bot.cli.base import (
     write_private_temp_file,
 )
 from ductor_bot.cli.claude_accounts import (
+    DEFAULT_SLOT,
     SlotRegistry,
     detect_auth_failure_kind,
     detect_rate_limit,
@@ -54,13 +55,14 @@ from ductor_bot.cli.slot_rotation import (
     build_reauth_notice,
     build_unparsable_prefix,
     clear_auth_failure,
-    fallback_slot,
     hot_slots,
     make_registry,
     parse_reset_from_text,
     record_auth_failure,
     record_cooldown,
     record_subscription_retry_failure,
+    reserve_probe,
+    reserve_slot,
     run_with_rotation,
     slot_extra_env,
 )
@@ -374,181 +376,179 @@ class ClaudeCodeCLI(BaseCLI):
         """
         accounts = list(self._config.claude_accounts)
 
-        if not accounts:
-            async for event in self._send_streaming_once(
-                prompt,
-                resume_session=resume_session,
-                continue_session=continue_session,
-                timeout_seconds=timeout_seconds,
-                timeout_controller=timeout_controller,
-                slot_name=None,
-            ):
-                yield event
-            return
-
-        hot = await hot_slots(self._registry, accounts)
-
-        if not hot:
-            # Every configured slot is cooling down — attempt the top
-            # priority once so the user still sees a response. No fallback
-            # prefix (it would misleadingly imply a successful switch).
-            logger.info("Claude: all slots cooling down; attempting top slot once")
-            top = await fallback_slot(self._registry, accounts)
-            async for event in self._stream_single_attempt_with_cooldown(
-                prompt,
-                resume_session=resume_session,
-                continue_session=continue_session,
-                timeout_seconds=timeout_seconds,
-                timeout_controller=timeout_controller,
-                slot_name=top,
-                record_on_rate_limit=True,
-            ):
-                yield event
-            return
+        hot = await hot_slots(self._registry, accounts) if accounts else []
 
         first_auth_slot: str | None = None
         first_rl_slot: str | None = None
         first_rl_reset = None
         first_rl_reset_estimated = False
 
-        for idx, slot in enumerate(hot):
-            is_last = idx == len(hot) - 1
-            capture = _StreamPassOutcome()
-            mtimes = (
-                await asyncio.to_thread(self._registry.credential_mtimes, slot)
-                if self._registry
-                else {}
-            )
-
-            async for event in self._stream_attempt(
-                prompt,
-                resume_session=resume_session,
-                continue_session=continue_session,
-                timeout_seconds=timeout_seconds,
-                timeout_controller=timeout_controller,
-                slot_name=slot,
-                capture=capture,
-            ):
-                if isinstance(event, ResultEvent):
-                    # Defer final result emission until we decide on retry.
+        attempted = False
+        last_error: ResultEvent | None = None
+        for slot in hot:
+            with reserve_slot(self._registry, slot) as reserved:
+                if not reserved:
                     continue
-                yield event
-
-            final = capture.final_result
-            returncode = capture.returncode
-            if returncode is None and final is not None:
-                returncode = final.returncode
-            attempt = AttemptOutcome(
-                returncode=returncode,
-                is_error=bool(final.is_error) if final is not None else False,
-                stderr=capture.stderr_text,
-                result_text=final.result if final is not None else "",
-            )
-
-            if (
-                not (self._registry and slot_is_api_key(self._registry.state_path.parent / slot))
-                and (
-                    failure_kind := detect_auth_failure_kind(
-                        returncode=attempt.returncode,
-                        is_error=attempt.is_error,
-                        stderr=attempt.stderr,
-                        result=attempt.result_text,
-                    )
-                )
-                is not None
-            ):
-                await record_auth_failure(self._registry, slot, mtimes, kind=failure_kind)
-                if first_auth_slot is None:
-                    first_auth_slot = slot
-                if is_last and final is not None:
-                    yield final.model_copy(
-                        update={
-                            "result": (final.result or capture.stderr_text) + build_reauth_notice()
-                        }
-                    )
-                continue
-
-            retry_failed = False
-            if returncode == 0 and not attempt.is_error:
-                await clear_auth_failure(self._registry, slot, mtimes)
-            elif returncode not in (0, None) or attempt.is_error:
-                retry_failed = await record_subscription_retry_failure(self._registry, slot, mtimes)
-
-            is_rl = detect_rate_limit(
-                returncode=attempt.returncode,
-                is_error=attempt.is_error,
-                stderr=attempt.stderr,
-                result=attempt.result_text,
-            )
-
-            if not is_rl:
-                if retry_failed:
-                    if is_last and final is not None:
-                        yield final
-                    continue
-                if final is None:
-                    return
-                if first_auth_slot is not None and returncode == 0 and not final.is_error:
-                    prefix = build_auth_fallback_prefix(first_auth_slot, slot)
-                    yield final.model_copy(update={"result": prefix + (final.result or "")})
-                elif first_rl_slot is not None and first_rl_reset is not None:
-                    prefix = build_fallback_prefix(
-                        first_rl_slot,
-                        slot,
-                        first_rl_reset,
-                        self._default_timezone(),
-                        reset_estimated=first_rl_reset_estimated,
-                    )
-                    yield final.model_copy(
-                        update={"result": prefix + (final.result or "")},
-                    )
-                else:
-                    yield final
-                return
-
-            reset_dt = parse_reset_from_text(
-                attempt.stderr + "\n" + attempt.result_text,
-                self._default_timezone(),
-            )
-            reset_estimated = reset_dt is None
-            if reset_dt is None:
-                logger.warning(
-                    "Claude slot=%s reset time unparsable — cooling down for 1 hour",
-                    slot,
-                )
-                reset_dt = datetime.fromtimestamp(
-                    time.time() + UNPARSABLE_RESET_COOLDOWN_SECONDS, tz=self._default_timezone()
+                attempted = True
+                capture = _StreamPassOutcome()
+                mtimes = (
+                    await asyncio.to_thread(self._registry.credential_mtimes, slot)
+                    if self._registry
+                    else {}
                 )
 
-            await record_cooldown(self._registry, slot, reset_dt.timestamp())
-            if first_rl_slot is None:
-                first_rl_slot = slot
-                first_rl_reset = reset_dt
-                first_rl_reset_estimated = reset_estimated
-            logger.info(
-                "Claude slot=%s rate-limited (reset %s); %s",
-                slot,
-                reset_dt.isoformat(timespec="minutes"),
-                "trying next slot" if not is_last else "no more hot slots",
-            )
-
-            if is_last:
-                # Every hot slot was rate-limited — surface the final 429
-                # unchanged; a "switched" prefix would be misleading.
-                logger.info(
-                    "Claude: all %d hot slots rate-limited; surfacing last 429",
-                    len(hot),
+                stream = self._stream_attempt(
+                    prompt,
+                    resume_session=resume_session,
+                    continue_session=continue_session,
+                    timeout_seconds=timeout_seconds,
+                    timeout_controller=timeout_controller,
+                    slot_name=slot,
+                    capture=capture,
                 )
-                if final is not None:
-                    if first_auth_slot is not None:
-                        final = final.model_copy(
+                async with contextlib.aclosing(stream):
+                    async for event in stream:
+                        if isinstance(event, ResultEvent):
+                            # Defer final result emission until we decide on retry.
+                            continue
+                        yield event
+
+                final = capture.final_result
+                returncode = capture.returncode
+                if returncode is None and final is not None:
+                    returncode = final.returncode
+                attempt = AttemptOutcome(
+                    returncode=returncode,
+                    is_error=bool(final.is_error) if final is not None else False,
+                    stderr=capture.stderr_text,
+                    result_text=final.result if final is not None else "",
+                )
+
+                if (
+                    not (
+                        self._registry and slot_is_api_key(self._registry.state_path.parent / slot)
+                    )
+                    and (
+                        failure_kind := detect_auth_failure_kind(
+                            returncode=attempt.returncode,
+                            is_error=attempt.is_error,
+                            stderr=attempt.stderr,
+                            result=attempt.result_text,
+                        )
+                    )
+                    is not None
+                ):
+                    await record_auth_failure(self._registry, slot, mtimes, kind=failure_kind)
+                    if first_auth_slot is None:
+                        first_auth_slot = slot
+                    if final is not None:
+                        last_error = final.model_copy(
                             update={
                                 "result": (final.result or capture.stderr_text)
                                 + build_reauth_notice()
                             }
                         )
-                    yield final
-                return
+                    continue
+
+                retry_failed = False
+                if returncode == 0 and not attempt.is_error:
+                    await clear_auth_failure(self._registry, slot, mtimes)
+                elif returncode not in (0, None) or attempt.is_error:
+                    retry_failed = await record_subscription_retry_failure(
+                        self._registry, slot, mtimes
+                    )
+
+                is_rl = detect_rate_limit(
+                    returncode=attempt.returncode,
+                    is_error=attempt.is_error,
+                    stderr=attempt.stderr,
+                    result=attempt.result_text,
+                )
+
+                if not is_rl:
+                    if retry_failed:
+                        last_error = final
+                        continue
+                    if final is None:
+                        return
+                    if first_auth_slot is not None and returncode == 0 and not final.is_error:
+                        prefix = build_auth_fallback_prefix(first_auth_slot, slot)
+                        yield final.model_copy(update={"result": prefix + (final.result or "")})
+                    elif first_rl_slot is not None and first_rl_reset is not None:
+                        prefix = build_fallback_prefix(
+                            first_rl_slot,
+                            slot,
+                            first_rl_reset,
+                            self._default_timezone(),
+                            reset_estimated=first_rl_reset_estimated,
+                        )
+                        yield final.model_copy(
+                            update={"result": prefix + (final.result or "")},
+                        )
+                    else:
+                        yield final
+                    return
+
+                reset_dt = parse_reset_from_text(
+                    attempt.stderr + "\n" + attempt.result_text,
+                    self._default_timezone(),
+                )
+                reset_estimated = reset_dt is None
+                if reset_dt is None:
+                    logger.warning(
+                        "Claude slot=%s reset time unparsable — cooling down for 1 hour",
+                        slot,
+                    )
+                    reset_dt = datetime.fromtimestamp(
+                        time.time() + UNPARSABLE_RESET_COOLDOWN_SECONDS, tz=self._default_timezone()
+                    )
+
+                await record_cooldown(self._registry, slot, reset_dt.timestamp())
+                if first_rl_slot is None:
+                    first_rl_slot = slot
+                    first_rl_reset = reset_dt
+                    first_rl_reset_estimated = reset_estimated
+                logger.info("Claude slot=%s rate-limited (reset %s)", slot, reset_dt.isoformat())
+                last_error = final
+                if final is not None and first_auth_slot is not None:
+                    last_error = final.model_copy(
+                        update={
+                            "result": (final.result or capture.stderr_text) + build_reauth_notice()
+                        }
+                    )
+
+        if last_error is not None:
+            yield last_error
+        if attempted:
+            return
+
+        remaining = [slot for slot in accounts if slot not in hot]
+        if remaining:
+            logger.info("Claude: no hot slot available; probing one slot")
+            async with reserve_probe(self._registry, remaining) as top:
+                stream = self._stream_single_attempt_with_cooldown(
+                    prompt,
+                    resume_session=resume_session,
+                    continue_session=continue_session,
+                    timeout_seconds=timeout_seconds,
+                    timeout_controller=timeout_controller,
+                    slot_name=top,
+                    record_on_rate_limit=True,
+                )
+                async with contextlib.aclosing(stream):
+                    async for event in stream:
+                        yield event
+            return
+
+        async for event in self._send_streaming_once(
+            prompt,
+            resume_session=resume_session,
+            continue_session=continue_session,
+            timeout_seconds=timeout_seconds,
+            timeout_controller=timeout_controller,
+            slot_name=None,
+        ):
+            yield event
 
     async def _stream_attempt(  # noqa: PLR0913
         self,
@@ -581,7 +581,7 @@ class ClaudeCodeCLI(BaseCLI):
             exec_cmd, use_cwd = cmd, str(self._working_dir)
             _log_cmd(exec_cmd, streaming=True)
 
-            async for event in run_streaming_subprocess(
+            stream = run_streaming_subprocess(
                 config=self._config,
                 spec=SubprocessSpec(
                     exec_cmd,
@@ -591,14 +591,17 @@ class ClaudeCodeCLI(BaseCLI):
                     timeout_controller,
                     stdin_text=prompt,
                     extra_env=extra_env or None,
+                    terminate_on_close=slot_name != DEFAULT_SLOT,
                 ),
                 line_handler=partial(self._usage_line_handler, usage_events=usage_events),
                 provider_label="CLI",
                 post_handler=_make_capturing_post_handler(capture),
-            ):
-                if isinstance(event, ResultEvent) and capture.final_result is None:
-                    capture.final_result = event
-                yield event
+            )
+            async with contextlib.aclosing(stream):
+                async for event in stream:
+                    if isinstance(event, ResultEvent) and capture.final_result is None:
+                        capture.final_result = event
+                    yield event
         finally:
             try:
                 await self._save_usage_events(usage_events, slot_name)
@@ -628,7 +631,7 @@ class ClaudeCodeCLI(BaseCLI):
             if self._registry
             else {}
         )
-        async for event in self._stream_attempt(
+        stream = self._stream_attempt(
             prompt,
             resume_session=resume_session,
             continue_session=continue_session,
@@ -636,9 +639,11 @@ class ClaudeCodeCLI(BaseCLI):
             timeout_controller=timeout_controller,
             slot_name=slot_name,
             capture=capture,
-        ):
-            if not isinstance(event, ResultEvent):
-                yield event
+        )
+        async with contextlib.aclosing(stream):
+            async for event in stream:
+                if not isinstance(event, ResultEvent):
+                    yield event
 
         if not record_on_rate_limit:
             if capture.final_result is not None:

@@ -2457,7 +2457,9 @@ for(const [index,state] of ['authenticated','unauthenticated','expired','unused'
  assert.equal(rows[index].children[1].className,'badge '+(index===0?'badge-ok':index===2?'badge-warn':'badge-off'));
  assert.equal(rows[index].children[2].textContent,'ko:cli_login.'+(index===1?'login':'relogin'));
 }
-assert.equal(rows[4].children.length,2,'API key slots must not offer an OAuth login button');
+assert.equal(rows[4].children.length,3,'API key slots have a badge and delete control');
+assert.equal(rows[4].children[2].dataset.delete,'claude-api');
+assert.equal(rows[0].children.length,3,'the default slot has no delete control');
 assert.equal(rows[4].children[1].textContent,'ko:cli_login.api_key');
 assert.equal(rows[4].children[1].dataset.i18n,'cli_login.api_key');
 assert.equal(rows[4].children[1].className,'badge badge-ok');

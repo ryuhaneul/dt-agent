@@ -158,6 +158,7 @@ class SubprocessSpec:
     timeout_controller: TimeoutController | None = None
     stdin_text: str | None = None
     extra_env: dict[str, str] | None = None
+    terminate_on_close: bool = False
 
 
 def effective_limit(
@@ -268,30 +269,37 @@ async def run_streaming_subprocess(
     stderr_drain = asyncio.create_task(process.stderr.read())
 
     try:
-        async for event in _stream_with_timeout(process, spec, line_handler):
-            yield _flag_stale(event, tracked)
-        stderr_bytes = await stderr_drain
-    except TimeoutError:
-        force_kill_process_tree(process.pid)
-        await process.wait()
-        timeout_s = spec.timeout_seconds or 0
-        logger.warning("%s stream timed out after %.0fs", provider_label, timeout_s)
-        yield ResultEvent(
-            type="result",
-            result=f"__TIMEOUT__{int(timeout_s)}",
-            is_error=True,
-        )
-        return
-    finally:
-        if not stdin_feed.done():
-            stdin_feed.cancel()
-        with contextlib.suppress(BaseException):
-            await stdin_feed
-        await _cancel_drain(stderr_drain)
-        if tracked and reg:
-            reg.unregister(tracked)
+        try:
+            async for event in _stream_with_timeout(process, spec, line_handler):
+                yield _flag_stale(event, tracked)
+            stderr_bytes = await stderr_drain
+        except TimeoutError:
+            force_kill_process_tree(process.pid)
+            await process.wait()
+            timeout_s = spec.timeout_seconds or 0
+            logger.warning("%s stream timed out after %.0fs", provider_label, timeout_s)
+            yield ResultEvent(
+                type="result",
+                result=f"__TIMEOUT__{int(timeout_s)}",
+                is_error=True,
+            )
+            return
+        finally:
+            if not stdin_feed.done():
+                stdin_feed.cancel()
+            with contextlib.suppress(BaseException):
+                await stdin_feed
+            await _cancel_drain(stderr_drain)
+            if tracked and reg:
+                reg.unregister(tracked)
 
-    await process.wait()
+        await process.wait()
+    except BaseException:
+        if spec.terminate_on_close and process.returncode is None:
+            force_kill_process_tree(process.pid)
+            # Drain closed pipes while reaping the child, even on another cancellation.
+            await await_process_cleanup(process.communicate())
+        raise
 
     handler = post_handler or _default_post_handler
     async for event in handler(SubprocessResult(process=process, stderr_bytes=stderr_bytes)):

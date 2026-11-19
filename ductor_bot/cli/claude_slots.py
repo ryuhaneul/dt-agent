@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 import sys
 import time
 from collections.abc import Callable, Sequence
@@ -12,12 +14,15 @@ from typing import TypedDict
 
 from ductor_bot.cli.claude_accounts import (
     CONTAINER_DUCTOR_MOUNT,
+    DEFAULT_SLOT,
     SlotRegistry,
     SlotSnapshot,
+    host_cli_auth_dir,
     host_slot_config_dir,
     slot_is_authenticated,
     state_file_path,
 )
+from ductor_bot.cli.slot_rotation import slot_use_lock
 from ductor_bot.config import AgentConfig, transform_config_file
 
 
@@ -41,6 +46,116 @@ def _accounts(data: dict[str, object]) -> list[str]:
     if not isinstance(accounts, list) or not all(isinstance(slot, str) for slot in accounts):
         raise ValueError("invalid_arguments")
     return list(accounts)
+
+
+def is_slot_name(name: str) -> bool:
+    """Match canonical login directory names, including the API key slot."""
+    return (
+        name != "claude-slots"
+        and re.fullmatch(r"claude(?:-[a-z0-9][a-z0-9_-]*)?", name) is not None
+    )
+
+
+def read_accounts(home: Path) -> list[str]:
+    """Read the current slot order from disk so deletion is visible immediately."""
+    config = home / "config" / "config.json"
+    return _accounts(json.loads(config.read_text(encoding="utf-8")))
+
+
+def unregistered_slots(home: Path, accounts: Sequence[str]) -> list[str]:
+    """List discovered login directories that have no configured priority."""
+    root = host_cli_auth_dir(home)
+    if not root.is_dir():
+        return []
+    return [
+        entry.name
+        for entry in sorted(root.iterdir())
+        if is_slot_name(entry.name) and entry.name not in accounts and entry.is_dir()
+    ]
+
+
+SlotIdentity = tuple[int, int, int]
+
+
+class SlotDeleteError(ValueError):
+    """A deletion was refused or failed after updating the slot list."""
+
+
+class SlotDirectoryError(SlotDeleteError):
+    """The login directory may still need removal."""
+
+    def __init__(self, path: Path, cause: OSError) -> None:
+        super().__init__("slot_delete_failed")
+        self.path = path
+        self.reason = cause.strerror or str(cause)
+
+
+def slot_identity(home: Path, slot: str) -> SlotIdentity:
+    """Identify the folder, or the config revision for a slot with no folder."""
+    if slot == DEFAULT_SLOT:
+        raise SlotDeleteError("slot_default")
+    if not is_slot_name(slot):
+        raise SlotDeleteError("invalid_slot")
+    directory = host_slot_config_dir(home, slot)
+    if directory.is_dir():
+        status = directory.lstat()
+    elif slot in read_accounts(home):
+        status = (home / "config" / "config.json").stat()
+    else:
+        raise SlotDeleteError("slot_not_found")
+    return status.st_dev, status.st_ino, status.st_ctime_ns
+
+
+def remove(home: Path, slot: str, *, expected: SlotIdentity | None = None) -> None:
+    """Remove a named slot while excluding turn execution and web login."""
+    if slot == DEFAULT_SLOT:
+        raise SlotDeleteError("slot_default")
+    if not is_slot_name(slot):
+        raise SlotDeleteError("invalid_slot")
+
+    with slot_use_lock(host_cli_auth_dir(home), slot, deleting=True) as reserved:
+        if not reserved:
+            raise SlotDeleteError("slot_busy")
+        if expected is not None and slot_identity(home, slot) != expected:
+            raise SlotDeleteError("slot_stale")
+        root = host_cli_auth_dir(home)
+        candidate = os.path.normpath(os.path.join(root, slot))  # noqa: PTH118 -- explicit boundary
+        if not candidate.startswith(os.fspath(root) + os.sep):
+            raise SlotDeleteError("invalid_slot")
+        directory = Path(candidate)
+
+        def unregister(data: dict[str, object]) -> None:
+            accounts = _accounts(data)
+            if slot in accounts:
+                data["claude_accounts"] = [name for name in accounts if name != slot]
+            elif not directory.is_dir():
+                raise SlotDeleteError("slot_not_found")
+
+        transform_config_file(home / "config" / "config.json", unregister)
+
+        _clear_slot_state(home, slot)
+        _remove_directory(directory)
+
+
+def _clear_slot_state(home: Path, slot: str) -> None:
+    def clear(snapshot: SlotSnapshot) -> None:
+        snapshot.cooldowns.pop(slot, None)
+        snapshot.auth_failures.pop(slot, None)
+        snapshot.auth_failure_details.pop(slot, None)
+        if snapshot.last_used == slot:
+            snapshot.last_used = None
+
+    SlotRegistry(state_file_path(home)).update(clear)
+
+
+def _remove_directory(directory: Path) -> None:
+    try:
+        if directory.is_symlink():
+            directory.unlink()
+        elif directory.is_dir():
+            shutil.rmtree(directory)
+    except OSError as exc:
+        raise SlotDirectoryError(directory, exc) from exc
 
 
 def _change_priority(home: Path, fn: Callable[[list[str]], list[str]]) -> None:

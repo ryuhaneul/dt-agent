@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import math
 import time
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
+from uuid import uuid4
 
 from ductor_bot.cli import claude_slots
-from ductor_bot.cli.claude_accounts import host_slot_config_dir, slot_is_api_key
+from ductor_bot.cli.claude_accounts import DEFAULT_SLOT, host_slot_config_dir, slot_is_api_key
 from ductor_bot.cli.claude_usage import UsageStore, usage_file_path
 from ductor_bot.config import AgentConfig, resolve_user_timezone
 from ductor_bot.i18n import t
@@ -22,6 +23,32 @@ logger = logging.getLogger(__name__)
 
 ACS_PREFIX = "acs:"
 _CALLBACK_MAX_BYTES = 64
+
+_DELETE_REFERENCES_MAX = 1024
+_delete_references: dict[str, tuple[Path, str, claude_slots.SlotIdentity | None]] = {}
+_delete_reference_lock = Lock()
+
+
+def _remember_delete_reference(
+    home: Path, slot: str, identity: claude_slots.SlotIdentity | None = None
+) -> str:
+    reference = uuid4().hex
+    with _delete_reference_lock:
+        if len(_delete_references) >= _DELETE_REFERENCES_MAX:
+            del _delete_references[next(iter(_delete_references))]
+        _delete_references[reference] = (home, slot, identity)
+    return reference
+
+
+def _take_delete_reference(
+    home: Path, reference: str, *, confirmation: bool
+) -> tuple[str, claude_slots.SlotIdentity | None]:
+    with _delete_reference_lock:
+        recorded = _delete_references.get(reference)
+        if recorded is None or recorded[0] != home or (recorded[2] is not None) != confirmation:
+            raise claude_slots.SlotDeleteError("slot_stale")
+        del _delete_references[reference]
+    return recorded[1], recorded[2]
 
 
 def is_account_selector_callback(data: str) -> bool:
@@ -41,6 +68,10 @@ async def account_selector_start(home: Path, config: AgentConfig) -> SelectorRes
 async def handle_account_callback(home: Path, config: AgentConfig, data: str) -> SelectorResponse:
     """Apply a named-slot action using the shared module, then reload the page."""
     try:
+        if len(data.encode("utf-8")) <= _CALLBACK_MAX_BYTES and data.startswith(
+            ("acs:x:", "acs:y:", "acs:n:")
+        ):
+            return await asyncio.to_thread(_handle_delete, home, config, data)
         note = ""
         if data != "acs:r":
             parts = data.split(":", 2)
@@ -71,6 +102,44 @@ async def handle_account_callback(home: Path, config: AgentConfig, data: str) ->
         return SelectorResponse(text=t("accounts.error"))
 
 
+def _handle_delete(home: Path, config: AgentConfig, data: str) -> SelectorResponse:
+    action, value = data.split(":", 2)[1:]
+    try:
+        if action == "x":
+            name = value
+            if value.startswith("@"):
+                name, _ = _take_delete_reference(home, value[1:], confirmation=False)
+            identity = claude_slots.slot_identity(home, name)
+            reference = _remember_delete_reference(home, name, identity)
+            return SelectorResponse(
+                text=t("accounts.delete_confirm", name=name),
+                buttons=ButtonGrid(
+                    [
+                        [
+                            Button(t("accounts.btn_cancel_delete"), f"acs:n:{reference}"),
+                            Button(t("accounts.btn_confirm_delete"), f"acs:y:{reference}"),
+                        ]
+                    ]
+                ),
+            )
+        name, confirmed_identity = _take_delete_reference(home, value, confirmation=True)
+        if action == "n":
+            return _build_page(home, config)
+        assert confirmed_identity is not None
+        claude_slots.remove(home, name, expected=confirmed_identity)
+        note = t("accounts.deleted", name=name)
+    except claude_slots.SlotDirectoryError as exc:
+        note = t("accounts.delete_failed", path=str(exc.path.relative_to(home)), reason=exc.reason)
+    except claude_slots.SlotDeleteError as exc:
+        note = t(
+            {
+                "slot_busy": "accounts.delete_busy",
+                "slot_default": "accounts.delete_default",
+            }.get(str(exc), "accounts.stale")
+        )
+    return _build_page(home, config, note)
+
+
 def _slot_button(text: str, action: str, name: str) -> Button | None:
     data = f"acs:{action}:{name}"
     if len(data.encode("utf-8")) > _CALLBACK_MAX_BYTES:
@@ -82,8 +151,10 @@ def _slot_button(text: str, action: str, name: str) -> Button | None:
 def _build_page(  # noqa: C901
     home: Path, config: AgentConfig, note: str = ""
 ) -> SelectorResponse:
-    data = json.loads((home / "config" / "config.json").read_text(encoding="utf-8"))
-    current = AgentConfig(claude_accounts=data.get("claude_accounts") or [])
+    accounts = claude_slots.read_accounts(home)
+    current = AgentConfig(
+        claude_accounts=[*accounts, *claude_slots.unregistered_slots(home, accounts)]
+    )
     slots = claude_slots.overview(home, current)["slots"]
     usage = UsageStore(usage_file_path(home / "workspace")).load()
     lines = [t("accounts.title")]
@@ -116,7 +187,9 @@ def _build_page(  # noqa: C901
                 minutes=minutes,
                 time=datetime.fromtimestamp(reset, timezone).strftime("%H:%M"),
             )
-        lines.append(f"{index + 1}. {name}  {auth} · {cooldown}")
+        priority = index < len(accounts)
+        unused = "" if priority else " · " + t("accounts.unused")
+        lines.append(f"{index + 1}. {name}  {auth} · {cooldown}{unused}")
         if not api_key:
             try:
                 usage_line = render_account_usage(usage.get(name), config, now=now)
@@ -125,17 +198,24 @@ def _build_page(  # noqa: C901
                 usage_line = t("usage.account_empty")
             lines.append("   " + usage_line)
         candidates: list[Button | None] = []
-        if index > 0:
+        if priority and index > 0:
             candidates.extend(
                 [
                     _slot_button(f"{name} ▲", "u", name),
                     _slot_button(t("accounts.btn_prefer", name=name), "p", name),
                 ]
             )
-        if index < len(slots) - 1:
+        if index < len(accounts) - 1:
             candidates.append(_slot_button(f"{name} ▼", "d", name))
-        if reset is not None and reset > now:
+        if priority and reset is not None and reset > now:
             candidates.append(_slot_button(t("accounts.btn_clear", name=name), "c", name))
+        if name != DEFAULT_SLOT and claude_slots.is_slot_name(name):
+            text = t("accounts.btn_delete", name=name)
+            delete_button = _slot_button(text, "x", name)
+            if delete_button is None:
+                reference = _remember_delete_reference(home, name)
+                delete_button = _slot_button(text, "x", "@" + reference)
+            candidates.append(delete_button)
         buttons = [button for button in candidates if button is not None]
         if buttons:
             rows.append(buttons)

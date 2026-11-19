@@ -25,6 +25,8 @@ from ductor_bot.webchat.cli_login_slots import (
     share_slot_from_default,
 )
 from ductor_bot.workspace.paths import DuctorPaths
+from tests.webchat.test_bridge_api import _PREFIX, bridge, cli_bridge, cli_headers  # noqa: F401
+from tests.webchat.test_web_app import CLIENT, login, site  # noqa: F401
 
 ROOT = Path(__file__).resolve().parents[2]
 OWNER = "fake-owner-hmac"
@@ -676,3 +678,110 @@ def test_web_slot_paths_reject_escape_before_api_probe(paths, operation, name):
             ClaudeLoginSlots(paths).resolve_oauth_slot(name)
     probe.assert_not_called()
     assert tree(paths.ductor_home) == before
+
+
+async def test_active_login_and_turn_share_slot_but_refuse_deletion(paths, manager_factory):
+    from ductor_bot.cli.claude_accounts import SlotRegistry, state_file_path
+    from ductor_bot.cli.claude_slots import remove
+    from ductor_bot.cli.slot_rotation import reserve_slot, slot_use_lock
+
+    directory = paths.ductor_home / ".cli-auth" / "claude-existing"
+    directory.mkdir()
+    manager, record = manager_factory("wait")
+    with slot_use_lock(directory.parent, directory.name, deleting=True) as deleting:
+        assert deleting
+        with pytest.raises(CliLoginError, match="slot_busy"):
+            manager.start("claude", OWNER, slot=directory.name)
+    registry = SlotRegistry(state_file_path(paths.ductor_home))
+    with reserve_slot(registry, directory.name) as turning:
+        assert turning
+        job = manager.start("claude", OWNER, slot=directory.name)
+        # Check immediately, before the new task can even start preparing its directory.
+        with pytest.raises(ValueError, match="slot_busy"):
+            remove(paths.ductor_home, directory.name)
+    await until(record.exists)
+    with reserve_slot(registry, directory.name) as turning, reserve_slot(
+        registry, directory.name
+    ) as second_turn:
+        assert turning and second_turn
+    with pytest.raises(ValueError, match="slot_busy"):
+        remove(paths.ductor_home, directory.name)
+    manager.cancel(job, OWNER)
+    assert (await settled(manager, job))["state"] == "cancelled"
+    remove(paths.ductor_home, directory.name)
+    assert not directory.exists()
+
+
+async def test_delete_route_enforces_bridge_auth_and_live_inventory(cli_bridge, monkeypatch):
+    from ductor_bot.cli import claude_slots
+    from ductor_bot.cli.claude_accounts import SlotRegistry, SlotSnapshot, state_file_path
+    from ductor_bot.cli.slot_rotation import reserve_slot, slot_use_lock
+
+    client, bot, _, paths, _ = cli_bridge
+    target = f"{_PREFIX}/cli-login/slots"
+    route = f"{target}/claude-work"
+    folder = paths.ductor_home / ".cli-auth" / "claude-work"
+    paths.config_path.write_text('{"claude_accounts":["claude","claude-work"]}')
+    bot.config.claude_accounts = ["claude", "claude-work"]
+    folder.mkdir()
+    registry = SlotRegistry(state_file_path(paths.ductor_home))
+    registry.save(SlotSnapshot(cooldowns={"claude-work": 100, "claude": 200}))
+
+    for headers in ({"X-Dtw-Owner": OWNER}, {
+        key: value for key, value in cli_headers().items() if key != "X-Dtw-Owner"
+    }):
+        response = await client.delete(route, headers=headers)
+        assert response.status == 403
+        assert "WWW-Authenticate" not in response.headers
+    response = await client.delete(f"{target}/claude", headers=cli_headers())
+    assert (response.status, await response.json()) == (400, {"error": "slot_default"})
+    with slot_use_lock(folder.parent, folder.name):
+        response = await client.delete(route, headers=cli_headers())
+        assert (response.status, await response.json()) == (409, {"error": "slot_busy"})
+
+    def refuse(directory):
+        assert directory == folder
+        raise PermissionError(13, "Denied", folder)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(claude_slots.shutil, "rmtree", refuse)
+        response = await client.delete(route, headers=cli_headers())
+    assert response.status == 500
+    assert await response.json() == {
+        "error": "slot_delete_failed", "path": ".cli-auth/claude-work", "reason": "Denied",
+    }
+    assert registry.load().cooldowns == {"claude": 200}
+    assert folder.is_dir()
+    with reserve_slot(registry, folder.name) as reserved:
+        assert not reserved
+    listing = await client.get(f"{_PREFIX}/cli-login/status", headers=cli_headers())
+    assert (await listing.json())["claude_slots"][-1]["priority"] is None
+    assert bot.config.claude_accounts == ["claude", "claude-work"]
+
+    response = await client.delete(route, headers=cli_headers())
+    assert (response.status, await response.json()) == (200, {"ok": True})
+    assert not folder.exists()
+    listing = await client.get(f"{_PREFIX}/cli-login/status", headers=cli_headers())
+    assert [slot["name"] for slot in (await listing.json())["claude_slots"]] == ["claude"]
+    response = await client.delete(route, headers=cli_headers())
+    assert (response.status, await response.json()) == (404, {"error": "slot_not_found"})
+
+
+async def test_browser_delete_requires_session_and_csrf_before_relay(site):
+    client, fake = site
+    route = "/api/cli-login/slots/claude-work"
+    response = await client.delete(route, headers=CLIENT)
+    assert response.status == 403
+    assert (await response.json())["error"] == "auth_required"
+    authorized, _ = await login(client)
+    for missing in ["X-Dtw-Client", "X-Dtw-Csrf"]:
+        headers = {key: value for key, value in authorized.items() if key != missing}
+        response = await client.delete(route, headers=headers)
+        assert response.status == 403
+        assert "WWW-Authenticate" not in response.headers
+    assert not any(call[1].startswith("/cli-login/") for call in fake.calls)
+    await client.delete(route, headers={**authorized, "X-Dtw-Owner": "forged-owner"})
+    assert fake.calls[-1][:2] == ("DELETE", "/cli-login/slots/claude-work")
+    path, owner = fake.owner_headers[-1]
+    assert path == "/cli-login/slots/claude-work"
+    assert owner and owner != "forged-owner"
