@@ -9,7 +9,11 @@ import time
 from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any
 
-from ductor_bot.cli.autocompact import resolve_autocompact, validate_autocompact
+from ductor_bot.cli.autocompact import (
+    parse_autocompact_tokens,
+    resolve_autocompact,
+    validate_autocompact,
+)
 from ductor_bot.config import transform_config_file, update_config_file_async
 from ductor_bot.i18n import t
 from ductor_bot.infra.json_store import atomic_json_save
@@ -299,7 +303,7 @@ async def consume_autocompact_input(
     if text.startswith("/"):
         return None
     try:
-        value = validate_autocompact(int(text))
+        value = parse_autocompact_tokens(text)
     except ValueError:
         return SelectorResponse(
             t("autocompact.invalid_input"),

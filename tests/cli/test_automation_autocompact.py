@@ -91,7 +91,7 @@ def test_tool_and_backend_validators_agree_on_cli_representation(value):
 
 
 @pytest.mark.parametrize(
-    "value", [True, False, 0, 99999, 1000001, 100000.0, "auto", "inherit", "1e6"]
+    "value", [True, False, 0, 99999, 1000001, 100000.5, "auto", "inherit", "1e6"]
 )
 def test_tool_and_backend_reject_invalid_values(value):
     with pytest.raises(ValueError, match="autocompact"):

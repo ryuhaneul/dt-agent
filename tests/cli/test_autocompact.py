@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import shutil
 import stat
 import subprocess
 import threading
@@ -360,3 +362,92 @@ async def test_runtime_probe_runs_outside_event_loop(tmp_path, monkeypatch, mode
             pass
     assert len(probe_threads) == 1
     assert probe_threads[0] != loop_thread
+
+
+TOKEN_INPUT_CASES = [
+    ("500000", 500000),
+    ("500,000", 500000),
+    ("500k", 500000),
+    ("500K", 500000),
+    ("0.5m", 500000),
+    ("1M", 1000000),
+    ("100k", 100000),
+    ("100,000", 100000),
+    ("1,000,000", 1000000),
+    ("0.100001M", 100001),
+    ("100.001k", 100001),
+    (" 500k ", 500000),
+    ("500000.0", 500000),
+    ("000500k", 500000),
+    ("", None),
+    ("99.999k", None),
+    ("1.000001M", None),
+    ("500.0001k", None),
+    ("500000.5", None),
+    ("500,00", None),
+    ("5,00,000", None),
+    (",500000", None),
+    ("500000,", None),
+    ("5e5", None),
+    ("+500000", None),
+    ("-500k", None),
+    ("500 k", None),
+    ("500kk", None),
+    ("500_000", None),
+    ("\uff15\uff10\uff10\uff10\uff10\uff10", None),
+    ("NaN", None),
+    ("Infinity", None),
+    (".5m", None),
+    ("500.k", None),
+    ("default", None),
+    ("off", None),
+]
+
+
+@pytest.mark.parametrize(("text", "expected"), TOKEN_INPUT_CASES)
+def test_token_input_parser(text, expected):
+    if expected is None:
+        with pytest.raises(ValueError, match=r"[Aa]utocompact"):
+            autocompact.parse_autocompact_tokens(text)
+    else:
+        assert autocompact.parse_autocompact_tokens(text) == expected
+        assert autocompact.parse_autocompact_input(text) == expected
+
+
+def test_stdlib_tool_and_javascript_token_parsers_match():
+    root = Path(__file__).resolve().parents[2]
+    tool_path = root / "ductor_bot/_home_defaults/workspace/tools/_tool_shared.py"
+    spec = importlib.util.spec_from_file_location("ac_tool_shared", tool_path)
+    assert spec is not None
+    assert spec.loader is not None
+    shared = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(shared)
+    for text, expected in TOKEN_INPUT_CASES:
+        if text in {"default", "off"}:
+            assert shared.parse_autocompact_option(text) == text
+        elif expected is None:
+            with pytest.raises(ValueError, match=r"[Aa]utocompact"):
+                shared.parse_autocompact_option(text)
+        else:
+            assert shared.parse_autocompact_option(text) == expected
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js required for browser parser parity")
+    source = (root / "ductor_bot/webchat/web/static/js/autocompact.js").read_text()
+    parser = source[source.index("export function parseAutocompactTokens") :]
+    parser = parser[: parser.index("export function initAutocompact")]
+    result = subprocess.run(
+        [
+            node,
+            "--input-type=module",
+            "-e",
+            parser
+            + "console.log(JSON.stringify("
+            + json.dumps([case[0] for case in TOKEN_INPUT_CASES])
+            + ".map(parseAutocompactTokens)));",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert json.loads(result.stdout) == [case[1] for case in TOKEN_INPUT_CASES]

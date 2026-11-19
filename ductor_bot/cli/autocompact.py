@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 from functools import lru_cache
 from pathlib import Path
@@ -21,6 +22,29 @@ _VALUE: TypeAdapter[AutocompactValue] = TypeAdapter(AutocompactValue)
 def validate_autocompact(value: object) -> AutocompactValue:
     """Reject coercions, unsupported modes and token counts outside 100k-1M."""
     return _VALUE.validate_python(value)
+
+
+def parse_autocompact_tokens(text: str) -> int:
+    """Parse decimal tokens, grouped commas and k/M suffixes without rounding."""
+    match = re.fullmatch(r"([0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:\.([0-9]+))?([kKmM]?)", text.strip())
+    if match is None:
+        raise ValueError("Invalid autocompact token count")
+    whole, fraction, suffix = match.groups()
+    fraction = fraction or ""
+    multiplier = {"": 1, "k": 1000, "m": 1000000}[suffix.lower()]
+    numerator = int(whole.replace(",", "") + fraction) * multiplier
+    denominator: int = 10 ** len(fraction)
+    value, remainder = divmod(numerator, denominator)
+    if remainder or not 100000 <= value <= 1000000:
+        raise ValueError("Autocompact tokens must be an integer from 100000 to 1000000")
+    return value
+
+
+def parse_autocompact_input(value: object) -> AutocompactValue:
+    """Normalize human input while keeping persisted settings strictly typed."""
+    if isinstance(value, str) and value not in {"default", "off"}:
+        return parse_autocompact_tokens(value)
+    return validate_autocompact(value)
 
 
 def stored_autocompact(

@@ -153,8 +153,17 @@ def parse_autocompact_option(
         return None
     if value in ("default", "off"):
         return value
-    if value.isascii() and value.isdigit() and 100000 <= int(value) <= 1000000:
-        return int(value)
+    match = re.fullmatch(
+        r"([0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:\.([0-9]+))?([kKmM]?)", value.strip()
+    )
+    if match is not None:
+        whole, fraction, suffix = match.groups()
+        fraction = fraction or ""
+        multiplier = {"": 1, "k": 1000, "m": 1000000}[suffix.lower()]
+        numerator = int(whole.replace(",", "") + fraction) * multiplier
+        tokens, remainder = divmod(numerator, 10 ** len(fraction))
+        if not remainder and 100000 <= tokens <= 1000000:
+            return tokens
     raise ValueError("autocompact must be default, off, or an integer from 100000 to 1000000" + (" (inherit is also allowed)" if allow_inherit else ""))
 
 
