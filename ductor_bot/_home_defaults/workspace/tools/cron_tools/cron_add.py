@@ -361,7 +361,11 @@ def main() -> None:
             sys.exit(1)
         task_dir = CRON_TASKS_DIR / name
         if task_dir.exists() or task_dir.is_symlink():
-            print(json.dumps({"error": f"Folder '{name}' already exists in cron_tasks/"}))
+            message = (
+                f"Folder {str(task_dir)!r} already exists. After confirming no job uses it, "
+                "move it out of cron_tasks and retry, or choose a different job ID."
+            )
+            print(json.dumps({"error": message}))
             sys.exit(1)
 
         CRON_TASKS_DIR.mkdir(parents=True, exist_ok=True)

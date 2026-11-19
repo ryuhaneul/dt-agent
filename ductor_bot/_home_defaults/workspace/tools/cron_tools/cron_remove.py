@@ -115,7 +115,7 @@ def main() -> None:
             shutil.rmtree(folder_path)
             folder_deleted = True
         except OSError as exc:
-            folder_error = str(exc)
+            folder_error = str(exc) or type(exc).__name__
 
     # Build result
     result: dict = {
@@ -133,8 +133,14 @@ def main() -> None:
             "Manually remove the entry from ~/.ductor/cron_jobs.json."
         )
 
-    if folder_error:
+    if folder_error is not None:
         result["folder_error"] = folder_error
+        if json_removed:
+            print(
+                f"Registry entry removed, but could not delete task folder "
+                f"{str(folder_path)!r}: {folder_error!r}",
+                file=sys.stderr,
+            )
 
     if not folder_path.is_dir() and not folder_deleted:
         result["folder_note"] = "Folder did not exist (already deleted or never created)"
@@ -149,7 +155,7 @@ def main() -> None:
     # The CronObserver detects the mtime change and cancels the job
 
     print(json.dumps(result))
-    sys.exit(0 if json_removed else 1)
+    sys.exit(0 if json_removed and folder_error is None else 1)
 
 
 if __name__ == "__main__":
