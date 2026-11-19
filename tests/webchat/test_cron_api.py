@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import ExitStack
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -13,6 +15,7 @@ import time_machine
 from ductor_bot.cron import definitions
 from ductor_bot.cron.jobs_file import read_jobs_data, write_jobs_data
 from ductor_bot.cron.observer import CronObserver
+from ductor_bot.infra import file_lock
 from ductor_bot.orchestrator.core import Orchestrator
 from ductor_bot.webchat.web.app import STATE, create_app
 from tests.webchat.test_bridge_api import conversation as conversation, headers
@@ -251,7 +254,7 @@ async def test_json_failure_rolls_back_files_and_returns_503(api, monkeypatch, a
             assert not list(api.paths.cron_tasks_dir.glob(".staging-*"))
         raise OSError("synthetic-private-path")
 
-    method = "update_jobs_file" if action == "update" else "save_definitions"
+    method = "save_definitions" if action == "create" else "write_jobs_data"
     monkeypatch.setattr(definitions, method, fail)
     if action == "create":
         response = await api.client.post(PATH, json=payload(), headers=headers())
@@ -273,6 +276,77 @@ async def test_json_failure_rolls_back_files_and_returns_503(api, monkeypatch, a
         assert (api.paths.cron_tasks_dir / "daily/TASK_DESCRIPTION.md").read_text() == payload()[
             "content"
         ]
+
+
+@pytest.mark.skipif(file_lock.fcntl is None, reason="requires flock")
+@pytest.mark.parametrize("action", ["update", "archive"])
+@pytest.mark.parametrize("timing", ["before_request", "after_file_change"])
+async def test_registry_lock_covers_files_and_json(api, monkeypatch, action, timing):
+    await add(api)
+    jobs = api.paths.cron_jobs_path
+    tasks = api.paths.cron_tasks_dir
+    folder = tasks / "daily"
+    original_json = jobs.read_bytes()
+    original_body = payload()["content"]
+    attempted = False
+
+    with ExitStack() as locks:
+
+        def contend_after_change():
+            nonlocal attempted
+            attempted = True
+            try:
+                locks.enter_context(file_lock.exclusive_file_lock(jobs, timeout=0))
+            except file_lock.LockTimeoutError:
+                pass  # The request already owns the lock through its JSON write.
+
+        if timing == "before_request":
+            locks.enter_context(file_lock.exclusive_file_lock(jobs))
+        elif action == "update":
+            save_body = definitions._save_body
+
+            def pause_after_body(*args, **kwargs):
+                saved = save_body(*args, **kwargs)
+                contend_after_change()
+                return saved
+
+            monkeypatch.setattr(definitions, "_save_body", pause_after_body)
+        else:
+            rename = Path.rename
+
+            def pause_after_move(source, target):
+                result = rename(source, target)
+                if source == folder:
+                    contend_after_change()
+                return result
+
+            monkeypatch.setattr(Path, "rename", pause_after_move)
+
+        if action == "update":
+            response = await api.client.put(
+                PATH + "/daily",
+                json={"content": "New body", "base_sha256": definitions.body_sha256(original_body)},
+                headers=headers(),
+            )
+        else:
+            response = await api.client.delete(PATH + "/daily", headers=headers())
+
+    archived = list((tasks / ".archive").glob("daily-*"))
+    if timing == "before_request":
+        assert response.status == 503
+        assert jobs.read_bytes() == original_json
+        assert (folder / "TASK_DESCRIPTION.md").read_text() == original_body
+        assert not archived
+        assert (await detail(api))["content"] == original_body
+    else:
+        assert attempted
+        assert response.status == 200
+        if action == "update":
+            assert (await detail(api))["content"] == "New body"
+        else:
+            assert not folder.exists()
+            assert read_jobs_data(jobs)["jobs"] == []
+            assert len(archived) == 1
 
 
 @pytest.mark.parametrize(
