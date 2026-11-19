@@ -215,6 +215,71 @@ async def test_verified_text_preserves_only_allowed_extensions(tmp_path, name, m
     assert result.inline_allowed is False
 
 
+@pytest.mark.parametrize(
+    ("text", "mime", "extension"),
+    [
+        ("<svg>", "image/svg+xml", "svg"),
+        ("<SVG xmlns='example'>", "image/svg+xml", "svg"),
+        ("\ufeff \t\r\n<svg >", "image/svg+xml", "svg"),
+        ("<?XML version='1.0'?>\n<!--one--><!--two-->\n<svg />", "image/svg+xml", "svg"),
+        ("<!--one--> text <!--two--><svg>", "image/svg+xml", "svg"),
+        ("<!-- -->junk--><svg>", "image/svg+xml", "svg"),
+        ("<?xml?> <!-- missing ?> <svg>", "image/svg+xml", "svg"),
+        ("<?xml data ?>junk ?> <svg>", "image/svg+xml", "svg"),
+        ("<!--one-->\u2003<svg >", "image/svg+xml", "svg"),
+        ("<svg/>", "text/plain", "txt"),
+        ("<svgx>", "text/plain", "txt"),
+        ("<?xml?><svg/>", "text/plain", "txt"),
+        ("<?xml <svg>", "text/plain", "txt"),
+        ("<!--missing<svg>", "text/plain", "txt"),
+        ("<!--valid--> <html>", "text/plain", "txt"),
+        ("<!doctype html><html>", "text/html", "html"),
+        ("<HEAD>", "text/html", "html"),
+        ("<body >", "text/html", "html"),
+        ("plain text", "text/plain", "txt"),
+        ("null\x00byte", "application/octet-stream", "bin"),
+    ],
+)
+def test_text_prefix_classification_retains_legacy_results(text, mime, extension):
+    from ductor_bot.webchat.uploads import _sniff_text
+
+    assert _sniff_text(text.encode()) == (mime, extension)
+
+
+def test_repeated_comment_prefix_has_bounded_cpu_and_sample(tmp_path):
+    program = r"""
+import json,sys,time
+from pathlib import Path
+from ductor_bot.webchat import uploads
+payload=b'<!--'+b'--><!--'*50_000+b'no svg'
+path=Path(sys.argv[1]);path.write_bytes(payload)
+original=uploads._sniff_text
+samples=[]
+def checked(sample):
+    samples.append(len(sample))
+    return original(sample)
+uploads._sniff_text=checked
+start=time.process_time()
+direct=original(payload)
+actual=uploads._sniff(path,'text/plain','comments.txt')
+elapsed=time.process_time()-start
+print(json.dumps({'seconds':elapsed,'direct':direct,'actual':actual,'sample_bytes':samples}))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", program, str(tmp_path / "comments.txt")],
+        check=True,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+    measured = json.loads(result.stdout)
+    assert measured["seconds"] <= 1.0, measured
+    assert measured["direct"] == ["text/plain", "txt"]
+    assert measured["actual"] == ["text/plain", "txt", False]
+    assert measured["sample_bytes"] == [64 * 1024]
+    print(json.dumps(measured))
+
+
 async def test_text_sniff_checks_past_the_prefix(tmp_path):
     payload = b"a" * 65536 + b"\x00\xff"
     store = UploadStore(tmp_path / "files")

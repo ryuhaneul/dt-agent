@@ -7,8 +7,8 @@ import hashlib
 import importlib.util
 import json
 import os
-import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -235,19 +235,7 @@ async def test_message_prompt_history_index_and_legacy_reader(conversation, tmp_
     metadata = await index.get("-123.7", entries[0].id)
     assert metadata[0]["id"] == upload_id
     assert (h.paths.workspace / metadata[0]["path"]).read_bytes() == b"# Example\n"
-    try:
-        source = await asyncio.to_thread(
-            subprocess.check_output,
-            [
-                "git",
-                "show",
-                "ecede25bc0bc51e3284447a61b5690779f73ecb5:ductor_bot/chat_log/history.py",
-            ],
-            text=True,
-            stderr=subprocess.PIPE,
-        )
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        pytest.skip("Historical reader check requires its reference commit")
+    source = (Path(__file__).parent / "fixtures/ecede25/history.py.txt").read_text()
     legacy_path = tmp_path / "legacy_history.py"
     legacy_path.write_text(source)
     spec = importlib.util.spec_from_file_location("legacy_attachment_history", legacy_path)

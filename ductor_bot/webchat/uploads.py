@@ -129,6 +129,37 @@ class UploadSession:
         }
 
 
+def _after_whitespace(text: str, start: int) -> int:
+    while start < len(text) and text[start].isspace():
+        start += 1
+    return start
+
+
+def _svg_prefix(text: str) -> bool:
+    """Match legacy XML/comment prefixes with two forward-only delimiter scans."""
+    tag = re.compile(r"<svg(?:\s|>)", re.IGNORECASE)
+    if tag.match(text):
+        return True
+    comment = 4 if text.startswith("<!--") else None
+    if text[:5].lower() == "<?xml":
+        cursor = 5
+        while (end := text.find("?>", cursor)) >= 0:
+            cursor = end + 2
+            start = _after_whitespace(text, cursor)
+            if tag.match(text, start):
+                return True
+            if comment is None and text.startswith("<!--", start):
+                comment = start + 4
+    if comment is not None:
+        cursor = comment
+        while (end := text.find("-->", cursor)) >= 0:
+            cursor = end + 3
+            start = _after_whitespace(text, cursor)
+            if tag.match(text, start):
+                return True
+    return False
+
+
 def _sniff_text(sample: bytes) -> tuple[str, str]:
     try:
         text = (
@@ -140,8 +171,7 @@ def _sniff_text(sample: bytes) -> tuple[str, str]:
         return "application/octet-stream", "bin"
     if _TEXT_CONTROLS.search(text):
         return "application/octet-stream", "bin"
-    svg = r"(?:<\?xml.*?\?>\s*)?(?:<!--.*?-->\s*)*<svg(?:\s|>)"
-    if re.match(svg, text, re.IGNORECASE | re.DOTALL):
+    if _svg_prefix(text):
         return "image/svg+xml", "svg"
     if re.match(r"(?:<!doctype\s+html|<html|<head|<body)(?:\s|>)", text, re.IGNORECASE):
         return "text/html", "html"

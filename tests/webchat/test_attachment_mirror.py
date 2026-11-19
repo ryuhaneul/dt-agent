@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import io
-import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -278,12 +277,8 @@ def test_attachment_notice_locales(locale):
 
 
 def legacy_module(tmp_path, name, relative):
-    try:
-        source = subprocess.check_output(
-            ["git", "show", f"ecede25:{relative}"], text=True, stderr=subprocess.PIPE
-        )
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        pytest.skip("Rollback check requires reference commit")
+    fixture = "ops.py" if relative.endswith("/webchat_ops.py") else Path(relative).name
+    source = (Path(__file__).parent / "fixtures/ecede25" / (fixture + ".txt")).read_text()
     path = tmp_path / (name + ".py")
     path.write_text(source)
     spec = importlib.util.spec_from_file_location(name, path)

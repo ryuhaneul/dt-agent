@@ -686,9 +686,7 @@ async def test_normal_and_outbox_success_receipts(conversation, monkeypatch, rou
 
 
 async def test_receipts_do_not_change_legacy_history_reader(conversation, tmp_path):
-    import asyncio
     import importlib.util
-    import subprocess
     import sys
 
     h = conversation
@@ -697,11 +695,7 @@ async def test_receipts_do_not_change_legacy_history_reader(conversation, tmp_pa
         h.key, Entry(role="bot", source="telegram", text="Same text")
     )
     await h.runtime.history.record_file("-123.7", entry.id, path, provenance="delivered")
-    source = await asyncio.to_thread(
-        subprocess.check_output,
-        ["git", "show", "ecede25:ductor_bot/chat_log/history.py"],
-        text=True,
-    )
+    source = (Path(__file__).parent / "fixtures/ecede25/history.py.txt").read_text()
     module_path = tmp_path / "old_history.py"
     module_path.write_text(source)
     spec = importlib.util.spec_from_file_location("old_receipt_history", module_path)
