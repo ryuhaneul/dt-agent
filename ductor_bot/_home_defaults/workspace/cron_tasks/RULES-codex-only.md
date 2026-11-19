@@ -1,47 +1,11 @@
 # Cron Tasks
 
 This directory contains isolated task folders used by scheduled jobs.
-For cron tool commands (add/edit/remove/list), see `tools/cron_tools/CLAUDE.md`.
+For cron tool commands (add/edit/remove/list), see `tools/cron_tools/AGENTS.md`.
 
-## ⚠️ MANDATORY WORKFLOW: Creating Cron Jobs
+## Creating and Editing Cron Jobs
 
-**CRITICAL: When creating a new cron job, you MUST ALWAYS ask the user these questions:**
-
-1. **Which model?** (`--model <name>`)
-   - Options: `gpt-5.5` (recommended), `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex-spark`
-   - Default if user doesn't specify: Use global config model
-
-2. **Which reasoning effort?** (`--reasoning-effort <level>`)
-   - Options: `low`, `medium` (default), `high`, `xhigh`
-   - Default if user doesn't specify: `medium` (model default)
-
-**YOU MUST present these options to the user and wait for their answers BEFORE calling cron_add.py!**
-
-**Advanced: CLI Parameters**
-If the user explicitly requests additional CLI flags, use `--cli-parameters '<json-array>'`.
-DO NOT suggest this proactively - only use if the user asks for it.
-
-**Example conversation flow:**
-
-User: "Create a cron job to analyze data every hour"
-
-You: "I'll create a cron job to analyze data every hour. Let me configure the execution:
-
-1. **Model**: Which Codex model?
-   - `gpt-5.5` (recommended, most capable)
-   - `gpt-5.4` (frontier agentic coding model)
-   - `gpt-5.4-mini` (faster, cheaper)
-   - `gpt-5.3-codex-spark` (Codex-optimized)
-
-2. **Reasoning effort**: How deeply should it reason?
-   - `low` (fast, surface-level)
-   - `medium` (default, balanced)
-   - `high` (extended thinking)
-   - `xhigh` (maximum reasoning depth)
-
-Please specify your choices, or I'll use global config defaults."
-
-[Wait for user response, then call cron_add.py with appropriate flags]
+Follow the creation and editing procedure in `tools/cron_tools/AGENTS.md`.
 
 ## Important Context
 
@@ -72,39 +36,7 @@ While creating/editing cron or webhook-triggered tasks, update
 
 ## Per-Task Execution Overrides
 
-Each cron task can override global config settings in `cron_jobs.json`:
-
-- `model`: Model name (optional, defaults to global config)
-  - Available models:
-    - `"gpt-5.5"` - Newest/recommended frontier agentic coding model
-    - `"gpt-5.4"` - Frontier agentic coding model
-    - `"gpt-5.4-mini"` - Smaller, faster frontier coding model
-    - `"gpt-5.3-codex-spark"` - Codex-optimized coding model
-- `reasoning_effort`: Reasoning effort (optional, defaults to `"medium"`)
-  - Typical values: `"low"`, `"medium"`, `"high"`, `"xhigh"`
-- `cli_parameters`: List of additional CLI flags (optional, advanced users only)
-
-**Fallback behavior:**
-- If a field is `null` or missing, the global config value is used
-- This allows per-task customization while maintaining global defaults
-- CLI parameters are merged: global provider-specific params + task-specific params
-
-**Example:**
-```json
-{
-  "id": "data-analyzer",
-  "schedule": "0 8 * * *",
-  "task_folder": "analyzer",
-  "agent_instruction": "Analyze daily data with extended thinking",
-  "model": "gpt-5.4",
-  "reasoning_effort": "high"
-}
-```
-
-**Use cases:**
-- High-reasoning analysis: `"reasoning_effort": "high"`
-- Fast iteration with mini: `"model": "gpt-5.4-mini"`, `"reasoning_effort": "medium"`
-- Advanced CLI flags: `"cli_parameters": [...]` (only if user explicitly requests)
+For provider, model, reasoning effort, and CLI parameter overrides, follow `tools/cron_tools/AGENTS.md`.
 
 ## Secrets and master keys
 

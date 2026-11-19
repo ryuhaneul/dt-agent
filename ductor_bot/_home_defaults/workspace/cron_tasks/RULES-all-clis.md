@@ -1,53 +1,11 @@
 # Cron Tasks
 
 This directory contains isolated task folders used by scheduled jobs.
-For cron tool commands (add/edit/remove/list), see `tools/cron_tools/CLAUDE.md`.
+For cron tool commands (add/edit/remove/list), see `tools/cron_tools/CLAUDE.md`, `tools/cron_tools/AGENTS.md`, or `tools/cron_tools/GEMINI.md` (whichever your CLI reads).
 
-## MANDATORY WORKFLOW: Creating Cron Jobs
+## Creating and Editing Cron Jobs
 
-**CRITICAL: When creating a new cron job, you MUST ALWAYS ask the user these questions:**
-
-1. **Which CLI provider?** (`--provider claude`, `--provider codex`, or `--provider gemini`)
-   - Default if user doesn't specify: Use global config provider
-
-2. **Which model?** (`--model <name>`)
-   - Claude models: `haiku`, `sonnet`, `opus`, `fable`
-   - Codex models: `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex-spark`
-   - Gemini models: `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-3-pro-preview`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash`
-   - Default if user doesn't specify: Use global config model
-
-3. **If Codex or Claude provider: Which reasoning effort?** (`--reasoning-effort <level>`)
-   - Options: `low`, `medium`, `high`, `xhigh`
-   - Default if user doesn't specify: `medium` (model default)
-
-**YOU MUST present these options to the user and wait for their answers BEFORE calling cron_add.py!**
-
-**Advanced: CLI Parameters**
-If the user explicitly requests additional CLI flags, use `--cli-parameters '<json-array>'`.
-DO NOT suggest this proactively - only use if the user asks for it.
-
-**Example conversation flow:**
-
-User: "Create a cron job to check weather every 3 minutes"
-
-You: "I'll create a cron job to check weather every 3 minutes. Let me configure the execution:
-
-1. **Provider**: Which CLI should execute this task?
-   - `claude` (standard Claude models)
-   - `codex` (OpenAI Codex models with extended thinking)
-   - `gemini` (Google Gemini models)
-
-2. **Model**: Which model?
-   - If Claude: `haiku` (fast), `sonnet` (balanced), `opus` (most capable), `fable`
-   - If Codex: `gpt-5.5` (recommended), `gpt-5.4`, `gpt-5.4-mini`, etc.
-   - If Gemini: `gemini-2.5-pro` (recommended), `gemini-2.5-flash`, `gemini-3.1-flash-lite`, etc.
-
-3. **Reasoning effort** (Codex and Claude): How deeply should it reason?
-   - `low`, `medium` (default), `high`, `xhigh`
-
-Please specify your choices, or I'll use global config defaults."
-
-[Wait for user response, then call cron_add.py with appropriate flags]
+Follow the creation and editing procedure in `tools/cron_tools/CLAUDE.md`, `tools/cron_tools/AGENTS.md`, or `tools/cron_tools/GEMINI.md` (whichever your CLI reads).
 
 ## Important Context
 
@@ -80,76 +38,7 @@ While creating/editing cron or webhook-triggered tasks, update
 
 ## Per-Task Execution Overrides
 
-Each cron task can override global config settings in `cron_jobs.json`:
-
-- `provider`: `"claude"`, `"codex"`, or `"gemini"` (optional, defaults to global config)
-- `model`: Model name (optional, defaults to global config)
-  - Claude models: `"haiku"`, `"sonnet"`, `"opus"`, `"fable"`
-  - Codex models:
-    - `"gpt-5.5"` - Newest/recommended frontier agentic coding model
-    - `"gpt-5.4"` - Frontier agentic coding model
-    - `"gpt-5.4-mini"` - Smaller, faster frontier coding model
-    - `"gpt-5.3-codex-spark"` - Codex-optimized coding model
-  - Gemini models:
-    - `"gemini-2.5-pro"` - Balanced, most capable
-    - `"gemini-2.5-flash"` - Fast and cost-effective
-    - `"gemini-3-pro-preview"` - Next-gen preview
-    - `"gemini-3.1-pro-preview"` - Latest pro preview
-    - `"gemini-3.1-flash-lite"` - Lightweight fast preview
-    - `"gemini-3.5-flash"` - Latest fast model
-- `reasoning_effort`: Reasoning effort (Codex and Claude, optional, defaults to `"medium"`)
-  - Typical values: `"low"`, `"medium"`, `"high"`, `"xhigh"`
-- `cli_parameters`: List of additional CLI flags (optional, advanced users only)
-
-**Fallback behavior:**
-- If a field is `null` or missing, the global config value is used
-- This allows per-task customization while maintaining global defaults
-- CLI parameters are merged: global provider-specific params + task-specific params
-
-**Examples:**
-
-Claude task:
-```json
-{
-  "id": "daily-summary",
-  "schedule": "0 8 * * *",
-  "task_folder": "summary",
-  "agent_instruction": "Summarize daily reports",
-  "provider": "claude",
-  "model": "opus"
-}
-```
-
-Codex task:
-```json
-{
-  "id": "data-analyzer",
-  "schedule": "0 8 * * *",
-  "task_folder": "analyzer",
-  "agent_instruction": "Analyze daily data with extended thinking",
-  "provider": "codex",
-  "model": "gpt-5.4",
-  "reasoning_effort": "high"
-}
-```
-
-Gemini task:
-```json
-{
-  "id": "report-generator",
-  "schedule": "0 8 * * *",
-  "task_folder": "reports",
-  "agent_instruction": "Generate daily report",
-  "provider": "gemini",
-  "model": "gemini-2.5-pro"
-}
-```
-
-**Use cases:**
-- High-reasoning analysis (Codex and Claude): `"reasoning_effort": "high"`
-- Provider-specific task: `"provider": "gemini"` while main agent uses Claude
-- Task-specific model: Different model per cron job
-- Advanced CLI flags: `"cli_parameters": [...]` (only if user explicitly requests)
+For provider, model, reasoning effort, and CLI parameter overrides, follow `tools/cron_tools/CLAUDE.md`, `tools/cron_tools/AGENTS.md`, or `tools/cron_tools/GEMINI.md` (whichever your CLI reads).
 
 ## Secrets and master keys
 
