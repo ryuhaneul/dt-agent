@@ -73,7 +73,7 @@ body:
     attributes:
       label: "ductor version"
       description: "Run `docker compose exec ductor-bot ductor --version`."
-      placeholder: "e.g. 1.2.1"
+      placeholder: "e.g. 1.3.0"
     validations:
       required: true
 
