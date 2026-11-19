@@ -414,6 +414,7 @@ change_named = "Automatisch comprimeren voor {name} wijzigen"
 back = "Terug"
 
 [attach]
+expired = "Verwijderd na afloop van de bewaartermijn."
 title = "Bijlagen"
 add = "Bestanden bijvoegen"
 count = "{n} bijlagen"

@@ -414,6 +414,7 @@ change_named = "Automatische Komprimierung für {name} ändern"
 back = "Zurück"
 
 [attach]
+expired = "Nach Ablauf der Aufbewahrungsfrist gelöscht."
 title = "Anhänge"
 add = "Dateien anhängen"
 count = "{n} Anhänge"

@@ -414,6 +414,7 @@ change_named = "Alterar compactação automática de {name}"
 back = "Voltar"
 
 [attach]
+expired = "Excluído após o período de retenção."
 title = "Anexos"
 add = "Anexar arquivos"
 count = "{n} anexos"

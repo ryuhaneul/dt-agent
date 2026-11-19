@@ -574,3 +574,24 @@ async def test_live_entry_event_reports_existing_attachment(conversation):
         assert events[-1]["entry"]["has_attachments"] is True
     finally:
         await ws.close()
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_prompt_explains_retention_and_requested_copy(tmp_path, enabled):
+    from ductor_bot.config import CleanupConfig
+
+    service = service_at(tmp_path)
+    service.cleanup = CleanupConfig(enabled=enabled, media_files_days=7)
+    session = await uploaded(service)
+    prepared = await service.prepare("123", "browser", "caption", [session.id])
+    notice = next(line for line in prepared.text.splitlines() if line.startswith("Web attachments"))
+    assert prepared.text.startswith("[INCOMING FILE]\n")
+    assert "temporary folder" in notice
+    assert "if the user asks to keep them" in notice
+    assert "workspace location outside cleanup-managed directories" in notice
+    if enabled:
+        assert "7 days (cleanup.media_files_days)" in notice
+    else:
+        assert "automatic cleanup is currently disabled" in notice
+        assert "7 days" not in notice
+    assert prepared.caption == "caption"

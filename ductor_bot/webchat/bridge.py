@@ -263,6 +263,7 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
         app[ATTACH_SETTINGS],
         bot._orch.paths.workspace,
         bot._orch.paths.webchat_dir / "attachments.jsonl",
+        cleanup=bot.config.cleanup,
     )
 
     if hasattr(runtime, "history"):

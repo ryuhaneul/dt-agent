@@ -834,7 +834,7 @@ class UploadStore:
         self._discard(upload_id)
 
     async def cleanup(self, *, now: float | None = None) -> int:
-        """Discard only expired partial uploads; completed files are retained."""
+        """Discard expired drafts and metadata for completed files removed by retention."""
         await complete_write(self._prepare)
         cutoff = (time.time() if now is None else now) - UPLOAD_TTL
         paths = await asyncio.to_thread(lambda: list(self.incoming.glob("*.json")))
@@ -864,11 +864,29 @@ class UploadStore:
             if path.stat().st_mtime >= cutoff:
                 return False
         else:
-            if not isinstance(raw, dict) or raw.get("path") is not None:
+            if not isinstance(raw, dict):
                 return False
+            if raw.get("path") is not None:
+                return self._expire_completed(path, raw, cutoff)
             updated = raw.get("updated")
             if not isinstance(updated, (int, float)) or updated >= cutoff:
                 return False
+        self._discard(path.stem)
+        return True
+
+    def _expire_completed(self, path: Path, raw: dict[str, Any], cutoff: float) -> bool:
+        try:
+            session = UploadSession(**raw)
+            self._validate_record(session)
+            if session.id != path.stem or session.path is None:
+                return False
+            file = self._safe(self.directory / session.path)
+            if file.exists():
+                if session.used_by is not None or session.updated > cutoff:
+                    return False
+                self.completed_path(session).unlink()
+        except (OSError, ValueError, TypeError, UploadError):
+            return False
         self._discard(path.stem)
         return True
 

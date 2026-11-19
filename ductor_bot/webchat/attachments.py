@@ -14,6 +14,7 @@ from typing import Any
 
 from ductor_bot.chat_log.ids import new_id
 from ductor_bot.chat_log.recorder import ChatLogTurn
+from ductor_bot.config import CleanupConfig
 from ductor_bot.files.prompt import MediaInfo, build_media_prompt
 from ductor_bot.files.tags import classify_mime
 from ductor_bot.infra.file_lock import exclusive_file_lock
@@ -181,12 +182,19 @@ class MessageAttachments:
     """Keep attachment admission independent of command and queue dispatch."""
 
     def __init__(
-        self, store: UploadStore, settings: AttachmentSettings, workspace: Path, index_path: Path
+        self,
+        store: UploadStore,
+        settings: AttachmentSettings,
+        workspace: Path,
+        index_path: Path,
+        *,
+        cleanup: CleanupConfig | None = None,
     ) -> None:
         self.store = store
         self.settings = settings
         self.workspace = workspace
         self.index = AttachmentIndex(index_path)
+        self.cleanup = cleanup if cleanup is not None else CleanupConfig()
 
     async def recover(self) -> None:
         rows, damaged = await asyncio.to_thread(self.index._rows)
@@ -263,6 +271,20 @@ class MessageAttachments:
                     transport="Web",
                 )
             )
+        retention = (
+            f"may be deleted after {self.cleanup.media_files_days} days (cleanup.media_files_days)"
+            if self.cleanup.enabled
+            else "automatic cleanup is currently disabled"
+        )
+        notice = (
+            f"Web attachments are in a temporary folder ({retention}); if the user asks to keep "
+            "them, copy them to a workspace location outside cleanup-managed directories."
+        )
+        instruction = "Check tools/media_tools/CLAUDE.md for file handling instructions."
+        prompts[0] = prompts[0].replace(instruction, instruction + "\n" + notice, 1)
         return AttachmentMessage(
-            "\n\n".join(prompts), turn, text, tuple(self._metadata(item) for item in sessions)
+            "\n\n".join(prompts),
+            turn,
+            text,
+            tuple(self._metadata(item) for item in sessions),
         )

@@ -14,7 +14,7 @@ import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import filetype
 from aiohttp import web
@@ -181,6 +181,20 @@ class AttachmentDownloads:
                     self._thumbnail(stream, info, path) if inline and _image_mime(stream) else None
                 )
                 return DownloadAttachment(path, description, preview)
+        except FileNotFoundError:
+            if ".." in Path(unquote(str(path))).parts:
+                return None
+            return DownloadAttachment(
+                path,
+                {
+                    **metadata,
+                    "path": path.name
+                    if metadata.get("provenance") == "delivered"
+                    else metadata["path"],
+                    "inline_allowed": False,
+                    "status": "expired",
+                },
+            )
         except (OSError, ValueError):
             return None
 
@@ -257,16 +271,30 @@ def _range(value: str | None, size: int) -> tuple[int, int]:
     return start, end
 
 
-async def stream_attachment(request: web.Request, item: DownloadAttachment) -> web.StreamResponse:
-    """Stream a securely opened descriptor; never delegate path reopening to FileResponse."""
-    preview = request.path.endswith("/preview")
-    path = item.preview if preview else item.path
-    if path is None:
-        raise web.HTTPNotFound
+def _open_download(item: DownloadAttachment, preview: bool) -> BinaryIO:
     try:
-        stream = await asyncio.to_thread(open_regular, path)
+        if preview:
+            # A cached thumbnail must not outlive access to the original file.
+            with open_regular(item.path):
+                pass
+        path = item.preview if preview else item.path
+        if path is None:
+            raise web.HTTPNotFound
+        return open_regular(path)
+    except FileNotFoundError:
+        raise web.HTTPGone(
+            text='{"error": "attachment_expired"}', content_type="application/json"
+        ) from None
     except (OSError, ValueError):
         raise web.HTTPNotFound from None
+
+
+async def stream_attachment(request: web.Request, item: DownloadAttachment) -> web.StreamResponse:
+    """Stream a securely opened descriptor; never delegate path reopening to FileResponse."""
+    if item.metadata.get("status") == "expired":
+        return web.json_response({"error": "attachment_expired"}, status=410)
+    preview = request.path.endswith("/preview")
+    stream = await asyncio.to_thread(_open_download, item, preview)
     with stream:
         info = os.fstat(stream.fileno())
         # Recheck bytes on this descriptor so replacement cannot promote active content inline.

@@ -242,7 +242,27 @@ space rejects or stops the transfer. Incomplete sessions expire after 24 hours o
 inactivity. Their private temporary files live in `workspace/webchat_files/.incoming/`;
 completed files use UTC date directories and random names with verified extensions
 under `workspace/webchat_files/`. Display names never select the storage path.
-Completion does not schedule deletion of the uploaded file after 24 hours.
+Completed uploads that have not been sent expire 24 hours after completion,
+including the exact 24-hour boundary, regardless of `cleanup.enabled`. This is a
+maximum retention limit: the general `cleanup.media_files_days` policy also
+applies to unsent completed files and may delete them earlier when its configured
+period is shorter. The upload cleanup cycle removes expired files and private metadata. Removing an unused
+completed draft from the tray also deletes its server-side file and metadata.
+
+Sent attachments follow `cleanup.media_files_days` (30 days by default), using
+each file's modification time just like Telegram media. This daily cleanup runs
+only when `cleanup.enabled` is true. The general cleanup excludes `.incoming/`;
+the upload cleanup cycle manages it and removes metadata for deleted originals.
+The separate attachment index remains so history can show **Deleted after the
+retention period**. Expired cards have no download or original-image action;
+download and preview URLs return `410 attachment_expired` rather than a server
+error. Cached previews are unavailable once their original has been removed.
+
+The agent receives a short notice explaining the configured retention period
+(or that automatic cleanup is disabled). If you ask the agent to keep a file, it
+copies the attachment to a location inside the workspace that is outside all
+cleanup-managed directories. Attachments in the temporary folder remain subject
+to the retention policy.
 
 ### Message cards, original images and Telegram mirrors
 
@@ -294,7 +314,7 @@ Browser resources below use the `/api` prefix; the bridge uses `/webchat/v1`:
 | `GET /topics/{tid}/uploads/{upload_id}` | Get acknowledged `offset` for resume |
 | `PUT /topics/{tid}/uploads/{upload_id}` | Stream a binary chunk at the `Upload-Offset` header |
 | `POST /topics/{tid}/uploads/{upload_id}/complete` | Verify the supplied `sha256` and complete |
-| `DELETE /topics/{tid}/uploads/{upload_id}` | Cancel an unfinished upload |
+| `DELETE /topics/{tid}/uploads/{upload_id}` | Delete an unfinished or completed unused upload; used uploads are rejected |
 | `POST /topics/{tid}/messages` | Send `text`, `client_id` and optional `attachment_ids`; completed uploads are single-use and scoped to the same session/topic |
 | `GET /topics/{tid}/messages/{entry_id}/attachments` | List authorized attachment metadata and URLs |
 | `GET /topics/{tid}/messages/{entry_id}/attachments/{attachment_id}` | Download; `?inline=1` requests a permitted original image |

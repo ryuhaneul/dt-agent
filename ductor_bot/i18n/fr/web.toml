@@ -414,6 +414,7 @@ change_named = "Modifier la compression automatique de {name}"
 back = "Retour"
 
 [attach]
+expired = "Supprimé après la période de conservation."
 title = "Pièces jointes"
 add = "Joindre des fichiers"
 count = "{n} pièces jointes"

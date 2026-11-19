@@ -707,3 +707,87 @@ async def test_receipts_do_not_change_legacy_history_reader(conversation, tmp_pa
         assert [(row.id, row.text) for row in rows] == [(entry.id, entry.text)]
     finally:
         sys.modules.pop(spec.name, None)
+
+
+async def test_retention_removes_original_but_keeps_expired_history_receipt(conversation):
+    import time
+
+    from ductor_bot.cleanup.observer import CleanupObserver
+    from ductor_bot.webchat.uploads import UPLOADS
+    from tests.webchat.test_attachments import attachment_post, upload_via_bridge
+
+    h = conversation
+    upload_id = await upload_via_bridge(h)
+    assert (await attachment_post(h, [upload_id])).status == 202
+    store = h.client.app[UPLOADS]
+    session = await store.status(upload_id, "-123.7", "browser")
+    base = f"/webchat/v1/topics/-123.7/messages/{session.used_by}/attachments"
+    # Wait for the accepted turn to publish its history entry.
+    for _ in range(100):
+        response = await h.client.get(base, headers=headers())
+        if response.status == 200:
+            break
+        import asyncio
+
+        await asyncio.sleep(0.01)
+    assert response.status == 200
+    assert len((await response.json())["attachments"]) == 1
+    path = store.completed_path(session)
+    old = time.time() - (h.bot.config.cleanup.media_files_days + 1) * 86400
+    os.utime(path, (old, old))
+    await CleanupObserver(h.bot.config, h.paths)._execute()
+    assert not path.exists()
+    assert await store.cleanup() == 1
+    response = await h.client.get(base, headers=headers())
+    (item,) = (await response.json())["attachments"]
+    assert item["status"] == "expired"
+    assert item["inline_allowed"] is False
+    assert item["original_url"] is None
+    assert item["preview_url"] is None
+    for suffix in ["", "/preview", "?inline=1"]:
+        response = await h.client.get(base + "/" + upload_id + suffix, headers=headers())
+        assert response.status == 410
+        assert await response.json() == {"error": "attachment_expired"}
+    assert (await h.client.get(base + "/" + upload_id)).status == 403
+
+
+async def test_preview_cannot_serve_cached_bytes_after_original_deletion(tmp_path):
+    from aiohttp.test_utils import make_mocked_request
+
+    from ductor_bot.webchat.downloads import stream_attachment
+
+    service = downloads_at(tmp_path)
+    path = write_file(service.workspace / "webchat_files/photo.png", image_bytes())
+    entry = receipt(service, Entry(role="bot", source="telegram", text="image receipt"), path)
+    (item,) = await service.list("123", entry)
+    assert item.preview is not None
+    path.unlink()
+    from aiohttp import web
+
+    with pytest.raises(web.HTTPGone) as expired:
+        await stream_attachment(make_mocked_request("GET", "/fixture/preview"), item)
+    assert expired.value.status == 410
+    assert "attachment_expired" in expired.value.text
+
+
+async def test_general_retention_can_remove_unused_completion_before_24_hours(conversation):
+    import time
+
+    from ductor_bot.cleanup.observer import CleanupObserver
+    from ductor_bot.webchat.uploads import UPLOAD_TTL, UPLOADS
+    from tests.webchat.test_attachments import upload_via_bridge
+
+    h = conversation
+    upload_id = await upload_via_bridge(h)
+    store = h.client.app[UPLOADS]
+    session = await store.status(upload_id, "-123.7", "browser")
+    assert session.used_by is None
+    assert time.time() - session.updated < UPLOAD_TTL
+    path = store.completed_path(session)
+    h.bot.config.cleanup.media_files_days = 0
+    old = time.time() - 1
+    os.utime(path, (old, old))
+    await CleanupObserver(h.bot.config, h.paths)._execute()
+    assert not path.exists()
+    assert await store.cleanup() == 1
+    assert not (store.incoming / f"{upload_id}.json").exists()

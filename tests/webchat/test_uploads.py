@@ -353,6 +353,7 @@ async def test_cleanup_expires_partials_but_keeps_completed_and_fresh(tmp_path):
     done = await store.complete(
         complete.id, "123", "session-one", hashlib.sha256(b"done").hexdigest()
     )
+    await store.claim([complete.id], "123", "session-one", "sent-entry", lambda _files: None)
     old = time.time() - UPLOAD_TTL - 1
     for session in [expired, complete]:
         path = store.incoming / f"{session.id}.json"
@@ -545,7 +546,7 @@ async def test_reservations_restore_decrease_and_release(tmp_path):
     )
     assert not restarted._reservations
     stale = await begin(restarted, b"stale")
-    assert await restarted.cleanup(now=time.time() + UPLOAD_TTL + 1) == 1
+    assert await restarted.cleanup(now=time.time() + UPLOAD_TTL + 1) == 2
     assert stale.id not in restarted._reservations
 
 
@@ -1218,3 +1219,37 @@ async def test_upload_chunk_uses_inactivity_timeout_only():
     assert timeout.total is None
     assert timeout.sock_read == 30
     assert timeout.sock_connect == 5
+
+
+@pytest.mark.parametrize("elapsed", [UPLOAD_TTL - 1, UPLOAD_TTL, UPLOAD_TTL + 1])
+async def test_unused_completed_upload_expires_from_completion_at_24_hours(tmp_path, elapsed):
+    store = UploadStore(tmp_path / "files")
+    payload = b"unused completed attachment"
+    session = await begin(store, payload)
+    await store.put(session.id, "123", "session-one", 0, chunks(payload))
+    session = await store.complete(
+        session.id, "123", "session-one", hashlib.sha256(payload).hexdigest()
+    )
+    path = store.completed_path(session)
+    # File mtime and metadata mtime do not define the unused completion deadline.
+    os.utime(path, (1, 1))
+    os.utime(store.incoming / f"{session.id}.json", (1, 1))
+    expired = elapsed >= UPLOAD_TTL
+    assert await store.cleanup(now=session.updated + elapsed) == int(expired)
+    assert path.exists() is not expired
+    assert (store.incoming / f"{session.id}.json").exists() is not expired
+
+
+async def test_retained_used_upload_metadata_removed_after_original_disappears(tmp_path):
+    store = UploadStore(tmp_path / "files")
+    payload = b"sent attachment"
+    session = await begin(store, payload)
+    await store.put(session.id, "123", "session-one", 0, chunks(payload))
+    session = await store.complete(
+        session.id, "123", "session-one", hashlib.sha256(payload).hexdigest()
+    )
+    await store.claim([session.id], "123", "session-one", "sent-entry", lambda _files: None)
+    assert await store.cleanup(now=session.updated + 2 * UPLOAD_TTL) == 0
+    store.completed_path(session).unlink()
+    assert await store.cleanup(now=session.updated + 2 * UPLOAD_TTL) == 1
+    assert not (store.incoming / f"{session.id}.json").exists()

@@ -4,7 +4,7 @@ import { t } from './i18n.js';
 
 const SAFE_IMAGES=new Set(['image/jpeg','image/png','image/webp','image/gif','image/bmp']);
 const sizeLabel=size=>size<1024?`${size} B`:size<1024**2?`${(size/1024).toFixed(1)} KiB`:`${(size/1024**2).toFixed(1)} MiB`;
-const HEADER=/\[INCOMING FILE\]\nThe user sent you a file via (?:Web|Telegram)\.\nPath: ([^\n]+)\nType: ([^\n]+)\nOriginal filename: ([^\n]+)\n\nCheck tools\/media_tools\/CLAUDE\.md for file handling instructions\.(?:\nThis is (?:an audio\/voice message|a video file)\.[^\n]*)?/g;
+const HEADER=/\[INCOMING FILE\]\nThe user sent you a file via (?:Web|Telegram)\.\nPath: ([^\n]+)\nType: ([^\n]+)\nOriginal filename: ([^\n]+)\n\nCheck tools\/media_tools\/CLAUDE\.md for file handling instructions\.(?:\nWeb attachments are in a temporary folder \([^\n]*\); if the user asks to keep them, copy them to a workspace location outside cleanup-managed directories\.)?(?:\nThis is (?:an audio\/voice message|a video file)\.[^\n]*)?/g;
 function belongs(match,item){return match[3]===item.name && (match[1]===item.path || match[1].split('/').at(-1)===item.path);}
 function caption(text,list){
   const matches=[...text.matchAll(HEADER)];
@@ -86,6 +86,7 @@ export function initAttachmentView({changed}) {
     },
     markup(tid,entry){
       return list(tid,entry).map(item=>{
+        if(item.status==='expired')return `<article class="message-attachment"><div class="grow"><span class="attachment-filename">${esc(item.name)}</span><span class="attachment-meta" role="status">${esc(t('attach.expired'))}</span></div></article>`;
         const token=encodeURIComponent(key(tid,entry.id)+item.id);references.set(token,item);
         const action=item.original_url?`<button type="button" class="attachment-image${item.preview_url?'':' attachment-no-preview'}" data-open-attachment="${token}" aria-label="${esc(t('attach.view',{name:item.name}))}">${item.preview_url?`<img src="${esc(item.preview_url)}" loading="lazy" alt="${esc(t('attach.preview',{name:item.name}))}">`:esc(t('attach.open_original'))}</button>`:'';
         return `<article class="message-attachment">${action}<div class="attachment-fileline"><div class="grow"><span class="attachment-filename">${esc(item.name)}</span><span class="attachment-meta">${esc(sizeLabel(item.size))} · ${esc(item.mime)}</span></div><a class="btn btn-sm attachment-download" href="${esc(item.download_url)}" download aria-label="${esc(t('attach.download_name',{name:item.name}))}">${esc(t('attach.download'))}</a></div></article>`;

@@ -414,6 +414,7 @@ change_named = "Ubah pemadatan otomatis untuk {name}"
 back = "Kembali"
 
 [attach]
+expired = "Dihapus setelah masa penyimpanan berakhir."
 title = "Lampiran"
 add = "Lampirkan berkas"
 count = "{n} lampiran"

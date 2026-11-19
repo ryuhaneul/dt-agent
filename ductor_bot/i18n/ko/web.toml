@@ -414,6 +414,7 @@ change_named = "{name} 자동 압축 변경"
 back = "뒤로"
 
 [attach]
+expired = "보관 기한이 지나 삭제됨"
 title = "첨부"
 add = "파일 첨부"
 count = "첨부 {n}개"

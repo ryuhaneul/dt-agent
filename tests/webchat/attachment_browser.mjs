@@ -24,10 +24,11 @@ const topic={tid:'123.7',chat_id:123,topic_id:7,name:'Attachment checks',group:'
 let settings={max_file_bytes:2*1024**3,max_files_per_message:10,chunk_bytes:1024**2,server_max_file_bytes:2*1024**3,server_max_files_per_message:10}, failPut=false;
 let emptyHistoryEnabled=false,historyEnabled=false,dropAfterAck=false,holdPut=false,releasePut=null,settingsPuts=0;
 const putOffsets=[];
-let wsPeer=null,backgroundReady=false;
+let wsPeer=null,backgroundReady=false,expiredPhoto=false;
 const incoming='[INCOMING FILE]\nThe user sent you a file via Telegram.\nPath: telegram_files/2026-11-18/photo.png\nType: image/png\nOriginal filename: photo.png\n\nCheck tools/media_tools/CLAUDE.md for file handling instructions.\n\nUser message: Please check the photo.';
 const longName='project-'+ 'f'.repeat(220)+'report.pdf';
 const entries=[{id:'aaaaaaaaaaaa',seq:1,role:'user',source:'telegram',text:incoming,ts:'2026-11-18T10:00:00Z'}, {id:'bbbbbbbbbbbb',seq:2,role:'bot',source:'web',text:`Project specification. <file:/safe/${longName}>`,ts:'2026-11-18T10:01:00Z'}, {id:'cccccccccccc',seq:3,role:'user',source:'web',text:'<file:/outside/'+ 'p'.repeat(320)+'/secret.txt>',ts:'2026-11-18T10:02:00Z'}, {id:'dddddddddddd',seq:4,role:'user',source:'web',text:'Web attachment caption',ts:'2026-11-18T10:03:00Z'}, {id:'eeeeeeeeeeee',seq:5,role:'user',source:'web',text:'',ts:'2026-11-18T10:04:00Z'}, {id:'ffffffffffff',seq:6,role:'event',source:'system',kind:'background',text:'Background <file:/safe/background.txt>',ts:'2026-11-18T10:05:00Z'}];
+entries.find(entry=>entry.id==='eeeeeeeeeeee').text='[INCOMING FILE]\nThe user sent you a file via Web.\nPath: webchat_files/2026-11-19/attachment-only.txt\nType: text/plain\nOriginal filename: attachment-only.txt\n\nCheck tools/media_tools/CLAUDE.md for file handling instructions.\nWeb attachments are in a temporary folder (may be deleted after 30 days (cleanup.media_files_days)); if the user asks to keep them, copy them to a workspace location outside cleanup-managed directories.';
 const cardMeta=(entry,id,name,mime,inline)=>{const base=`/api/topics/123.7/messages/${entry}/attachments/${id}`;return{id,name,mime,size:2048,path:name,inline_allowed:inline,download_url:base,original_url:inline?base+'?inline=1':null,preview_url:inline?base+'/preview':null};};
 const response=(route,data,status=200)=>route.fulfill({status,contentType:'application/json',body:JSON.stringify(data)});
 await page.routeWebSocket('**/api/ws',peer=>{wsPeer=peer;});
@@ -51,7 +52,7 @@ await page.route('**/api/**',async route=>{
   const attachmentPath=p.match(/^\/topics\/123\.7\/messages\/([^/]+)\/attachments(?:\/([a-f0-9]{32})(?:\/preview)?)?$/);
   if(attachmentPath){
     if(attachmentPath[2])return route.fulfill({contentType:attachmentPath[1]==='bbbbbbbbbbbb'?'application/pdf':'image/png',body:await fs.readFile(path.join(cfg.directory,'sample.png'))});
-    return response(route,{attachments:attachmentPath[1]==='aaaaaaaaaaaa'?[cardMeta(attachmentPath[1],'a'.repeat(32),'photo.png','image/png',true)]:attachmentPath[1]==='bbbbbbbbbbbb'?[cardMeta(attachmentPath[1],'b'.repeat(32),longName,'application/pdf',false)]:attachmentPath[1]==='dddddddddddd'?[cardMeta(attachmentPath[1],'d'.repeat(32),'web-notes.txt','text/plain',false)]:attachmentPath[1]==='eeeeeeeeeeee'?[cardMeta(attachmentPath[1],'e'.repeat(32),'attachment-only.txt','text/plain',false)]:attachmentPath[1]==='ffffffffffff'&&backgroundReady?[cardMeta(attachmentPath[1],'f'.repeat(32),'background.txt','text/plain',false)]:[]});
+    return response(route,{attachments:attachmentPath[1]==='aaaaaaaaaaaa'?[{...cardMeta(attachmentPath[1],'a'.repeat(32),'photo.png','image/png',true),...(expiredPhoto?{status:'expired',inline_allowed:false,original_url:null,preview_url:null}:{})}]:attachmentPath[1]==='bbbbbbbbbbbb'?[cardMeta(attachmentPath[1],'b'.repeat(32),longName,'application/pdf',false)]:attachmentPath[1]==='dddddddddddd'?[cardMeta(attachmentPath[1],'d'.repeat(32),'web-notes.txt','text/plain',false)]:attachmentPath[1]==='eeeeeeeeeeee'?[cardMeta(attachmentPath[1],'e'.repeat(32),'attachment-only.txt','text/plain',false)]:attachmentPath[1]==='ffffffffffff'&&backgroundReady?[cardMeta(attachmentPath[1],'f'.repeat(32),'background.txt','text/plain',false)]:[]});
   }
   if(p.endsWith('/messages') && method==='GET')return response(route,{entries:emptyHistoryEnabled?Array.from({length:100},(_,i)=>({id:i.toString(16).padStart(12,'0'),seq:i+1,role:'bot',source:'web',text:'Plain message '+i,has_attachments:false,ts:'2026-11-18T10:00:00Z'})):historyEnabled?entries.map(entry=>({...entry,has_attachments:['aaaaaaaaaaaa','bbbbbbbbbbbb','dddddddddddd','eeeeeeeeeeee'].includes(entry.id)||(entry.id==='ffffffffffff'&&backgroundReady)})):[],has_more:false});
   if(p.includes('/uploads')){
@@ -220,7 +221,7 @@ try{
     backgroundReady=true;wsPeer.send(JSON.stringify({type:'attachments_changed',tid:'123.7',entry_id:'ffffffffffff'}));
     await page.waitForFunction(()=>document.querySelectorAll('.message-attachment').length===5);
     assert.equal(await page.locator('.attachment-filename').allTextContents().then(value=>value.sort()).then(value=>value.join(',')),['attachment-only.txt','photo.png',longName,'web-notes.txt','background.txt'].sort().join(','));
-    assert(!await page.locator('#thread').innerText().then(value=>value.includes('[INCOMING FILE]')));assert(await page.locator('#thread').innerText().then(value=>value.includes('Please check the photo.')));
+    assert(!await page.locator('#thread').innerText().then(value=>value.includes('[INCOMING FILE]')));assert(!await page.locator('#thread').innerText().then(value=>value.includes('Web attachments are in a temporary folder')));assert(await page.locator('#thread').innerText().then(value=>value.includes('Please check the photo.')));
     assert.equal(await page.locator('.message-attachment').filter({hasText:'secret.txt'}).count(),0);assert(await page.locator('#thread').innerText().then(value=>value.includes('Web attachment caption')));
     assert(!await page.locator('#thread').innerText().then(value=>value.includes('<file:/safe/background.txt>')));
     for(const [width,height] of [[375,667],[768,960],[1280,720]]){
@@ -244,6 +245,20 @@ try{
       }
     }
     results.checks.push('Web text-only history and attachment-only message cards; Telegram photo and bot file cards; outside user path has no card; native overlay focus/Escape/zoom');
+    expiredPhoto=true;wsPeer.send(JSON.stringify({type:'attachments_changed',tid:'123.7',entry_id:'aaaaaaaaaaaa'}));
+    const expiredCard=page.locator('.message-attachment').filter({hasText:'photo.png'});
+    await page.waitForFunction(message=>[...document.querySelectorAll('.message-attachment')].some(node=>node.textContent.includes('photo.png')&&node.textContent.includes(message)),cfg.strings['attach.expired']);
+    assert.equal(await expiredCard.locator('a,button,img').count(),0);
+    await page.evaluate(()=>location.hash='chat');
+    await page.waitForFunction(()=>!document.body.classList.contains('info-open'));
+    for(const width of [375,1280]){
+      await page.setViewportSize({width,height:width===375?667:720});
+      await page.waitForFunction(()=>innerWidth>1180||getComputedStyle(document.querySelector('.info')).visibility==='hidden');
+      await expiredCard.scrollIntoViewIfNeeded();
+      const bounds=await expiredCard.boundingBox();assert(bounds.x>=0&&bounds.x+bounds.width<=width);
+      await page.screenshot({path:path.join(cfg.shots,`expired-${width}.png`)});
+    }
+    results.checks.push('expired receipt shows retention notice without download or original controls');
   }
   // Exercise the completed draft state before message admission using the public controller.
   await page.route('**/static/js/main.js',route=>route.fulfill({contentType:'application/javascript',body:''}));

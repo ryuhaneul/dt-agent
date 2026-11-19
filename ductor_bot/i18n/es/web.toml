@@ -414,6 +414,7 @@ change_named = "Cambiar compactación automática de {name}"
 back = "Volver"
 
 [attach]
+expired = "Eliminado al vencer el plazo de conservación."
 title = "Adjuntos"
 add = "Adjuntar archivos"
 count = "{n} adjuntos"

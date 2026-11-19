@@ -414,6 +414,7 @@ change_named = "Change automatic compaction for {name}"
 back = "Back"
 
 [attach]
+expired = "Deleted after the retention period."
 title = "Attachments"
 add = "Attach files"
 count = "{n} attachments"
