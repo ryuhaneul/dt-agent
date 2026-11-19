@@ -840,6 +840,26 @@ async def test_delete_preserves_unreadable_cooldowns_and_allows_retry(
     assert not folder.exists()
 
 
+@pytest.mark.parametrize("contents", ["{not json", "[]", ""])
+async def test_delete_recovers_corrupt_cooldown_state(cli_bridge, contents):
+    from ductor_bot.cli.claude_accounts import state_file_path
+
+    client, _, _, paths, _ = cli_bridge
+    slot = "claude-work"
+    other = "claude-other"
+    paths.config_path.write_text(json.dumps({"claude_accounts": [slot, other]}))
+    folder = paths.ductor_home / ".cli-auth" / slot
+    folder.mkdir()
+    state = state_file_path(paths.ductor_home)
+    state.write_text(contents)
+
+    response = await client.delete(f"{_PREFIX}/cli-login/slots/{slot}", headers=cli_headers())
+    assert (response.status, await response.json()) == (200, {"ok": True})
+    assert json.loads(state.read_text()) == {"cooldowns": {}}
+    assert json.loads(paths.config_path.read_text())["claude_accounts"] == [other]
+    assert not folder.exists()
+
+
 @pytest.mark.parametrize("mode", ["cancel", "timeout", "managed-timeout"])
 @pytest.mark.parametrize(
     ("leader_exits", "output", "sent_result"),
@@ -852,15 +872,17 @@ async def test_delete_preserves_unreadable_cooldowns_and_allows_retry(
         (False, "none", False),
     ],
 )
-async def test_interrupted_slot_can_be_deleted_and_recreated_by_detached_child(
+async def test_interrupted_slot_can_be_deleted_with_detached_child(
     cli_bridge, monkeypatch, mode, leader_exits, output, sent_result
 ):
     import contextlib
     import signal
 
+    from ductor_bot.cli import executor
     from ductor_bot.cli.base import CLIConfig
     from ductor_bot.cli.claude_provider import ClaudeCodeCLI
     from ductor_bot.cli.timeout_controller import TimeoutConfig, TimeoutController
+    from ductor_bot.infra.process_tree import force_kill_process_tree
 
     client, _, _, paths, _ = cli_bridge
     slot = "claude-work"
@@ -868,6 +890,12 @@ async def test_interrupted_slot_can_be_deleted_and_recreated_by_detached_child(
     folder = paths.ductor_home / ".cli-auth" / slot
     folder.mkdir()
     pids = paths.ductor_home / "pids.json"
+
+    def kill_test_tree(pid):
+        assert pid == json.loads(pids.read_text())[0]
+        force_kill_process_tree(pid)
+
+    monkeypatch.setattr(executor, "force_kill_process_tree", kill_test_tree)
     write_slot = paths.ductor_home / "write-slot"
     marker = folder / "child-wrote"
     child_script = """import os, sys, time
@@ -957,11 +985,15 @@ if trigger.exists():
             else:
                 assert result.is_error and result.result == "__TIMEOUT__1"
 
-        assert alive(child)
         response = await client.delete(route, headers=cli_headers())
         assert (response.status, await response.json()) == (200, {"ok": True})
         assert not folder.exists()
 
+        if not leader_exits:
+            assert not alive(child)
+            return
+
+        assert alive(child)
         write_slot.touch()
         await until(marker.exists)
         listing = await client.get(f"{_PREFIX}/cli-login/status", headers=cli_headers())

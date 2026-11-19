@@ -252,6 +252,8 @@ async def _finish_interrupted_stream_pipes(process: asyncio.subprocess.Process) 
 
 async def _terminate_stream_group(process: asyncio.subprocess.Process) -> None:
     """Stop the dedicated stream group and wait until its members cannot access the slot."""
+    if process.returncode is None:
+        await asyncio.to_thread(force_kill_process_tree, process.pid)
     with contextlib.suppress(ProcessLookupError):
         os.killpg(process.pid, signal.SIGKILL)
     await _finish_interrupted_stream_pipes(process)

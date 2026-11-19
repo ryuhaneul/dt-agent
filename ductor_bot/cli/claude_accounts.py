@@ -458,7 +458,7 @@ class SlotRegistry:
         return mtimes
 
     def _read_state(self, *, strict: bool) -> dict[str, object]:
-        """Load cooldown state, optionally refusing to treat an unreadable file as empty."""
+        """Read cooldown state, optionally raising on file I/O errors."""
         if not strict and not self._state_path.is_file():
             return {}
         try:
@@ -468,19 +468,16 @@ class SlotRegistry:
                 raise
             return {}
         except (ValueError, RecursionError, OSError) as exc:
-            if strict:
+            if strict and isinstance(exc, OSError):
                 raise
             logger.warning("Failed to read %s: %s", self._state_path, exc)
             return {}
         if not isinstance(raw, dict):
-            if strict:
-                msg = "Invalid cooldown state"
-                raise ValueError(msg)
             return {}
         return raw
 
     def load(self, *, strict: bool = False) -> SlotSnapshot:
-        """Load cooldown state, optionally refusing to treat an unreadable file as empty."""
+        """Load cooldown state, optionally raising on file I/O errors."""
         raw = self._read_state(strict=strict)
         cooldowns_raw = raw.get("cooldowns", {})
         cooldowns: dict[str, float] = {}
