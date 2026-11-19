@@ -24,6 +24,7 @@ from ductor_bot.session.named import interagent_session_name, normalize_lane
 from ductor_bot.workspace.paths import DuctorPaths
 
 if TYPE_CHECKING:
+    from ductor_bot.bus.envelope import TelegramBroadcastOutcomes
     from ductor_bot.multiagent.bus import AsyncInterAgentResult, AsyncInterAgentTask
 
 logger = logging.getLogger(__name__)
@@ -124,6 +125,13 @@ class CorruptAsyncRecordError(ValueError):
     """A persisted async record does not match the durable schema."""
 
 
+def async_result_payload(result: AsyncInterAgentResult) -> dict[str, Any]:
+    """Keep recipient delivery outcomes at the record level."""
+    payload = asdict(result)
+    del payload["telegram_broadcast_outcomes"]
+    return payload
+
+
 def _valid_result(record: dict[str, Any]) -> bool:
     result = record.get("result")
     if result is None:
@@ -146,6 +154,15 @@ def _valid_result(record: dict[str, Any]) -> bool:
         and 0 <= result["received_at"] <= 253402300799
         and result["task_id"] == record["task_id"]
         and all(result[key] == record[key] for key in _ROUTING_FIELDS)
+    )
+
+
+def _valid_telegram_broadcast_outcomes(outcomes: object) -> bool:
+    return isinstance(outcomes, dict) and all(
+        isinstance(chat_id, str)
+        and re.fullmatch(r"-?[0-9]+", chat_id) is not None
+        and status in ("delivered", "permanent")
+        for chat_id, status in outcomes.items()
     )
 
 
@@ -288,6 +305,7 @@ class AsyncRecordStore:
         delivered_text_sha256: str = "",
         chunk_scheme: str = "",
         area: str = "inflight",
+        telegram_broadcast_outcomes: TelegramBroadcastOutcomes | None = None,
     ) -> Path:
         """Archive a damaged record and atomically replace it from memory."""
         target = task.reply_to or task.sender
@@ -308,7 +326,9 @@ class AsyncRecordStore:
             original_message=task.message,
         )
         record["status"] = "completed" if normalized.success else "failed"
-        record["result"] = asdict(normalized)
+        record["result"] = async_result_payload(normalized)
+        if telegram_broadcast_outcomes:
+            record["telegram_broadcast_outcomes"] = telegram_broadcast_outcomes
         if stage in {"delivered", "abandoned"}:
             record["stage"] = stage
         if main_response.strip() and stage in {"injected", "delivered", "abandoned"}:
@@ -386,6 +406,7 @@ class AsyncRecordStore:
             or record["delivered_chunks"] < 0
             or type(record["delivered_text_sha256"]) is not str
             or type(record["chunk_scheme"]) is not str
+            or not _valid_telegram_broadcast_outcomes(record.get("telegram_broadcast_outcomes", {}))
             or not _valid_lane_fields(record)
             or (record["chunk_scheme"] and _CHUNK_SCHEME.fullmatch(record["chunk_scheme"]) is None)
             or (
@@ -440,13 +461,14 @@ class AsyncRecordStore:
         chunk_scheme: str | None = None,
         reset_progress: bool = False,
         redelivery_state: tuple[int, float | None] | None = None,
+        telegram_broadcast_outcomes: TelegramBroadcastOutcomes | None = None,
     ) -> None:
         path = self.path_for(target, task_id)
         record = self.load(target, task_id)
         prior_stage = record["stage"]
         if result is not None:
             record["status"] = "completed" if result.success else "failed"
-            record["result"] = asdict(result)
+            record["result"] = async_result_payload(result)
         if stage is not None:
             record["stage"] = stage
         if main_response is not None:
@@ -477,6 +499,8 @@ class AsyncRecordStore:
             attempts, next_at = merge_redelivery_state(current, redelivery_state)
             record["redelivery_attempts"] = attempts
             record["next_redelivery_at"] = next_at
+        if telegram_broadcast_outcomes:
+            record["telegram_broadcast_outcomes"] = telegram_broadcast_outcomes
         record["updated_at"] = time.time()
         self._write(path, record)
 

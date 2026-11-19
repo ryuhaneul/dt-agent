@@ -156,10 +156,10 @@ _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a"})
 _RICH_TOKENS = r"<file:(?P<file>[^>]+)>|\[button:(?P<button>[^\]]+)\]"
 _OUTBOX_TOKEN_RE = re.compile(_RICH_TOKENS)
 _IA_TOKEN_RE = re.compile(
-    r"(?P<code>^[ ]{0,3}(?P<backtick_fence>`{3,})[^`\n]*\n"
-    r"[\s\S]*?(?:^[ ]{0,3}(?P=backtick_fence)`*[ \t]*\r?$|\Z)"
-    r"|^[ ]{0,3}(?P<tilde_fence>~{3,})[^\n]*\n"
-    r"[\s\S]*?(?:^[ ]{0,3}(?P=tilde_fence)~*[ \t]*\r?$|\Z)"
+    r"(?P<code>^[ \t]*(?P<backtick_fence>`{3,})[^`\n]*\n"
+    r"[\s\S]*?(?:^[ \t]*(?P=backtick_fence)`*[ \t]*\r?$|\Z)"
+    r"|^[ \t]*(?P<tilde_fence>~{3,})[^\n]*\n"
+    r"[\s\S]*?(?:^[ \t]*(?P=tilde_fence)~*[ \t]*\r?$|\Z)"
     r"|(?<![\\`])(?P<ticks>`+)(?!`)(?:(?!\n[ \t]*\n)[\s\S])+?(?<!`)(?P=ticks)(?!`))|"
     + _RICH_TOKENS,
     re.MULTILINE,

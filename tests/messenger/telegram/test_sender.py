@@ -884,6 +884,8 @@ async def test_ia_button_only_report_sends_keyboard_with_prompt() -> None:
         "Example: `{tag}`",
         "Example: ``with a ` backtick and {tag}``",
         "Example:\n```text\n{tag}\n```",
+        "1. Example\n    ```text\n    value\n\n    {tag}\n    ```",
+        "Example:\n\t```\n\tvalue\n\n\t{tag}\n\t```",
         "Example:\n````text\n```\n{tag}\n```\n````",
         "Example:\n~~~text\n{tag}\n~~~",
         "Example:\r\n```text\r\n{tag}\r\n```\r",

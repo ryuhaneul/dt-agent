@@ -2802,7 +2802,8 @@ async def test_cron_broadcast_recipient_outcome_controls_record(
             SendProgress(True, 1, None, "", None),
             SendProgress(False, 0, "transient", "timeout", None),
             SendProgress(True, 1, None, "", None),
-        ] * 2
+            SendProgress(False, 0, "transient", "timeout", None),
+        ]
         if scenario == "partial" else [SendProgress(True, 1, None, "", None)] * 3
     )
     with patch(
@@ -2822,8 +2823,8 @@ async def test_cron_broadcast_recipient_outcome_controls_record(
     store = AsyncRecordStore(tmp_path)
     parked = store.path_for("main", task_id, area="undelivered")
     assert injector.inject_prompt.await_count == 1
-    assert send.await_count == {
-        "none": 0, "partial": 6, "all": 3,
+    assert [call.args[1] for call in send.await_args_list] == {
+        "none": [], "partial": [101, 102, 103, 102], "all": [101, 102, 103],
     }[scenario]
     assert parked.exists() is (scenario != "all")
     assert not store.path_for("main", task_id).exists()
@@ -2982,6 +2983,64 @@ async def test_cron_broadcast_partial_retry_keeps_current_scope(
     assert store.path_for("main", task.task_id, area="undelivered").exists()
     # Pending user decision: current retries repeat all transports, including successes.
     assert [t.deliver_broadcast.await_count for t in transports] == [2, 2, 2]
+
+
+@pytest.mark.parametrize("scenario", ["retry", "restart", "all_permanent"])
+async def test_cron_broadcast_permanent_recipient_outcomes(
+    tmp_path: Path, scenario: str,
+) -> None:
+    from aiogram.exceptions import TelegramForbiddenError, TelegramNetworkError
+    from aiogram.methods import SendMessage
+
+    from ductor_bot.messenger.telegram.transport import TelegramTransport
+
+    task = _task(
+        task_id="abc000000094", chat_id=0, topic_id=None, transport="tg",
+        result_origin="cron-broadcast", broadcast_ref="job-94",
+    )
+    store = AsyncRecordStore(tmp_path)
+    store.create(task)
+    store.update("main", task.task_id, result=_result(task))
+    calls: list[tuple[int, str]] = []
+
+    async def send_message(*, chat_id: int, text: str, **kwargs: object) -> object:
+        method = SendMessage(chat_id=chat_id, text=text)
+        calls.append((chat_id, text))
+        if scenario == "all_permanent" or chat_id == 102:
+            raise TelegramForbiddenError(method, "blocked")
+        if chat_id == 101 and len(calls) == 1:
+            raise TelegramNetworkError(method, "temporary")
+        return SimpleNamespace(message_id=1)
+
+    def setup() -> tuple[InterAgentBus, AsyncMock]:
+        ia, bus, injector, transports, bot = _broadcast_recovery_bus(tmp_path)
+        bot._config.allowed_user_ids = [101, 102, 103]
+        bot.file_roots.return_value = []
+        bot.bot_instance.send_message = AsyncMock(side_effect=send_message)
+        bus._transports.remove(transports[0])
+        bus.register_transport(TelegramTransport(bot))
+        return ia, injector
+
+    ia, injector = setup()
+    if scenario == "retry":
+        ia._retry_delays = (0,)
+    assert await ia.recover_inflight("main") == (1 if scenario == "retry" else 0)
+    injector.inject_prompt.assert_awaited_once()
+    if scenario == "restart":
+        record = store.load("main", task.task_id, area="undelivered")
+        assert record["telegram_broadcast_outcomes"] == {"102": "permanent", "103": "delivered"}
+        restarted, restarted_injector = setup()
+        assert await restarted.redeliver_undelivered("main") == 1
+        restarted_injector.inject_prompt.assert_not_awaited()
+    report = "Public final report"
+    assert [chat_id for chat_id, text in calls if text == report] == (
+        [101, 102, 103] if scenario == "all_permanent" else [101, 102, 103, 101]
+    )
+    assert [chat_id for chat_id, text in calls if text != report] == (
+        [101, 102, 103] if scenario == "all_permanent" else []
+    )
+    assert not store.path_for("main", task.task_id).exists()
+    assert not store.path_for("main", task.task_id, area="undelivered").exists()
 
 
 def test_redelivery_metadata_is_top_level_and_result_unchanged(tmp_path: Path) -> None:

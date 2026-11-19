@@ -208,6 +208,7 @@ class MessageBus:
             delivered_chunks=envelope.delivered_chunks,
             delivered_text_sha256=delivery_hash,
             chunk_scheme=envelope.chunk_scheme,
+            telegram_broadcast_outcomes=envelope.telegram_broadcast_outcomes,
         )
 
     async def _observe_delivery(self, envelope: Envelope) -> None:
@@ -243,6 +244,7 @@ class MessageBus:
             delivered_text_sha256="",
             chunk_scheme="",
             failed_transports=[],
+            telegram_broadcast_outcomes={},
             session_name="",
             envelope_id=secrets.token_hex(6),
             metadata={"ia_task_id": task_id},

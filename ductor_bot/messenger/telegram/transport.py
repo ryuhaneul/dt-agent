@@ -537,8 +537,12 @@ class TelegramTransport:
             allowed_roots=self._roots(),
             ia_task_id=env.metadata.get("ia_task_id", ""),
         )
-        all_sent = True
+        outcomes = env.telegram_broadcast_outcomes.copy()
+        transient_failure = False
         for chat_id in recipients:
+            recipient = str(chat_id)
+            if recipient in outcomes:
+                continue
             try:
                 progress = await send_rich_progress_detailed(
                     self._bot.bot_instance,
@@ -549,13 +553,20 @@ class TelegramTransport:
                 )
             except Exception as exc:
                 logger.warning("Telegram IA broadcast recipient failed: %s", type(exc).__name__)
-                all_sent = False
+                transient_failure = True
             else:
-                all_sent = all_sent and progress.delivered
-                if progress.failure == "permanent":
-                    env.delivery_failure = progress.failure
-        env.delivered = all_sent
-        if not all_sent:
+                if progress.delivered:
+                    outcomes[recipient] = "delivered"
+                elif progress.failure == "permanent":
+                    outcomes[recipient] = "permanent"
+                else:
+                    transient_failure = True
+        env.telegram_broadcast_outcomes = outcomes
+        all_permanent = all(outcomes.get(str(chat_id)) == "permanent" for chat_id in recipients)
+        env.delivered = not (transient_failure or all_permanent)
+        if all_permanent:
+            env.delivery_failure = "permanent"
+        if not env.delivered:
             env.delivery_error = "telegram broadcast send failed"
 
     async def _broadcast_webhook_cron(self, env: Envelope) -> None:

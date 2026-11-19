@@ -8,10 +8,11 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 # Bump a transport value whenever IA chunk preparation or ordering changes.
-IA_CHUNK_SCHEMES = {"tg": "tg-ia-v5", "mx": "mx-ia-v1", "sl": "sl-ia-v1"}
+IA_CHUNK_SCHEMES = {"tg": "tg-ia-v6", "mx": "mx-ia-v1", "sl": "sl-ia-v1"}
 
 
 DeliveryFailure = Literal["transient", "permanent"]
+TelegramBroadcastOutcomes = dict[str, Literal["delivered", "permanent"]]
 
 
 class Origin(enum.Enum):
@@ -57,6 +58,9 @@ class DeliveryOutcome:
     delivered_chunks: int = 0
     delivered_text_sha256: str = ""
     chunk_scheme: str = ""
+    telegram_broadcast_outcomes: TelegramBroadcastOutcomes = field(
+        default_factory=dict, kw_only=True
+    )
 
 
 @dataclass(slots=True)
@@ -104,6 +108,9 @@ class Envelope:
     chunk_scheme: str = ""
     broadcast_targets: list[str] | None = None
     failed_transports: list[str] = field(default_factory=list)
+    telegram_broadcast_outcomes: TelegramBroadcastOutcomes = field(
+        default_factory=dict, kw_only=True
+    )
 
     # -- Origin-specific metadata --
     metadata: dict[str, Any] = field(default_factory=dict)
