@@ -26,16 +26,16 @@ const beforeMidnight = '2025-12-31T14:59:00.000Z';
 const afterMidnight = '2025-12-31T15:00:00.000Z';
 const today = '2026-01-01T15:01:00.000Z';
 const topic = {
-  tid: '1.2', chat_id: 1, topic_id: 2, name: '날짜 표시 확인', group: 'telegram',
+  tid: '1.2', chat_id: 1, topic_id: 2, name: 'Message dates', group: 'telegram',
   count: 240, imported_count: 0, created_at: beforeMidnight, last_ts: today,
-  preview: '오늘 메시지와 이전 메시지를 함께 확인해 줘.',
+  preview: 'Please compare current messages with earlier messages.',
   read_only: false, renamable: true, deletable: true, busy: false,
 };
 const messages = Array.from({ length: topic.count }, (_, index) => ({
   id: `entry-${index + 1}`, seq: index + 1,
   ts: index < 74 ? beforeMidnight : index < 194 ? afterMidnight : today,
   role: index % 2 ? 'bot' : 'user', source: index % 3 ? 'web' : 'telegram',
-  text: index % 2 ? '지난 대화에서 날짜가 바뀌는 구간을 확인했습니다.' : '오늘 메시지와 이전 메시지를 함께 확인해 줘.',
+  text: index % 2 ? 'Here is the point where the date changes in the conversation.' : 'Please compare current messages with earlier messages.',
   has_attachments: false,
 }));
 messages[74].role = 'event';
@@ -148,12 +148,19 @@ try {
         assert.ok(result.pinned && result.messageClear, JSON.stringify(result));
       }
       if (width === 375) {
-        const overlap = await page.evaluate(() => {
+        const result = await page.evaluate(() => {
+          const thread = document.querySelector('#thread');
           const button = document.querySelector('#threadBottom').getBoundingClientRect();
-          const thread = document.querySelector('#thread').getBoundingClientRect();
-          return button.height > 0 && button.top >= thread.bottom;
+          const bounds = thread.getBoundingClientRect();
+          const visibleTimes = [...thread.querySelectorAll('time')].map(time => time.getBoundingClientRect())
+            .filter(time => time.bottom > bounds.top && time.top < bounds.bottom);
+          return {
+            scrollableBesideButton: document.elementFromPoint(bounds.left + 36, button.top + 22)?.closest('#thread') === thread,
+            overlaps: visibleTimes.filter(time => time.right > button.left && time.top < button.bottom && time.bottom > button.top).length,
+          };
         });
-        assert.ok(overlap, 'mobile navigation is outside the message viewport');
+        assert.ok(result.scrollableBesideButton, 'mobile scrolling reaches the area beside navigation');
+        assert.equal(result.overlaps, 0);
       }
       await readDay(72);
       await page.screenshot({ path: path.join(config.shots, `dates-a-${width}-${theme}.png`) });
@@ -164,7 +171,7 @@ try {
       await page.waitForFunction(() => document.querySelector('[data-entry-seq="240"]'));
       assert.equal(await labelFor(240).textContent(), config.locales.ko['chat.today']);
 
-      await page.locator('#msgIn').fill('대기 메시지');
+      await page.locator('#msgIn').fill('Queued message');
       await page.locator('#sendBtn').click();
       const queued = page.locator('[data-queue-turn="test-turn"] time');
       await queued.waitFor();

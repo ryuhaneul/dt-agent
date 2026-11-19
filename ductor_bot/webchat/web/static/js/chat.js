@@ -315,6 +315,7 @@ function updateThreadNavigation() {
     for (const group of thread.children) {
       if (group.getBoundingClientRect().bottom <= stickyTop) continue;
       const day = group.firstElementChild;
+      if (!day) continue;
       if (!day.hidden && day.getBoundingClientRect().top <= stickyTop + 1) divider = day;
       break;
     }
@@ -325,18 +326,40 @@ function updateThreadNavigation() {
     pinnedDay = divider;
   }
 }
-let dateLocale, messageFormatters;
+let calendarDay, calendarZone, midnightTimer = null;
+let dateLocale, dateZone, messageFormatters;
+function readCalendar() {
+  const now = new Date();
+  return { now, day: localDay(now), zone: new Intl.DateTimeFormat().resolvedOptions().timeZone };
+}
+function scheduleMidnight(now) {
+  clearTimeout(midnightTimer);
+  const midnight = new Date(now);
+  midnight.setHours(24, 0, 0, 0);
+  midnightTimer = setTimeout(() => {
+    midnightTimer = null;
+    refreshCalendar();
+  }, midnight - now);
+}
+function refreshCalendar() {
+  if (!active || !getTopic()) return;
+  const calendar = readCalendar();
+  if (calendar.day !== calendarDay || calendar.zone !== calendarZone) {
+    renderThread({ changes: {}, calendar });
+  } else if (midnightTimer === null) scheduleMidnight(calendar.now);
+}
 function messageDate(ts) {
   const date = ts ? new Date(ts) : null;
   return date && Number.isFinite(+date) ? date : null;
 }
 function messageFormats() {
   const locale = document.documentElement.lang;
-  if (dateLocale !== locale) {
+  if (dateLocale !== locale || dateZone !== calendarZone) {
     dateLocale = locale;
+    dateZone = calendarZone;
     messageFormatters = {
-      day: new Intl.DateTimeFormat(locale, { dateStyle: 'medium' }),
-      clock: new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit' }),
+      day: new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeZone: dateZone }),
+      clock: new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit', timeZone: dateZone }),
     };
   }
   return messageFormatters;
@@ -354,16 +377,16 @@ function localDay(date) {
   return date ? `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}` : '';
 }
 function threadGroups(rows) {
-  const groups = [], today = localDay(new Date());
+  const groups = [];
   let group;
   for (const row of rows) {
     if (row.kind !== 'busy' || !group) {
       const ts = row.entry ? row.entry.ts : row.kind === 'stream' ? streamTimestamp(row.turn) : row.received;
       const date = messageDate(ts);
       const day = localDay(date), imported = !!row.entry?.imported;
-      const dayKey = `${day}:${imported}:${day === today}`;
+      const dayKey = `${day}:${imported}`;
       if (dayKey !== group?.dayKey) {
-        const label = day === today ? t('chat.today') : date ? messageFormats().day.format(date) : '—';
+        const label = day === calendarDay ? t('chat.today') : date ? messageFormats().day.format(date) : '—';
         const divider = imported ? `${label} · ${t('chat.imported_day')}` : label;
         group = { dayKey, key: `${dayKey}:${row.key}`, divider, rows: [] };
         groups.push(group);
@@ -402,7 +425,10 @@ function rememberActivity(node) {
 function patchThread(thread, groups, changes) {
   // Keep unchanged messages in place, including when a window starts partway through a day.
   const existing = new Map(threadRows(thread).map(node => [nodeKey(node), node]));
-  const oldGroups = new Map([...thread.children].map(node => [node.dataset.dateGroup, node]));
+  const oldGroups = new Map();
+  for (const node of thread.children) {
+    if (node.dataset.dateGroup !== undefined) oldGroups.set(node.dataset.dateGroup, node);
+  }
   const wanted = new Set(groups.flatMap(group => group.rows.map(row => row.key)));
   for (const [key, node] of existing) {
     if (!wanted.has(key)) { rememberActivity(node); node.remove(); }
@@ -414,6 +440,9 @@ function patchThread(thread, groups, changes) {
     if (!parent) {
       template.innerHTML = groupStart(group) + '</div>';
       parent = template.content.firstElementChild;
+    } else if (changes.dayChanged || changes.zoneChanged) {
+      const divider = parent.firstElementChild;
+      if (divider.textContent !== group.divider) divider.textContent = group.divider;
     }
     if (parent.parentNode !== thread || parent.nextElementSibling !== nextGroup) {
       thread.insertBefore(parent, nextGroup);
@@ -422,9 +451,9 @@ function patchThread(thread, groups, changes) {
     for (let index = group.rows.length - 1; index >= 0; index--) {
       const item = group.rows[index], { entry, turn } = item;
       let node = existing.get(item.key);
-      const dirty = item.kind === 'entry'
+      const dirty = changes.zoneChanged || (item.kind === 'entry'
         ? changes.entries?.has(entry.id) || changes.turns?.has(entry.turn_id)
-        : turn && changes.turns?.has(turn.id);
+        : turn && changes.turns?.has(turn.id));
       if (!node || dirty) {
         if (node) rememberActivity(node);
         template.innerHTML = itemMarkup(item);
@@ -533,16 +562,30 @@ function restoreViewport(thread, viewport, previousTop, changes) {
   // Read scrollTop after layout so native scroll anchoring is included in the correction.
   const shift = anchor.getBoundingClientRect().top - viewport.first.top;
   if (!shift) return;
-  thread.scrollTop += shift;
-  // Chromium can quantize scrollTop even when row positions use fractional CSS pixels.
-  const remainder = anchor.getBoundingClientRect().top - viewport.first.top;
-  if (!remainder || Math.abs(remainder) >= 1) return;
-  const previous = parseFloat(thread.style.getPropertyValue('--thread-anchor-offset')) || 0;
-  const padding = previous - remainder, whole = Math.trunc(padding);
-  const top = thread.scrollTop;
-  thread.style.setProperty('--thread-anchor-offset', `${padding - whole}px`);
-  if (whole) thread.scrollTop = top - whole;
+  const target = thread.scrollTop + shift;
+  if (Number.isInteger(target) || target < 0 || target >= thread.scrollHeight - thread.clientHeight) {
+    thread.scrollTop = target;
+    return;
+  }
+  // A fresh spacer establishes the fractional offset during layout of the new window.
+  const previous = threadOffset(thread);
+  const unpadded = target - (previous?.getBoundingClientRect().height ?? 0);
+  const pixel = Math.ceil(unpadded), remainder = pixel - unpadded;
+  previous?.remove();
+  if (remainder) {
+    const offset = document.createElement('div');
+    offset.dataset.threadOffset = '';
+    offset.setAttribute('aria-hidden', 'true');
+    offset.style.height = `${remainder}px`;
+    thread.insertBefore(offset, thread.firstElementChild);
+  }
+  thread.scrollTop = pixel;
 }
+function threadOffset(thread) {
+  const offset = thread.firstElementChild;
+  return offset?.dataset.threadOffset !== undefined ? offset : null;
+}
+
 function messageRange(state, rows, { seq, bottom, move, viewport, keepReading }) {
   const length = rows.length;
   const indexOf = key => rows.findIndex(row => row.key === key);
@@ -576,7 +619,7 @@ function mountedRows(rows, start, end, showBusy) {
   if (showBusy) mounted.push({ kind: 'busy', key: 'busy' });
   return mounted;
 }
-export function renderThread({ bottom = false, seq = null, changes = null, move = null } = {}) {
+export function renderThread({ bottom = false, seq = null, changes = null, move = null, calendar } = {}) {
   if (!changes) cancelStreamRender();
   cancelHistoryRender();
   const topic = getTopic();
@@ -587,6 +630,11 @@ export function renderThread({ bottom = false, seq = null, changes = null, move 
   const sameTopic = renderedTopic === topic?.tid;
   renderedTopic = topic?.tid;
   if (!topic) { thread.replaceChildren(); updateThreadNavigation(); return; }
+  calendar ??= readCalendar();
+  const dayChanged = calendarDay !== calendar.day, zoneChanged = calendarZone !== calendar.zone;
+  calendarDay = calendar.day; calendarZone = calendar.zone;
+  if (active && (dayChanged || zoneChanged || midnightTimer === null)) scheduleMidnight(calendar.now);
+  if (changes && (dayChanged || zoneChanged)) changes = { ...changes, dayChanged, zoneChanged };
   const state = history(topic.tid);
   const previousTop = thread.scrollTop;
   const nearBottom = !state.range?.newer && thread.scrollHeight - thread.clientHeight - previousTop < 80;
@@ -604,7 +652,7 @@ export function renderThread({ bottom = false, seq = null, changes = null, move 
     const resumed = rows.findIndex(row => row.key === state.renderStart);
     start = resumed >= limit && resumed < end ? resumed : end - 12;
   }
-  if (!sameTopic || bottom || seq !== null || move === 'top') thread.style.removeProperty('--thread-anchor-offset');
+  if (!sameTopic || bottom || seq !== null || move === 'top') threadOffset(thread)?.remove();
   const showBusy = !state.range.newer && (busy.get(topic.tid) ?? topic.busy) && !liveTurns.length;
   const mounted = mountedRows(rows, start, end, showBusy), groups = threadGroups(mounted);
   if (changes) patchThread(thread, groups, changes);
@@ -1017,6 +1065,7 @@ export function initChat() {
     if (selector && !selector.disabled) void chooseButton(selector.dataset.callbackEntry, selector.dataset.callbackData, 'selector');
   });
   thread.addEventListener('scroll', async () => {
+    refreshCalendar();
     updateThreadNavigation();
     const topic = getTopic();
     if (!topic || topRequest || pagination?.tid === topic.tid) return;
@@ -1064,11 +1113,17 @@ export function initChat() {
     view = event.detail.view;
     if (active && event.detail.route === 'chat') { renderThread(); resizeComposer(); }
   });
-  document.addEventListener('visibilitychange', () => { if (active && !document.hidden) void resync(); });
+  window.addEventListener('focus', refreshCalendar);
+  document.addEventListener('visibilitychange', () => {
+    if (!active || document.hidden) return;
+    refreshCalendar();
+    void resync();
+  });
   document.addEventListener('auth-change', event => {
     cancelTop();
     active = event.detail.authenticated; ++epoch;
     cancelStreamRender(); cancelHistoryRender();
+    clearTimeout(midnightTimer); midnightTimer = null;
     stopEvents?.(); stopEvents = null; renderedTopic = null; pagination = null;
     histories.clear(); turns.clear(); busy.clear(); drafts.clear(); topicVersions.clear(); busyVersions.clear(); input.value = '';
     telegram = { state: 'unknown' }; botUp = false; webSessions = null;
