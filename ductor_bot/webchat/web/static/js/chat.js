@@ -289,6 +289,7 @@ function renderHeader() {
   stop.hidden = !topic || !started(topic.tid);
   stop.disabled = !topic || !started(topic.tid);
   document.querySelector('#sendBtn').disabled = !topic || (sending && !isControlCommand(document.querySelector('#msgIn').value));
+  composerFiles?.render();
 }
 function updateThreadNavigation() {
   const thread = document.querySelector('#thread');
@@ -598,6 +599,7 @@ export async function handleEvent(event) {
   if (active) renderThread();
 }
 function resizeComposer() {
+  if (composerFiles) { composerFiles.resize(); return; }
   const input = document.querySelector('#msgIn');
   input.style.height = 'auto';
   input.style.height = `${input.scrollHeight + input.offsetHeight - input.clientHeight}px`;

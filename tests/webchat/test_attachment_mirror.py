@@ -192,7 +192,7 @@ async def test_bridge_order_literal_caption_and_same_topic(conversation, tmp_pat
     caption = f"<file:{secret}> [button:x] &lt; &#91; **literal**"
     items = await queue_message(h, [first, second], caption)
     assert [item.origin for item in items] == [
-        "web_attachment_text",
+        "web_user_text",
         "web_attachment",
         "web_attachment",
         None,
@@ -317,7 +317,7 @@ async def test_ecede25_reader_drainer_and_sender_rollback(conversation, tmp_path
         outbox = old_outbox.Outbox(h.runtime.outbox.directory)
         loaded = await outbox.pending()
         assert [item.id for item in loaded] == [item.id for item in items]
-        assert [item.origin for item in loaded[:2]] == ["web_attachment_text", "web_attachment"]
+        assert [item.origin for item in loaded[:2]] == ["web_user_text", "web_attachment"]
         bot = bot_at(tmp_path)
         ops = old_ops.TelegramWebchatOps(bot)
         monitor = old_link.TelegramLinkMonitor(ops, EventHub())

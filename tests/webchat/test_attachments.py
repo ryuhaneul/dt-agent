@@ -325,7 +325,7 @@ async def test_message_ownership_limits_and_command_rejections(conversation):
     await ws.close()
 
 
-async def test_busy_message_does_not_consume_attachment(conversation):
+async def test_attachments_join_existing_fifo_queue(conversation):
     h = conversation
     upload_id = await upload_via_bridge(h)
     lock = h.pool.get(h.key.lock_key)
@@ -335,8 +335,18 @@ async def test_busy_message_does_not_consume_attachment(conversation):
         assert (await attachment_post(h, [upload_id])).status == 202
         await receive_until(ws, lambda event: event.get("phase") == "queued")
         second = await upload_via_bridge(h)
-        assert (await attachment_post(h, [second])).status == 409
-        assert (await h.client.app[UPLOADS].status(second, "-123.7", "browser")).used_by is None
+        response = await attachment_post(h, [second])
+        assert response.status == 202
+        second_turn = (await response.json())["turn_id"]
+        await receive_until(
+            ws, lambda event: event.get("turn_id") == second_turn and event.get("phase") == "queued"
+        )
+        assert (await h.client.app[UPLOADS].status(second, "-123.7", "browser")).used_by
+        topics = await h.client.get("/webchat/v1/topics", headers=headers())
+        queued = (await topics.json())["topics"][0]["turns"]
+        assert len(queued) == 2
+        assert [item["phase"] for item in queued] == ["queued", "queued"]
+        assert queued[1]["turn_id"] == second_turn
     finally:
         lock.release()
         await ws.close()

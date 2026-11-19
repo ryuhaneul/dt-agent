@@ -553,15 +553,13 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
         tid: str, text: str, upload_ids: list[str], owner: str
     ) -> web.Response:
         # Keep attachment admission outside command dispatch and queue internals.
-        if turns.busy(tid):
-            raise WebCommandBusyError
         try:
             prepared = await attachments.prepare(tid, owner, text, upload_ids)
         except UploadError as exc:
             return _error(exc.code, exc.status)
         except OSError:
             return _error("attachment_storage_unavailable", 503)
-        turn_id = turns.submit(tid, prepared.text, turn=prepared.turn, attachments=prepared)
+        turn_id = await turns.submit(tid, prepared.text, turn=prepared.turn, attachments=prepared)
         return web.json_response({"turn_id": turn_id}, status=202)
 
     async def entry_attachments(request: web.Request) -> web.Response:
