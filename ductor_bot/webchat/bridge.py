@@ -61,6 +61,7 @@ from ductor_bot.webchat.commands import (
     command_list,
     parse_command,
 )
+from ductor_bot.webchat.cron_api import register_cron_routes
 from ductor_bot.webchat.files import WebFileError, WebFiles
 from ductor_bot.webchat.read_state import ReadState
 from ductor_bot.webchat.secret import WebSecrets
@@ -237,6 +238,7 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
 ) -> None:
     turns = WebTurns(bot, runtime)
     topics = WebTopics(bot, runtime, turns)
+    register_cron_routes(app, bot, topics, turns)
     read_state = ReadState(bot._orch.paths.webchat_dir / "read_state.json")
     dispatcher = WebCommandDispatcher(
         bot,

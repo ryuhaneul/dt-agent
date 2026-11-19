@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import hmac
 import json
+import re
 import secrets
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -131,6 +132,9 @@ async def security(
     try:
         if request.path.startswith(("/api/masterkey/", "/api/secrets/")):
             request = request.clone(client_max_size=64 * 1024)
+        elif re.fullmatch(r"/api/topics/[^/]+/cron(?:/[^/]+(?:/toggle)?)?", request.path):
+            # Keep the content limit at 256 KiB after decoding JSON escapes.
+            request = request.clone(client_max_size=2 * 1024 * 1024)
         if request.can_read_body:
             await request.read()
         return await handler(request)
@@ -479,6 +483,10 @@ def create_app(
         ("/topics", ("GET", "POST")),
         ("/topics/seen-all", ("POST",)),
         ("/topics/{tid}/seen", ("PUT",)),
+        ("/topics/{tid}/cron", ("GET", "POST")),
+        ("/topics/{tid}/cron/preview", ("POST",)),
+        ("/topics/{tid}/cron/{id}", ("GET", "PUT", "DELETE")),
+        ("/topics/{tid}/cron/{id}/toggle", ("POST",)),
         ("/topics/{tid}/autocompact", ("GET", "PUT")),
         ("/topics/{tid}/autocompact/automations", ("GET",)),
         ("/topics/{tid}/autocompact/automations/{kind}/{id}", ("PUT",)),

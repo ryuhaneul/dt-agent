@@ -204,7 +204,7 @@ def test_body_size_checked_before_changes(paths):
             jobs,
             tasks,
             {"id": "large", "title": "Large", "schedule": "* * * * *"},
-            "한" * (defs.BODY_LIMIT // 3 + 1),
+            "\u20AC" * (defs.BODY_LIMIT // 3 + 1),
             ductor_home=jobs.parent,
         )
     assert not tasks.exists()
