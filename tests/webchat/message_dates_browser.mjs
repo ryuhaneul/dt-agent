@@ -40,6 +40,103 @@ const messages = Array.from({ length: topic.count }, (_, index) => ({
 }));
 messages[74].role = 'event';
 messages[74].kind = 'background';
+async function mockChat(page, entries = messages) {
+  const fixtureTopic = { ...topic, count: entries.length, last_ts: entries.at(-1).ts };
+  await page.routeWebSocket('**/api/ws', () => {});
+  await page.route('**/api/**', async route => {
+    const request = route.request(), url = new URL(request.url());
+    const fulfill = (data, status = 200) => route.fulfill({ status, json: data });
+    switch (url.pathname) {
+      case '/api/i18n': {
+        const lang = url.searchParams.get('lang') || 'ko';
+        return fulfill({ lang, strings: config.locales[lang] });
+      }
+      case '/api/auth/state':
+        return fulfill({ authenticated: true, csrf: 'fixture', bridge_up: true, password_configured: true, totp_configured: true });
+      case '/api/topics': return fulfill({ topics: [fixtureTopic] });
+      case '/api/state': return fulfill({ telegram: { state: 'up' }, bot: { up: true }, outbox: { pending: 0 }, web_sessions: 1 });
+      case '/api/outbox': return fulfill({ items: [] });
+      case '/api/commands': return fulfill({ commands: [] });
+      case '/api/files': return fulfill({ files: [] });
+      case '/api/masterkey/status': return fulfill({ state: 'unconfigured', remaining_seconds: null });
+      case '/api/topics/1.2/seen': return fulfill({ seen: request.postDataJSON().seq });
+      case '/api/topics/1.2/messages': {
+        if (request.method() === 'POST') return fulfill({ turn_id: 'test-turn', phase: 'queued' });
+        const before = Number(url.searchParams.get('before') ?? Infinity);
+        const eligible = entries.filter(entry => entry.seq < before);
+        return fulfill({ entries: eligible.slice(-100), has_more: eligible.length > 100 });
+      }
+      default: return fulfill({});
+    }
+  });
+}
+
+async function scrollPosition(page, gap) {
+  return page.evaluate(async distance => {
+    const thread = document.querySelector('#thread');
+    if (distance !== undefined) thread.scrollTop = thread.scrollHeight - thread.clientHeight - distance;
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const bounds = thread.getBoundingClientRect();
+    const anchor = [...thread.querySelectorAll('[data-entry-seq]')].find(row => row.getBoundingClientRect().bottom > bounds.top);
+    return {
+      gap: thread.scrollHeight - thread.clientHeight - thread.scrollTop,
+      seq: anchor.dataset.entrySeq,
+      y: anchor.getBoundingClientRect().top,
+    };
+  }, gap);
+}
+
+async function calendarScroll(browser) {
+  const entries = messages.slice(0, 40);
+  const viewport = { width: 375, height: 667 };
+  const oldDay = config.locales.ko['chat.today'];
+  for (const gap of [0, 48, 64, 96]) {
+    const context = await browser.newContext({ viewport, timezoneId: 'Asia/Seoul' });
+    const page = await context.newPage();
+    await page.clock.install({ time: new Date('2025-12-31T14:59:30.000Z') });
+    await mockChat(page, entries);
+    await page.goto(origin);
+    await page.waitForFunction(() => document.querySelectorAll('[data-entry-seq]').length === 40);
+    await page.evaluate(() => document.fonts.ready);
+    const before = await scrollPosition(page, gap);
+    assert.equal(before.gap, gap);
+    assert.equal(await page.locator('#thread .day').textContent(), oldDay);
+
+    const remaining = Date.parse(afterMidnight) - await page.evaluate(() => Date.now());
+    await page.clock.runFor(remaining + 1200);
+    const date = await page.evaluate(ts => new Date(ts).toLocaleDateString('ko', { dateStyle: 'medium' }), beforeMidnight);
+    assert.equal(await page.locator('#thread .day').textContent(), date);
+    assert.deepEqual(await scrollPosition(page), before, `midnight at ${gap}px from latest`);
+    await context.close();
+  }
+
+  const context = await browser.newContext({ viewport });
+  const page = await context.newPage();
+  await page.clock.setFixedTime(new Date(afterMidnight));
+  await mockChat(page, entries);
+  await page.goto(origin);
+  await page.waitForFunction(() => document.querySelectorAll('[data-entry-seq]').length === 40);
+  await page.evaluate(() => document.fonts.ready);
+  const before = await scrollPosition(page, 64);
+  assert.equal(before.gap, 64);
+  const stamp = page.locator('#thread [data-entry-seq="40"] time');
+  const oldStamp = await stamp.textContent();
+  const oldZone = await page.evaluate(() => new Intl.DateTimeFormat().resolvedOptions().timeZone);
+  const cdp = await context.newCDPSession(page);
+  await cdp.send('Emulation.setTimezoneOverride', { timezoneId: oldZone === 'UTC' ? 'Asia/Seoul' : 'UTC' });
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await page.waitForFunction(text => document.querySelector('#thread [data-entry-seq="40"] time').textContent !== text, oldStamp);
+  assert.deepEqual(await scrollPosition(page), before, 'timezone refresh on focus');
+
+  await page.evaluate(() => {
+    window.resumeRow = document.querySelector('#thread [data-entry-seq="40"]');
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await page.waitForFunction(() => document.querySelector('#thread [data-entry-seq="40"]') !== window.resumeRow);
+  assert.deepEqual(await scrollPosition(page), before, 'history resync after returning to the chat');
+  await context.close();
+}
+
 const browser = await chromium.launch();
 const measurements = [];
 try {
@@ -51,33 +148,7 @@ try {
       await page.clock.setFixedTime(new Date(today));
       const errors = [];
       page.on('pageerror', error => errors.push(error.message));
-      await page.routeWebSocket('**/api/ws', () => {});
-      await page.route('**/api/**', async route => {
-        const request = route.request(), url = new URL(request.url());
-        const fulfill = (data, status = 200) => route.fulfill({ status, json: data });
-        switch (url.pathname) {
-          case '/api/i18n': {
-            const lang = url.searchParams.get('lang') || 'ko';
-            return fulfill({ lang, strings: config.locales[lang] });
-          }
-          case '/api/auth/state':
-            return fulfill({ authenticated: true, csrf: 'fixture', bridge_up: true, password_configured: true, totp_configured: true });
-          case '/api/topics': return fulfill({ topics: [topic] });
-          case '/api/state': return fulfill({ telegram: { state: 'up' }, bot: { up: true }, outbox: { pending: 0 }, web_sessions: 1 });
-          case '/api/outbox': return fulfill({ items: [] });
-          case '/api/commands': return fulfill({ commands: [] });
-          case '/api/files': return fulfill({ files: [] });
-          case '/api/masterkey/status': return fulfill({ state: 'unconfigured', remaining_seconds: null });
-          case '/api/topics/1.2/seen': return fulfill({ seen: request.postDataJSON().seq });
-          case '/api/topics/1.2/messages': {
-            if (request.method() === 'POST') return fulfill({ turn_id: 'test-turn', phase: 'queued' });
-            const before = Number(url.searchParams.get('before') ?? Infinity);
-            const eligible = messages.filter(entry => entry.seq < before);
-            return fulfill({ entries: eligible.slice(-100), has_more: eligible.length > 100 });
-          }
-          default: return fulfill({});
-        }
-      });
+      await mockChat(page);
       await page.goto(origin);
       await page.waitForFunction(() => document.querySelectorAll('[data-entry-seq]').length === 100);
       await page.evaluate(() => document.fonts.ready);
@@ -190,6 +261,7 @@ try {
       await context.close();
     }
   }
+  await calendarScroll(browser);
   console.log(JSON.stringify(measurements));
 } finally {
   await browser.close();

@@ -619,7 +619,9 @@ function mountedRows(rows, start, end, showBusy) {
   if (showBusy) mounted.push({ kind: 'busy', key: 'busy' });
   return mounted;
 }
-export function renderThread({ bottom = false, seq = null, changes = null, move = null, calendar } = {}) {
+export function renderThread({
+  bottom = false, seq = null, changes = null, move = null, calendar, preserveReading = !!calendar,
+} = {}) {
   if (!changes) cancelStreamRender();
   cancelHistoryRender();
   const topic = getTopic();
@@ -637,15 +639,16 @@ export function renderThread({ bottom = false, seq = null, changes = null, move 
   if (changes && (dayChanged || zoneChanged)) changes = { ...changes, dayChanged, zoneChanged };
   const state = history(topic.tid);
   const previousTop = thread.scrollTop;
-  const nearBottom = !state.range?.newer && thread.scrollHeight - thread.clientHeight - previousTop < 80;
-  const viewport = sameTopic && !bottom && seq === null && (move || !nearBottom)
+  const gap = thread.scrollHeight - thread.clientHeight - previousTop;
+  const followLatest = !state.range?.newer && gap < (preserveReading ? 1 : 80);
+  const viewport = sameTopic && !bottom && seq === null && (move || !followLatest)
     ? viewportMessages(thread) : {};
   const entries = sorted(topic.tid);
   const topicTurns = [...turns.values()].filter(turn => turn.tid === topic.tid);
   const liveTurns = topicTurns.filter(turn => ['queued', 'started'].includes(turn.phase));
   const rows = orderedMessages(entries, liveTurns, topicTurns);
   const { start: limit, end } = messageRange(state, rows, {
-    seq, bottom, move, viewport, keepReading: sameTopic && !nearBottom,
+    seq, bottom, move, viewport, keepReading: sameTopic && !followLatest,
   });
   let start = limit;
   if (!state.rendered && seq === null && !move && end - limit > 12) {
@@ -658,7 +661,7 @@ export function renderThread({ bottom = false, seq = null, changes = null, move 
   if (changes) patchThread(thread, groups, changes);
   else thread.innerHTML = groups.map(group => groupStart(group) + group.rows.map(itemMarkup).join('') + '</div>').join('');
   loadWindowAttachments(topic.tid, mounted);
-  const pinned = !move && (bottom || nearBottom) && !state.range.newer;
+  const pinned = !move && (bottom || followLatest) && !state.range.newer;
   if (seq !== null) {
     thread.querySelector(`[data-entry-seq="${Number(seq)}"]`)?.scrollIntoView({ block: 'center' });
   } else if (move === 'top') thread.scrollTop = 0;
@@ -762,7 +765,7 @@ async function refreshOutbox() {
   if (!active || epoch !== generation) return;
   outbox = data.items; renderOutboxStatus();
 }
-async function resync() {
+async function resync({ preserveReading = false } = {}) {
   attachmentView?.reset?.();
   const generation = epoch, versions = new Map(topicVersions), busySnapshot = new Map(busyVersions);
   try {
@@ -795,8 +798,12 @@ async function resync() {
     }
     const topic = getTopic();
     if (topic) {
+      const entries = history(topic.tid).entries;
+      const previousCount = entries.size;
       await loadHistory(topic.tid);
-      if (active && generation === epoch && getTopic()?.tid === topic.tid) renderThread();
+      if (active && generation === epoch && getTopic()?.tid === topic.tid) {
+        renderThread({ preserveReading: preserveReading && entries.size === previousCount });
+      }
     }
   } catch (error) { if (active && generation === epoch) errorNotice(error); }
 }
@@ -1117,7 +1124,7 @@ export function initChat() {
   document.addEventListener('visibilitychange', () => {
     if (!active || document.hidden) return;
     refreshCalendar();
-    void resync();
+    void resync({ preserveReading: true });
   });
   document.addEventListener('auth-change', event => {
     cancelTop();
