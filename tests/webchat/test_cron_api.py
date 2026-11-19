@@ -896,6 +896,7 @@ with patch("ductor_bot.cron.jobs_file.write_jobs_data", side_effect=OSError("sav
         ("cli", "body", False, "web"),
         ("cli", "registry", True, None),
         ("cli", None, False, "cli"),
+        ("cli", "cleanup", False, "cli"),
     ],
 )
 async def test_web_and_cli_same_id_create_keeps_winner(
@@ -928,7 +929,7 @@ async def test_web_and_cli_same_id_create_keeps_winner(
         "DUCTOR_TRANSPORT": "tg",
     }
     probe = """
-import runpy, sys
+import errno, os, runpy, sys
 from pathlib import Path
 from unittest.mock import patch
 from ductor_bot.cron import jobs_file
@@ -938,6 +939,7 @@ sys.path.insert(0, str(Path(script).parent))
 sys.argv = [script, *args]
 write_jobs = jobs_file.write_jobs_data
 write_text = Path.write_text
+rmdir = os.rmdir
 
 def wait_before_write():
     print("ready", flush=True)
@@ -958,7 +960,15 @@ def create_body(path, *args, **kwargs):
         raise OSError("CLI body failure")
     return write_text(path, *args, **kwargs)
 
-with patch.object(jobs_file, "write_jobs_data", save), patch.object(Path, "write_text", create_body):
+def remove_dir(path, *args, **kwargs):
+    candidate = Path(path)
+    if failure == "cleanup" and candidate.name.startswith(".cli-staging-"):
+        raise OSError(errno.EIO, "CLI cleanup failure", path)
+    return rmdir(path, *args, **kwargs)
+
+with patch.object(jobs_file, "write_jobs_data", save), patch.object(
+    Path, "write_text", create_body
+), patch.object(os, "rmdir", remove_dir):
     runpy.run_path(script, run_name="__main__")
 """
     command = [sys.executable, "-c", probe, first, str(cli_failure), *cli]
@@ -1038,12 +1048,30 @@ with patch.object(jobs_file, "write_jobs_data", save), patch.object(Path, "write
                 assert await asyncio.to_thread(web_waiting.wait, 10)
                 return await asyncio.wait_for(child.communicate(b"continue\n"), timeout=15)
 
-            response, (_, stderr) = await asyncio.gather(
+            response, (stdout, stderr) = await asyncio.gather(
                 api.client.post(PATH, json=data, headers=headers()), release_cli()
             )
-            assert child.returncode == (1 if cli_failure else 0)
-            if cli_failure:
+            assert child.returncode == (1 if cli_failure in {"body", "registry"} else 0)
+            if cli_failure in {"body", "registry"}:
                 assert f"CLI {cli_failure} failure".encode() in stderr
+            if cli_failure == "cleanup":
+                assert json.loads(stdout)["json_entry_created"] is True
+                (left,) = tasks.glob(".cli-staging-*")
+                assert list(left.iterdir()) == []
+                warnings = stderr.decode().splitlines()
+                assert len(warnings) == 1
+                assert "warning" in warnings[0].lower()
+                assert str(left) in warnings[0]
+                listed = await asyncio.to_thread(
+                    subprocess.run,
+                    [sys.executable, str(tool.with_name("cron_list.py"))],
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=15,
+                )
+                assert [entry["id"] for entry in json.loads(listed.stdout)["jobs"]] == [job]
         finally:
             if child.returncode is None:
                 child.kill()
@@ -1051,7 +1079,8 @@ with patch.object(jobs_file, "write_jobs_data", save), patch.object(Path, "write
 
     entries = read_jobs_data(jobs)["jobs"]
     assert not list(tasks.glob(".staging-*"))
-    assert not list(tasks.glob(".cli-staging-*"))
+    if cli_failure != "cleanup":
+        assert not list(tasks.glob(".cli-staging-*"))
     if winner is None:
         assert response.status == 503
         assert entries == []

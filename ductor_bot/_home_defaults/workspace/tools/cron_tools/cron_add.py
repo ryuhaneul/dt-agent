@@ -365,18 +365,28 @@ def main() -> None:
             sys.exit(1)
 
         CRON_TASKS_DIR.mkdir(parents=True, exist_ok=True)
-        with TemporaryDirectory(prefix=".cli-staging-", dir=CRON_TASKS_DIR) as scratch:
-            staging = _create_task_folder(
-                name, args.title, args.description, folder=Path(scratch) / name
-            )
-            staging.rename(task_dir)
-            # This invocation published the folder while holding the registry lock.
-            try:
-                data["jobs"].append(job)
-                write_jobs_data(JOBS_PATH, data)
-            except BaseException:
-                shutil.rmtree(task_dir)
+        committed = False
+        try:
+            with TemporaryDirectory(prefix=".cli-staging-", dir=CRON_TASKS_DIR) as scratch:
+                staging = _create_task_folder(
+                    name, args.title, args.description, folder=Path(scratch) / name
+                )
+                staging.rename(task_dir)
+                # This invocation published the folder while holding the registry lock.
+                try:
+                    data["jobs"].append(job)
+                    write_jobs_data(JOBS_PATH, data)
+                except BaseException:
+                    shutil.rmtree(task_dir)
+                    raise
+                committed = True
+        except OSError:
+            if not committed:
                 raise
+            print(
+                f"Warning: cron registration succeeded, but staging cleanup failed: {scratch!r}",
+                file=sys.stderr,
+            )
 
     # The CronObserver detects the mtime change and auto-schedules
 
