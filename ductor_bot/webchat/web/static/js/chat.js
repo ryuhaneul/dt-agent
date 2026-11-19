@@ -768,6 +768,7 @@ async function refreshOutbox() {
 }
 async function resync({ preserveReading = false } = {}) {
   attachmentView?.reset?.();
+  for (const state of histories.values()) state.loaded = false;
   const generation = epoch, versions = new Map(topicVersions), busySnapshot = new Map(busyVersions);
   try {
     await Promise.all([refreshTopics(), refreshState(), refreshOutbox()]);
@@ -798,7 +799,6 @@ async function resync({ preserveReading = false } = {}) {
       }
     }
     const topic = getTopic();
-    for (const [tid, state] of histories) if (tid !== topic?.tid) state.loaded = false;
     if (topic) {
       const entries = history(topic.tid).entries;
       const previousCount = entries.size;

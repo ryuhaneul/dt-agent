@@ -73,7 +73,7 @@ async function open(kind,width,entries,secondEntries=entries) {
   await page.waitForFunction(()=>!document.querySelector('#app').classList.contains('hidden'));
   await page.waitForFunction(count=>document.querySelectorAll('[data-entry-seq]').length===count,Math.min(entries.length,100));
   await page.evaluate(()=>document.fonts.ready);
-  return {page,context,socket};
+  return {page,context,get socket(){return socket;}};
 }
 const entries=Array.from({length:600},(_,index)=>({id:`e${index+1}`,seq:index+1,role:'bot',source:'telegram',text:`Entry ${index+1}\n\n**Message** https://example.test/${index+1}\n\n- item\n- next`,ts:null}));
 async function loadAll(page){
@@ -216,7 +216,8 @@ async function historyWindow() {
   fs.mkdirSync(cfg.artifacts,{recursive:true});
   for(const width of [375,768,1280]){
     const rows=entries.map(entry=>({...entry,source:'web'})),secondRows=entries.slice(0,300);
-    const {page,context,socket}=await open('current',width,rows,secondRows);
+    const session=await open('current',width,rows,secondRows);
+    const {page,context}=session;
     const historyRequests=[],secondRequests=[];
     page.on('request',request=>{
       const url=new URL(request.url());
@@ -280,7 +281,7 @@ async function historyWindow() {
 
     const live={...entries[300],ts:'2025-01-01T12:00:00Z',text:'Live search hit'};
     secondRows.push(live);
-    socket.send(JSON.stringify({type:'entry',tid:'1.3',entry:live}));
+    session.socket.send(JSON.stringify({type:'entry',tid:'1.3',entry:live}));
     await page.locator('#tlist [data-tid="1.3"] .pv').filter({hasText:live.text}).waitFor({state:'attached'});
     const beforeFirstSearch=secondRequests.length;
     await page.evaluate(async()=>{const {selectTopic}=await import('/static/js/topics.js');selectTopic('1.3',301);});
@@ -294,24 +295,37 @@ async function historyWindow() {
     await mounted.first().and(page.locator('[data-entry-seq="152"]')).waitFor({timeout:5000});
     assert.deepEqual(secondRequests.slice(beforeFirstSearch),[null,'202']);
 
-    await page.evaluate(async()=>{const {selectTopic}=await import('/static/js/topics.js');selectTopic('1.2');});
-    await page.waitForFunction(()=>document.querySelector('#msgIn')===document.activeElement);
-    await socket.close();
-    secondRows.push(...entries.slice(301,305));
-    rows.push({...rows.at(-1),id:'e601',seq:601,text:'Resynced current topic'});
-    await page.locator('#thread [data-entry-seq="601"]').waitFor();
-    const beforeReconnectSearch=secondRequests.length;
-    await page.evaluate(async()=>{const {selectTopic}=await import('/static/js/topics.js');selectTopic('1.3',250);});
-    await page.waitForFunction(()=>{
-      const node=document.querySelector('[data-entry-seq="250"]'), range=document.querySelector('#thread').getBoundingClientRect();
-      return node && node.getBoundingClientRect().top>=range.top && node.getBoundingClientRect().bottom<=range.bottom;
-    });
-    await page.locator('#threadBottom').click();
-    const reconnectedEntries=await mounted.evaluateAll(nodes=>nodes.slice(-4).map(node=>Number(node.dataset.entrySeq)));
-    assert.deepEqual(reconnectedEntries,[302,303,304,305],'Missed messages after reconnect and search');
-    assert.deepEqual(secondRequests.slice(beforeReconnectSearch),[null]);
-    await page.screenshot({path:path.join(cfg.artifacts,`reconnect-search-${width}.png`)});
-    results.push({width,maxMounted,down,up,olderRequests,searchBefore:secondRequests[beforeFirstSearch+1],reconnectedEntries});
+    const reconnectResults=[];
+    for(const failTopics of [false,true]){
+      await page.evaluate(async()=>{const {selectTopic}=await import('/static/js/topics.js');selectTopic('1.2');});
+      await page.waitForFunction(()=>document.querySelector('#msgIn')===document.activeElement);
+      if(failTopics){
+        await page.route('**/api/topics',route=>route.fulfill({status:500,json:{error:'generic'}}),{times:1});
+      }
+      await session.socket.close();
+      const missed=entries.slice(secondRows.length,secondRows.length+4);
+      secondRows.push(...missed);
+      if(failTopics){
+        await page.locator('#toasts [role="alert"]').filter({hasText:cfg.strings['error.generic']}).waitFor();
+      }else{
+        rows.push({...rows.at(-1),id:'e601',seq:601,text:'Resynced current topic'});
+        await page.locator('#thread [data-entry-seq="601"]').waitFor();
+      }
+      const beforeReconnectSearch=secondRequests.length;
+      await page.evaluate(async()=>{const {selectTopic}=await import('/static/js/topics.js');selectTopic('1.3',250);});
+      await page.waitForFunction(()=>{
+        const node=document.querySelector('[data-entry-seq="250"]'), range=document.querySelector('#thread').getBoundingClientRect();
+        return node && node.getBoundingClientRect().top>=range.top && node.getBoundingClientRect().bottom<=range.bottom;
+      });
+      await page.locator('#threadBottom').click();
+      const recovered=await mounted.evaluateAll(nodes=>nodes.slice(-4).map(node=>Number(node.dataset.entrySeq)));
+      assert.deepEqual(recovered,missed.map(entry=>entry.seq),`Missed messages after ${failTopics?'failed':'successful'} resync and search`);
+      assert.deepEqual(secondRequests.slice(beforeReconnectSearch),[null]);
+      const screenshot=failTopics?'failed-resync-search':'reconnect-search';
+      await page.screenshot({path:path.join(cfg.artifacts,`${screenshot}-${width}.png`)});
+      reconnectResults.push({failTopics,recovered});
+    }
+    results.push({width,maxMounted,down,up,olderRequests,searchBefore:secondRequests[beforeFirstSearch+1],reconnectResults});
     await context.close();
   }
   assert.deepEqual(failures,[]);
