@@ -37,6 +37,7 @@ def setup_import(tmp_path: Path) -> tuple[DuctorPaths, AgentConfig]:
     paths = DuctorPaths(tmp_path)
     config = AgentConfig(
         chat_log={"enabled": True},
+        memory_reflection={"prompt": "Synthetic reflection"},
         heartbeat={
             "prompt": "Synthetic heartbeat",
             "ack_token": "SYNTHETIC_OK",
@@ -164,6 +165,26 @@ def test_unknown_only_main_workspace_and_duplicate_roots(setup_import) -> None:
     assert [(file.provider, file.tid) for file in files].count(("claude", "111.7")) == 1
     assert sum(file.tid == "unknown" for file in files) == 2
     assert not any(file.session_id in {"synthetic-other", "synthetic-outside"} for file in files)
+
+
+@pytest.mark.parametrize("prompt", ["Synthetic reflection", "## Reflect\nSynthetic reflection"])
+def test_import_strips_configured_reflection_suffix(setup_import, prompt) -> None:
+    paths, config = setup_import
+    config.memory_reflection.prompt = prompt
+    importer = TranscriptImporter(paths, config)
+    source = next(file.path for file in importer.plan() if file.provider == "claude")
+    suffix = "\n\n" + prompt
+    followed_by_user_text = "Synthetic body" + suffix + "\n\nMore user text."
+    add_rows(
+        source,
+        [
+            {"type": "user", "message": {"content": "Synthetic body" + suffix}},
+            {"type": "user", "message": {"content": followed_by_user_text}},
+        ],
+    )
+
+    entries = next(file.entries for file in importer.plan() if file.provider == "claude")
+    assert [entry.text for entry in entries[-2:]] == ["Synthetic body", followed_by_user_text]
 
 
 def test_suffixes_queue_context_and_heartbeat_filter(setup_import) -> None:

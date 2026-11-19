@@ -133,7 +133,12 @@ class TranscriptImporter:
         )
 
     def _clean_user(self, text: str) -> tuple[str | None, str | None]:
-        text = _without_hook_suffix(without_queue_context(text)).strip()
+        text = without_queue_context(text)
+        prompt = self.config.memory_reflection.prompt
+        suffix = "\n\n" + prompt
+        while prompt and text.endswith(suffix):
+            text = text.removesuffix(suffix)
+        text = _without_hook_suffix(text).strip()
         ack = self._heartbeats.get(text)
         if not text or ack is not None or _INJECTION.match(text) or text.startswith("<"):
             return None, ack
