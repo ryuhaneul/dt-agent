@@ -67,6 +67,7 @@ class _Pending:
     key: str
     prompt_message_id: int
     expires_at: float
+    thread_id: int | None = None
 
 
 @dataclass(slots=True)
@@ -221,7 +222,7 @@ class SecretInput:
                 masterkey_text("expired")
                 if pending is not None and pending.key in STAGES
                 else _text("expired_value"),
-                thread_id=get_thread_id(message),
+                thread_id=pending.thread_id if pending is not None else get_thread_id(message),
             )
         elif command:
             if extra:
@@ -288,7 +289,7 @@ class SecretInput:
                 thread_id=get_thread_id(message),
             )
         elif action in {"set", "delete"} and len(parts) in {2, 3}:
-            if await self._locked(chat_id):
+            if await self._locked(chat_id, thread_id=get_thread_id(message)):
                 return
             key = parts[2] if len(parts) == 3 else ""
             if validate_key(key):
@@ -328,7 +329,7 @@ class SecretInput:
         prompt_text: str | None = None,
     ) -> None:
         identity = (chat_id, user_id)
-        pending = _Pending(chat_id, user_id, key, 0, self._clock() + PENDING_SECONDS)
+        pending = _Pending(chat_id, user_id, key, 0, self._clock() + PENDING_SECONDS, thread_id)
         # Replace any earlier request before starting the new one.
         self._remove_pending(chat_id, user_id)
         self._pending[identity] = pending
@@ -360,8 +361,9 @@ class SecretInput:
             self._schedule_prompt_delete(pending, at_expiry=True, edit_at_expiry=True)
 
     async def _value(self, message: Message, pending: _Pending | None) -> None:
+        thread_id = pending.thread_id if pending is not None else get_thread_id(message)
         # Schedule deletion before responding; never make the value message a reply target.
-        await self._delete(message.chat.id, message.message_id, thread_id=get_thread_id(message))
+        await self._delete(message.chat.id, message.message_id, thread_id=thread_id)
         if pending is None or pending.expires_at <= self._clock():
             if pending is not None and self._clock() >= pending.expires_at + 120:
                 self._remove_pending(pending.chat_id, pending.user_id)
@@ -370,17 +372,17 @@ class SecretInput:
                 masterkey_text("expired")
                 if pending is not None and pending.key in STAGES
                 else _text("expired"),
-                thread_id=get_thread_id(message),
+                thread_id=thread_id,
             )
             return
         if pending.key in STAGES:
             await self._masterkey.value(message, pending)
             return
-        if await self._locked(message.chat.id):
+        if await self._locked(message.chat.id, thread_id=thread_id):
             self._remove_pending(pending.chat_id, pending.user_id)
             return
         if message.text is None:
-            await self._send(message.chat.id, _text("not_text"), thread_id=get_thread_id(message))
+            await self._send(message.chat.id, _text("not_text"), thread_id=thread_id)
             return
         reason = validate_value(message.text)
         if reason is not None:
@@ -390,23 +392,21 @@ class SecretInput:
             await self._send(
                 message.chat.id,
                 _text("rejected", reason=_text(f"reason_{reason}", max=MAX_VALUE_LENGTH)),
-                thread_id=get_thread_id(message),
+                thread_id=thread_id,
             )
             return
         try:
             await vault_set_secret(self._store_path, pending.key, message.text, plain=set_secret)
         except Exception as exc:
             self._failure("save_failed", exc, pending.key)
-            await self._send(
-                message.chat.id, self._store_error(exc), thread_id=get_thread_id(message)
-            )
+            await self._send(message.chat.id, self._store_error(exc), thread_id=thread_id)
             return
         self._remove_pending(pending.chat_id, pending.user_id)
         logger.info("Secret input key=%s result=saved length=%d", pending.key, len(message.text))
         text = _text("saved", key=pending.key, length=len(message.text))
         if pending.key in load_env_secrets(self._home / ".env"):
             text += "\n" + _text("saved_env_note", key=pending.key)
-        await self._send(message.chat.id, text, thread_id=get_thread_id(message))
+        await self._send(message.chat.id, text, thread_id=thread_id)
 
     async def handle_callback(self, callback_query: CallbackQuery) -> bool:
         """Handle secret buttons, checking the actor's authorization again."""
@@ -419,7 +419,10 @@ class SecretInput:
                 denial = self._denial(message, callback_query.from_user.id)
                 if denial is None and data.startswith("mk:ttl:"):
                     await self._masterkey.callback(
-                        message.chat.id, callback_query.from_user.id, data
+                        message.chat.id,
+                        callback_query.from_user.id,
+                        data,
+                        thread_id=get_thread_id(message),
                     )
                 elif denial is None:
                     await self._callback_action(
@@ -445,7 +448,7 @@ class SecretInput:
             self._remove_pending(chat_id, user_id)
             await self._send(chat_id, _text("cancelled"), thread_id=thread_id)
             return
-        if await self._locked(chat_id):
+        if await self._locked(chat_id, thread_id=thread_id):
             return
         parts = data.split(":", 2)
         if len(parts) != 3 or parts[1] not in {"ow", "del"}:
@@ -474,14 +477,14 @@ class SecretInput:
             return masterkey_text("locked")
         return _text("save_failed")
 
-    async def _locked(self, chat_id: int) -> bool:
+    async def _locked(self, chat_id: int, *, thread_id: int | None = None) -> bool:
         try:
             vault = get_secret_vault(self._store_path)
             locked = vault is not None and (await vault.status()).state is VaultState.LOCKED
         except VaultError as exc:
             locked = exc.code == "SECRETS_LOCKED"
         if locked:
-            await self._send(chat_id, masterkey_text("locked"))
+            await self._send(chat_id, masterkey_text("locked"), thread_id=thread_id)
         return locked
 
     @staticmethod
@@ -701,6 +704,7 @@ class SecretInput:
                     "key": str,
                     "prompt_message_id": int,
                     "expires_at": (int, float),
+                    "thread_id": (int, type(None)),
                 },
             ),
             ("guarded", {"chat_id": int, "message_id": int, "at": (int, float), "deleted": bool}),
@@ -710,6 +714,8 @@ class SecretInput:
             if not isinstance(rows, list):
                 raise TypeError("metadata_shape")
             for row in rows:
+                if field == "pending" and isinstance(row, dict):
+                    row.setdefault("thread_id", None)
                 if not isinstance(row, dict) or set(row) != set(types):
                     raise ValueError("metadata_shape")
                 if any(not isinstance(row[key], expected) for key, expected in types.items()):

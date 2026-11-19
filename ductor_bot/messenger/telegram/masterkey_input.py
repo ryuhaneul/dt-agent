@@ -12,6 +12,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from ductor_bot.i18n import t
 from ductor_bot.infra.secret_runtime import get_secret_vault
 from ductor_bot.infra.secret_vault import SecretVault, VaultError, VaultState
+from ductor_bot.messenger.telegram.topic import get_thread_id
 
 if TYPE_CHECKING:
     from aiogram.types import Message
@@ -103,12 +104,22 @@ class MasterKeyInput:
         self._vault = None
 
     async def _stage(
-        self, chat_id: int, user_id: int, stage: str, keys: _Keys | None = None
+        self,
+        chat_id: int,
+        user_id: int,
+        stage: str,
+        keys: _Keys | None = None,
+        *,
+        thread_id: int | None = None,
     ) -> None:
         from ductor_bot.messenger.telegram.secret_input import PENDING_SECONDS
 
         await self._owner._request(
-            chat_id, user_id, PREFIX + stage, prompt_text=text("prompt_" + stage.replace("-", "_"))
+            chat_id,
+            user_id,
+            PREFIX + stage,
+            thread_id=thread_id,
+            prompt_text=text("prompt_" + stage.replace("-", "_")),
         )
         identity = (chat_id, user_id)
         if identity in self._owner._pending:
@@ -117,7 +128,7 @@ class MasterKeyInput:
                 PENDING_SECONDS, self.clear, identity
             )
 
-    async def error(self, chat_id: int, exc: VaultError) -> None:
+    async def error(self, chat_id: int, exc: VaultError, *, thread_id: int | None = None) -> None:
         name = {
             "MASTER_KEY_TOO_SHORT": "too_short",
             "SECRETS_RATE_LIMITED": "rate_limited",
@@ -131,30 +142,40 @@ class MasterKeyInput:
             "MASTER_KEY_ALREADY_SET": "already_set",
             "INVALID_TTL": "invalid_ttl",
         }.get(exc.code, "failed")
-        await self._owner._send(chat_id, text(name, retry_after=exc.retry_after or 0))
+        await self._owner._send(
+            chat_id, text(name, retry_after=exc.retry_after or 0), thread_id=thread_id
+        )
 
     async def command(self, message: Message, parts: list[str], user_id: int) -> None:
         chat_id = message.chat.id
+        thread_id = get_thread_id(message)
         self._owner._remove_pending(chat_id, user_id)
         action = parts[1].lower() if len(parts) > 1 else "status"
         if action == "cancel" and len(parts) == 2:
-            await self._owner._send(chat_id, text("cancelled"))
+            await self._owner._send(chat_id, text("cancelled"), thread_id=thread_id)
             return
         if len(parts) > 2 and not (action == "ttl" and len(parts) == 3):
-            await self._owner._delete(chat_id, message.message_id)
-            await self._owner._send(chat_id, text("usage"))
+            await self._owner._delete(chat_id, message.message_id, thread_id=thread_id)
+            await self._owner._send(chat_id, text("usage"), thread_id=thread_id)
             return
         try:
             vault = get_secret_vault(self._owner._store_path)
             if vault is None:
-                await self._owner._send(chat_id, text("unavailable"))
+                await self._owner._send(chat_id, text("unavailable"), thread_id=thread_id)
                 return
-            await self._command(vault, chat_id, user_id, action, parts)
+            await self._command(vault, chat_id, user_id, action, parts, thread_id=thread_id)
         except VaultError as exc:
-            await self.error(chat_id, exc)
+            await self.error(chat_id, exc, thread_id=thread_id)
 
-    async def _command(  # noqa: C901, PLR0912
-        self, vault: SecretVault, chat_id: int, user_id: int, action: str, parts: list[str]
+    async def _command(  # noqa: C901, PLR0912, PLR0913
+        self,
+        vault: SecretVault,
+        chat_id: int,
+        user_id: int,
+        action: str,
+        parts: list[str],
+        *,
+        thread_id: int | None = None,
     ) -> None:
         status = await vault.status()
         if action == "status":
@@ -180,119 +201,146 @@ class MasterKeyInput:
                     ttl=ttl,
                     remaining=remaining,
                 ),
+                thread_id=thread_id,
             )
         elif action == "lock":
             if status.state is VaultState.UNCONFIGURED:
                 raise VaultError("MASTER_KEY_NOT_SET")
             await vault.lock()
-            await self._owner._send(chat_id, text("locked"))
+            await self._owner._send(chat_id, text("locked"), thread_id=thread_id)
         elif action == "ttl":
             if len(parts) == 3:
-                await self.ttl(chat_id, user_id, parts[2])
+                await self.ttl(chat_id, user_id, parts[2], thread_id=thread_id)
             else:
-                await self._owner._send(chat_id, text("choose_ttl"), keyboard=self.keyboard())
+                await self._owner._send(
+                    chat_id, text("choose_ttl"), keyboard=self.keyboard(), thread_id=thread_id
+                )
         elif action == "setup":
             if status.state is not VaultState.UNCONFIGURED:
                 raise VaultError("MASTER_KEY_ALREADY_SET")
-            await self._stage(chat_id, user_id, "setup")
+            await self._stage(chat_id, user_id, "setup", thread_id=thread_id)
         elif action == "unlock":
             if status.state is VaultState.UNCONFIGURED:
                 raise VaultError("MASTER_KEY_NOT_SET")
-            await self._stage(chat_id, user_id, "unlock")
+            await self._stage(chat_id, user_id, "unlock", thread_id=thread_id)
         elif action == "change":
             if status.state is not VaultState.UNLOCKED:
                 raise VaultError(
                     "SECRETS_LOCKED" if status.state is VaultState.LOCKED else "MASTER_KEY_NOT_SET"
                 )
-            await self._stage(chat_id, user_id, "current")
+            await self._stage(chat_id, user_id, "current", thread_id=thread_id)
         else:
-            await self._owner._send(chat_id, text("usage"))
+            await self._owner._send(chat_id, text("usage"), thread_id=thread_id)
 
     async def value(self, message: Message, pending: _Pending) -> None:
         identity = (pending.chat_id, pending.user_id)
         keys = self._keys.get(identity)
         self._owner._remove_pending(*identity)
         chat_id, user_id = identity
+        thread_id = pending.thread_id
         value = message.text
         if keys is None:
-            await self._owner._send(chat_id, text("expired"))
+            await self._owner._send(chat_id, text("expired"), thread_id=thread_id)
             return
         stage = pending.key.removeprefix(PREFIX)
         if stage == "ttl":
-            await self.ttl(chat_id, user_id, value or "")
+            await self.ttl(chat_id, user_id, value or "", thread_id=thread_id)
             return
         if value is None:
-            await self._owner._send(chat_id, text("not_text"))
+            await self._owner._send(chat_id, text("not_text"), thread_id=thread_id)
             return
         try:
-            await self._key_value(chat_id, user_id, stage, keys, value)
+            await self._key_value(chat_id, user_id, stage, keys, value, thread_id=thread_id)
         except UnicodeError:
-            await self._owner._send(chat_id, text("not_text"))
+            await self._owner._send(chat_id, text("not_text"), thread_id=thread_id)
         except VaultError as exc:
-            await self.error(chat_id, exc)
+            await self.error(chat_id, exc, thread_id=thread_id)
 
-    async def _key_value(  # noqa: C901
-        self, chat_id: int, user_id: int, stage: str, keys: _Keys, value: str
+    async def _key_value(  # noqa: C901, PLR0913
+        self,
+        chat_id: int,
+        user_id: int,
+        stage: str,
+        keys: _Keys,
+        value: str,
+        *,
+        thread_id: int | None = None,
     ) -> None:
         if not value.encode("utf-8"):
             raise VaultError("MASTER_KEY_TOO_SHORT")
         vault = get_secret_vault(self._owner._store_path)
         if vault is None:
-            await self._owner._send(chat_id, text("unavailable"))
+            await self._owner._send(chat_id, text("unavailable"), thread_id=thread_id)
             return
         if stage in {"setup", "new"}:
             if len(value) < 8:
                 raise VaultError("MASTER_KEY_TOO_SHORT")
             keys.new = value
             await self._stage(
-                chat_id, user_id, "setup-confirm" if stage == "setup" else "new-confirm", keys
+                chat_id,
+                user_id,
+                "setup-confirm" if stage == "setup" else "new-confirm",
+                keys,
+                thread_id=thread_id,
             )
         elif stage == "current":
             keys.current = value
-            await self._stage(chat_id, user_id, "new", keys)
+            await self._stage(chat_id, user_id, "new", keys, thread_id=thread_id)
         elif stage in {"setup-confirm", "new-confirm"}:
             if not hmac.compare_digest(keys.new.encode("utf-8"), value.encode("utf-8")):
-                await self._owner._send(chat_id, text("mismatch"))
+                await self._owner._send(chat_id, text("mismatch"), thread_id=thread_id)
                 return
             if stage == "setup-confirm":
                 await vault.setup(value)
             else:
                 await vault.change_key(keys.current, value)
             await self._owner._send(
-                chat_id, text("setup_done" if stage == "setup-confirm" else "changed")
+                chat_id,
+                text("setup_done" if stage == "setup-confirm" else "changed"),
+                thread_id=thread_id,
             )
         elif stage == "ttl-key" and keys.ttl_seconds is not None:
             await vault.set_ttl(keys.ttl_seconds, value)
-            await self._owner._send(chat_id, text("ttl_saved"))
+            await self._owner._send(chat_id, text("ttl_saved"), thread_id=thread_id)
         elif stage == "unlock":
             await vault.unlock(value)
-            await self._owner._send(chat_id, text("unlocked"))
+            await self._owner._send(chat_id, text("unlocked"), thread_id=thread_id)
 
-    async def ttl(self, chat_id: int, user_id: int, value: str) -> None:
+    async def ttl(
+        self, chat_id: int, user_id: int, value: str, *, thread_id: int | None = None
+    ) -> None:
         if not value.isascii() or not value.isdecimal() or len(value) > 8:
-            await self._owner._send(chat_id, text("invalid_ttl"))
+            await self._owner._send(chat_id, text("invalid_ttl"), thread_id=thread_id)
             return
         try:
             vault = get_secret_vault(self._owner._store_path)
             if vault is None:
-                await self._owner._send(chat_id, text("unavailable"))
+                await self._owner._send(chat_id, text("unavailable"), thread_id=thread_id)
                 return
             await vault.set_ttl(int(value) * 60)
         except VaultError as exc:
             if exc.code == "MASTER_KEY_REQUIRED":
-                await self._stage(chat_id, user_id, "ttl-key", _Keys(ttl_seconds=int(value) * 60))
+                await self._stage(
+                    chat_id,
+                    user_id,
+                    "ttl-key",
+                    _Keys(ttl_seconds=int(value) * 60),
+                    thread_id=thread_id,
+                )
             else:
-                await self.error(chat_id, exc)
+                await self.error(chat_id, exc, thread_id=thread_id)
         else:
-            await self._owner._send(chat_id, text("ttl_saved"))
+            await self._owner._send(chat_id, text("ttl_saved"), thread_id=thread_id)
 
-    async def callback(self, chat_id: int, user_id: int, data: str) -> None:
+    async def callback(
+        self, chat_id: int, user_id: int, data: str, *, thread_id: int | None = None
+    ) -> None:
         self._owner._remove_pending(chat_id, user_id)
         value = data.removeprefix("mk:ttl:")
         if value == "custom":
-            await self._stage(chat_id, user_id, "ttl")
+            await self._stage(chat_id, user_id, "ttl", thread_id=thread_id)
         else:
-            await self.ttl(chat_id, user_id, value)
+            await self.ttl(chat_id, user_id, value, thread_id=thread_id)
 
     @staticmethod
     def keyboard() -> InlineKeyboardMarkup:
