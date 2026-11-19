@@ -69,16 +69,6 @@ _DEFAULT_FLUSH_PROMPT = (
     "nothing new worth saving, reply exactly: FLUSH_NOOP"
 )
 
-# Exact pre-reporting default, retained to strip it from imported transcripts.
-LEGACY_MEMORY_REFLECTION_PROMPT = (
-    "## MEMORY REFLECTION\n"
-    "Review the last several messages in this conversation.\n"
-    "Check: were there any new decisions, corrections, error solutions, user preferences, or "
-    "important facts that you did NOT yet write to memory?\n"
-    "If yes -- update memory_system/MAINMEMORY.md silently.\n"
-    "If everything is already recorded -- do nothing."
-)
-
 _DEFAULT_MEMORY_REFLECTION_PROMPT = (
     "## MEMORY REFLECTION\n"
     "Review the last several messages in this conversation.\n"

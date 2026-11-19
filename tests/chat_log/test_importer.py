@@ -20,33 +20,6 @@ from ductor_bot.workspace.paths import DuctorPaths
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
-_LEGACY_MEMORY_REFLECTION_PROMPT = (
-    "## MEMORY REFLECTION\n"
-    "Review the last several messages in this conversation.\n"
-    "Check: were there any new decisions, corrections, error solutions, user preferences, or "
-    "important facts that you did NOT yet write to memory?\n"
-    "If yes -- update memory_system/MAINMEMORY.md silently.\n"
-    "If everything is already recorded -- do nothing."
-)
-
-_LEGACY_MAINMEMORY_REMINDER = (
-    "## MEMORY CHECK\n"
-    "Silently review: memory_system/MAINMEMORY.md, user_tools/, cron_tasks/.\n"
-    "Compare what you already know with this conversation so far.\n"
-    "If something important is missing from memory (personality, preferences, decisions, "
-    "facts) -- save it silently in the workspace memory (memory_system/) if it matters "
-    "regardless of the model you run on; use a model's built-in memory (for example Claude "
-    "auto-memory) only for notes that apply to that model alone.\n"
-    "MAINMEMORY.md holds only what you must always know plus an index; put details in "
-    "separate topic files under memory_system/ and link them from that index. Prefer merging "
-    "into an existing page over creating a new file, and when a fact changes, update the "
-    "essentials at the top in the same edit. After editing files in memory_system/, run "
-    "`python3 tools/memory_tools/memory_lint.py check` and fix its findings; to look "
-    "something up, use memory_search.py instead of searching recursively.\n"
-    "If you notice a gap that only the user can fill, ask ONE natural follow-up question that "
-    "fits the current conversation. Do not interrogate."
-)
-
 
 def write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -64,7 +37,6 @@ def setup_import(tmp_path: Path) -> tuple[DuctorPaths, AgentConfig]:
     paths = DuctorPaths(tmp_path)
     config = AgentConfig(
         chat_log={"enabled": True},
-        memory_reflection={"prompt": "Synthetic reflection"},
         heartbeat={
             "prompt": "Synthetic heartbeat",
             "ack_token": "SYNTHETIC_OK",
@@ -1117,33 +1089,42 @@ async def test_short_bot_reply_is_not_consumed_by_unrelated_live_prefix(
     assert sum(len(file.entries) for file in importer.run()) == 0
 
 
-@pytest.mark.parametrize("custom_prompt", [None, "Custom reflection"])
 @pytest.mark.parametrize(
     "suffix",
     [
-        _LEGACY_MAINMEMORY_REMINDER,
-        _LEGACY_MEMORY_REFLECTION_PROMPT,
-        _LEGACY_MAINMEMORY_REMINDER + "\n\n" + _LEGACY_MEMORY_REFLECTION_PROMPT,
+        hooks.MAINMEMORY_REMINDER.suffix,
+        AgentConfig().memory_reflection.prompt,
+        "## MEMORY CHECK\nSave it silently in the workspace memory (memory_system/).",
+        "## MEMORY REFLECTION\nIf yes -- update memory_system/MAINMEMORY.md silently.",
+        "## MEMORY CHECK\nChanged wording.\n\n## MEMORY REFLECTION\nAnother update.",
     ],
-    ids=["reminder", "reflection", "combined"],
+    ids=["current-check", "current-reflection", "old-check", "old-reflection", "changed-multiple"],
 )
-def test_import_strips_legacy_memory_suffixes(setup_import, custom_prompt, suffix) -> None:
-    paths, _ = setup_import
-    config = AgentConfig()
-    if custom_prompt is not None:
-        config.memory_reflection.prompt = custom_prompt
-    source = next(
-        file.path for file in TranscriptImporter(paths, config).plan() if file.provider == "claude"
-    )
+def test_import_strips_memory_hooks_by_heading(setup_import, suffix) -> None:
+    paths, config = setup_import
+    importer = TranscriptImporter(paths, config)
+    source = next(file.path for file in importer.plan() if file.provider == "claude")
     add_rows(source, [{"type": "user", "message": {"content": "Old question\n\n" + suffix}}])
 
-    entries = next(
-        file.entries
-        for file in TranscriptImporter(paths, config).plan()
-        if file.provider == "claude"
-    )
+    entries = next(file.entries for file in importer.plan() if file.provider == "claude")
     assert entries[-1].text == "Old question"
-    # A partial suffix or a suffix inside actual user content must remain intact.
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "A regular question\n\nA second paragraph.",
+        "## MEMORY CHECK\nA user heading at the start.",
+        "Question mentions ## MEMORY CHECK inline.\nNext line.",
+        "Question\n## MEMORY CHECK\nNo separating blank line.",
+        "Question\n\n## MEMORY CHECK notes\nUser text.",
+        "Question\n\n> ## MEMORY REFLECTION\n> A quoted heading.\n\nUser ending.",
+        "Question\n\n```md\n\n## MEMORY CHECK\nQuoted text.\n```\n\nUser ending.",
+        "Question\n\n~~~~md\n~~~\n\n## MEMORY CHECK\nQuoted text.\n~~~~",
+    ],
+)
+def test_import_preserves_user_content_near_hook_boundaries(setup_import, body) -> None:
+    paths, config = setup_import
     importer = TranscriptImporter(paths, config)
-    for text in ("Question\n\n" + suffix[:-1], "Question\n\n" + suffix + "\nUser ending"):
-        assert importer._clean_user(text) == (text, None)
+    assert importer._clean_user(body) == (body, None)
+    assert importer._clean_user(body + "\n\n## TASK REMINDER\nFramework text.") == (body, None)
