@@ -798,6 +798,7 @@ async function resync({ preserveReading = false } = {}) {
       }
     }
     const topic = getTopic();
+    for (const [tid, state] of histories) if (tid !== topic?.tid) state.loaded = false;
     if (topic) {
       const entries = history(topic.tid).entries;
       const previousCount = entries.size;

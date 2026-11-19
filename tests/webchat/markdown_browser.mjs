@@ -22,7 +22,7 @@ async function serve(root) {
   return {server,origin:`http://127.0.0.1:${server.address().port}`};
 }
 const servers = {current:await serve(cfg.root),baseline:await serve(cfg.baseline)};
-async function open(kind,width,entries) {
+async function open(kind,width,entries,secondEntries=entries) {
   const context=await browser.newContext({viewport:{width,height:900},reducedMotion:'reduce'});
   await context.addInitScript(()=>{
     localStorage.setItem('dtw-theme','light');
@@ -45,20 +45,23 @@ async function open(kind,width,entries) {
   });
   const page=await context.newPage();
   page.on('pageerror',error=>failures.push(error.message));
-  await page.routeWebSocket('**/api/ws',()=>{});
+  let socket;
+  await page.routeWebSocket('**/api/ws',peer=>{socket=peer;});
   const topic={tid:'1.2',chat_id:1,topic_id:2,name:'Markdown fixture',group:'telegram',count:entries.length,seen:entries.length,renamable:true,deletable:true,read_only:false,preview:'',last_ts:null,created_at:null,imported_count:0,busy:false};
+  const secondTopic={...topic,tid:'1.3',topic_id:3,name:'Second topic',seen:secondEntries.length};
   await page.route('**/api/**',async route=>{
     const url=new URL(route.request().url());let result;
+    const tid=url.pathname.split('/')[3], topicEntries=tid==='1.3'?secondEntries:entries;
     if(url.pathname==='/api/i18n')result={lang:'en',strings:cfg.strings};
     else if(url.pathname==='/api/auth/state')result={authenticated:true,csrf:'fake-csrf',bridge_up:true};
     else if(url.pathname==='/api/commands')result={commands:[]};
-    else if(url.pathname==='/api/topics')result={topics:[topic,{...topic,tid:'1.3',topic_id:3,name:'Second topic'},...(cfg.mode==='navigation'?[{...topic,tid:'1.4',topic_id:4,name:'Third topic'}]:[])]};
+    else if(url.pathname==='/api/topics')result={topics:[topic,{...secondTopic,count:secondEntries.length},...(cfg.mode==='navigation'?[{...topic,tid:'1.4',topic_id:4,name:'Third topic'}]:[])]};
     else if(url.pathname==='/api/state')result={telegram:{state:'up',strip:Array(30).fill('ok')},outbox:{pending:0},bot:{up:true},web_sessions:1};
     else if(url.pathname==='/api/outbox')result={items:[]};
     else if(url.pathname.endsWith('/messages')){
-      const before=Number(url.searchParams.get('before')||Infinity),rows=entries.filter(entry=>entry.seq<before);
-      result={entries:rows.slice(-100).map(entry=>({...entry,text:`Topic ${url.pathname.split('/')[3]}\n\n${entry.text}`})),has_more:rows.length>100};
-    }else if(url.pathname.endsWith('/seen'))result={seen:entries.at(-1)?.seq||0};
+      const before=Number(url.searchParams.get('before')||Infinity),rows=topicEntries.filter(entry=>entry.seq<before);
+      result={entries:rows.slice(-100).map(entry=>({...entry,text:`Topic ${tid}\n\n${entry.text}`})),has_more:rows.length>100};
+    }else if(url.pathname.endsWith('/seen'))result={seen:topicEntries.at(-1)?.seq||0};
     else if(url.pathname==='/api/cli-login/status')result={providers:{},claude_slots:[],running:false};
     else if(url.pathname==='/api/masterkey/status')result={state:'unconfigured',ttl_seconds:0};
     else if(url.pathname==='/api/files')result={files:[{name:'PERSONA.md'}]};
@@ -70,7 +73,7 @@ async function open(kind,width,entries) {
   await page.waitForFunction(()=>!document.querySelector('#app').classList.contains('hidden'));
   await page.waitForFunction(count=>document.querySelectorAll('[data-entry-seq]').length===count,Math.min(entries.length,100));
   await page.evaluate(()=>document.fonts.ready);
-  return {page,context};
+  return {page,context,socket};
 }
 const entries=Array.from({length:600},(_,index)=>({id:`e${index+1}`,seq:index+1,role:'bot',source:'telegram',text:`Entry ${index+1}\n\n**Message** https://example.test/${index+1}\n\n- item\n- next`,ts:null}));
 async function loadAll(page){
@@ -210,13 +213,15 @@ async function navigation() {
 
 async function historyWindow() {
   const results=[];
-  const rows=entries.map(entry=>({...entry,source:'web'}));
+  fs.mkdirSync(cfg.artifacts,{recursive:true});
   for(const width of [375,768,1280]){
-    const {page,context}=await open('current',width,rows);
-    const historyRequests=[];
+    const rows=entries.map(entry=>({...entry,source:'web'})),secondRows=entries.slice(0,300);
+    const {page,context,socket}=await open('current',width,rows,secondRows);
+    const historyRequests=[],secondRequests=[];
     page.on('request',request=>{
       const url=new URL(request.url());
       if(url.pathname==='/api/topics/1.2/messages')historyRequests.push(url.searchParams.get('before'));
+      if(url.pathname==='/api/topics/1.3/messages')secondRequests.push(url.searchParams.get('before'));
     });
     await page.evaluate(async()=>{
       const {selectTopic}=await import('/static/js/topics.js');
@@ -271,11 +276,45 @@ async function historyWindow() {
     assert.equal(historyRequests.length,afterFetch);
     const maxMounted=await page.evaluate(()=>window.maxMounted);
     assert.equal(maxMounted,100);
-    results.push({width,maxMounted,down,up,olderRequests:historyRequests.filter(Boolean).length});
+    const olderRequests=historyRequests.filter(Boolean).length;
+
+    const live={...entries[300],ts:'2025-01-01T12:00:00Z',text:'Live search hit'};
+    secondRows.push(live);
+    socket.send(JSON.stringify({type:'entry',tid:'1.3',entry:live}));
+    await page.locator('#tlist [data-tid="1.3"] .pv').filter({hasText:live.text}).waitFor({state:'attached'});
+    const beforeFirstSearch=secondRequests.length;
+    await page.evaluate(async()=>{const {selectTopic}=await import('/static/js/topics.js');selectTopic('1.3',301);});
+    const mounted=page.locator('#thread [data-entry-seq]');
+    await mounted.first().and(page.locator('[data-entry-seq="202"]')).waitFor({timeout:5000});
+    assert.equal(await mounted.count(),100);
+    assert.equal(await mounted.last().getAttribute('data-entry-seq'),'301');
+    assert(await page.locator('#threadTop').isVisible());
+    assert.deepEqual(secondRequests.slice(beforeFirstSearch),[null]);
+    await page.locator('#thread').evaluate(thread=>{thread.scrollTop=0;});
+    await mounted.first().and(page.locator('[data-entry-seq="152"]')).waitFor({timeout:5000});
+    assert.deepEqual(secondRequests.slice(beforeFirstSearch),[null,'202']);
+
+    await page.evaluate(async()=>{const {selectTopic}=await import('/static/js/topics.js');selectTopic('1.2');});
+    await page.waitForFunction(()=>document.querySelector('#msgIn')===document.activeElement);
+    await socket.close();
+    secondRows.push(...entries.slice(301,305));
+    rows.push({...rows.at(-1),id:'e601',seq:601,text:'Resynced current topic'});
+    await page.locator('#thread [data-entry-seq="601"]').waitFor();
+    const beforeReconnectSearch=secondRequests.length;
+    await page.evaluate(async()=>{const {selectTopic}=await import('/static/js/topics.js');selectTopic('1.3',250);});
+    await page.waitForFunction(()=>{
+      const node=document.querySelector('[data-entry-seq="250"]'), range=document.querySelector('#thread').getBoundingClientRect();
+      return node && node.getBoundingClientRect().top>=range.top && node.getBoundingClientRect().bottom<=range.bottom;
+    });
+    await page.locator('#threadBottom').click();
+    const reconnectedEntries=await mounted.evaluateAll(nodes=>nodes.slice(-4).map(node=>Number(node.dataset.entrySeq)));
+    assert.deepEqual(reconnectedEntries,[302,303,304,305],'Missed messages after reconnect and search');
+    assert.deepEqual(secondRequests.slice(beforeReconnectSearch),[null]);
+    await page.screenshot({path:path.join(cfg.artifacts,`reconnect-search-${width}.png`)});
+    results.push({width,maxMounted,down,up,olderRequests,searchBefore:secondRequests[beforeFirstSearch+1],reconnectedEntries});
     await context.close();
   }
   assert.deepEqual(failures,[]);
-  fs.mkdirSync(cfg.artifacts,{recursive:true});
   fs.writeFileSync(path.join(cfg.artifacts,'window.json'),JSON.stringify(results,null,2));
   console.log(JSON.stringify(results));
 }
