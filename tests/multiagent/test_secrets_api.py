@@ -247,13 +247,17 @@ async def test_rpc_ignores_proxy_environment(
     assert await asyncio.to_thread(loader.store_secrets, "GH_TOKEN") == {"GH_TOKEN": VALUE}
 
 
-def test_status_tool_projects_only_public_metadata(monkeypatch, capsys):
+@pytest.mark.parametrize(
+    ("state", "ttl", "remaining"),
+    [("unconfigured", 0, None), ("locked", 900, None), ("unlocked", 900, 123.75)],
+)
+def test_status_tool_projects_only_public_metadata(monkeypatch, capsys, state, ttl, remaining):
     module = ModuleType("_secrets")
     module.SecretsError = RuntimeError
     module.secret_status = lambda: {
-        "state": "locked",
-        "ttl_seconds": 900,
-        "remaining_seconds": None,
+        "state": state,
+        "ttl_seconds": ttl,
+        "remaining_seconds": remaining,
         "value": VALUE,
         "master_key": MASTER,
         "token": "synthetic-boot-token",
@@ -264,9 +268,9 @@ def test_status_tool_projects_only_public_metadata(monkeypatch, capsys):
     assert script["main"]() == 0
     output = capsys.readouterr()
     assert json.loads(output.out) == {
-        "state": "locked",
-        "ttl_seconds": 900,
-        "remaining_seconds": None,
+        "state": state,
+        "ttl_seconds": ttl,
+        "remaining_seconds": remaining,
     }
     assert output.err == ""
     assert VALUE not in output.out

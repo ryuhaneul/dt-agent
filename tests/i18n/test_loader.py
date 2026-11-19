@@ -8,7 +8,13 @@ from pathlib import Path
 import pytest
 
 from ductor_bot.i18n import LANGUAGES, init, t, t_cmd, t_plural, t_rich
-from ductor_bot.i18n.loader import TranslationStore, _flatten, _load_language, _load_toml
+from ductor_bot.i18n.loader import (
+    TranslationStore,
+    _flatten,
+    _load_language,
+    _load_toml,
+    load_web_strings,
+)
 
 _I18N_ROOT = Path(__file__).resolve().parent.parent.parent / "ductor_bot" / "i18n"
 
@@ -261,3 +267,33 @@ def test_all_language_dirs_exist() -> None:
     for lang_code in LANGUAGES:
         lang_dir = _I18N_ROOT / lang_code
         assert lang_dir.is_dir(), f"Language dir missing: {lang_dir}"
+
+
+@pytest.mark.parametrize("language", [*LANGUAGES, "", "../ko", "/tmp", r"..\ko", "unknown"])
+def test_web_strings_open_only_registered_locale_paths(language, monkeypatch):
+    from ductor_bot.i18n import loader
+
+    paths = []
+    load = loader._load_toml
+
+    def record(path):
+        paths.append(path)
+        return load(path)
+
+    monkeypatch.setattr(loader, "_load_toml", record)
+    actual = load_web_strings(language)
+    selected = language if language in LANGUAGES else "en"
+    expected_paths = [_I18N_ROOT / "en" / "web.toml"]
+    if selected != "en":
+        expected_paths.append(_I18N_ROOT / selected / "web.toml")
+    expected_paths.append(_I18N_ROOT / "en" / "chat.toml")
+    if selected != "en":
+        expected_paths.append(_I18N_ROOT / selected / "chat.toml")
+    assert paths == expected_paths
+    expected = load(_I18N_ROOT / "en" / "web.toml")
+    expected.update(load(_I18N_ROOT / selected / "web.toml"))
+    chat = load(_I18N_ROOT / "en" / "chat.toml")
+    chat.update(load(_I18N_ROOT / selected / "chat.toml"))
+    for key in actual.keys() - expected.keys():
+        expected[key] = chat[key]
+    assert actual == expected

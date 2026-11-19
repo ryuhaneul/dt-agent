@@ -111,15 +111,16 @@ class TranslationStore:
 def load_web_strings(lang: str) -> dict[str, str]:
     """Load flattened web strings with English fallback for absent keys."""
     strings = _load_toml(_I18N_DIR / "en" / "web.toml")
-    # Only locale directories may be selected, never an arbitrary file path.
+    # Select the registered constant key instead of carrying caller input into paths.
     from ductor_bot.i18n import LANGUAGES
 
-    if lang != "en" and lang in LANGUAGES:
-        strings.update(_load_toml(_I18N_DIR / lang / "web.toml"))
+    language = next((code for code in LANGUAGES if code == lang), "en")
+    if language != "en":
+        strings.update(_load_toml(_I18N_DIR / language / "web.toml"))
     # Reuse only the public Telegram indicator labels, never the rest of chat strings.
     chat = _load_toml(_I18N_DIR / "en" / "chat.toml")
-    if lang != "en" and lang in LANGUAGES:
-        chat.update(_load_toml(_I18N_DIR / lang / "chat.toml"))
+    if language != "en":
+        chat.update(_load_toml(_I18N_DIR / language / "chat.toml"))
     for name in (
         "label_thinking",
         "label_compacting",

@@ -454,3 +454,32 @@ async def test_first_enrollment_failure_never_writes_plaintext_and_can_retry(
     assert saved.totp is not None
     assert decrypt_seed(saved.totp, PASSWORD)[0] == SEED
     assert SEED not in instance.credential_store.path.read_text()
+
+
+@pytest.mark.parametrize("encrypted", [False, True])
+@pytest.mark.parametrize("password_set", [False, True])
+@pytest.mark.parametrize("totp_set", [False, True])
+def test_check_config_credential_flags_expose_no_values(
+    cli_home, capsys, encrypted, password_set, totp_set
+):
+    encoded = hash_password(PASSWORD) if password_set else ""
+    if encrypted:
+        store = CredentialStore(cli_home.webchat_dir / "credentials.json")
+        salt = b"0123456789abcdef"
+        totp = encrypt_seed(SEED, derive_seed_key(PASSWORD, salt), salt) if totp_set else None
+        store.save(WebCredentials(encoded, totp))
+    else:
+        path = cli_home.ductor_home / "secrets.env"
+        path.write_text(f"{PASSWORD_KEY}={encoded}\n{TOTP_KEY}={SEED if totp_set else ''}\n")
+    cli.cmd_webchat(["check-config", "--json"])
+    output = capsys.readouterr()
+    assert json.loads(output.out)["credentials"] == {
+        "storage": "encrypted" if encrypted else "legacy",
+        "password_configured": password_set,
+        "totp_configured": totp_set,
+        "migration_required": not encrypted,
+    }
+    assert PASSWORD not in output.out + output.err
+    assert SEED not in output.out + output.err
+    if encoded:
+        assert encoded not in output.out + output.err

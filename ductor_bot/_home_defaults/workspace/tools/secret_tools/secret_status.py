@@ -14,10 +14,16 @@ from _secrets import SecretsError, secret_status as read_store_status
 def main() -> int:
     try:
         metadata = read_store_status()
+        # Rebuild the public enum and numbers instead of forwarding RPC values.
+        state = next(
+            state for state in ("unconfigured", "locked", "unlocked")
+            if state == metadata["state"]
+        )
+        remaining = metadata["remaining_seconds"]
         public_status = {
-            "state": metadata["state"],
-            "ttl_seconds": metadata["ttl_seconds"],
-            "remaining_seconds": metadata["remaining_seconds"],
+            "state": state,
+            "ttl_seconds": int(metadata["ttl_seconds"]),
+            "remaining_seconds": float(remaining) if remaining is not None else None,
         }
         print(json.dumps(public_status))
         return 0

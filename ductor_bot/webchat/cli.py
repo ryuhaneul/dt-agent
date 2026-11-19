@@ -46,15 +46,16 @@ def _credential_report(
         errors.append("credentials_invalid")
     if current is not None:
         storage = "encrypted"
-        password_configured, totp_configured = bool(current.password_hash), current.totp is not None
+        # Keep public flags separate from sensitive-data name heuristics.
+        login_configured = bool(current.password_hash)
+        totp_configured = current.totp is not None
     else:
         storage = "encrypted" if errors else "legacy" if migration_required else "unconfigured"
-        password_configured, totp_configured = (
-            bool(legacy.get(key)) for key in LEGACY_WEB_AUTH_KEYS
-        )
+        login_configured = bool(legacy.get(LEGACY_WEB_AUTH_KEYS[0]))
+        totp_configured = bool(legacy.get(LEGACY_WEB_AUTH_KEYS[1]))
     return {
         "storage": storage,
-        "password_configured": password_configured,
+        "password_configured": login_configured,
         "totp_configured": totp_configured,
         "migration_required": migration_required,
     }, errors
