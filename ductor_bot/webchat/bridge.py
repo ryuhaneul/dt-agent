@@ -559,7 +559,16 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
             return _error(exc.code, exc.status)
         except OSError:
             return _error("attachment_storage_unavailable", 503)
-        turn_id = await turns.submit(tid, prepared.text, turn=prepared.turn, attachments=prepared)
+        try:
+            turn_id = await turns.submit(
+                tid, prepared.text, turn=prepared.turn, attachments=prepared
+            )
+        except OSError:
+            try:
+                await attachments.rollback(tid, owner, prepared)
+            except (OSError, UploadError):
+                logger.warning("Attachment admission rollback unavailable")
+            raise
         return web.json_response({"turn_id": turn_id}, status=202)
 
     async def entry_attachments(request: web.Request) -> web.Response:

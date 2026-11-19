@@ -753,6 +753,35 @@ class UploadStore:
             raise
         return sessions
 
+    async def release_claims(
+        self,
+        upload_ids: list[str],
+        tid: str,
+        owner: str,
+        entry_id: str,
+        rollback: Callable[[], None],
+    ) -> None:
+        """Persist rejection before releasing only this entry's batch claims."""
+        async with contextlib.AsyncExitStack() as stack:
+            for upload_id in sorted(upload_ids):
+                await stack.enter_async_context(self._lock(upload_id))
+            await complete_write(self._release_claims, upload_ids, tid, owner, entry_id, rollback)
+
+    def _release_claims(
+        self,
+        upload_ids: list[str],
+        tid: str,
+        owner: str,
+        entry_id: str,
+        rollback: Callable[[], None],
+    ) -> None:
+        rollback()
+        for upload_id in upload_ids:
+            session = self._load(upload_id, tid, owner)
+            if session.used_by == entry_id:
+                session.used_by = None
+                self._save(session)
+
     async def recover_claims(self, indexed_entries: set[str] | None) -> int:
         """Release interrupted claims only when their index entry is absent."""
         await complete_write(self._prepare)

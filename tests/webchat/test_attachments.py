@@ -338,3 +338,95 @@ async def test_attachments_join_existing_fifo_queue(conversation):
     finally:
         lock.release()
         await ws.close()
+
+
+@pytest.mark.parametrize("restart", [False, True])
+async def test_rejected_attachment_admission_allows_same_upload_retry(
+    conversation, monkeypatch, restart
+):
+    from ductor_bot.webchat.turns import _QueueJournal
+
+    h = conversation
+    upload_id = await upload_via_bridge(h)
+    with monkeypatch.context() as failing:
+
+        def reject(*_args):
+            raise OSError("journal unavailable")
+
+        failing.setattr(_QueueJournal, "accept", reject)
+        response = await attachment_post(h, [upload_id])
+        assert response.status == 503
+        assert await response.json() == {"error": "generic"}
+    rows, damaged = AttachmentIndex(h.paths.webchat_dir / "attachments.jsonl")._rows()
+    assert not damaged
+    assert rows[-1]["attachments"] == []
+    assert (await h.client.app[UPLOADS].status(upload_id, "-123.7", "browser")).used_by is None
+    assert await h.runtime.history.read("-123.7") == []
+    assert await h.runtime.outbox.pending() == []
+    if restart:
+        restarted = MessageAttachments(
+            UploadStore(h.paths.workspace / "webchat_files"),
+            h.client.app[ATTACH_SETTINGS],
+            h.paths.workspace,
+            h.paths.webchat_dir / "attachments.jsonl",
+        )
+        await restarted.recover()
+    ws = await h.client.ws_connect("/webchat/v1/events", headers=headers())
+    try:
+        response = await attachment_post(h, [upload_id])
+        assert response.status == 202, await response.text()
+        await receive_until(ws, lambda event: event.get("phase") == "done")
+    finally:
+        await ws.close()
+
+
+async def test_cancellation_snapshot_recovery_releases_only_rejected_entry(tmp_path):
+    service = service_at(tmp_path)
+    accepted = await uploaded(service)
+    accepted_message = await service.prepare("123", "browser", "accepted", [accepted.id])
+    rejected = await uploaded(service)
+    rejected_message = await service.prepare("123", "browser", "rejected", [rejected.id])
+    service.index.append("123", rejected_message.turn["user_entry_id"], [])
+    restarted = service_at(tmp_path)
+    await restarted.recover()
+    assert (await restarted.store.status(accepted.id, "123", "browser")).used_by == (
+        accepted_message.turn["user_entry_id"]
+    )
+    assert (await restarted.store.status(rejected.id, "123", "browser")).used_by is None
+    retried = await restarted.prepare("123", "browser", "retry", [rejected.id])
+    assert retried.turn["user_entry_id"] != rejected_message.turn["user_entry_id"]
+    await restarted.rollback("123", "browser", rejected_message)
+    assert (await restarted.store.status(rejected.id, "123", "browser")).used_by == (
+        retried.turn["user_entry_id"]
+    )
+
+
+async def test_rejecting_other_attachment_preserves_accepted_claim(conversation, monkeypatch):
+    from ductor_bot.webchat.turns import _QueueJournal
+
+    h = conversation
+    accepted = await upload_via_bridge(h)
+    ws = await h.client.ws_connect("/webchat/v1/events", headers=headers())
+    try:
+        assert (await attachment_post(h, [accepted])).status == 202
+        await receive_until(ws, lambda event: event.get("phase") == "done")
+        accepted_entry = (await h.client.app[UPLOADS].status(accepted, "-123.7", "browser")).used_by
+        rejected = await upload_via_bridge(h)
+        with monkeypatch.context() as failing:
+
+            def reject(*_args):
+                raise OSError("journal unavailable")
+
+            failing.setattr(_QueueJournal, "accept", reject)
+            assert (await attachment_post(h, [rejected])).status == 503
+        assert (await h.client.app[UPLOADS].status(accepted, "-123.7", "browser")).used_by == (
+            accepted_entry
+        )
+        response = await attachment_post(h, [rejected])
+        assert response.status == 202, await response.text()
+        await receive_until(ws, lambda event: event.get("phase") == "done")
+        assert (await h.client.app[UPLOADS].status(accepted, "-123.7", "browser")).used_by == (
+            accepted_entry
+        )
+    finally:
+        await ws.close()

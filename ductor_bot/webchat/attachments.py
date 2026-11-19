@@ -33,7 +33,7 @@ class AttachmentMessage:
 
 
 class AttachmentIndex:
-    """Append one durable record per history entry, never modifying history."""
+    """Append durable attachment snapshots, never modifying history."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -146,7 +146,20 @@ class MessageAttachments:
             retained = await self.store.recover_claims(None)
             logger.warning("Retaining %d attachment claims: index_damaged_or_unavailable", retained)
         else:
-            await self.store.recover_claims({row["entry_id"] for row in rows})
+            latest = {(row["tid"], row["entry_id"]): row for row in rows}
+            await self.store.recover_claims(
+                {row["entry_id"] for row in latest.values() if row["attachments"]}
+            )
+
+    async def rollback(self, tid: str, owner: str, prepared: AttachmentMessage) -> None:
+        entry_id = prepared.turn["user_entry_id"]
+        await self.store.release_claims(
+            [item["id"] for item in prepared.files],
+            tid,
+            owner,
+            entry_id,
+            lambda: self.index.append(tid, entry_id, []),
+        )
 
     def _metadata(self, session: UploadSession) -> dict[str, Any]:
         path = self.store.completed_path(session).relative_to(self.workspace).as_posix()
