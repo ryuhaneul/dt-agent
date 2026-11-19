@@ -684,6 +684,7 @@ async function resync() {
       }
     }
     const topic = getTopic();
+    for (const [tid, state] of histories) if (tid !== topic?.tid) state.loaded = false;
     if (topic) {
       await loadHistory(topic.tid);
       if (active && generation === epoch && getTopic()?.tid === topic.tid) renderThread();
