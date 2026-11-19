@@ -23,20 +23,21 @@ from pathlib import Path
 from _shared import (
     parse_autocompact_option,
     CRON_TASKS_DIR,
+    DUCTOR_HOME,
     DELIVERY_MODES,
     JOBS_PATH,
     describe_job,
-    detect_rule_filenames,
     load_jobs_or_default,
     read_user_timezone,
-    render_cron_task_claude_md,
     sanitize_name,
     save_jobs,
     schedule_problem,
 )
 
-_DEFAULT_INSTRUCTION = (
-    "Read through TASK_DESCRIPTION.md and carry it out. Stay focused and complete the task neatly."
+from ductor_bot.cron.definitions import (
+    DEFAULT_INSTRUCTION as _DEFAULT_INSTRUCTION,
+    create_task_folder,
+    render_task_description_md,
 )
 
 _TUTORIAL = """\
@@ -177,41 +178,13 @@ WHAT HAPPENS AFTER CREATION:
 """
 
 
-def _render_task_description_md(title: str, description: str) -> str:
-    """Render the TASK_DESCRIPTION.md template for a cron task."""
-    return f"""\
-# {title}
-
-## Goal
-
-{description}
-
-## Assignment
-
-(Detailed instructions for completing this task. Be specific and actionable.)
-
-## Output
-
-(What should the final result look like? Format, content, destination.)
-"""
-
-
 def _create_task_folder(name: str, title: str, description: str) -> Path:
-    """Create the cron_task workspace folder."""
-    task_dir = CRON_TASKS_DIR / name
-    task_dir.mkdir(parents=True, exist_ok=False)
-
-    rule_content = render_cron_task_claude_md(name)
-    for filename in detect_rule_filenames():
-        (task_dir / filename).write_text(rule_content, encoding="utf-8")
-
-    task_desc = _render_task_description_md(title, description)
-    (task_dir / "TASK_DESCRIPTION.md").write_text(task_desc, encoding="utf-8")
-
-    (task_dir / f"{name}_MEMORY.md").write_text(f"# {name} Memory\n", encoding="utf-8")
-    (task_dir / "scripts").mkdir(exist_ok=True)
-
-    return task_dir
+    return create_task_folder(
+        name,
+        render_task_description_md(title, description),
+        tasks_dir=CRON_TASKS_DIR,
+        ductor_home=DUCTOR_HOME,
+    )
 
 
 def main() -> None:

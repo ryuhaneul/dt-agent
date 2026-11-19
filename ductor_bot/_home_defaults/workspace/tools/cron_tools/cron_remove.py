@@ -20,9 +20,10 @@ from _shared import (
     find_job_by_id_or_task_folder,
     load_jobs_strict,
     parse_tool_args,
-    safe_task_dir,
     save_jobs,
 )
+
+from ductor_bot.cron.definitions import safe_task_dir
 
 _TUTORIAL = """\
 CRON REMOVE -- Delete a scheduled cron job and its workspace folder.
@@ -110,7 +111,7 @@ def main() -> None:
     folder_deleted = False
     folder_error = None
     try:
-        folder_path = safe_task_dir(task_folder)
+        folder_path = safe_task_dir(task_folder, CRON_TASKS_DIR)
     except ValueError as exc:
         folder_path = (CRON_TASKS_DIR / task_folder).resolve()
         folder_error = str(exc)

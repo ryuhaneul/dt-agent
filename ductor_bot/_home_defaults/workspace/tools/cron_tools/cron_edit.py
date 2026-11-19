@@ -24,18 +24,16 @@ from _shared import (
     JOBS_PATH,
     parse_autocompact_option,
     available_job_ids,
-    describe_job,
     detect_rule_filenames,
     find_job_by_id_or_task_folder,
     load_jobs_strict,
     read_user_timezone,
     render_cron_task_claude_md,
     safe_task_dir,
-    sanitize_name,
     save_jobs,
-    schedule_problem,
 )
 
+from ductor_bot.cron.definitions import describe_job, sanitize_name, schedule_problem
 from ductor_bot.workspace.rules_boundary import rule_write_allowed
 
 _TUTORIAL = """\
