@@ -18,7 +18,7 @@ from typing import Any
 
 from ductor_bot.chat_log.history import Entry, HistoryStore
 from ductor_bot.chat_log.ids import history_filename, to_tid
-from ductor_bot.config import AgentConfig
+from ductor_bot.config import LEGACY_MEMORY_REFLECTION_PROMPT, AgentConfig
 from ductor_bot.heartbeat.models import HeartbeatStatus
 from ductor_bot.infra.atomic_io import atomic_text_save
 from ductor_bot.infra.file_lock import exclusive_file_lock
@@ -36,6 +36,26 @@ _NAMED_TAG = re.compile(r"^\*\*\[[^\]\r\n]+ \| (?:claude|codex|gemini)\]\*\*\n")
 _INJECTION = re.compile(
     r"^\[(?:[A-Z][A-Z0-9 _-]{2,}(?::|\])"
     r"|ASYNC INTER-AGENT (?:RESPONSE|FAILURE|RESULT LOST) from ')"
+)
+
+
+# Exact MEMORY CHECK suffix from before memory-change reporting. Import-only compatibility.
+_LEGACY_MAINMEMORY_REMINDER = (
+    "## MEMORY CHECK\n"
+    "Silently review: memory_system/MAINMEMORY.md, user_tools/, cron_tasks/.\n"
+    "Compare what you already know with this conversation so far.\n"
+    "If something important is missing from memory (personality, preferences, decisions, "
+    "facts) -- save it silently in the workspace memory (memory_system/) if it matters "
+    "regardless of the model you run on; use a model's built-in memory (for example Claude "
+    "auto-memory) only for notes that apply to that model alone.\n"
+    "MAINMEMORY.md holds only what you must always know plus an index; put details in "
+    "separate topic files under memory_system/ and link them from that index. Prefer merging "
+    "into an existing page over creating a new file, and when a fact changes, update the "
+    "essentials at the top in the same edit. After editing files in memory_system/, run "
+    "`python3 tools/memory_tools/memory_lint.py check` and fix its findings; to look "
+    "something up, use memory_search.py instead of searching recursively.\n"
+    "If you notice a gap that only the user can fill, ask ONE natural follow-up question that "
+    "fits the current conversation. Do not interrogate."
 )
 
 
@@ -97,7 +117,11 @@ class TranscriptImporter:
         self.state_path = paths.chat_log_dir / "import_refs.json"
         self._suffixes = [
             value.suffix for value in vars(hooks).values() if isinstance(value, hooks.MessageHook)
-        ] + [config.memory_reflection.prompt]
+        ] + [
+            config.memory_reflection.prompt,
+            LEGACY_MEMORY_REFLECTION_PROMPT,
+            _LEGACY_MAINMEMORY_REMINDER,
+        ]
         self._heartbeats = {config.heartbeat.prompt: config.heartbeat.ack_token}
         self._heartbeats.update(
             {

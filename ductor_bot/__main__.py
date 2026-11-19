@@ -28,7 +28,9 @@ from ductor_bot.cli_commands.status import (
 )
 from ductor_bot.config import (
     DEFAULT_EMPTY_GEMINI_API_KEY,
+    LEGACY_MEMORY_REFLECTION_PROMPT,
     AgentConfig,
+    MemoryReflectionConfig,
     deep_merge_config,
 )
 from ductor_bot.i18n import init as init_i18n
@@ -174,6 +176,10 @@ def load_config() -> AgentConfig:
     normalized_existing = False
     if user_data.get("gemini_api_key") is None:
         user_data["gemini_api_key"] = DEFAULT_EMPTY_GEMINI_API_KEY
+        normalized_existing = True
+    reflection = user_data.get("memory_reflection")
+    if isinstance(reflection, dict) and reflection.get("prompt") == LEGACY_MEMORY_REFLECTION_PROMPT:
+        reflection["prompt"] = MemoryReflectionConfig().prompt
         normalized_existing = True
     normalized_transports = _normalized_transport_list(user_data)
     if user_data.get("transports") != normalized_transports:
