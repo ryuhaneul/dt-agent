@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -15,8 +16,8 @@ from ductor_bot.cron.definitions import (
     sanitize_name,
     schedule_problem,
 )
-from ductor_bot.cron.jobs_file import save_definitions
-from ductor_bot.infra.file_lock import LockTimeoutError
+from ductor_bot.cron.jobs_file import read_jobs_data, save_definitions
+from ductor_bot.infra.file_lock import LockTimeoutError, exclusive_file_lock
 
 from ductor_bot._home_defaults.workspace.tools._tool_shared import (
     parse_autocompact_option,  # noqa: F401 -- shared CLI option parser
@@ -81,6 +82,22 @@ def available_job_ids(jobs: list[dict[str, Any]]) -> list[str]:
 
 def safe_task_dir(task_folder: str) -> Path:
     return definitions.safe_task_dir(task_folder, CRON_TASKS_DIR)
+
+
+@contextmanager
+def locked_jobs_file(jobs_path: Path) -> Iterator[dict[str, Any]]:
+    """Read the registry under the lock and retain it through the caller's writes."""
+    try:
+        with exclusive_file_lock(jobs_path):
+            try:
+                data = read_jobs_data(jobs_path)
+            except (ValueError, TypeError):
+                print(json.dumps({"error": "Corrupt cron_jobs.json -- cannot parse"}))
+                sys.exit(1)
+            yield data
+    except LockTimeoutError:
+        print(json.dumps({"error": "cron_jobs.json is locked by another writer; try again"}))
+        sys.exit(1)
 
 
 def save_jobs(

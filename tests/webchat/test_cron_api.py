@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
+import subprocess
+import sys
 from contextlib import ExitStack
 from datetime import UTC, datetime
 from pathlib import Path
@@ -729,3 +733,155 @@ async def test_escaped_json_accepts_content_at_exact_utf8_limit(api, public_api,
     response = await client.post(path, json=payload(content=content), headers=auth)
     assert response.status == 201, await response.text()
     assert (api.paths.cron_tasks_dir / "daily/TASK_DESCRIPTION.md").read_bytes() == content.encode()
+
+
+@pytest.mark.skipif(file_lock.fcntl is None, reason="requires flock")
+@pytest.mark.parametrize("action", ["rename_same", "rename_other", "add", "remove"])
+async def test_cli_workspace_change_waits_for_web_archive(api, monkeypatch, action):
+    await add(api, id="archive-target")
+    tasks = api.paths.cron_tasks_dir
+    target = "archive-target" if action == "rename_same" else "cli-target"
+    if action in {"rename_other", "remove"}:
+        await add(api, id=target)
+    if action != "add":
+        (tasks / target / "scripts/probe.txt").write_text("preserve this")
+    tools = (
+        Path(__file__).resolve().parents[2] / "ductor_bot/_home_defaults/workspace/tools/cron_tools"
+    )
+    tool, cli_args = {
+        "rename_same": ("cron_edit.py", [target, "--name", "renamed"]),
+        "rename_other": ("cron_edit.py", [target, "--name", "renamed"]),
+        "add": (
+            "cron_add.py",
+            [
+                "--name",
+                target,
+                "--title",
+                "CLI test",
+                "--description",
+                "Test",
+                "--schedule",
+                "0 9 * * *",
+            ],
+        ),
+        "remove": ("cron_remove.py", [target]),
+    }[action]
+    resolve = definitions._workspace_job_dir
+    result = None
+    folder_intact_before_archive = False
+
+    def pause_before_folder_move(*args, **kwargs):
+        nonlocal result, folder_intact_before_archive
+        folder = resolve(*args, **kwargs)
+        if folder.name != "archive-target":
+            return folder
+        result = subprocess.run(
+            [sys.executable, str(tools / tool), *cli_args],
+            env={**os.environ, "DUCTOR_HOME": str(api.paths.ductor_home)},
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=20,
+        )
+        folder_intact_before_archive = (tasks / target / "scripts/probe.txt").is_file()
+        return folder
+
+    monkeypatch.setattr(definitions, "_workspace_job_dir", pause_before_folder_move)
+    response = await api.client.delete(PATH + "/archive-target", headers=headers())
+    assert result is not None
+    assert result.returncode == 1
+    assert "locked by another writer" in result.stdout
+    assert response.status == 200
+    assert not (tasks / "renamed").exists()
+    entries = {job["id"]: job for job in read_jobs_data(api.paths.cron_jobs_path)["jobs"]}
+    assert "renamed" not in entries
+    for missing in ("archive-target", "renamed"):
+        assert (await api.client.get(PATH + f"/{missing}", headers=headers())).status == 404
+    if action == "rename_same":
+        assert folder_intact_before_archive
+        assert entries == {}
+        assert not (tasks / target).exists()
+        archived = next((tasks / ".archive").glob("archive-target-*"))
+        assert (archived / "scripts/probe.txt").read_text() == "preserve this"
+    elif action == "add":
+        assert entries == {}
+        assert not (tasks / target).exists()
+    else:
+        assert folder_intact_before_archive
+        assert entries[target]["task_folder"] == target
+        assert (await detail(api, target))["content"] == payload()["content"]
+        assert (tasks / target / "scripts/probe.txt").read_text() == "preserve this"
+
+    if action == "rename_other":
+        retry = await asyncio.to_thread(
+            subprocess.run,
+            [sys.executable, str(tools / tool), *cli_args],
+            env={**os.environ, "DUCTOR_HOME": str(api.paths.ductor_home)},
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=20,
+        )
+        assert json.loads(retry.stdout)["job_id"] == "renamed"
+        assert not (tasks / target).exists()
+        assert (await detail(api, "renamed"))["content"] == payload()["content"]
+        assert (tasks / "renamed/scripts/probe.txt").read_text() == "preserve this"
+
+
+@pytest.mark.parametrize("action", ["rename", "add", "remove"])
+async def test_cli_registry_save_failure_leaves_workspace_unchanged(api, action):
+    await add(api)
+    root = api.paths.cron_tasks_dir
+    folder = root / "daily"
+    (folder / "scripts/probe.txt").write_text("preserve this")
+    jobs = api.paths.cron_jobs_path
+    registry_before = jobs.read_bytes()
+    before = {p.relative_to(folder): p.read_bytes() for p in folder.rglob("*") if p.is_file()}
+    tools = (
+        Path(__file__).resolve().parents[2] / "ductor_bot/_home_defaults/workspace/tools/cron_tools"
+    )
+    tool, args = {
+        "rename": ("cron_edit.py", ["daily", "--name", "renamed"]),
+        "add": (
+            "cron_add.py",
+            [
+                "--name",
+                "new-task",
+                "--title",
+                "CLI test",
+                "--description",
+                "Test",
+                "--schedule",
+                "0 9 * * *",
+            ],
+        ),
+        "remove": ("cron_remove.py", ["daily"]),
+    }[action]
+    probe = """
+import runpy, sys
+from pathlib import Path
+from unittest.mock import patch
+script = sys.argv[1]
+sys.path.insert(0, str(Path(script).parent))
+sys.argv = sys.argv[1:]
+with patch("ductor_bot.cron.jobs_file.write_jobs_data", side_effect=OSError("save failed")):
+    runpy.run_path(script, run_name="__main__")
+"""
+    result = await asyncio.to_thread(
+        subprocess.run,
+        [sys.executable, "-c", probe, str(tools / tool), *args],
+        env={**os.environ, "DUCTOR_HOME": str(api.paths.ductor_home)},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=20,
+    )
+    assert result.returncode == 1
+    assert "save failed" in result.stdout + result.stderr
+    assert jobs.read_bytes() == registry_before
+    assert {
+        p.relative_to(folder): p.read_bytes() for p in folder.rglob("*") if p.is_file()
+    } == before
+    assert not (root / "renamed").exists()
+    assert not (root / "new-task").exists()
+    assert (await detail(api))["content"] == payload()["content"]

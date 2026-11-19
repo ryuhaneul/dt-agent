@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -27,10 +28,9 @@ from _shared import (
     DELIVERY_MODES,
     JOBS_PATH,
     describe_job,
-    load_jobs_or_default,
+    locked_jobs_file,
     read_user_timezone,
     sanitize_name,
-    save_jobs,
     schedule_problem,
 )
 
@@ -39,6 +39,8 @@ from ductor_bot.cron.definitions import (
     create_task_folder,
     render_task_description_md,
 )
+
+from ductor_bot.cron.jobs_file import write_jobs_data
 
 _TUTORIAL = """\
 CRON ADD -- Create a scheduled cron job with its own workspace.
@@ -296,21 +298,6 @@ def main() -> None:
         print(json.dumps({"error": problem}))
         sys.exit(1)
 
-    data = load_jobs_or_default(JOBS_PATH)
-
-    if any(j["id"] == name for j in data["jobs"]):
-        print(json.dumps({"error": f"Job '{name}' already exists"}))
-        sys.exit(1)
-
-    task_dir = CRON_TASKS_DIR / name
-    if task_dir.exists():
-        print(json.dumps({"error": f"Folder '{name}' already exists in cron_tasks/"}))
-        sys.exit(1)
-
-    # 1) Create the cron_task folder
-    _create_task_folder(name, args.title, args.description)
-
-    # 2) Add job to JSON
     job: dict = {
         "id": name,
         "title": args.title,
@@ -364,8 +351,22 @@ def main() -> None:
     if topic_id:
         job["topic_id"] = int(topic_id)
     job["transport"] = transport
-    data["jobs"].append(job)
-    save_jobs(JOBS_PATH, data, upsert=[(name, name)])
+    with locked_jobs_file(JOBS_PATH) as data:
+        if any(entry["id"] == name for entry in data["jobs"]):
+            print(json.dumps({"error": f"Job '{name}' already exists"}))
+            sys.exit(1)
+        task_dir = CRON_TASKS_DIR / name
+        if task_dir.exists():
+            print(json.dumps({"error": f"Folder '{name}' already exists in cron_tasks/"}))
+            sys.exit(1)
+
+        _create_task_folder(name, args.title, args.description)
+        try:
+            data["jobs"].append(job)
+            write_jobs_data(JOBS_PATH, data)
+        except BaseException:
+            shutil.rmtree(task_dir)
+            raise
 
     # The CronObserver detects the mtime change and auto-schedules
 
