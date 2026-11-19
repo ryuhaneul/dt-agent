@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from cronsim import CronSim, CronSimError
 
 from ductor_bot.cli.autocompact import validate_autocompact
-from ductor_bot.cron.jobs_file import read_jobs_data, save_definitions, write_jobs_data
+from ductor_bot.cron.jobs_file import read_jobs_data, write_jobs_data
 from ductor_bot.cron.manager import DELIVERY_MODES
 from ductor_bot.infra.atomic_io import atomic_bytes_save, atomic_text_save
 from ductor_bot.infra.file_lock import exclusive_file_lock
@@ -503,14 +503,15 @@ def create_job(
     _validate_job(definition)
     _validate_body(body)
     tasks_dir.mkdir(parents=True, exist_ok=True)
-    # Serialize folder/body operations as well as the JSON's own short write lock.
-    with exclusive_file_lock(tasks_dir / ".definitions"):
+    # The CLI also holds the registry lock while claiming a task name.
+    with exclusive_file_lock(tasks_dir / ".definitions"), exclusive_file_lock(jobs_path):
         data = read_jobs_data(jobs_path)
         if any(entry.get("id") == name for entry in data["jobs"]):
             raise DefinitionConflictError(f"Job {name!r} already exists")
-        final = safe_task_dir(name, tasks_dir)
-        if final.exists():
+        final = tasks_dir / name
+        if final.exists() or final.is_symlink():
             raise DefinitionConflictError(f"Folder {name!r} already exists")
+        final = safe_task_dir(name, tasks_dir)
         staging = tasks_dir / f".staging-{name}-{uuid4().hex}"
         published = False
         try:
@@ -520,7 +521,7 @@ def create_job(
             staging.rename(final)
             published = True
             data["jobs"].append(definition)
-            save_definitions(jobs_path, data, upsert=[(name, name)])
+            write_jobs_data(jobs_path, data)
         except BaseException:
             cleanup = final if published else staging
             if cleanup.exists():

@@ -20,6 +20,7 @@ import shutil
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from _shared import (
     parse_autocompact_option,
@@ -180,12 +181,15 @@ WHAT HAPPENS AFTER CREATION:
 """
 
 
-def _create_task_folder(name: str, title: str, description: str) -> Path:
+def _create_task_folder(
+    name: str, title: str, description: str, *, folder: Path | None = None
+) -> Path:
     return create_task_folder(
         name,
         render_task_description_md(title, description),
         tasks_dir=CRON_TASKS_DIR,
         ductor_home=DUCTOR_HOME,
+        folder=folder,
     )
 
 
@@ -356,17 +360,23 @@ def main() -> None:
             print(json.dumps({"error": f"Job '{name}' already exists"}))
             sys.exit(1)
         task_dir = CRON_TASKS_DIR / name
-        if task_dir.exists():
+        if task_dir.exists() or task_dir.is_symlink():
             print(json.dumps({"error": f"Folder '{name}' already exists in cron_tasks/"}))
             sys.exit(1)
 
-        _create_task_folder(name, args.title, args.description)
-        try:
-            data["jobs"].append(job)
-            write_jobs_data(JOBS_PATH, data)
-        except BaseException:
-            shutil.rmtree(task_dir)
-            raise
+        CRON_TASKS_DIR.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(prefix=".cli-staging-", dir=CRON_TASKS_DIR) as scratch:
+            staging = _create_task_folder(
+                name, args.title, args.description, folder=Path(scratch) / name
+            )
+            staging.rename(task_dir)
+            # This invocation published the folder while holding the registry lock.
+            try:
+                data["jobs"].append(job)
+                write_jobs_data(JOBS_PATH, data)
+            except BaseException:
+                shutil.rmtree(task_dir)
+                raise
 
     # The CronObserver detects the mtime change and auto-schedules
 

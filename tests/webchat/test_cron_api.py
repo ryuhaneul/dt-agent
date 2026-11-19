@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from contextlib import ExitStack
 from datetime import UTC, datetime
 from pathlib import Path
@@ -258,8 +259,7 @@ async def test_json_failure_rolls_back_files_and_returns_503(api, monkeypatch, a
             assert not list(api.paths.cron_tasks_dir.glob(".staging-*"))
         raise OSError("synthetic-private-path")
 
-    method = "save_definitions" if action == "create" else "write_jobs_data"
-    monkeypatch.setattr(definitions, method, fail)
+    monkeypatch.setattr(definitions, "write_jobs_data", fail)
     if action == "create":
         response = await api.client.post(PATH, json=payload(), headers=headers())
     elif action == "archive":
@@ -885,3 +885,190 @@ with patch("ductor_bot.cron.jobs_file.write_jobs_data", side_effect=OSError("sav
     assert not (root / "renamed").exists()
     assert not (root / "new-task").exists()
     assert (await detail(api))["content"] == payload()["content"]
+
+
+@pytest.mark.skipif(file_lock.fcntl is None, reason="requires flock")
+@pytest.mark.parametrize(
+    ("first", "cli_failure", "web_failure", "winner"),
+    [
+        ("web", "registry", False, "web"),
+        ("cli", "registry", False, "web"),
+        ("cli", "body", False, "web"),
+        ("cli", "registry", True, None),
+        ("cli", None, False, "cli"),
+    ],
+)
+async def test_web_and_cli_same_id_create_keeps_winner(
+    api, monkeypatch, first, cli_failure, web_failure, winner
+):
+    job = "collision"
+    tasks = api.paths.cron_tasks_dir
+    folder = tasks / job
+    jobs = api.paths.cron_jobs_path
+    tool = (
+        Path(__file__).resolve().parents[2]
+        / "ductor_bot/_home_defaults/workspace/tools/cron_tools/cron_add.py"
+    )
+    cli = [
+        str(tool),
+        "--name",
+        job,
+        "--title",
+        "CLI collision body",
+        "--description",
+        "CLI assignment",
+        "--schedule",
+        "0 9 * * *",
+    ]
+    env = {
+        **os.environ,
+        "DUCTOR_HOME": str(api.paths.ductor_home),
+        "DUCTOR_CHAT_ID": "-123",
+        "DUCTOR_TOPIC_ID": "7",
+        "DUCTOR_TRANSPORT": "tg",
+    }
+    probe = """
+import runpy, sys
+from pathlib import Path
+from unittest.mock import patch
+from ductor_bot.cron import jobs_file
+
+first, failure, script, *args = sys.argv[1:]
+sys.path.insert(0, str(Path(script).parent))
+sys.argv = [script, *args]
+write_jobs = jobs_file.write_jobs_data
+write_text = Path.write_text
+
+def wait_before_write():
+    print("ready", flush=True)
+    assert sys.stdin.readline().strip() == "continue"
+
+def save(path, data):
+    folder = path.parent / "workspace/cron_tasks/collision"
+    (folder / "scripts/cli-marker.txt").write_text("CLI script")
+    if first == "cli":
+        wait_before_write()
+    if failure == "registry":
+        raise OSError("CLI registry failure")
+    write_jobs(path, data)
+
+def create_body(path, *args, **kwargs):
+    if failure == "body" and path.name == "TASK_DESCRIPTION.md":
+        wait_before_write()
+        raise OSError("CLI body failure")
+    return write_text(path, *args, **kwargs)
+
+with patch.object(jobs_file, "write_jobs_data", save), patch.object(Path, "write_text", create_body):
+    runpy.run_path(script, run_name="__main__")
+"""
+    command = [sys.executable, "-c", probe, first, str(cli_failure), *cli]
+    build = definitions.create_task_folder
+
+    def add_web_marker(*args, **kwargs):
+        staged = build(*args, **kwargs)
+        (staged / "scripts/web-marker.txt").write_text("Web script")
+        return staged
+
+    monkeypatch.setattr(definitions, "create_task_folder", add_web_marker)
+    if web_failure:
+
+        def fail_web(*args, **kwargs):
+            raise OSError("Web registry failure")
+
+        monkeypatch.setattr(definitions, "write_jobs_data", fail_web)
+
+    web_body = "Distinct web assignment"
+    data = payload(id=job, title="Web collision body", content=web_body)
+    if first == "web":
+        attempted = None
+
+        def pause_after_web_stage(*args, **kwargs):
+            nonlocal attempted
+            staged = add_web_marker(*args, **kwargs)
+            assert not folder.exists()
+            attempted = subprocess.run(
+                command,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=15,
+            )
+            assert not folder.exists()
+            return staged
+
+        monkeypatch.setattr(definitions, "create_task_folder", pause_after_web_stage)
+        response = await api.client.post(PATH, json=data, headers=headers())
+        assert attempted is not None
+        assert attempted.returncode == 1
+        assert "locked by another writer" in attempted.stdout
+        duplicate = await asyncio.to_thread(
+            subprocess.run,
+            [sys.executable, *cli],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+        assert duplicate.returncode == 1
+        assert "already exists" in duplicate.stdout
+    else:
+        web_waiting = threading.Event()
+        lock = definitions.exclusive_file_lock
+
+        def observe_web_lock(target):
+            if target == jobs:
+                web_waiting.set()
+            return lock(target)
+
+        monkeypatch.setattr(definitions, "exclusive_file_lock", observe_web_lock)
+        child = await asyncio.create_subprocess_exec(
+            *command,
+            env=env,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            assert child.stdout is not None
+            assert await asyncio.wait_for(child.stdout.readline(), timeout=15) == b"ready\n"
+
+            async def release_cli():
+                assert await asyncio.to_thread(web_waiting.wait, 10)
+                return await asyncio.wait_for(child.communicate(b"continue\n"), timeout=15)
+
+            response, (_, stderr) = await asyncio.gather(
+                api.client.post(PATH, json=data, headers=headers()), release_cli()
+            )
+            assert child.returncode == (1 if cli_failure else 0)
+            if cli_failure:
+                assert f"CLI {cli_failure} failure".encode() in stderr
+        finally:
+            if child.returncode is None:
+                child.kill()
+                await child.wait()
+
+    entries = read_jobs_data(jobs)["jobs"]
+    assert not list(tasks.glob(".staging-*"))
+    assert not list(tasks.glob(".cli-staging-*"))
+    if winner is None:
+        assert response.status == 503
+        assert entries == []
+        assert not folder.exists()
+        assert (await api.client.get(PATH + "/" + job, headers=headers())).status == 404
+        return
+
+    assert response.status == (201 if winner == "web" else 409)
+    assert [entry["id"] for entry in entries] == [job]
+    assert entries[0]["task_folder"] == job
+    saved = await detail(api, job)
+    if winner == "web":
+        assert entries[0]["title"] == data["title"]
+        assert saved["content"] == web_body
+    else:
+        assert entries[0]["title"] == "CLI collision body"
+        assert "CLI assignment" in saved["content"]
+    assert saved["scripts"] == [f"{winner}-marker.txt"]
+    expected_script = "Web script" if winner == "web" else "CLI script"
+    assert (folder / "scripts" / f"{winner}-marker.txt").read_text() == expected_script

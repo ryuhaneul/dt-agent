@@ -58,7 +58,7 @@ def test_invalid_timezone(timezone):
 
 def test_creation_publishes_final_body_before_enabled_definition(paths, monkeypatch):
     jobs, tasks = paths
-    save = defs.save_definitions
+    save = defs.write_jobs_data
 
     def inspect_save(*args, **kwargs):
         assert (tasks / "daily/TASK_DESCRIPTION.md").read_text() == "Original assignment.\n"
@@ -66,7 +66,7 @@ def test_creation_publishes_final_body_before_enabled_definition(paths, monkeypa
         assert list(tasks.glob(".staging-*")) == []
         save(*args, **kwargs)
 
-    monkeypatch.setattr(defs, "save_definitions", inspect_save)
+    monkeypatch.setattr(defs, "write_jobs_data", inspect_save)
     result = create(paths, enabled=False)
     assert result["enabled"] is True
     assert result["agent_instruction"] == defs.DEFAULT_INSTRUCTION
@@ -91,7 +91,7 @@ def test_create_failure_leaves_no_definition_or_workspace(paths, monkeypatch, fa
         monkeypatch.setattr(Path, "rename", lambda *args: (_ for _ in ()).throw(OSError("rename")))
     else:
         monkeypatch.setattr(
-            defs, "save_definitions", lambda *a, **k: (_ for _ in ()).throw(OSError("save"))
+            defs, "write_jobs_data", lambda *a, **k: (_ for _ in ()).throw(OSError("save"))
         )
     with pytest.raises(OSError):
         create(paths)
