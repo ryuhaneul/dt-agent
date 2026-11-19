@@ -56,10 +56,11 @@ class TaskSubmit:
     origin_transport: str = ""
     origin_session_kind: str = ""
     origin_session_id: str = ""
-    autocompact: AutocompactValue = "default"
+    autocompact: AutocompactValue | None = None
 
     def __post_init__(self) -> None:
-        self.autocompact = validate_autocompact(self.autocompact)
+        if self.autocompact is not None:
+            self.autocompact = validate_autocompact(self.autocompact)
 
 
 def _count(value: object) -> int:
@@ -103,10 +104,11 @@ class TaskEntry:
     origin_transport: str = ""
     origin_session_kind: str = ""
     origin_session_id: str = ""
-    autocompact: AutocompactValue = "default"
+    autocompact: AutocompactValue | None = None
 
     def __post_init__(self) -> None:
-        self.autocompact = validate_autocompact(self.autocompact)
+        if self.autocompact is not None:
+            self.autocompact = validate_autocompact(self.autocompact)
 
     def to_dict(self) -> dict[str, object]:
         d: dict[str, object] = {
@@ -207,8 +209,11 @@ class TaskEntry:
             notify_pending=d.get("notify_pending") is True,
             notify_attempts=_count(d.get("notify_attempts")),
             priority=normalise_priority(d.get("priority")),
-            autocompact=stored_autocompact(d.get("autocompact", "default"), d["task_id"])
-            or "default",
+            autocompact=(
+                None
+                if d.get("autocompact", "default") is None
+                else stored_autocompact(d.get("autocompact", "default"), d["task_id"])
+            ),
         )
 
 

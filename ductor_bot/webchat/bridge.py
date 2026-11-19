@@ -17,7 +17,7 @@ from aiohttp import ClientError, web
 
 from ductor_bot.chat_log.history import InvalidSelectorButtonError, SelectorConflictError
 from ductor_bot.chat_log.ids import from_tid
-from ductor_bot.cli.autocompact import resolve_autocompact, validate_autocompact
+from ductor_bot.cli.autocompact import parse_autocompact_input, resolve_autocompact
 from ductor_bot.cli.claude_accounts import (
     SlotRegistry,
     host_cli_auth_dir,
@@ -410,7 +410,7 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
             try:
                 for scope, value in data.items():
                     if scope != "topic" or value is not None:
-                        validate_autocompact(value)
+                        data[scope] = parse_autocompact_input(value)
             except ValueError:
                 return _error("bad_request", 400)
         async with topics.gate(tid):
@@ -438,8 +438,8 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
             if kind not in {"cron", "webhook"} or data.keys() != {"value"}:
                 return _error("bad_request", 400)
             try:
-                if kind == "cron" or data["value"] is not None:
-                    validate_autocompact(data["value"])
+                if data["value"] is not None:
+                    data["value"] = parse_autocompact_input(data["value"])
             except ValueError:
                 return _error("bad_request", 400)
         async with topics.gate(tid):

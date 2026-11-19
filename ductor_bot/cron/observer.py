@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, TypedDict
 
 from cronsim import CronSim, CronSimError
 
+from ductor_bot.cli.autocompact import resolve_autocompact
 from ductor_bot.cli.param_resolver import TaskOverrides
 from ductor_bot.config import resolve_user_timezone
 from ductor_bot.cron.manager import CronManager
@@ -92,6 +93,7 @@ class _RunSnapshot:
 class _InjectionArgs(TypedDict, total=False):
     delivery_mode: str
     prompt: str
+    autocompact: AutocompactValue
 
 
 class CronObserver(BaseTaskObserver):
@@ -757,7 +759,11 @@ class CronObserver(BaseTaskObserver):
             ran_at=self._result_time(),
             result_file=result_file,
         )
-        return {"delivery_mode": "inject", "prompt": prompt}
+        return {
+            "delivery_mode": "inject",
+            "prompt": prompt,
+            "autocompact": resolve_autocompact(job.autocompact, self._config.autocompact),
+        }
 
     async def _run_in_session(
         self,
@@ -809,7 +815,7 @@ class CronObserver(BaseTaskObserver):
                 routing,
                 delivery_mode="in_session",
                 prompt=prompt,
-                autocompact=job.autocompact,
+                autocompact=resolve_autocompact(job.autocompact, self._config.autocompact),
             )
         self._manager.update_run_status(
             job.id,

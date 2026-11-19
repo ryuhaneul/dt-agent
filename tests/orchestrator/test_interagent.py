@@ -750,7 +750,7 @@ async def test_autocompact_uses_recipient_session_not_sender_topic(orch_ia, reci
     await orch_ia._sessions.update_session(sender_topic)
     await orch_ia.handle_interagent_message("main", "hello", source_chat_id=-900, source_topic_id=99)
     request = orch_ia._cli_service.execute.await_args.args[0]
-    assert request.autocompact == (200000 if recipient_value is None else recipient_value)
+    assert request.autocompact == recipient_value
     assert request.chat_id == 12345
     assert request.topic_id is None
     assert (await orch_ia._sessions.get_active(SessionKey(chat_id=-900, topic_id=99))).autocompact == 1000000

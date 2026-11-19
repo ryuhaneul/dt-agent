@@ -183,4 +183,4 @@ async def test_automation_callback_denies_disallowed_actor(ac_bot):
     )
     await bot._on_callback_query(query)
     bot._run_selector_callback.assert_not_called()
-    assert bot._orch._cron_manager.get_job("job-0").autocompact == "default"
+    assert bot._orch._cron_manager.get_job("job-0").autocompact is None

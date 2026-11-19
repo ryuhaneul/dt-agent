@@ -83,6 +83,7 @@ class TaskExecutionConfig:
     # User timezone label used to render reset-time strings.
     user_timezone: str = ""
     autocompact: AutocompactValue = "default"
+    autocompact_inherit: bool = False
 
 
 def _static_effort(
@@ -235,4 +236,5 @@ def resolve_cli_config(
         claude_accounts=list(base_config.claude_accounts),
         user_timezone=base_config.user_timezone,
         autocompact=resolve_autocompact(overrides.autocompact, base_config.autocompact),
+        autocompact_inherit=overrides.autocompact is None,
     )

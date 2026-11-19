@@ -1,6 +1,17 @@
 import { api } from './api.js';
 import { t } from './i18n.js';
 
+export function parseAutocompactTokens(text) {
+  const match = /^([0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:\.([0-9]+))?([kKmM]?)$/.exec(text.trim());
+  if (!match) return null;
+  const [, whole, fraction = '', suffix] = match;
+  const multiplier = { '': 1n, k: 1000n, m: 1000000n }[suffix.toLowerCase()];
+  const numerator = BigInt(whole.replaceAll(',', '') + fraction) * multiplier;
+  const denominator = 10n ** BigInt(fraction.length);
+  const value = numerator / denominator;
+  return numerator % denominator === 0n && value >= 100000n && value <= 1000000n ? Number(value) : null;
+}
+
 export function initAutocompact(getTopic, onSaved) {
   const dialog = document.querySelector('#autocompactDlg');
   const close = document.querySelector('#autocompactClose');
@@ -22,9 +33,8 @@ export function initAutocompact(getTopic, onSaved) {
   let view = 'settings', automations = null, item = null, itemMode = null, itemFocus = null;
   const mode = value => value === null ? 'inherit' : typeof value === 'number' ? 'tokens' : value;
   const value = scope => modes[scope] === 'inherit' ? null : modes[scope] === 'tokens'
-    ? Number(fields[scope].value) : modes[scope];
-  const valid = scope => modes[scope] !== 'tokens' || (/^\d+$/.test(fields[scope].value)
-    && Number.isInteger(value(scope)) && value(scope) >= 100000 && value(scope) <= 1000000);
+    ? parseAutocompactTokens(fields[scope].value) : modes[scope];
+  const valid = scope => modes[scope] !== 'tokens' || value(scope) !== null;
   const path = () => `/topics/${encodeURIComponent(topic.tid)}/autocompact`;
   function format(current) {
     return current === null ? t('autocompact.inherit') : typeof current === 'number'
@@ -62,7 +72,7 @@ export function initAutocompact(getTopic, onSaved) {
     }
     follow.hidden = modes.topic !== 'inherit';
     follow.textContent = `${t('autocompact.inherit')} → ${valid('global') ? format(value('global')) : '—'}`;
-    const selected = value('topic') === null ? 'global' : 'topic';
+    const selected = modes.topic === 'inherit' ? 'global' : 'topic';
     effective.textContent = valid(selected) ? format(value(selected)) : '—';
     const unsupported = ['grok', 'gemini'].includes(provider) ? 'unsupported'
       : provider === 'codex' && scopes.some(scope => modes[scope] === 'off') ? 'off_unsupported' : null;
@@ -86,7 +96,7 @@ export function initAutocompact(getTopic, onSaved) {
     scopes.forEach(scope => {
       const current = state[`${scope}_value`];
       modes[scope] = mode(current);
-      fields[scope].value = typeof current === 'number' ? String(current) : '200000';
+      fields[scope].value = typeof current === 'number' ? String(current) : '500k';
     });
     render();
   }
@@ -171,18 +181,16 @@ export function initAutocompact(getTopic, onSaved) {
     }
   }
   function editorValue() {
-    return itemMode === 'inherit' ? null : itemMode === 'tokens' ? Number(automationNumber.value) : itemMode;
+    return itemMode === 'inherit' ? null : itemMode === 'tokens' ? parseAutocompactTokens(automationNumber.value) : itemMode;
   }
   function validEditor() {
-    return itemMode !== 'tokens' || (/^\d+$/.test(automationNumber.value) && Number.isInteger(editorValue())
-      && editorValue() >= 100000 && editorValue() <= 1000000);
+    return itemMode !== 'tokens' || editorValue() !== null;
   }
   function renderAutomationEditor() {
     document.querySelector('#acAutomationName').textContent = item.name;
     document.querySelector('#acAutomationMeta').textContent = `${t(`autocompact.${item.kind}`)} · ${automationMeta(item)}`;
     document.querySelector('#acAutomationCurrent').textContent = automationValue(item);
     dialog.querySelectorAll('[data-ac-automation-mode]').forEach(button => {
-      button.hidden = item.kind === 'cron' && button.dataset.acAutomationMode === 'inherit';
       button.setAttribute('aria-pressed', String(itemMode === button.dataset.acAutomationMode));
     });
     document.querySelector('#ac-automation-custom').hidden = itemMode !== 'tokens';
@@ -192,7 +200,7 @@ export function initAutocompact(getTopic, onSaved) {
   }
   function editAutomation(entry) {
     item = entry; itemFocus = { kind: entry.kind, id: entry.id }; itemMode = mode(entry.value);
-    automationNumber.value = typeof entry.value === 'number' ? String(entry.value) : '200000';
+    automationNumber.value = typeof entry.value === 'number' ? String(entry.value) : '500k';
     view = 'editor'; errorKey = null; render(); setBusy(false);
     dialog.querySelector('.ac-body').scrollTop = 0;
     dialog.querySelector(`[data-ac-automation-mode="${itemMode}"]`).focus();

@@ -11,6 +11,7 @@ import pytest
 from ductor_bot.i18n.loader import TranslationStore
 from ductor_bot.orchestrator.selectors import autocompact_selector as ac
 from ductor_bot.session import SessionData, SessionKey
+from tests.cli.test_autocompact import TOKEN_INPUT_CASES
 
 
 async def test_command_and_initial_buttons(orch):
@@ -199,3 +200,22 @@ def test_translated_labels_and_command_description(lang):
     assert "{" not in text
     assert "autocompact.status" not in text
     assert len(store.cmd("bot.autocompact")) <= 22
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    TOKEN_INPUT_CASES,
+)
+async def test_human_token_input_roundtrip(orch, text, expected):
+    key = SessionKey(chat_id=1, topic_id=42)
+    await ac.handle_autocompact_callback(orch, key, "ac:topic:input", user_id=100)
+    await ac.consume_autocompact_input(orch, key, text, user_id=100)
+    session = await orch._sessions.get_active(key)
+    if expected is None:
+        assert session is None
+        assert (key, 100) in orch._autocompact_inputs
+    else:
+        assert session.autocompact == expected
+        assert type(session.autocompact) is int
+        assert (key, 100) not in orch._autocompact_inputs
+    orch._cli_service.execute.assert_not_called()

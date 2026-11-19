@@ -217,7 +217,12 @@ def _parse_args() -> argparse.Namespace:
         help="separate: result as a message; inject: result injected into the "
         "topic's session; in_session: instruction runs in the topic's session.",
     )
-    parser.add_argument("--autocompact", type=parse_autocompact_option, help="default, off, or 100000-1000000 tokens")
+    parser.add_argument(
+        "--autocompact",
+        type=lambda value: parse_autocompact_option(value, allow_inherit=True),
+        default=argparse.SUPPRESS,
+        help="inherit, default, off, or 100000-1000000 tokens",
+    )
     return parser.parse_args()
 
 
@@ -330,7 +335,7 @@ def _apply_updates(args: argparse.Namespace, job: dict[str, Any]) -> tuple[list[
             job["model"] = model
             updated_fields.append("model")
 
-    if args.autocompact is not None:
+    if hasattr(args, "autocompact"):
         job["autocompact"] = args.autocompact
         updated_fields.append("autocompact")
     if args.reasoning_effort is not None and job.get("reasoning_effort") != args.reasoning_effort:
@@ -453,7 +458,7 @@ def main() -> None:
             args.schedule is not None,
             args.timezone is not None,
             args.provider is not None,
-            args.autocompact is not None,
+            hasattr(args, "autocompact"),
             args.model is not None,
             args.reasoning_effort is not None,
             args.cli_parameters is not None,

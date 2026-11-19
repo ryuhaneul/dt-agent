@@ -9,7 +9,11 @@ import time
 from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any
 
-from ductor_bot.cli.autocompact import resolve_autocompact, validate_autocompact
+from ductor_bot.cli.autocompact import (
+    parse_autocompact_tokens,
+    resolve_autocompact,
+    validate_autocompact,
+)
 from ductor_bot.config import transform_config_file, update_config_file_async
 from ductor_bot.i18n import t
 from ductor_bot.infra.json_store import atomic_json_save
@@ -299,7 +303,7 @@ async def consume_autocompact_input(
     if text.startswith("/"):
         return None
     try:
-        value = validate_autocompact(int(text))
+        value = parse_autocompact_tokens(text)
     except ValueError:
         return SelectorResponse(
             t("autocompact.invalid_input"),
@@ -391,7 +395,7 @@ def _automation_detail(orch: Orchestrator, kind: str, token: str) -> SelectorRes
     if item is None:
         return automation_selector_start(orch, note=t("autocompact.list_changed"))
     prefix = f"ac:auto:{kind}:{token}:"
-    modes = ["inherit", "default", "off"] if kind == "webhook" else ["default", "off"]
+    modes = ["inherit", "default", "off"]
     rows = [
         [
             Button(
@@ -451,9 +455,7 @@ async def _automation_callback(  # noqa: PLR0911 -- selector action dispatch
     if len(parts) != 5 or parts[2] not in {"cron", "webhook"}:
         return SelectorResponse(t("autocompact.invalid_action"))
     _, _, kind, token, action = parts
-    if action not in {"open", "input", "default", "off", "inherit"} or (
-        action == "inherit" and kind != "webhook"
-    ):
+    if action not in {"open", "input", "default", "off", "inherit"}:
         return SelectorResponse(t("autocompact.invalid_action"))
     if automation_target(orch, kind, token) is None:
         return automation_selector_start(orch, note=t("autocompact.list_changed"))

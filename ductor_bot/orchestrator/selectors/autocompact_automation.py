@@ -27,7 +27,7 @@ def automation_state(orch: Orchestrator) -> dict[str, Any]:
             "schedule": entry.schedule,
             "enabled": entry.enabled,
             "value": entry.autocompact,
-            "effective_value": entry.autocompact,
+            "effective_value": resolve_autocompact(entry.autocompact, global_value),
         }
         for entry in jobs
     ]
@@ -65,9 +65,8 @@ def save_automation(
     """Validate before writing, reusing each registry's existing save operation."""
     if kind not in {"cron", "webhook"}:
         raise ValueError("Unknown automation kind")
-    concrete = validate_autocompact(value) if kind == "cron" or value is not None else None
+    concrete = validate_autocompact(value) if value is not None else None
     if kind == "cron":
-        assert concrete is not None
         try:
             return orch._cron_manager.set_autocompact(item_id, concrete)
         except OSError:

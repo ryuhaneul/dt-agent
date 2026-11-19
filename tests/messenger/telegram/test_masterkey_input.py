@@ -63,6 +63,40 @@ async def setup(h):
     assert (await h.vault.status()).state is VaultState.UNLOCKED
 
 
+@pytest.mark.parametrize("command", ["/masterkey", "/masterkey status"])
+@pytest.mark.parametrize("thread", [None, 707])
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    [
+        (
+            VaultState.UNCONFIGURED,
+            (
+                "Secrets: Not configured\nExpiry: Unlimited\nRemaining: —\n"
+                "Use /masterkey setup to configure a master key."
+            ),
+        ),
+        (
+            VaultState.LOCKED,
+            (
+                "Secrets: Locked\nExpiry: Unlimited\nRemaining: —\n"
+                "Use /masterkey unlock to enter the master key and unlock."
+            ),
+        ),
+        (VaultState.UNLOCKED, "Secrets: Unlocked\nExpiry: Unlimited\nRemaining: Unlimited"),
+    ],
+)
+async def test_status_guidance_preserves_topic(mk, command, thread, state, expected):
+    if state is not VaultState.UNCONFIGURED:
+        await setup(mk)
+        if state is VaultState.LOCKED:
+            await mk.vault.lock()
+    before = len(mk.bot.sent)
+    await mk.command(command, thread=thread)
+    assert len(mk.bot.sent) == before + 1
+    assert mk.texts()[-1] == expected
+    assert mk.bot.sent[-1][1]["message_thread_id"] == thread
+
+
 async def test_setup_unlock_change_and_status(mk, caplog):
     caplog.set_level(logging.DEBUG)
     set_secret(mk.path, "TOOL_TOKEN", SECRET)

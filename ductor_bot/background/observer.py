@@ -11,7 +11,6 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from ductor_bot.background.models import BackgroundResult, BackgroundSubmit, BackgroundTask
-from ductor_bot.cli.autocompact import resolve_autocompact
 from ductor_bot.config import AutocompactValue
 from ductor_bot.i18n import t
 from ductor_bot.infra.input_context import add_input_wait, current_input_context
@@ -79,9 +78,9 @@ class BackgroundObserver:
         self._cli_service = cli_service
         self._config = config
         self._on_result: BgResultCallback | None = None
-        self._autocompact_resolver: Callable[[SessionKey], Awaitable[AutocompactValue]] | None = (
-            None
-        )
+        self._autocompact_resolver: (
+            Callable[[SessionKey], Awaitable[AutocompactValue | None]] | None
+        ) = None
         self._tasks: dict[str, BackgroundTask] = {}
         # Inter-agent sessions resumed by hand queue in the same FIFO gate as inter-agent requests.
         self._reserve: Callable[[int, str], Reservation | None] | None = None
@@ -92,7 +91,7 @@ class BackgroundObserver:
         self._on_result = handler
 
     def set_autocompact_resolver(
-        self, resolver: Callable[[SessionKey], Awaitable[AutocompactValue]]
+        self, resolver: Callable[[SessionKey], Awaitable[AutocompactValue | None]]
     ) -> None:
         """Resolve the receiving agent's topic value immediately before execution."""
         self._autocompact_resolver = resolver
@@ -323,7 +322,7 @@ class BackgroundObserver:
             autocompact = (
                 await self._autocompact_resolver(key)
                 if self._autocompact_resolver is not None
-                else resolve_autocompact(None, self._config.autocompact)
+                else None
             )
             request = AgentRequest(
                 prompt=f"{bg_task.prompt}\n\n{setup_hint}" if setup_hint else bg_task.prompt,

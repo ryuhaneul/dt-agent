@@ -2673,11 +2673,11 @@ def test_autocompact_dialog_has_labeled_scopes_and_bounded_token_inputs(markup):
     assert nodes["autocompactDlg"][0] == "dialog"
     assert nodes["autocompactDlg"][1]["aria-labelledby"] == "autocompactTitle"
     assert nodes["headerAutocompact"][1]["type"] == "button"
-    for scope in ("topic", "global"):
+    for scope in ("topic", "global", "automation"):
         assert nodes[f"ac-{scope}-scope"][0] == "fieldset"
         field = nodes[f"ac-{scope}-number"][1]
-        assert field["type"] == "number"
-        assert (field["min"], field["max"], field["step"]) == ("100000", "1000000", "1")
+        assert field["type"] == "text"
+        assert field["inputmode"] == "numeric"
         assert f"ac-{scope}-error" in field["aria-describedby"]
     assert nodes["autocompactError"][1]["role"] == "alert"
     assert nodes["autocompactUnsupported"][1]["role"] == "status"

@@ -17,6 +17,7 @@ from ductor_bot.multiagent.registry import AgentRegistry
 from ductor_bot.orchestrator.core import Orchestrator
 from ductor_bot.session import SessionData, SessionKey
 from ductor_bot.workspace.paths import DuctorPaths
+from tests.cli.test_autocompact import TOKEN_INPUT_CASES
 from tests.webchat.test_bridge_api import (
     conversation as conversation,  # noqa: PLC0414 -- register shared pytest fixture
 )
@@ -101,7 +102,7 @@ async def test_save_both_and_one_scope_with_explicit_default_and_inheritance(api
         {"topic": 400000, "global": 1000001},
         {"topic": True},
         {"topic": 100000.0},
-        {"topic": "100000"},
+        {"topic": "99k"},
         {"topic": "inherit"},
         {"topic": {}},
         {"topic": []},
@@ -223,11 +224,11 @@ async def test_saved_value_reaches_next_request_argv_and_env(api, value, monkeyp
     await orch.handle_message(api.key, "hello")
     request = orch._cli_service.execute.await_args.args[0]
     expected = 200000 if value is None else value
-    assert request.autocompact == expected
+    assert request.autocompact == value
     cli = orch._cli_service._make_cli(request)
     cmd = cli._build_command("hello")
     env = build_subprocess_env(cli._config)
-    assert env["DUCTOR_AUTOCOMPACT"] == str(expected)
+    assert env["DUCTOR_AUTOCOMPACT"] == ("inherit" if value is None else str(expected))
     assert ("--autocompact" in cmd) == isinstance(expected, int)
     if isinstance(expected, int):
         assert cmd[cmd.index("--autocompact") + 1] == str(expected)
@@ -384,6 +385,7 @@ async def test_automation_list_is_public_metadata_and_agent_local(automation_api
         ("cron", "job-0", 100000),
         ("cron", "job-0", 1000000),
         ("cron", "job-0", "default"),
+        ("cron", "job-0", None),
         ("cron", "job-0", "off"),
         ("webhook", "hook", None),
         ("webhook", "hook", 300000),
@@ -414,7 +416,7 @@ async def test_automation_save_roundtrip_and_next_execution(
     command = build_cmd(config, "hello")
     assert command is not None
     expected = 500000 if value is None else value
-    assert command.env_overrides["DUCTOR_AUTOCOMPACT"] == str(expected)
+    assert command.env_overrides["DUCTOR_AUTOCOMPACT"] == ("inherit" if value is None else str(expected))
     assert ("--autocompact" in command.cmd) == isinstance(expected, int)
     if isinstance(expected, int):
         assert command.cmd[command.cmd.index("--autocompact") + 1] == str(expected)
@@ -426,12 +428,11 @@ async def test_automation_save_roundtrip_and_next_execution(
 @pytest.mark.parametrize(
     ("kind", "body"),
     [
-        ("cron", {"value": None}),
         ("cron", {"value": 99999}),
         ("webhook", {"value": 1000001}),
         ("cron", {"value": True}),
         ("webhook", {"value": "inherit"}),
-        ("cron", {"value": "300000"}),
+        ("cron", {"value": "500.0001k"}),
         ("cron", {"value": 300000.0}),
         ("cron", {}),
         ("cron", {"value": "off", "extra": 1}),
@@ -611,7 +612,10 @@ async def test_sub_global_success_updates_both_files_runtime_and_next_request(ap
     assert orch._config.autocompact == orch._cli_service._config.autocompact == 400000
     await orch.handle_message(api.key, "hello")
     request = orch._cli_service.execute.await_args.args[0]
-    assert request.autocompact == (300000 if transport == "web" else 400000)
+    assert request.autocompact == (300000 if transport == "web" else None)
+    assert orch._cli_service._make_cli(request)._config.autocompact == (
+        300000 if transport == "web" else 400000
+    )
 
 
 @pytest.mark.parametrize(
@@ -704,3 +708,41 @@ async def test_sub_global_failure_restores_observed_runtime_update(api, monkeypa
         == api.bot._orch._cli_service._config.autocompact
         == 200000
     )
+
+
+@pytest.mark.parametrize(("text", "expected"), TOKEN_INPUT_CASES)
+async def test_human_token_input_api_normalizes_before_saving(api, text, expected):
+    if text in {"default", "off"}:
+        return  # Existing mode tests cover these API values.
+    response = await _put(api, {"topic": text, "global": text})
+    assert response.status == (200 if expected is not None else 400)
+    if expected is not None:
+        state = await response.json()
+        assert state["topic_value"] == state["global_value"] == expected
+        assert json.loads(api.paths.config_path.read_text())["autocompact"] == expected
+        assert (await api.bot._orch._sessions.get_active(api.key)).autocompact == expected
+    else:
+        assert json.loads(api.paths.config_path.read_text()) == {}
+        assert (await api.bot._orch._sessions.get_active(api.key)).autocompact is None
+
+
+@pytest.mark.parametrize(("text", "expected"), TOKEN_INPUT_CASES)
+async def test_automation_human_token_input_api(automation_api, text, expected):
+    if text in {"default", "off"}:
+        return
+    h = automation_api
+    before = (h.paths.cron_jobs_path.read_text(), h.paths.webhooks_path.read_text())
+    for kind, item_id, path, key in [
+        ("cron", "job-0", h.paths.cron_jobs_path, "jobs"),
+        ("webhook", "hook", h.paths.webhooks_path, "hooks"),
+    ]:
+        response = await h.client.put(
+            AUTO_PATH + f"/{kind}/{item_id}", json={"value": text}, headers=headers()
+        )
+        assert response.status == (200 if expected is not None else 400)
+        if expected is not None:
+            record = next(x for x in json.loads(path.read_text())[key] if x["id"] == item_id)
+            assert record["autocompact"] == expected
+            assert type(record["autocompact"]) is int
+    if expected is None:
+        assert before == (h.paths.cron_jobs_path.read_text(), h.paths.webhooks_path.read_text())

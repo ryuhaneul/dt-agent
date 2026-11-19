@@ -121,7 +121,7 @@ def build_subprocess_env(
     env.update(secret_environment(ductor_home))
     env["DUCTOR_HOME"] = str(ductor_home)
     env["DUCTOR_TRANSPORT"] = config.transport
-    env["DUCTOR_AUTOCOMPACT"] = str(config.autocompact)
+    env["DUCTOR_AUTOCOMPACT"] = "inherit" if config.autocompact_inherit else str(config.autocompact)
     env["DUCTOR_SHARED_MEMORY_PATH"] = str(main_home / "SHAREDMEMORY.md")
 
     optional = {

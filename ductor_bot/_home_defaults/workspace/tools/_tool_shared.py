@@ -148,13 +148,25 @@ def parse_autocompact_option(
 ) -> str | int | None:
     """Parse CLI text without importing the bot's optional Python dependencies."""
     if value is None:
-        value = os.environ.get("DUCTOR_AUTOCOMPACT", "default") if use_env else None
+        value = (
+            os.environ.get("DUCTOR_AUTOCOMPACT", "inherit" if allow_inherit else "default")
+            if use_env else None
+        )
     if value is None or (allow_inherit and value == "inherit"):
         return None
     if value in ("default", "off"):
         return value
-    if value.isascii() and value.isdigit() and 100000 <= int(value) <= 1000000:
-        return int(value)
+    match = re.fullmatch(
+        r"([0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:\.([0-9]+))?([kKmM]?)", value.strip()
+    )
+    if match is not None:
+        whole, fraction, suffix = match.groups()
+        fraction = fraction or ""
+        multiplier = {"": 1, "k": 1000, "m": 1000000}[suffix.lower()]
+        numerator = int(whole.replace(",", "") + fraction) * multiplier
+        tokens, remainder = divmod(numerator, 10 ** len(fraction))
+        if not remainder and 100000 <= tokens <= 1000000:
+            return tokens
     raise ValueError("autocompact must be default, off, or an integer from 100000 to 1000000" + (" (inherit is also allowed)" if allow_inherit else ""))
 
 
@@ -166,7 +178,7 @@ def normalize_autocompact_records(data: dict[str, Any], key: str) -> dict[str, A
             continue
         value = record["autocompact"]
         valid = value in ("default", "off") if isinstance(value, str) else type(value) is int and 100000 <= value <= 1000000
-        if not valid and not (inherit and value is None):
+        if not valid and value is not None:
             logging.getLogger(__name__).warning("Invalid stored autocompact for record %s; using fallback", record.get("id", "?"))
             record["autocompact"] = None if inherit else "default"
     return data

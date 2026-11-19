@@ -432,7 +432,11 @@ class InternalAgentAPI:
         from ductor_bot.tasks.models import TaskSubmit, normalise_priority
 
         try:
-            autocompact = validate_autocompact(data.get("autocompact", "default"))
+            autocompact = (
+                validate_autocompact(data["autocompact"])
+                if data.get("autocompact") is not None
+                else None
+            )
         except ValueError:
             return web.json_response({"success": False, "error": "Invalid autocompact"}, status=400)
         submit = TaskSubmit(

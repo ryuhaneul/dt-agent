@@ -108,6 +108,7 @@ class CLIConfig:
     # Reasoning effort: used by Codex (-c model_reasoning_effort) and Claude (--effort).
     reasoning_effort: str = "medium"
     autocompact: AutocompactValue = "default"
+    autocompact_inherit: bool = False
     # Codex-specific fields (ignored by Claude provider):
     sandbox_mode: str = "read-only"
     images: list[str] = field(default_factory=list)
