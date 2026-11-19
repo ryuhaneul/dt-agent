@@ -395,7 +395,7 @@ def _automation_detail(orch: Orchestrator, kind: str, token: str) -> SelectorRes
     if item is None:
         return automation_selector_start(orch, note=t("autocompact.list_changed"))
     prefix = f"ac:auto:{kind}:{token}:"
-    modes = ["inherit", "default", "off"] if kind == "webhook" else ["default", "off"]
+    modes = ["inherit", "default", "off"]
     rows = [
         [
             Button(
@@ -455,9 +455,7 @@ async def _automation_callback(  # noqa: PLR0911 -- selector action dispatch
     if len(parts) != 5 or parts[2] not in {"cron", "webhook"}:
         return SelectorResponse(t("autocompact.invalid_action"))
     _, _, kind, token, action = parts
-    if action not in {"open", "input", "default", "off", "inherit"} or (
-        action == "inherit" and kind != "webhook"
-    ):
+    if action not in {"open", "input", "default", "off", "inherit"}:
         return SelectorResponse(t("autocompact.invalid_action"))
     if automation_target(orch, kind, token) is None:
         return automation_selector_start(orch, note=t("autocompact.list_changed"))

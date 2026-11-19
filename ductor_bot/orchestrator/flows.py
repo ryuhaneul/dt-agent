@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING
 from ductor_bot.cli import auth as cli_auth
 from ductor_bot.cli.autocompact import (
     autocompact_override_kwargs,
-    resolve_autocompact,
     validate_autocompact,
 )
 from ductor_bot.cli.claude_features import snapshot_refresh_active
@@ -138,14 +137,14 @@ async def build_append_prompt(
     return ("\n\n".join(parts) or None), snapshot_off
 
 
-async def _topic_autocompact(orch: Orchestrator, key: SessionKey) -> AutocompactValue:
+async def _topic_autocompact(orch: Orchestrator, key: SessionKey) -> AutocompactValue | None:
     """Resolve a named turn's recipient setting without blocking metadata recovery."""
     try:
         session = await orch._sessions.get_active(key)
     except (OSError, ValueError, TypeError):
         logger.warning("Autocompact topic lookup failed; using the agent global value")
-        return resolve_autocompact(None, orch._config.autocompact)
-    return resolve_autocompact(session.autocompact if session else None, orch._config.autocompact)
+        return None
+    return session.autocompact if session else None
 
 
 async def _prepare_normal(
@@ -216,7 +215,7 @@ async def _prepare_normal(
         model_override=req_model,
         provider_override=req_provider,
         effort_override=req_effort,
-        autocompact=resolve_autocompact(session.autocompact, orch._config.autocompact),
+        autocompact=session.autocompact,
         chat_id=key.chat_id,
         topic_id=key.topic_id,
         transport=transport_override or key.transport,
@@ -1242,7 +1241,7 @@ async def heartbeat_flow(  # noqa: PLR0911
         model_override=session.model or req_model,
         provider_override=session.provider,
         effort_override=session.reasoning_effort or None,
-        autocompact=resolve_autocompact(session.autocompact, orch._config.autocompact),
+        autocompact=session.autocompact,
         chat_id=key.chat_id,
         topic_id=key.topic_id,
         transport=key.transport,

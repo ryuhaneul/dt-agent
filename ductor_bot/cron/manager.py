@@ -57,7 +57,7 @@ class CronJob:
     model: str | None = None
     reasoning_effort: str | None = None
     cli_parameters: list[str] = field(default_factory=list)
-    autocompact: AutocompactValue = "default"
+    autocompact: AutocompactValue | None = None
 
     # Quiet hours (None = use global config defaults)
     quiet_start: int | None = None
@@ -90,7 +90,8 @@ class CronJob:
         return "separate" if self.delivery_mode_problem() else self.delivery_mode
 
     def __post_init__(self) -> None:
-        self.autocompact = validate_autocompact(self.autocompact)
+        if self.autocompact is not None:
+            self.autocompact = validate_autocompact(self.autocompact)
         if not self.created_at:
             self.created_at = datetime.now(UTC).isoformat()
 
@@ -161,8 +162,11 @@ class CronJob:
             model=data.get("model"),
             reasoning_effort=data.get("reasoning_effort"),
             cli_parameters=data.get("cli_parameters", []),
-            autocompact=stored_autocompact(data.get("autocompact", "default"), data["id"])
-            or "default",
+            autocompact=(
+                None
+                if data.get("autocompact", "default") is None
+                else stored_autocompact(data.get("autocompact", "default"), data["id"])
+            ),
             quiet_start=data.get("quiet_start"),
             quiet_end=data.get("quiet_end"),
             dependency=data.get("dependency"),
@@ -230,9 +234,9 @@ class CronManager:
         """Return a job by ID, or None."""
         return next((j for j in self._jobs if j.id == job_id), None)
 
-    def set_autocompact(self, job_id: str, value: AutocompactValue) -> bool:
+    def set_autocompact(self, job_id: str, value: AutocompactValue | None) -> bool:
         """Change only the saved compaction value, preserving concurrent registry edits."""
-        concrete = validate_autocompact(value)
+        concrete = validate_autocompact(value) if value is not None else None
 
         def mutate(jobs: list[dict[str, Any]]) -> bool:
             raw = _raw_job(jobs, job_id)

@@ -68,8 +68,8 @@ def test_public_state_and_saving_only_changes_value(orch):
                 "name": "Cron 0",
                 "schedule": "0 6 * * *",
                 "enabled": True,
-                "value": "default",
-                "effective_value": "default",
+                "value": None,
+                "effective_value": 350000,
             },
             {
                 "kind": "webhook",
@@ -128,10 +128,11 @@ async def test_list_pages_and_item_options(orch):
     for kind, item_id in [("cron", "job-0"), ("webhook", "hook")]:
         response = await ac.handle_autocompact_callback(orch, key, callback(kind, item_id, "open"))
         buttons = [b.callback_data for row in response.buttons.rows for b in row]
-        assert (callback(kind, item_id, "inherit") in buttons) == (kind == "webhook")
+        assert callback(kind, item_id, "inherit") in buttons
         assert all(len(b.encode()) <= 64 for b in buttons)
     response = await ac.handle_autocompact_callback(orch, key, callback("cron", "job-0", "inherit"))
-    assert response.buttons is None
+    assert response.buttons is not None
+    assert orch._cron_manager.get_job("job-0").autocompact is None
 
 
 async def test_automation_input_reuses_owner_topic_cancel_retry_and_completion(orch):
@@ -168,7 +169,7 @@ async def test_deleted_target_and_collision_never_change_another_item(orch, monk
     response = await ac.consume_autocompact_input(orch, key, "300000", user_id=100)
     assert "list changed" in response.text
     assert not orch._autocompact_inputs
-    assert orch._cron_manager.get_job("job-1").autocompact == "default"
+    assert orch._cron_manager.get_job("job-1").autocompact is None
     orch._cron_manager.add_job(
         CronJob(
             id="job-2",
@@ -187,7 +188,7 @@ async def test_deleted_target_and_collision_never_change_another_item(orch, monk
         orch, key, "ac:auto:cron:collision:off", user_id=100
     )
     assert "list changed" in response.text
-    assert all(job.autocompact == "default" for job in orch._cron_manager.list_jobs())
+    assert all(job.autocompact is None for job in orch._cron_manager.list_jobs())
 
 
 @pytest.mark.parametrize(
@@ -210,7 +211,7 @@ def test_saved_values_reach_execution_argv_env(orch, kind, item_id, value, monke
     apply_autocompact_env(command, cfg)
     expected = 300000 if kind == "cron" else 500000
     assert command.cmd[command.cmd.index("--autocompact") + 1] == str(expected)
-    assert command.env_overrides["DUCTOR_AUTOCOMPACT"] == str(expected)
+    assert command.env_overrides["DUCTOR_AUTOCOMPACT"] == ("inherit" if value is None else str(expected))
 
 
 async def test_webhook_input_write_failure_keeps_retry_and_restores_runtime_value(
@@ -303,6 +304,6 @@ async def _run_named_background_setting(orch, monkeypatch, followup, value, erro
     finally:
         await observer.shutdown()
     request = orch._cli_service.execute.call_args.args[0]
-    assert request.autocompact == (500000 if error is not None or value is None else value)
+    assert request.autocompact == (None if error is not None else value)
     assert request.transport == "sl"
     assert request.topic_id == 99

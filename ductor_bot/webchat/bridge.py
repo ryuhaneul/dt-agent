@@ -397,7 +397,7 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
             if kind not in {"cron", "webhook"} or data.keys() != {"value"}:
                 return _error("bad_request", 400)
             try:
-                if kind == "cron" or data["value"] is not None:
+                if data["value"] is not None:
                     data["value"] = parse_autocompact_input(data["value"])
             except ValueError:
                 return _error("bad_request", 400)

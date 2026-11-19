@@ -83,7 +83,9 @@ def build_cmd(
 
 def apply_autocompact_env(command: OneShotCommand, config: TaskExecutionConfig) -> None:
     """The saved setting wins after slot, caller and bot-home env composition."""
-    command.env_overrides["DUCTOR_AUTOCOMPACT"] = str(config.autocompact)
+    command.env_overrides["DUCTOR_AUTOCOMPACT"] = (
+        "inherit" if config.autocompact_inherit else str(config.autocompact)
+    )
     command.env_overrides.update(autocompact_env(config.provider, config.autocompact))
     if config.provider == "claude" and isinstance(config.autocompact, int):
         command.env_overrides.update(DISABLE_AUTO_COMPACT=None, DISABLE_COMPACT=None)

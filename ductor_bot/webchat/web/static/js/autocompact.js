@@ -96,7 +96,7 @@ export function initAutocompact(getTopic, onSaved) {
     scopes.forEach(scope => {
       const current = state[`${scope}_value`];
       modes[scope] = mode(current);
-      fields[scope].value = typeof current === 'number' ? String(current) : '500000';
+      fields[scope].value = typeof current === 'number' ? String(current) : '500k';
     });
     render();
   }
@@ -191,7 +191,6 @@ export function initAutocompact(getTopic, onSaved) {
     document.querySelector('#acAutomationMeta').textContent = `${t(`autocompact.${item.kind}`)} · ${automationMeta(item)}`;
     document.querySelector('#acAutomationCurrent').textContent = automationValue(item);
     dialog.querySelectorAll('[data-ac-automation-mode]').forEach(button => {
-      button.hidden = item.kind === 'cron' && button.dataset.acAutomationMode === 'inherit';
       button.setAttribute('aria-pressed', String(itemMode === button.dataset.acAutomationMode));
     });
     document.querySelector('#ac-automation-custom').hidden = itemMode !== 'tokens';
@@ -201,7 +200,7 @@ export function initAutocompact(getTopic, onSaved) {
   }
   function editAutomation(entry) {
     item = entry; itemFocus = { kind: entry.kind, id: entry.id }; itemMode = mode(entry.value);
-    automationNumber.value = typeof entry.value === 'number' ? String(entry.value) : '500000';
+    automationNumber.value = typeof entry.value === 'number' ? String(entry.value) : '500k';
     view = 'editor'; errorKey = null; render(); setBusy(false);
     dialog.querySelector('.ac-body').scrollTop = 0;
     dialog.querySelector(`[data-ac-automation-mode="${itemMode}"]`).focus();

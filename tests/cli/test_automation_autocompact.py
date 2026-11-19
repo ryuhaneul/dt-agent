@@ -17,6 +17,7 @@ from ductor_bot._home_defaults.workspace.tools._tool_shared import (
     parse_autocompact_option,
 )
 from ductor_bot.cli.autocompact import stored_autocompact, validate_autocompact
+from ductor_bot.cli.executor import build_subprocess_env
 from ductor_bot.cli.param_resolver import TaskExecutionConfig, TaskOverrides, resolve_cli_config
 from ductor_bot.cli.slot_rotation import RotationResult
 from ductor_bot.cli.types import AgentResponse
@@ -39,6 +40,7 @@ from tests.orchestrator.conftest import (
     workspace as workspace,  # noqa: PLC0414 -- shared pytest fixture
 )
 from tests.tasks.test_hub import _make_cli_service, _make_config
+from tests.tools.test_tool_arguments import server as server  # noqa: PLC0414
 from tests.webhook.test_observer import _make_hook, _make_manager, _make_observer, _make_paths
 
 
@@ -60,7 +62,7 @@ def _payload(kind):
 
 
 @pytest.mark.parametrize("kind", ["cron", "webhook", "task"])
-@pytest.mark.parametrize("value", ["default", "off", 100000, 1000000])
+@pytest.mark.parametrize("value", [None, "default", "off", 100000, 1000000])
 def test_stored_roundtrip_and_legacy_defaults(kind, value):
     cls = {"cron": CronJob, "webhook": WebhookEntry, "task": TaskEntry}[kind]
     payload = _payload(kind)
@@ -105,7 +107,8 @@ def test_tool_and_backend_reject_invalid_values(value):
 def test_tool_storage_repair_matches_backend(key, value):
     data = {key: [{"id": "record-id", "autocompact": value, "description": "keep"}]}
     record = normalize_autocompact_records(data, key)[key][0]
-    assert record["autocompact"] == stored_autocompact(value, "record-id", inherit=key == "hooks")
+    expected = None if value is None else stored_autocompact(value, "record-id", inherit=key == "hooks")
+    assert record["autocompact"] == expected
     assert record["description"] == "keep"
 
 
@@ -242,13 +245,13 @@ async def test_rotated_slots_and_caller_env_cannot_change_saved_autocompact(tmp_
         assert env["DUCTOR_AUTOCOMPACT"] == "300000"
 
 
-@pytest.mark.parametrize("value", ["default", "off", 300000])
+@pytest.mark.parametrize("value", [None, "default", "off", 300000])
 async def test_cron_in_session_carries_saved_override_through_bus(tmp_path, value):
     world = World(tmp_path, autocompact=900000)
     job = world.add(_job("daily", delivery_mode="in_session", autocompact=value))
     spawned = await world.run(job)
     spawned.assert_not_called()
-    assert world.injector.calls[0]["autocompact"] == value
+    assert world.injector.calls[0]["autocompact"] == (900000 if value is None else value)
 
 
 async def test_webhook_wake_inherits_current_global_but_explicit_default_stops_it(tmp_path):
@@ -347,9 +350,10 @@ def test_cron_and_webhook_tools_snapshot_edit_and_inheritance(tmp_path, monkeypa
     assert changed.returncode == 0, changed.stderr
     assert json.loads(jobs_path.read_text())["jobs"][0]["autocompact"] == "off"
     before = jobs_path.read_bytes()
-    invalid = _run(tmp_path, TOOL_EDIT, ["job", "--autocompact", "inherit"])
-    assert invalid.returncode != 0
-    assert jobs_path.read_bytes() == before
+    inherited = _run(tmp_path, TOOL_EDIT, ["job", "--autocompact", "inherit"])
+    assert inherited.returncode == 0, inherited.stderr
+    assert json.loads(jobs_path.read_text())["jobs"][0]["autocompact"] is None
+    assert jobs_path.read_bytes() != before
     added = _run(
         tmp_path,
         tools / "webhook_tools/webhook_add.py",
@@ -410,3 +414,59 @@ async def test_oneshot_probe_runs_outside_event_loop(tmp_path, monkeypatch, slot
     )
     assert len(probe_threads) == 1
     assert probe_threads[0] != loop_thread
+
+
+@pytest.mark.parametrize("topic_value", [None, "default", "off", 400000])
+async def test_creation_copies_raw_topic_setting(orch, tmp_path, monkeypatch, server, topic_value):
+    from ductor_bot.orchestrator.core import Orchestrator
+    from tests.cron.test_cron_add_tool import _full_args, _run_tool
+    from tests.tools.test_tool_arguments import _env, _only_request, _run
+
+    orch._config.autocompact = 800000
+    orch = Orchestrator(orch._config, orch.paths)
+    orch._cli_service.execute = AsyncMock(return_value=AgentResponse(result="done"))
+    key = SessionKey(chat_id=1, topic_id=42)
+    await orch._sessions.set_autocompact(key, topic_value)
+    await orch.handle_message(key, "create automation")
+    request = orch._cli_service.execute.await_args.args[0]
+    assert request.autocompact == topic_value
+    cli = orch._cli_service._make_cli(request)
+    env_value = build_subprocess_env(cli._config)["DUCTOR_AUTOCOMPACT"]
+    assert env_value == ("inherit" if topic_value is None else str(topic_value))
+    assert cli._config.autocompact == (800000 if topic_value is None else topic_value)
+    monkeypatch.setenv("DUCTOR_AUTOCOMPACT", env_value)
+    added = _run_tool(tmp_path, _full_args("job"))
+    assert added.returncode == 0, added.stderr
+    assert json.loads((tmp_path / "cron_jobs.json").read_text())["jobs"][0]["autocompact"] == topic_value
+    recorder, port = server
+    env = _env(tmp_path, port)
+    env["DUCTOR_AUTOCOMPACT"] = env_value
+    created = _run("task_tools/create_task.py", ["task prompt"], env)
+    assert created.returncode == 0, created.stderr
+    body = _only_request(recorder)
+    assert "autocompact" in body
+    assert body["autocompact"] == topic_value
+    submit = TaskSubmit(chat_id=1, prompt="task", message_id=1, thread_id=42,
+                        parent_agent="main", autocompact=body["autocompact"])
+    registry = TaskRegistry(tmp_path / "tasks.json", tmp_path / "tasks")
+    entry = registry.create(submit, provider="claude", model="opus")
+    assert registry.get(entry.task_id).autocompact == topic_value
+    orch._cli_service.update_config(replace(orch._cli_service._config, autocompact=600000))
+    task_cli = orch._cli_service._make_cli(replace(request, autocompact=entry.autocompact))
+    assert task_cli._config.autocompact == (600000 if topic_value is None else topic_value)
+
+
+@pytest.mark.parametrize("mode", ["separate", "inject", "in_session"])
+async def test_inherited_cron_uses_current_global_on_each_execution(tmp_path, mode):
+    world = World(tmp_path, autocompact=300000)
+    job = world.add(_job("daily", delivery_mode=mode, autocompact=None))
+    for global_value in [300000, 700000]:
+        world.observer._config.autocompact = global_value
+        spawned = await world.run(job)
+        if mode != "in_session":
+            argv = spawned.await_args.args
+            assert argv[argv.index("--autocompact") + 1] == str(global_value)
+            assert spawned.await_args.kwargs["env"]["DUCTOR_AUTOCOMPACT"] == "inherit"
+        if mode != "separate":
+            assert world.injector.calls[-1]["autocompact"] == global_value
+    assert world.stored("daily").autocompact is None

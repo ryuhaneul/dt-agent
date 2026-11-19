@@ -148,7 +148,10 @@ def parse_autocompact_option(
 ) -> str | int | None:
     """Parse CLI text without importing the bot's optional Python dependencies."""
     if value is None:
-        value = os.environ.get("DUCTOR_AUTOCOMPACT", "default") if use_env else None
+        value = (
+            os.environ.get("DUCTOR_AUTOCOMPACT", "inherit" if allow_inherit else "default")
+            if use_env else None
+        )
     if value is None or (allow_inherit and value == "inherit"):
         return None
     if value in ("default", "off"):
@@ -175,7 +178,7 @@ def normalize_autocompact_records(data: dict[str, Any], key: str) -> dict[str, A
             continue
         value = record["autocompact"]
         valid = value in ("default", "off") if isinstance(value, str) else type(value) is int and 100000 <= value <= 1000000
-        if not valid and not (inherit and value is None):
+        if not valid and value is not None:
             logging.getLogger(__name__).warning("Invalid stored autocompact for record %s; using fallback", record.get("id", "?"))
             record["autocompact"] = None if inherit else "default"
     return data

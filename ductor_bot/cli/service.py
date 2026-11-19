@@ -432,6 +432,7 @@ class CLIService:
                 permission_mode=self._config.permission_mode,
                 reasoning_effort=effort,
                 autocompact=resolve_autocompact(request.autocompact, self._config.autocompact),
+                autocompact_inherit=request.autocompact is None,
                 gemini_api_key=self._config.gemini_api_key,
                 process_registry=self._process_registry,
                 chat_id=request.chat_id,

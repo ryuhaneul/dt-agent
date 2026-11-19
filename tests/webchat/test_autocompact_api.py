@@ -224,11 +224,11 @@ async def test_saved_value_reaches_next_request_argv_and_env(api, value, monkeyp
     await orch.handle_message(api.key, "hello")
     request = orch._cli_service.execute.await_args.args[0]
     expected = 200000 if value is None else value
-    assert request.autocompact == expected
+    assert request.autocompact == value
     cli = orch._cli_service._make_cli(request)
     cmd = cli._build_command("hello")
     env = build_subprocess_env(cli._config)
-    assert env["DUCTOR_AUTOCOMPACT"] == str(expected)
+    assert env["DUCTOR_AUTOCOMPACT"] == ("inherit" if value is None else str(expected))
     assert ("--autocompact" in cmd) == isinstance(expected, int)
     if isinstance(expected, int):
         assert cmd[cmd.index("--autocompact") + 1] == str(expected)
@@ -385,6 +385,7 @@ async def test_automation_list_is_public_metadata_and_agent_local(automation_api
         ("cron", "job-0", 100000),
         ("cron", "job-0", 1000000),
         ("cron", "job-0", "default"),
+        ("cron", "job-0", None),
         ("cron", "job-0", "off"),
         ("webhook", "hook", None),
         ("webhook", "hook", 300000),
@@ -415,7 +416,7 @@ async def test_automation_save_roundtrip_and_next_execution(
     command = build_cmd(config, "hello")
     assert command is not None
     expected = 500000 if value is None else value
-    assert command.env_overrides["DUCTOR_AUTOCOMPACT"] == str(expected)
+    assert command.env_overrides["DUCTOR_AUTOCOMPACT"] == ("inherit" if value is None else str(expected))
     assert ("--autocompact" in command.cmd) == isinstance(expected, int)
     if isinstance(expected, int):
         assert command.cmd[command.cmd.index("--autocompact") + 1] == str(expected)
@@ -427,7 +428,6 @@ async def test_automation_save_roundtrip_and_next_execution(
 @pytest.mark.parametrize(
     ("kind", "body"),
     [
-        ("cron", {"value": None}),
         ("cron", {"value": 99999}),
         ("webhook", {"value": 1000001}),
         ("cron", {"value": True}),
@@ -612,7 +612,10 @@ async def test_sub_global_success_updates_both_files_runtime_and_next_request(ap
     assert orch._config.autocompact == orch._cli_service._config.autocompact == 400000
     await orch.handle_message(api.key, "hello")
     request = orch._cli_service.execute.await_args.args[0]
-    assert request.autocompact == (300000 if transport == "web" else 400000)
+    assert request.autocompact == (300000 if transport == "web" else None)
+    assert orch._cli_service._make_cli(request)._config.autocompact == (
+        300000 if transport == "web" else 400000
+    )
 
 
 @pytest.mark.parametrize(

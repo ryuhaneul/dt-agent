@@ -977,15 +977,13 @@ async def test_existing_topic_effort_fixed_when_global_default_changes(
 
 @pytest.mark.parametrize("topic_value", [None, "default", "off", 300000])
 async def test_autocompact_normal_named_and_heartbeat(orch, topic_value):
-    from ductor_bot.cli.autocompact import resolve_autocompact
-
     orch._config.autocompact = 200000
     orch._config.heartbeat.cooldown_minutes = 0
     key = SessionKey(chat_id=1, topic_id=42)
     session = SessionData(chat_id=1, topic_id=42, autocompact=topic_value)
     session.session_id = "session-1"
     await orch._sessions.update_session(session)
-    expected = resolve_autocompact(topic_value, 200000)
+    expected = topic_value
     orch._cli_service.execute = AsyncMock(return_value=_mock_response())
     await normal(orch, key, "hello")
     assert orch._cli_service.execute.await_args.args[0].autocompact == expected
@@ -1040,7 +1038,7 @@ async def test_named_autocompact_metadata_failure_uses_agent_global(orch, error,
         orch._cli_service.execute = execute
         await named_session_flow(orch, key, ns.name, "hello")
     assert execute.await_count == 1
-    assert execute.await_args.args[0].autocompact == 200000
+    assert execute.await_args.args[0].autocompact is None
     assert "Autocompact topic lookup failed" in caplog.text
     assert "SYNTHETIC_PRIVATE_VALUE" not in caplog.text
     assert "/private/path" not in caplog.text

@@ -286,10 +286,13 @@ def main() -> None:
         "is injected into the topic's session; in_session: the instruction runs in the topic's "
         "session. inject and in_session need a chat.",
     )
-    parser.add_argument("--autocompact", help="default, off, or 100000-1000000 tokens; defaults to the creating topic value")
+    parser.add_argument(
+        "--autocompact",
+        help="inherit, default, off, or 100000-1000000 tokens; defaults to the creating topic value",
+    )
     args = parser.parse_args()
     try:
-        args.autocompact = parse_autocompact_option(args.autocompact, use_env=True)
+        args.autocompact = parse_autocompact_option(args.autocompact, allow_inherit=True, use_env=True)
     except ValueError as exc:
         parser.error(str(exc))
 

@@ -170,7 +170,7 @@ class TestTaskOnlyMode:
 
 async def test_create_autocompact_is_validated_before_submit(api_client):
     hub = api_client.app["_test_hub"]
-    for value in [None, True, "100000", 99999, 1000001]:
+    for value in [True, "100000", 99999, 1000001]:
         response = await api_client.post("/tasks/create", json={"from": "main", "prompt": "hello", "autocompact": value})
         assert response.status == 400
     hub.submit.assert_not_called()
@@ -195,3 +195,11 @@ async def test_resume_autocompact_is_forwarded_only_when_present(api_client):
     response = await api_client.post("/tasks/resume", json={"from": "main", "prompt": "hello", "task_id": "task-id", "autocompact": None})
     assert not (await response.json())["success"]
     hub.resume.assert_not_called()
+
+
+@pytest.mark.parametrize("body", [{}, {"autocompact": None}])
+async def test_create_task_defaults_to_global_inheritance(api_client, body):
+    hub = api_client.app["_test_hub"]
+    response = await api_client.post("/tasks/create", json={"from": "main", "prompt": "hello", **body})
+    assert response.status == 200
+    assert hub.submit.call_args.args[0].autocompact is None
