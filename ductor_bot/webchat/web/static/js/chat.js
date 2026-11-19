@@ -380,14 +380,15 @@ function threadGroups(rows) {
   const groups = [];
   let group;
   for (const row of rows) {
-    if (row.kind !== 'busy' || !group) {
-      const ts = row.entry ? row.entry.ts : row.kind === 'stream' ? streamTimestamp(row.turn) : row.received;
-      const date = messageDate(ts);
+    const ts = row.entry ? row.entry.ts : row.kind === 'stream' ? streamTimestamp(row.turn) : row.received;
+    const date = messageDate(ts);
+    const showDay = row.kind === 'entry' || !!date;
+    if (showDay || !group) {
       const day = localDay(date), imported = !!row.entry?.imported;
-      const dayKey = `${day}:${imported}`;
+      const dayKey = showDay ? `${day}:${imported}` : null;
       if (dayKey !== group?.dayKey) {
         const label = day === calendarDay ? t('chat.today') : date ? messageFormats().day.format(date) : '—';
-        const divider = imported ? `${label} · ${t('chat.imported_day')}` : label;
+        const divider = !showDay ? '' : imported ? `${label} · ${t('chat.imported_day')}` : label;
         group = { dayKey, key: `${dayKey}:${row.key}`, divider, rows: [] };
         groups.push(group);
       }
@@ -397,7 +398,7 @@ function threadGroups(rows) {
   return groups;
 }
 function groupStart(group) {
-  return `<div class="date-group" data-date-group="${esc(group.key)}"><div class="day"${group.rows[0].kind === 'busy' ? ' hidden' : ''}>${esc(group.divider)}</div>`;
+  return `<div class="date-group" data-date-group="${esc(group.key)}"><div class="day"${group.divider ? '' : ' hidden'}>${esc(group.divider)}</div>`;
 }
 function itemMarkup(item) {
   const { kind, entry, turn } = item;
