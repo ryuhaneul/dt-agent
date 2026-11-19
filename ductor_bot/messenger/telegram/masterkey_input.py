@@ -191,18 +191,19 @@ class MasterKeyInput:
                 if not status.ttl_seconds
                 else text("seconds", seconds=status.ttl_seconds)
             )
-            await self._owner._send(
-                chat_id,
-                text(
-                    "status",
-                    state=text(
-                        "locked_state" if status.state is VaultState.LOCKED else status.state.value
-                    ),
-                    ttl=ttl,
-                    remaining=remaining,
+            response = text(
+                "status",
+                state=text(
+                    "locked_state" if status.state is VaultState.LOCKED else status.state.value
                 ),
-                thread_id=thread_id,
+                ttl=ttl,
+                remaining=remaining,
             )
+            if status.state is VaultState.LOCKED:
+                response += "\n" + text("status_unlock_hint")
+            elif status.state is VaultState.UNCONFIGURED:
+                response += "\n" + text("status_setup_hint")
+            await self._owner._send(chat_id, response, thread_id=thread_id)
         elif action == "lock":
             if status.state is VaultState.UNCONFIGURED:
                 raise VaultError("MASTER_KEY_NOT_SET")
