@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from ductor_bot.orchestrator.flows import StreamingCallbacks
     from ductor_bot.orchestrator.registry import OrchestratorResult
     from ductor_bot.session.key import SessionKey
+    from ductor_bot.webchat.attachments import AttachmentMessage
 
 logger = logging.getLogger(__name__)
 
@@ -322,8 +323,16 @@ class WebTurns:
             {"tid": state.tid, "turn_id": state.identity["turn_id"], **activity}
         )
 
-    async def submit(self, tid: str, text: str, *, session_name: str | None = None) -> str:
-        turn: ChatLogTurn = {
+    async def submit(
+        self,
+        tid: str,
+        text: str,
+        *,
+        session_name: str | None = None,
+        turn: ChatLogTurn | None = None,
+        attachments: AttachmentMessage | None = None,
+    ) -> str:
+        turn = turn or {
             "turn_id": new_id(),
             "user_entry_id": new_id(),
             "reply_entry_id": new_id(),
@@ -344,7 +353,7 @@ class WebTurns:
             self._fifo_locks.setdefault(tid, asyncio.Lock())
             turn_id = turn["turn_id"]
             self._turns[turn_id] = state
-            work = self._run(tid, text, turn, session_name=session_name)
+            work = self._run(tid, text, turn, session_name=session_name, attachments=attachments)
             task = asyncio.create_task(work, name="webchat-turn")
             self._tasks[turn_id] = task
             queue.append(turn_id)
@@ -642,6 +651,38 @@ class WebTurns:
                         to_tid(key), result._chat_log_entry_id, rows
                     )
 
+    async def _mirror_user(
+        self, tid: str, text: str, turn: ChatLogTurn, attachments: AttachmentMessage | None
+    ) -> None:
+        key = from_tid(tid)
+        async with self.runtime.outbox.delivery_lock:
+            if tid in self.blocked:
+                return
+            mirror_text, origin = user_mirror_fields(
+                attachments.caption if attachments else text, self._strings
+            )
+            await self.runtime.outbox.enqueue(
+                kind="user_mirror",
+                chat_id=key.chat_id,
+                topic_id=key.topic_id,
+                text=mirror_text,
+                origin=origin,
+                history_id=turn["user_entry_id"],
+            )
+            if attachments is not None:
+                for item in attachments.files:
+                    path = self.bot._orch.paths.workspace / item["path"]
+                    await self.runtime.outbox.enqueue(
+                        kind="user_mirror",
+                        chat_id=key.chat_id,
+                        topic_id=key.topic_id,
+                        text=f"<file:{path}>",
+                        origin="web_attachment",
+                        title=item["name"],
+                        history_id=turn["user_entry_id"],
+                    )
+        self.runtime.drainer.wake()
+
     async def _run(  # noqa: C901, PLR0912, PLR0915 -- turn lifecycle, FIFO admission and named target
         self,
         tid: str,
@@ -649,6 +690,7 @@ class WebTurns:
         turn: ChatLogTurn,
         *,
         session_name: str | None = None,
+        attachments: AttachmentMessage | None = None,
     ) -> None:
         key = from_tid(tid)
         state = self._turns[turn["turn_id"]]
@@ -659,19 +701,7 @@ class WebTurns:
         try:
             if tid in self.blocked:
                 return
-            async with self.runtime.outbox.delivery_lock:
-                if tid in self.blocked:
-                    return
-                mirror_text, origin = user_mirror_fields(text, self._strings)
-                await self.runtime.outbox.enqueue(
-                    kind="user_mirror",
-                    chat_id=key.chat_id,
-                    topic_id=key.topic_id,
-                    text=mirror_text,
-                    origin=origin,
-                    history_id=turn["user_entry_id"],
-                )
-            self.runtime.drainer.wake()
+            await self._mirror_user(tid, text, turn, attachments)
             state.prepared.set()
             if state.phase == "cancelled":
                 return

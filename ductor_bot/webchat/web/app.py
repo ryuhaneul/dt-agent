@@ -33,7 +33,7 @@ from ductor_bot.webchat.web.sessions import (
 from ductor_bot.webchat.web.upstream import BridgeClient, BridgeUnavailableError
 
 CSP = (
-    "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
+    "default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; "
     "connect-src 'self'; frame-src 'self'; frame-ancestors 'none'; "
     "base-uri 'none'; form-action 'self'"
 )
@@ -124,18 +124,24 @@ def _error(code: str, status: int = 403) -> web.Response:
     return web.json_response({"error": code}, status=status)
 
 
+def _upload_path(path: str) -> bool:
+    return re.fullmatch(r"/api/topics/[^/]+/uploads(?:/[^/]+(?:/complete)?)?", path) is not None
+
+
 @web.middleware
 async def security(
     request: web.Request,
     handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
 ) -> web.StreamResponse:
     try:
+        if request.can_read_body and "Content-Encoding" in request.headers:
+            return _error("unsupported_media_type", 415)
         if request.path.startswith(("/api/masterkey/", "/api/secrets/")):
             request = request.clone(client_max_size=64 * 1024)
         elif re.fullmatch(r"/api/topics/[^/]+/cron(?:/[^/]+(?:/toggle)?)?", request.path):
             # Keep the content limit at 256 KiB after decoding JSON escapes.
             request = request.clone(client_max_size=2 * 1024 * 1024)
-        if request.can_read_body:
+        if request.can_read_body and not _upload_path(request.path):
             await request.read()
         return await handler(request)
     except BridgeUnavailableError:
@@ -150,7 +156,10 @@ async def response_headers(request: web.Request, response: web.StreamResponse) -
     )
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "no-referrer"
-    if request.path.startswith("/api/"):
+    private_attachment = response.headers.get("Cache-Control") == "private" and re.fullmatch(
+        r"/api/topics/[^/]+/messages/[^/]+/attachments/[a-f0-9]{32}(?:/preview)?", request.path
+    )
+    if request.path.startswith("/api/") and not private_attachment:
         response.headers["Cache-Control"] = "no-store"
 
 
@@ -368,11 +377,93 @@ async def relay(request: web.Request) -> web.Response:
                 ),
             },
         )
+    elif request.method == "POST" and re.fullmatch(r"/api/topics/[^/]+/messages", request.path):
+        token = request.cookies.get(SESSION_COOKIE, "")
+        status, data = await state.bridge.request(
+            request.method, path, body=body, headers={"X-Dtw-Owner": _login_owner(state, token)}
+        )
     else:
         status, data = await state.bridge.request(request.method, path, body=body)
     if request.path == "/api/state" and status == 200:
         data.update({"bot": {"up": True}, "web_sessions": state.sessions.count()})
     return web.json_response(data, status=status)
+
+
+async def upload_relay(request: web.Request) -> web.Response:
+    """Authenticate first, then stream only binary PUT bodies to the bridge."""
+    state = request.app[STATE]
+    token = request.cookies.get(SESSION_COOKIE, "")
+    owner = _login_owner(state, token)
+    path = request.rel_url.raw_path.removeprefix("/api")
+    if request.method != "PUT":
+        status, data = await state.bridge.request(
+            request.method, path, body=await request.read(), headers={"X-Dtw-Owner": owner}
+        )
+        return web.json_response(data, status=status)
+    if request.content_type != "application/octet-stream" or request.headers.get(
+        "Content-Encoding"
+    ):
+        return _error("unsupported_media_type", 415)
+    if request.content_length is not None and request.content_length > 8 * 1024 * 1024:
+        return _error("too_large", 413)
+
+    async def chunks() -> AsyncIterator[bytes]:
+        while True:
+            async with asyncio.timeout(30):
+                chunk = await request.content.read(64 * 1024)
+            if not chunk:
+                return
+            yield chunk
+
+    status, data, offset = await state.bridge.upload_chunk(
+        path,
+        chunks(),
+        owner=owner,
+        offset=request.headers.get("Upload-Offset", ""),
+        length=request.content_length,
+    )
+    headers = {"Upload-Offset": offset} if offset is not None else {}
+    return web.json_response(data, status=status, headers=headers)
+
+
+async def download_relay(request: web.Request) -> web.StreamResponse:
+    """Relay authenticated file responses without storing them in web process memory."""
+    state = request.app[STATE]
+    path = request.rel_url.raw_path.removeprefix("/api")
+    if request.rel_url.raw_query_string:
+        path += "?" + request.rel_url.raw_query_string
+    response = None
+    try:
+        async with state.bridge.download(request.method, path, headers=request.headers) as upstream:
+            headers = {
+                name: upstream.headers[name]
+                for name in (
+                    "Content-Type",
+                    "Content-Length",
+                    "Content-Disposition",
+                    "Content-Range",
+                    "Accept-Ranges",
+                    "X-Content-Type-Options",
+                    "Cache-Control",
+                )
+                if name in upstream.headers
+            }
+            if upstream.status in {200, 206, 416}:
+                headers["Cache-Control"] = "private"
+            response = web.StreamResponse(status=upstream.status, headers=headers)
+            await response.prepare(request)
+            if request.method != "HEAD":
+                async for chunk in upstream.content.iter_chunked(64 * 1024):
+                    async with asyncio.timeout(30):
+                        await response.write(chunk)
+            await response.write_eof()
+            return response
+    except (BridgeUnavailableError, TimeoutError, ConnectionError):
+        if response is None or not response.prepared:
+            raise BridgeUnavailableError from None
+        if request.transport is not None:
+            request.transport.close()
+        return response
 
 
 async def websocket(request: web.Request) -> web.StreamResponse:
@@ -449,7 +540,11 @@ def create_app(
     public_origin: str,
     static_dir: Path | None = None,
 ) -> web.Application:
-    app = web.Application(middlewares=[security, authenticate], client_max_size=512 * 1024)
+    app = web.Application(
+        middlewares=[security, authenticate],
+        client_max_size=512 * 1024,
+        handler_args={"auto_decompress": False},
+    )
     app[STATE] = WebState(
         bridge_url=bridge_url,
         bridge_token=bridge_token,
@@ -469,7 +564,20 @@ def create_app(
     app.router.add_post("/api/auth/logout", logout)
     app.router.add_get("/api/ws", websocket)
     app.router.add_get("/api/state", relay)
+    for suffix in ("", "/preview"):
+        app.router.add_get(
+            "/api/topics/{tid}/messages/{entry_id}/attachments/{attachment_id}" + suffix,
+            download_relay,
+        )
+    for upload_path, upload_methods in (
+        ("/topics/{tid}/uploads", ("POST",)),
+        ("/topics/{tid}/uploads/{upload_id}", ("GET", "PUT", "DELETE")),
+        ("/topics/{tid}/uploads/{upload_id}/complete", ("POST",)),
+    ):
+        for method in upload_methods:
+            app.router.add_route(method, "/api" + upload_path, upload_relay)
     for path, methods in (
+        ("/attach-settings", ("GET", "PUT")),
         ("/masterkey/status", ("GET",)),
         ("/masterkey/{action:setup|unlock|lock|change|ttl}", ("POST",)),
         ("/secrets/keys", ("GET",)),
@@ -492,6 +600,7 @@ def create_app(
         ("/topics/{tid}/autocompact/automations/{kind}/{id}", ("PUT",)),
         ("/topics/{tid}", ("PATCH", "DELETE")),
         ("/topics/{tid}/messages", ("GET", "POST")),
+        ("/topics/{tid}/messages/{entry_id}/attachments", ("GET",)),
         ("/topics/{tid}/abort", ("POST",)),
         ("/topics/{tid}/turns/{turn_id}/cancel", ("POST",)),
         ("/topics/{tid}/buttons", ("POST",)),

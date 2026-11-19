@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from aiogram.types import InlineKeyboardMarkup
@@ -48,7 +49,9 @@ class TelegramWebchatOps:
         *,
         on_chunk: Callable[[int], Awaitable[None]] | None = None,
         buttons: list[list[dict[str, Any]]] | None = None,
+        web_attachment_name: str | None = None,
         literal_text: bool = False,
+        on_file: Callable[[Path], Awaitable[None]] | None = None,
         on_keyboard: Callable[[int, InlineKeyboardMarkup, str | None], Awaitable[None]]
         | None = None,
     ) -> SendProgress:
@@ -78,7 +81,9 @@ class TelegramWebchatOps:
                 reply_markup=markup,
                 skip_unavailable_files=True,
                 on_keyboard=on_keyboard,
+                web_attachment_name=web_attachment_name,
                 literal_text=literal_text,
+                on_file=on_file,
             ),
             start_chunk=start_chunk,
             on_chunk=on_chunk,

@@ -223,6 +223,142 @@ commands, and comments can produce false positives. No warning does not guarante
 that the task uses no secrets. This check does not mask values: task files must
 never contain secret values or master keys.
 
+## Attachments
+
+Use the attachment button beside the message input to select multiple files, drop
+files onto the composer, or paste images/files from the clipboard. Clipboard file
+support depends on what the browser and source application expose. Review the
+attachment tray before sending: it shows names, sizes and image thumbnails; remove
+an item with its remove button. A message can contain attachments without text.
+Slash commands do not accept attachments. The input grows with new lines up to 40%
+of the visible height; the attachment tray scrolls independently.
+
+Each image has its own processing menu. **Original** is the default and uploads
+the selected file's bytes unchanged. Processing happens in the browser only when
+selected, and the displayed size is calculated from the resulting file:
+
+| Choice | Uploaded result |
+|---|---|
+| Original | Original bytes, format and resolution |
+| Resize | Fit within the selected longest edge, preserving aspect ratio and never enlarging; JPEG/PNG/WebP retain their format, other decoded formats become PNG |
+| Compress | Convert to WebP at the selected quality, retaining the dimensions |
+| Resize + compress | Apply both the selected longest edge and WebP quality |
+
+Browser processing accepts inputs up to 32 MiB and 32 million decoded pixels.
+Larger files can still be sent as originals within the configured upload limit.
+Canvas processing produces a still image; choose Original to retain animation.
+Cancelling the processing menu keeps the previous selection and result.
+
+### Limits and interrupted transfers
+
+Open **Account → Attachment settings** to set the maximum size per file in MiB
+and maximum files per message. The defaults are 2048 MiB (2 GiB) and 10 files.
+The dialog shows the administrator's server maxima, rejects values outside them,
+and saves shared web-chat preferences in `webchat/attach_settings.json`.
+New selections and upload attempts fetch the current limits; the server also
+validates size, ownership, topic and attachment count. Administrator hard caps are
+`webchat.attach_max_file_bytes` and `webchat.attach_max_files_per_message`.
+Preferences are clamped to those caps; changing the administrator config requires
+a restart, while saving preferences in the dialog does not.
+
+Uploads are sequential chunks, with per-file progress showing bytes acknowledged
+by the server. Hash calculation and final verification have separate states.
+**Resume upload** after a failure or **Cancel transfer** uses the server's received
+offset in the same tab; it does not resend already accepted chunks. Cancellation
+keeps the draft text and attachments. Removing an unfinished attachment requests
+cancellation of its server session. Refreshing or closing the tab discards the
+in-memory files and resume state; this is not cross-tab or reload recovery.
+If message submission was not confirmed after uploading, check the conversation
+before retrying. Cancellation/removal is disabled while submitting the message.
+
+`webchat.upload_chunk_bytes` defaults to 8388608 bytes (8 MiB), configurable from
+1 to 8 MiB. Binary chunks use `application/octet-stream`; the web app streams them
+to the bridge rather than buffering a whole file. Set proxy/WAF request limits
+for the chosen chunk size and verify the deployed ingress separately. The server
+verifies the full SHA-256 before completion. It reserves disk space for remaining
+file bytes and chunk staging while preserving a 1 GiB free-space floor; inadequate
+space rejects or stops the transfer. Incomplete sessions expire after 24 hours of
+inactivity. Their private temporary files live in `workspace/webchat_files/.incoming/`;
+completed files use UTC date directories and random names with verified extensions
+under `workspace/webchat_files/`. Display names never select the storage path.
+Completed uploads that have not been sent expire 24 hours after completion,
+including the exact 24-hour boundary, regardless of `cleanup.enabled`. This is a
+maximum retention limit: the general `cleanup.media_files_days` policy also
+applies to unsent completed files and may delete them earlier when its configured
+period is shorter. The upload cleanup cycle removes expired files and private metadata. Removing an unused
+completed draft from the tray also deletes its server-side file and metadata.
+
+Sent attachments follow `cleanup.media_files_days` (30 days by default), using
+each file's modification time just like Telegram media. This daily cleanup runs
+only when `cleanup.enabled` is true. The general cleanup excludes `.incoming/`;
+the upload cleanup cycle manages it and removes metadata for deleted originals.
+The separate attachment index remains so history can show **Deleted after the
+retention period**. Expired cards have no download or original-image action;
+download and preview URLs return `410 attachment_expired` rather than a server
+error. Cached previews are unavailable once their original has been removed.
+
+The agent receives a short notice explaining the configured retention period
+(or that automatic cleanup is disabled). If you ask the agent to keep a file, it
+copies the attachment to a location inside the workspace that is outside all
+cleanup-managed directories. Attachments in the temporary folder remain subject
+to the retention policy.
+
+### Message cards, original images and Telegram mirrors
+
+Message cards show name, size, MIME type and a download action. Safe images also
+show a server-generated thumbnail (longest edge 512px); thumbnails do not replace
+or modify the stored original. Click an image to view its original in a modal,
+fit it to the screen or zoom to 200%, open it in a new tab, or download it.
+Esc closes the modal and restores focus to the image control. When a thumbnail
+cannot be generated, a safe image can still offer View original. Unavailable files
+or damaged attachment metadata do not prevent the message text from loading.
+Existing Telegram incoming-file records and bot `<file:...>` records use the same
+cards, including records created before the separate attachment index existed.
+
+Web messages are mirrored to the same Telegram topic through the durable outbox:
+text first, then attachments in selection order. JPEG/PNG/WebP/GIF are sent as
+photos; other formats are documents. The current sender uses a 10000000-byte
+photo limit and a 50000000-byte document limit. Larger attachments stay available
+in web chat and are mirrored as a localized notice containing their name and size.
+Telegram's other media restrictions can still reject an otherwise small file.
+Existing outbox retry rules apply; missing files use the unavailable-file skip path.
+
+### Download boundary and API
+
+Downloads, thumbnails and originals require an authenticated browser session.
+The server derives files from the message's attachment index or supported legacy
+record, rather than accepting a browser-supplied filesystem path. Eligible locations
+are `workspace/webchat_files/`, `workspace/telegram_files/`, and paths recorded in
+bot entries using `<file:...>` tags (which can be outside the workspace). An arbitrary
+path typed by a user does not grant access. Only regular files are served; parent
+traversal and symlink components are rejected. This web-specific boundary does not
+change other transports' `file_access` policy.
+
+Downloads default to `Content-Disposition: attachment`. Inline viewing requires
+verified safe raster image content and an explicit inline allowance; SVG/HTML and
+other inline-prohibited files remain downloads. Responses use
+`X-Content-Type-Options: nosniff` and private caching. Range requests and streamed
+responses allow downloads without buffering the entire file in the web app.
+Attachment metadata is stored separately in `webchat/attachments.jsonl`, keyed by
+message ID; the history format and stored text remain unchanged. The agent receives
+`[INCOMING FILE]` blocks with source Web and stored paths.
+
+Browser resources below use the `/api` prefix; the bridge uses `/webchat/v1`:
+
+| Method / resource | Purpose |
+|---|---|
+| `GET /attach-settings` | Effective limits, server maxima and chunk size |
+| `PUT /attach-settings` | Save `max_file_bytes` and `max_files_per_message` |
+| `POST /topics/{tid}/uploads` | Start with display `name`, declared `size` and candidate `mime` |
+| `GET /topics/{tid}/uploads/{upload_id}` | Get acknowledged `offset` for resume |
+| `PUT /topics/{tid}/uploads/{upload_id}` | Stream a binary chunk at the `Upload-Offset` header |
+| `POST /topics/{tid}/uploads/{upload_id}/complete` | Verify the supplied `sha256` and complete |
+| `DELETE /topics/{tid}/uploads/{upload_id}` | Delete an unfinished or completed unused upload; used uploads are rejected |
+| `POST /topics/{tid}/messages` | Send `text`, `client_id` and optional `attachment_ids`; completed uploads are single-use and scoped to the same session/topic |
+| `GET /topics/{tid}/messages/{entry_id}/attachments` | List authorized attachment metadata and URLs |
+| `GET /topics/{tid}/messages/{entry_id}/attachments/{attachment_id}` | Download; `?inline=1` requests a permitted original image |
+| `GET /topics/{tid}/messages/{entry_id}/attachments/{attachment_id}/preview` | Retrieve an available thumbnail |
+
 ## Master-key and secret dialogs
 
 The header lock badge (emphasized while locked) and account menu open the **Master key** /
@@ -314,7 +450,10 @@ The browser app relays bridge JSON statuses and error codes. Bridge routes use
     "bridge_port": 8743,
     "crowdsec_lapi_port": 18080,
     "crowdsec_appsec_port": 17422,
-    "default_chat_id": 0
+    "default_chat_id": 0,
+    "attach_max_file_bytes": 2147483648,
+    "attach_max_files_per_message": 10,
+    "upload_chunk_bytes": 8388608
   }
 }
 ```

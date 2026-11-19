@@ -723,6 +723,7 @@ error = "Gebruik weergeven mislukt"
 [chat_log]
 mirror_command = "Opdracht uitgevoerd: {text}"
 mirror_user = "🌐 Verzonden via het web\n{text}"
+mirror_attachment = "Bijgevoegd via het web: {name} ({size})"
 mirror_aborted = "Antwoord gestopt"
 
 [masterkey]

@@ -124,6 +124,9 @@ top-level key.
 | `webchat.crowdsec_lapi_port` | `int` | `18080` | restart | CrowdSec LAPI port, 1-65535 |
 | `webchat.crowdsec_appsec_port` | `int` | `17422` | restart | AppSec port, 1-65535; must differ from LAPI |
 | `webchat.default_chat_id` | `int` | `0` | restart | `0` falls back to the first `allowed_user_ids` entry; an explicit group ID may be negative |
+| `webchat.attach_max_file_bytes` | `int` | `2147483648` | restart | Server hard maximum per web attachment in bytes; positive; web preferences are clamped to this cap |
+| `webchat.attach_max_files_per_message` | `int` | `10` | restart | Server hard maximum attachments per message; positive; web preferences are clamped to this cap |
+| `webchat.upload_chunk_bytes` | `int` | `8388608` | restart | Binary upload chunk size in bytes, from 1048576 to 8388608; match proxy/WAF limits and restart after changes |
 | `cli_parameters` | `CLIParametersConfig` | `(nested keys below)` | hot | Provider-specific extra CLI flags |
 | `cli_parameters.claude` | `list[str]` | `[]` | hot | Extra args appended to Claude CLI command |
 | `cli_parameters.codex` | `list[str]` | `[]` | hot | Extra args appended to Codex CLI command |

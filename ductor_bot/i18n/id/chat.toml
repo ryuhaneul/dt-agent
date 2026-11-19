@@ -722,6 +722,7 @@ error = "Gagal menampilkan penggunaan"
 [chat_log]
 mirror_command = "Perintah dijalankan: {text}"
 mirror_user = "🌐 Dikirim dari web\n{text}"
+mirror_attachment = "Dilampirkan dari web: {name} ({size})"
 mirror_aborted = "Balasan dihentikan"
 
 [masterkey]

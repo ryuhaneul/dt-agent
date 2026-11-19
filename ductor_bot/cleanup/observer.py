@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 _CHECK_INTERVAL = 3600  # Re-check every hour whether it's time to run.
 
 
-def _delete_old_files(directory: Path, max_age_days: int) -> int:
+def _delete_old_files(directory: Path, max_age_days: int, *, protected: Path | None = None) -> int:
     """Delete files older than *max_age_days* from *directory*.
 
     Walks the directory tree recursively, removes old files, then prunes
@@ -35,6 +35,8 @@ def _delete_old_files(directory: Path, max_age_days: int) -> int:
     cutoff = time.time() - max_age_days * 86400
     deleted = 0
     for entry in directory.rglob("*"):
+        if protected is not None and (entry == protected or protected in entry.parents):
+            continue
         if not entry.is_file():
             continue
         try:
@@ -46,6 +48,8 @@ def _delete_old_files(directory: Path, max_age_days: int) -> int:
 
     # Prune empty subdirectories (bottom-up so nested empties are removed)
     for sub in sorted(directory.rglob("*"), reverse=True):
+        if protected is not None and (sub == protected or protected in sub.parents):
+            continue
         if sub.is_dir():
             with contextlib.suppress(OSError):
                 sub.rmdir()  # only succeeds if empty
@@ -122,26 +126,32 @@ class CleanupObserver(BaseObserver):
 
     async def _execute(self) -> None:
         """Perform the actual cleanup in a thread to avoid blocking the loop."""
+        if not self._cfg.enabled:
+            return
         targets = [
             (self._paths.telegram_files_dir, self._cfg.media_files_days),
             (self._paths.output_to_user_dir, self._cfg.output_to_user_days),
             (self._paths.api_files_dir, self._cfg.api_files_days),
             (self._paths.matrix_files_dir, self._cfg.media_files_days),
+            (self._paths.workspace / "webchat_files", self._cfg.media_files_days),
         ]
-        results = await asyncio.to_thread(_run_cleanup, targets)
+        results = await asyncio.to_thread(
+            _run_cleanup, targets, protected=self._paths.workspace / "webchat_files/.incoming"
+        )
 
         if any(results):
             logger.info(
-                "Cleanup complete: telegram=%d, output=%d, api=%d, matrix=%d",
+                "Cleanup complete: telegram=%d, output=%d, api=%d, matrix=%d, webchat=%d",
                 results[0],
                 results[1],
                 results[2],
                 results[3],
+                results[4],
             )
         else:
             logger.debug("Cleanup: nothing to delete")
 
 
-def _run_cleanup(targets: list[tuple[Path, int]]) -> list[int]:
+def _run_cleanup(targets: list[tuple[Path, int]], *, protected: Path | None = None) -> list[int]:
     """Synchronous cleanup runner (called via ``asyncio.to_thread``)."""
-    return [_delete_old_files(d, days) for d, days in targets]
+    return [_delete_old_files(d, days, protected=protected) for d, days in targets]

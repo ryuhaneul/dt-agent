@@ -32,19 +32,19 @@ export class ApiError extends Error {
   }
 }
 
-export async function api(path, { method = 'GET', body } = {}) {
+export async function api(path, { method = 'GET', body, binary = false, headers: extra = {}, signal } = {}) {
   const epoch = credentialEpoch;
-  const headers = {};
+  const headers = { ...extra };
   if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
     headers['X-Dtw-Client'] = 'web';
     if (csrf) headers['X-Dtw-Csrf'] = csrf;
   }
-  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  if (body !== undefined) headers['Content-Type'] = binary ? 'application/octet-stream' : 'application/json';
   let response;
   try {
     response = await fetch(`/api${path}`, {
-      method, headers, credentials: 'same-origin', cache: 'no-store',
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      method, headers, signal, credentials: 'same-origin', cache: 'no-store',
+      ...(body === undefined ? {} : { body: binary ? body : JSON.stringify(body) }),
     });
   } catch { throw new ApiError(503, { error: 'bot_unreachable' }); }
   let data;

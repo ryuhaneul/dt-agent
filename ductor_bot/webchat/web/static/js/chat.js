@@ -1,5 +1,7 @@
 import { api } from './api.js';
 import { initCommands } from './commands.js';
+import { initAttachments } from './attachments.js';
+import { initAttachmentView } from './attachment-view.js';
 import { initSecret } from './secret.js';
 import { initCron } from './cron.js';
 import { initAutocompact } from './autocompact.js';
@@ -13,7 +15,7 @@ const histories = new Map(), turns = new Map(), busy = new Map(), drafts = new M
 let active = false, epoch = 0, stopEvents = null, telegram = { state: 'unknown' };
 let botUp = false, webSessions = null, pending = 0, outbox = [], sending = false;
 let view = 'chat', loading = false, selection = 0, commandMenu = null, secretDialog = null, autocompactDialog = null, cronDialog = null;
-let streamFrame = null, historyRender = null;
+let streamFrame = null, historyRender = null, composerFiles = null, attachmentView = null;
 const streamUpdates = new Set();
 function history(tid) {
   if (!histories.has(tid)) histories.set(tid, { entries: new Map(), meta: new Map(), choices: new Map(), hasMore: false, loaded: false, rendered: false, renderStart: null, markdown: createMarkdownCache(`entry:${tid}`) });
@@ -34,6 +36,8 @@ function visibleChat() {
   return view === 'chat' && ['#chat', ''].includes(location.hash) && !document.hidden;
 }
 function errorNotice(error) {
+  if (error.silent) return;
+  if (error.attachmentKey) { notify(error.attachmentKey, error.attachmentValues || {}); return; }
   if (error.code === 'auth_required') return;
   notify(['bot_unreachable', 'telegram_unavailable', 'web_turn_running', 'topic_busy', 'read_only'].includes(error.code)
     ? `error.${error.code}` : 'error.generic');
@@ -201,17 +205,19 @@ function streamContent(turn, live) {
 }
 
 function entryMarkup(entry) {
+  const displayText=attachmentView?.text(getTopic().tid,entry)??entry.text;
+  const attachmentCards=attachmentView?.markup(getTopic().tid,entry)||'';
   const time = esc(formatTime(entry.ts));
   const delegated = entry.role === 'event' && entry.kind === 'interagent';
   if (entry.role === 'event' && !delegated) {
     const failed = ['failed', 'error', 'cancelled'].includes(entry.status);
     const key = entry.kind === 'task_result' && failed ? 'task_failed' : entry.kind;
     const kind = ['task_result', 'task_failed', 'task_question', 'heartbeat', 'interagent', 'cron', 'webhook', 'background'].includes(key) ? key : 'background';
-    return `<div class="event${entry.imported ? ' old' : ''}" data-entry-seq="${entry.seq}"><span class="badge ${kind === 'task_result' ? 'badge-ok' : kind === 'task_failed' ? 'badge-down' : 'badge-off'}">${esc(t(`event.${kind}`))}</span><div><div class="meta">${sourceTag(entry)}<span class="tm">${time}</span>${entry.title ? `<b>${esc(entry.title)}</b>` : ''}</div><div class="md">${history(getTopic().tid).markdown(entry)}</div>${responseButtons(entry)}${mirror(entry)}</div></div>`;
+    return `<div class="event${entry.imported ? ' old' : ''}" data-entry-seq="${entry.seq}"><span class="badge ${kind === 'task_result' ? 'badge-ok' : kind === 'task_failed' ? 'badge-down' : 'badge-off'}">${esc(t(`event.${kind}`))}</span><div><div class="meta">${sourceTag(entry)}<span class="tm">${time}</span>${entry.title ? `<b>${esc(entry.title)}</b>` : ''}</div><div class="md">${history(getTopic().tid).markdown({ ...entry, text: displayText })}</div>${attachmentCards}${responseButtons(entry)}${mirror(entry)}</div></div>`;
   }
   const turn = turns.get(entry.turn_id);
   const stopped = entry.status === 'aborted' || (entry.role === 'bot' && turn?.phase === 'aborted');
-  return `<div class="msg ${entry.role === 'user' ? 'me' : 'bot'}${entry.imported ? ' old' : ''}${entry.kind === 'command' ? ' command-message' : ''}" data-entry-seq="${entry.seq}"><div class="meta">${sourceTag(entry)}${delegated ? `<span class="tag">${esc(t('chat.delegated_response'))}</span>` : ''}<span class="tm">${time}</span>${delegated && entry.title ? `<span>${esc(entry.title)}</span>` : ''}</div><div class="bubble md">${entry.role === 'bot' ? activitySummary(turn) : ''}${entry.kind === 'command' ? esc(entry.text || '') : history(getTopic().tid).markdown(entry)}${responseButtons(entry)}</div>${entry.role === 'user' ? queueStatus(entry.turn_id, entry.status) : ''}${stopped ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : ''}${mirror(entry)}</div>`;
+  return `<div class="msg ${entry.role === 'user' ? 'me' : 'bot'}${entry.imported ? ' old' : ''}${entry.kind === 'command' ? ' command-message' : ''}" data-entry-seq="${entry.seq}"><div class="meta">${sourceTag(entry)}${delegated ? `<span class="tag">${esc(t('chat.delegated_response'))}</span>` : ''}<span class="tm">${time}</span>${delegated && entry.title ? `<span>${esc(entry.title)}</span>` : ''}</div><div class="bubble md">${entry.role === 'bot' ? activitySummary(turn) : ''}${entry.kind === 'command' ? esc(entry.text || '') : history(getTopic().tid).markdown({ ...entry, text: displayText })}${attachmentCards}${responseButtons(entry)}</div>${entry.role === 'user' ? queueStatus(entry.turn_id, entry.status) : ''}${stopped ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : ''}${mirror(entry)}</div>`;
 }
 function streamMarkup(turn) {
   const live = ['queued', 'started'].includes(turn.phase);
@@ -285,6 +291,7 @@ function renderHeader() {
   stop.hidden = !topic || !started(topic.tid);
   stop.disabled = !topic || !started(topic.tid);
   document.querySelector('#sendBtn').disabled = !topic || (sending && !isControlCommand(document.querySelector('#msgIn').value));
+  composerFiles?.render();
 }
 function updateThreadNavigation() {
   const thread = document.querySelector('#thread');
@@ -391,6 +398,7 @@ export function renderThread({ bottom = false, seq = null } = {}) {
   html += waiting.map(item => item.markup).join('');
   if ((busy.get(topic.tid) ?? topic.busy) && !running(topic.tid)) html += `<div class="meta">${esc(t('chat.answering'))}<span class="typing" aria-hidden="true"><i></i><i></i><i></i></span></div>`;
   thread.innerHTML = html;
+  attachmentView?.load(topic.tid,entries);
   if (seq !== null) {
     thread.querySelector(`[data-entry-seq="${Number(seq)}"]`)?.scrollIntoView({ block: 'center' });
   } else if (bottom || nearBottom) thread.scrollTop = thread.scrollHeight;
@@ -475,6 +483,7 @@ async function refreshOutbox() {
   outbox = data.items; renderStatus();
 }
 async function resync() {
+  attachmentView?.reset?.();
   const generation = epoch, versions = new Map(topicVersions), busySnapshot = new Map(busyVersions);
   try {
     await Promise.all([refreshTopics(), refreshState(), refreshOutbox()]);
@@ -522,6 +531,12 @@ export async function handleEvent(event) {
       const turn = turns.get(entry.turn_id);
       if (turn && entry.role === 'user' && entry.status === 'cancelled') turn.phase = 'cancelled';
       if (!getTopics().some(item => item.tid === tid)) await refreshTopics();
+      break;
+    }
+    case 'attachments_changed': {
+      const entry = history(tid).entries.get(event.entry_id);
+      if (entry) entry.has_attachments = true;
+      attachmentView?.invalidate?.(tid,event.entry_id);
       break;
     }
     case 'entry_meta': {
@@ -589,6 +604,7 @@ export async function handleEvent(event) {
   if (active) renderThread();
 }
 function resizeComposer() {
+  if (composerFiles) { composerFiles.resize(); return; }
   const input = document.querySelector('#msgIn');
   input.style.height = 'auto';
   input.style.height = `${input.scrollHeight + input.offsetHeight - input.clientHeight}px`;
@@ -613,14 +629,20 @@ async function sendMessage() {
   }
   const text = input.value, control = isControlCommand(text);
   if (sending && !control) return;
-  if (!text.trim() || text.length > 32000) return;
+  const hasFiles = composerFiles?.has(topic.tid);
+  if ((!text.trim() && !hasFiles) || text.length > 32000) return;
+  if (hasFiles && text.trimStart().startsWith('/')) { notify('attach.command'); return; }
   if (!control) sending = true;
   renderHeader();
   const generation = epoch;
+  let uploaded = null, attachmentError = null;
   try {
+    uploaded = hasFiles ? await composerFiles.upload(topic.tid) : null;
+    if (!active || generation !== epoch) return;
     const result = await api(`/topics/${encodeURIComponent(topic.tid)}/messages`, {
-      method: 'POST', body: { text, client_id: crypto.randomUUID() },
+      method: 'POST', body: { text, client_id: crypto.randomUUID(), ...(uploaded ? { attachment_ids: uploaded.ids } : {}) },
     });
+    if (uploaded && active && generation === epoch) composerFiles.sent(topic.tid, uploaded.batch);
     if (!active || generation !== epoch) return;
     if (result.turn_id) {
       const turn = turns.get(result.turn_id) || { id: result.turn_id, tid: topic.tid, phase: 'queued', text: '' };
@@ -629,12 +651,13 @@ async function sendMessage() {
     if (result.secret && getTopic()?.tid === topic.tid) secretDialog.show(result, topic.tid);
     drafts.delete(topic.tid);
     if (getTopic()?.tid === topic.tid && input.value === text) { input.value = ''; resizeComposer(); }
-  } catch (error) { if (active && generation === epoch) errorNotice(error); }
-  finally { if (!control) sending = false; if (active && generation === epoch) { renderHeader(); renderThread({ bottom: true }); } }
+  } catch (error) { attachmentError = error; if (active && generation === epoch) errorNotice(error); }
+  finally { composerFiles?.finish?.(uploaded?.run || attachmentError?.attachmentRun, attachmentError); if (!control) sending = false; if (active && generation === epoch) { renderHeader(); renderThread({ bottom: true }); } }
 }
 export function initChat() {
   cronDialog = initCron(getTopic);
   secretDialog = initSecret();
+  attachmentView = initAttachmentView({ changed: () => { if (active) renderThread(); } });
   autocompactDialog = initAutocompact(getTopic, () => {
     notify('autocompact.saved');
     const toast = document.querySelector('#toasts').lastElementChild;
@@ -687,6 +710,7 @@ export function initChat() {
   new ResizeObserver(updateThreadNavigation).observe(thread);
   initMarkdownLinks(thread);
   input.maxLength = 32000;
+  composerFiles = initAttachments({ getTopic, changed: renderHeader, resume: () => void sendMessage() });
   commandMenu = initCommands(input, value => { if (getTopic()) drafts.set(getTopic().tid, value); resizeComposer(); });
   input.addEventListener('input', () => { if (getTopic()) drafts.set(getTopic().tid, input.value); resizeComposer(); renderHeader(); });
   window.addEventListener('resize', resizeComposer);

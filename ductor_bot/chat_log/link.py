@@ -202,6 +202,10 @@ class OutboxDrainer:
         revision = meta.get("selector_revision", 0)
         self._active_revision = revision if meta else None
         keyboard: dict[str, Any] = {"on_keyboard": self._keyboard_observer(item, revision)}
+        if item.kind != "user_mirror":
+            keyboard["on_file"] = self._history.file_observer(
+                SessionKey.telegram(item.chat_id, item.topic_id), item.history_id
+            )
         if "buttons" in meta:
             keyboard["buttons"] = meta["buttons"]
         return meta.get("text", item.text), keyboard, revision != meta.get("mirror_revision", 0)
@@ -230,6 +234,8 @@ class OutboxDrainer:
                     raise
 
             text, keyboard, restart_screen = await self._mirror_content(item)
+            if item.kind == "user_mirror" and item.origin == "web_attachment":
+                keyboard["web_attachment_name"] = item.title or "attachment"
             if item.kind == "user_mirror" and item.origin == "web_user_text":
                 text = html.unescape(text)
                 keyboard["literal_text"] = True

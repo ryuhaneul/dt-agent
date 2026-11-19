@@ -727,6 +727,7 @@ error = "Не удалось показать использование"
 [chat_log]
 mirror_command = "Команда выполнена: {text}"
 mirror_user = "🌐 Отправлено из веб-чата\n{text}"
+mirror_attachment = "Прикреплено из веб-чата: {name} ({size})"
 mirror_aborted = "Ответ прерван"
 
 [masterkey]

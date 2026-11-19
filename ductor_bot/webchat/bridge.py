@@ -8,7 +8,7 @@ import hmac
 import json
 import logging
 import secrets
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -51,6 +51,7 @@ from ductor_bot.orchestrator.selectors.autocompact_automation import (
 )
 from ductor_bot.orchestrator.selectors.autocompact_selector import save_autocompact
 from ductor_bot.text.response_format import stop_text
+from ductor_bot.webchat.attachments import MessageAttachments
 from ductor_bot.webchat.auth import AuthError, BridgeAuth
 from ductor_bot.webchat.cli_login import CliLoginError, CliLoginManager
 from ductor_bot.webchat.cli_login_slots import ClaudeLoginSlots, resolve_slot_name
@@ -62,12 +63,19 @@ from ductor_bot.webchat.commands import (
     parse_command,
 )
 from ductor_bot.webchat.cron_api import register_cron_routes
+from ductor_bot.webchat.downloads import AttachmentDownloads, stream_attachment
 from ductor_bot.webchat.files import WebFileError, WebFiles
 from ductor_bot.webchat.read_state import ReadState
 from ductor_bot.webchat.secret import WebSecrets
 from ductor_bot.webchat.settings import resolve_default_chat_id
 from ductor_bot.webchat.topics import TopicBusyError, TopicDeleteError, WebTopics
 from ductor_bot.webchat.turns import WebTurns
+from ductor_bot.webchat.uploads import (
+    ATTACH_SETTINGS,
+    UPLOADS,
+    UploadError,
+    register_upload_routes,
+)
 from ductor_bot.webchat.vault import register_vault_routes
 
 if TYPE_CHECKING:
@@ -101,9 +109,15 @@ def create_bridge_app(  # noqa: C901
             supplied.encode("utf-8", errors="replace"), token.encode()
         ):
             return web.json_response({"error": "forbidden"}, status=403)
+        if request.can_read_body and "Content-Encoding" in request.headers:
+            return web.json_response({"error": "unsupported_media_type"}, status=415)
         return await handler(request)
 
-    app = web.Application(middlewares=[authenticate], client_max_size=512 * 1024)
+    app = web.Application(
+        middlewares=[authenticate],
+        client_max_size=512 * 1024,
+        handler_args={"auto_decompress": False},
+    )
 
     async def close_auth(_app: web.Application) -> None:
         await auth.close()
@@ -239,6 +253,33 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
     turns = WebTurns(bot, runtime)
     topics = WebTopics(bot, runtime, turns)
     register_cron_routes(app, bot, topics, turns)
+    register_upload_routes(
+        app,
+        bot._orch.paths.workspace / "webchat_files",
+        topics.lookup,
+        config=bot.config.webchat,
+        settings_path=bot._orch.paths.webchat_dir / "attach_settings.json",
+    )
+    attachments = MessageAttachments(
+        app[UPLOADS],
+        app[ATTACH_SETTINGS],
+        bot._orch.paths.workspace,
+        bot._orch.paths.webchat_dir / "attachments.jsonl",
+        cleanup=bot.config.cleanup,
+    )
+
+    if hasattr(runtime, "history"):
+        runtime.history.attachment_index_path = attachments.index.path
+
+    downloads = AttachmentDownloads(
+        bot._orch.paths.workspace, attachments.index, bot._orch.paths.webchat_dir / "thumbnails"
+    )
+
+    async def recover_attachments(_app: web.Application) -> AsyncIterator[None]:
+        await attachments.recover()
+        yield
+
+    app.cleanup_ctx.append(recover_attachments)
     read_state = ReadState(bot._orch.paths.webchat_dir / "read_state.json")
     dispatcher = WebCommandDispatcher(
         bot,
@@ -431,6 +472,7 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
         except LockTimeoutError:
             return _error("history_busy", 503)
         mirrors = await runtime.outbox.mirror_states([entry.id for entry in entries])
+        indexed = await attachments.index.get_many(tid, [entry.id for entry in entries])
         rendered = []
         metadata = await runtime.history.metadata(tid)
         for entry in entries:
@@ -448,11 +490,14 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
                     **metadata.get(entry.id, {}),
                     **selector_fields({**legacy, **metadata.get(entry.id, {})}),
                     "mirror": {"state": mirror} if mirror else None,
+                    "has_attachments": bool(indexed[entry.id]),
                 }
             )
         return web.json_response({"entries": rendered, "has_more": more})
 
-    async def send_or_abort(request: web.Request) -> web.Response:
+    async def send_or_abort(  # noqa: PLR0911 -- validate ingress before attachment admission
+        request: web.Request,
+    ) -> web.Response:
         tid = request.match_info["tid"]
         if tid == "unknown":
             return _error("read_only", 409)
@@ -460,15 +505,20 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
         data = {} if abort else await _body(request)
         text = data.get("text")
         client_id = data.get("client_id")
+        attachment_ids = data.get("attachment_ids", [])
+        if not abort and not isinstance(attachment_ids, list):
+            return _error("bad_attachments", 400)
         if not abort and (
             not isinstance(text, str)
-            or not text.strip()
+            or (not text.strip() and not attachment_ids)
             or len(text) > 32000
             or not isinstance(client_id, str)
             or not client_id
         ):
             return _error("bad_request", 400)
         parsed = parse_command(text) if isinstance(text, str) else None
+        if attachment_ids and parsed is not None:
+            return _error("attachment_command", 400)
         control = abort or (parsed is not None and parsed[0] in {"stop", "interrupt", "stop_all"})
         # Control requests bypass slow commands. Management acquires the normal
         # gate first, then this control gate, so deletion remains exclusive.
@@ -479,6 +529,10 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
                 return web.json_response({"killed": await turns.abort(tid)})
             assert isinstance(text, str)
             try:
+                if attachment_ids:
+                    return await dispatch_attachments(
+                        tid, text, attachment_ids, request.headers.get("X-Dtw-Owner", "")
+                    )
                 return await dispatch_text(tid, text)
             except (WebCommandBusyError, OSError) as error:
                 return (
@@ -499,6 +553,67 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
             if result != "cancelled":
                 return _error(result, 404 if result == "unknown_turn" else 409)
             return web.json_response({"turn_id": turn_id, "phase": "cancelled"})
+
+    async def dispatch_attachments(
+        tid: str, text: str, upload_ids: list[str], owner: str
+    ) -> web.Response:
+        # Keep attachment admission outside command dispatch and queue internals.
+        try:
+            prepared = await attachments.prepare(tid, owner, text, upload_ids)
+        except UploadError as exc:
+            return _error(exc.code, exc.status)
+        except OSError:
+            return _error("attachment_storage_unavailable", 503)
+        try:
+            turn_id = await turns.submit(
+                tid, prepared.text, turn=prepared.turn, attachments=prepared
+            )
+        except (OSError, asyncio.CancelledError):
+            try:
+                await attachments.rollback(tid, owner, prepared)
+            except (OSError, UploadError):
+                logger.warning("Attachment admission rollback unavailable")
+            raise
+        return web.json_response({"turn_id": turn_id}, status=202)
+
+    async def entry_attachments(request: web.Request) -> web.Response:
+        tid, entry_id = request.match_info["tid"], request.match_info["entry_id"]
+        if await topics.lookup(tid) is None:
+            return _error("unknown_topic", 404)
+        try:
+            entry = await runtime.history.get_entry(tid, entry_id)
+            if entry is None:
+                return _error("unknown_entry", 404)
+        except LockTimeoutError:
+            return _error("history_busy", 503)
+        items = await downloads.list(tid, entry)
+        return web.json_response({"attachments": [item.metadata for item in items]})
+
+    async def download_attachment(request: web.Request) -> web.StreamResponse:
+        tid = request.match_info["tid"]
+        if await topics.lookup(tid) is None:
+            return _error("unknown_topic", 404)
+        try:
+            entry = await runtime.history.get_entry(tid, request.match_info["entry_id"])
+        except LockTimeoutError:
+            return _error("history_busy", 503)
+        if entry is None:
+            return _error("unknown_entry", 404)
+        item = await downloads.find(tid, entry, request.match_info["attachment_id"])
+        if item is None:
+            return _error("unknown_attachment", 404)
+        return await stream_attachment(request, item)
+
+    app.router.add_get(
+        f"{_PREFIX}/topics/{{tid}}/messages/{{entry_id}}/attachments", entry_attachments
+    )
+
+    for suffix in ("", "/preview"):
+        app.router.add_get(
+            f"{_PREFIX}/topics/{{tid}}/messages/{{entry_id}}/attachments/{{attachment_id}}"
+            + suffix,
+            download_attachment,
+        )
 
     async def dispatch_text(  # noqa: C901 -- preserve existing command/message ingress
         tid: str,
@@ -841,6 +956,9 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
                         "entry": {
                             **event["entry"],
                             **selector_fields(event["entry"]),
+                            "has_attachments": bool(
+                                await attachments.index.get(tid, event["entry"]["id"])
+                            ),
                             "mirror": {"state": mirror} if mirror else None,
                         },
                     }

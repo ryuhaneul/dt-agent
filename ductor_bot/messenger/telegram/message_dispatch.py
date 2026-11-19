@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from aiogram import Bot
     from aiogram.types import InlineKeyboardMarkup, Message
 
+    from ductor_bot.chat_log.recorder import HistoryRecorder
     from ductor_bot.config import SceneConfig, StreamingConfig
     from ductor_bot.messenger.telegram.reply_phase import ReplyPhase
     from ductor_bot.orchestrator.core import Orchestrator
@@ -224,6 +225,16 @@ def _keyboard_observer(
     return record
 
 
+def _file_observer(
+    dispatch: NonStreamingDispatch | StreamingDispatch, result: OrchestratorResult
+) -> Callable[[Path], Awaitable[None]] | None:
+    recorder: HistoryRecorder | None = getattr(dispatch.orchestrator, "_history_recorder", None)
+    entry_id = getattr(result, "_chat_log_entry_id", None)
+    if recorder is None or entry_id is None:
+        return None
+    return recorder._history.file_observer(dispatch.key, entry_id)
+
+
 async def run_non_streaming_message(
     dispatch: NonStreamingDispatch,
 ) -> str:
@@ -258,6 +269,7 @@ async def run_non_streaming_message(
                 allowed_roots=dispatch.allowed_roots,
                 thread_id=dispatch.thread_id,
                 on_keyboard=_keyboard_observer(dispatch, result),
+                on_file=_file_observer(dispatch, result),
             ),
         )
         return result.text
@@ -423,6 +435,7 @@ async def run_streaming_message(  # noqa: C901, PLR0915
                     allowed_roots=dispatch.allowed_roots,
                     thread_id=dispatch.thread_id,
                     on_keyboard=_keyboard_observer(dispatch, result),
+                    on_file=_file_observer(dispatch, result),
                 ),
             )
         else:
@@ -432,6 +445,11 @@ async def run_streaming_message(  # noqa: C901, PLR0915
                 result.text,
                 allowed_roots=dispatch.allowed_roots,
                 thread_id=dispatch.thread_id,
+                **(
+                    {"on_file": _file_observer(dispatch, result)}
+                    if _file_observer(dispatch, result)
+                    else {}
+                ),
             )
 
         return result.text

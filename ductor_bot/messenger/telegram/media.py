@@ -15,6 +15,7 @@ from aiogram.exceptions import (
     TelegramRetryAfter,
 )
 
+from ductor_bot.chat_log.recorder import received_file
 from ductor_bot.files.image_processor import process_image
 from ductor_bot.files.prompt import MediaInfo
 from ductor_bot.files.prompt import build_media_prompt as _build_media_prompt_generic
@@ -167,6 +168,7 @@ async def resolve_media_text(
     except (OSError, yaml.YAMLError):
         logger.warning("Index update failed", exc_info=True)
 
+    received_file.set(info.path)
     return build_media_prompt(info, workspace)
 
 

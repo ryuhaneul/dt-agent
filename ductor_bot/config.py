@@ -562,6 +562,9 @@ class WebchatConfig(BaseModel):
     crowdsec_lapi_port: int = 18080
     crowdsec_appsec_port: int = 17422
     default_chat_id: int = 0
+    attach_max_file_bytes: int = Field(default=2 * 1024**3, ge=1, strict=True)
+    attach_max_files_per_message: int = Field(default=10, ge=1, strict=True)
+    upload_chunk_bytes: int = Field(default=8 * 1024**2, ge=1024**2, le=8 * 1024**2, strict=True)
 
     @field_validator("domain")
     @classmethod

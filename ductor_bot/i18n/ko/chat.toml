@@ -722,6 +722,7 @@ error = "사용량 표시 실패"
 [chat_log]
 mirror_command = "명령어 실행: {text}"
 mirror_user = "🌐 웹에서 보냄\n{text}"
+mirror_attachment = "웹에서 첨부함: {name} ({size})"
 mirror_aborted = "답변 중단됨"
 
 [masterkey]

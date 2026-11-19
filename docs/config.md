@@ -664,6 +664,9 @@ restart. Both `chat_log.enabled` and `webchat.enabled` default to `false`.
 | `crowdsec_lapi_port` | `int` | `18080` | CrowdSec LAPI port, 1-65535 |
 | `crowdsec_appsec_port` | `int` | `17422` | AppSec port, 1-65535; must differ from LAPI |
 | `default_chat_id` | `int` | `0` | `0` falls back to the first `allowed_user_ids` entry; an explicit group ID may be negative |
+| `attach_max_file_bytes` | `int` | `2147483648` | Server hard maximum per web attachment in bytes; positive; web preferences are clamped to this cap |
+| `attach_max_files_per_message` | `int` | `10` | Server hard maximum attachments per message; positive; web preferences are clamped to this cap |
+| `upload_chunk_bytes` | `int` | `8388608` | Binary upload chunk size in bytes, from 1048576 to 8388608; match proxy/WAF limits and restart after changes |
 
 `validate_webchat(config)` returns `[]` when disabled. When enabled, it returns
 all applicable error codes below. Operational checks (including port ranges)

@@ -7,6 +7,8 @@ from datetime import UTC
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from ductor_bot.cleanup.observer import CleanupObserver, _delete_old_files
 from ductor_bot.config import AgentConfig, CleanupConfig
 from ductor_bot.workspace.paths import DuctorPaths
@@ -175,3 +177,32 @@ async def test_maybe_run_skips_duplicate_same_day(tmp_path: Path) -> None:
         # Second call same day: should not run again.
         await observer._maybe_run()
         assert observer._last_run_date == "2025-06-01"
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_webchat_retention_preserves_recent_files_and_upload_metadata(tmp_path, enabled):
+    import os
+
+    paths = _make_paths(tmp_path)
+    directory = paths.workspace / "webchat_files"
+    dated = directory / "2025-01-01"
+    dated.mkdir(parents=True)
+    old = dated / "old.txt"
+    old.write_text("sent old")
+    recent = dated / "recent.txt"
+    recent.write_text("sent recent")
+    incoming = directory / ".incoming"
+    incoming.mkdir()
+    metadata = incoming / "session.json"
+    metadata.write_text("private metadata")
+    partial = incoming / "session.part"
+    partial.write_text("active upload")
+    expired = time.time() - 31 * 86400
+    for path in [old, metadata, partial]:
+        os.utime(path, (expired, expired))
+    observer = CleanupObserver(_make_config(enabled=enabled), paths)
+    await observer._execute()
+    assert old.exists() is not enabled
+    assert recent.exists()
+    assert metadata.exists()
+    assert partial.exists()

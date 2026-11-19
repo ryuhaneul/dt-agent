@@ -723,6 +723,7 @@ error = "Nutzungsanzeige fehlgeschlagen"
 [chat_log]
 mirror_command = "Befehl ausgeführt: {text}"
 mirror_user = "🌐 Aus dem Web gesendet\n{text}"
+mirror_attachment = "Im Web angehängt: {name} ({size})"
 mirror_aborted = "Antwort gestoppt"
 
 [masterkey]

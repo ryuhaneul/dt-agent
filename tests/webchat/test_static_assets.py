@@ -526,6 +526,8 @@ try {
     if (request.method()==='POST') assert.equal(request.headers()['x-dtw-client'],'web');
     if (url.pathname==='/api/i18n') result={lang:'en',strings};
     else if (url.pathname==='/api/commands') result={commands};
+    else if (url.pathname.endsWith('/attachments')) result={attachments:[]};
+    else if (url.pathname==='/api/masterkey/status') result={configured:true,state:'locked',remaining_seconds:null};
     else if (url.pathname==='/api/cli-login/status') result={providers:{claude:'installed',codex:'installed',grok:'installed'},claude_slots:[{name:'claude',authenticated:false,priority:1}],running:false};
     else if (url.pathname==='/api/cli-login/jobs'&&request.method()==='POST') result={job_id:'browser-login'};
     else if (url.pathname==='/api/cli-login/jobs/browser-login/cancel') {cliState='cancelled';result={ok:true};}
@@ -2596,7 +2598,9 @@ try {
     result={seen:cursors.get(tid)};for(const peer of peers)peer.send(JSON.stringify({type:'seen',seen:{[tid]:result.seen}}));
    }else if(url.pathname.endsWith('/messages')){
     const tid=url.pathname.split('/')[3];result={entries:entries.get(tid).map(seq=>({id:tid+':'+seq,seq,role:'bot',source:seq<0?'import':'telegram',imported:seq<0,text:'Message '+seq,ts:null})),has_more:false};
-   }else if(url.pathname==='/api/cli-login/status')result={providers:{},claude_slots:[],running:false};
+   }else if(url.pathname.endsWith('/attachments'))result={attachments:[]};
+   else if(url.pathname==='/api/masterkey/status')result={configured:true,state:'locked',remaining_seconds:null};
+   else if(url.pathname==='/api/cli-login/status')result={providers:{},claude_slots:[],running:false};
    else if(url.pathname==='/api/files')result={files:[]};
    else throw Error('Unexpected API '+url.pathname);
    await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(result)});
