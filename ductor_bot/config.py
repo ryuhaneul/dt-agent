@@ -345,6 +345,14 @@ class CronDeliveryRetryConfig(BaseModel):
     max_attempts: int = Field(default=12, ge=1)
 
 
+# Exact saved defaults from before cron preflight was enabled by default.
+LEGACY_CRON_PREFLIGHT_DEFAULTS = {
+    "enabled": False,
+    "timeout_seconds": 15.0,
+    "skip_marker": "HEARTBEAT_OK",
+}
+
+
 class CronPreflightConfig(BaseModel):
     """Task-local deterministic gate that can skip a cron agent run."""
 

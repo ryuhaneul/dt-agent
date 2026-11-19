@@ -116,8 +116,8 @@ Runtime behavior:
    exits with code 0 and its last non-empty stdout line matches `skip_marker`
    (default `HEARTBEAT_OK`), skip the agent and record `success:preflight`. The
    agent runs as usual if the script is missing, fails, or exceeds
-   `cron_preflight.timeout_seconds` (default 15 seconds). Set
-   `cron_preflight.enabled` to `false` to disable preflight.
+   `cron_preflight.timeout_seconds` (default 15 seconds). See
+   [CronPreflightConfig](config.md#cronpreflightconfig) for upgrade and opt-out behavior.
 3. Acquire the optional shared dependency lock, validate the task folder, and
    resolve execution overrides.
 4. Build a `claude`, `codex`, `gemini`, or `grok` command and run it with `cli_timeout`.

@@ -22,8 +22,64 @@ _LIFECYCLE = "ductor_bot.cli_commands.lifecycle"
 _STATUS = "ductor_bot.cli_commands.status"
 
 
+_LEGACY_CRON_PREFLIGHT = {
+    "enabled": False,
+    "timeout_seconds": 15,
+    "skip_marker": "HEARTBEAT_OK",
+}
+
+
 class TestLoadConfig:
     """Test config loading, creation, and smart-merge."""
+
+    @pytest.mark.parametrize(
+        ("preflight", "enabled"),
+        [
+            (_LEGACY_CRON_PREFLIGHT, True),
+            ({**_LEGACY_CRON_PREFLIGHT, "timeout_seconds": 20}, False),
+            ({**_LEGACY_CRON_PREFLIGHT, "skip_marker": "SKIP"}, False),
+            ({**_LEGACY_CRON_PREFLIGHT, "extra": "keep"}, False),
+            ({"enabled": False}, False),
+            (None, True),
+            ({**_LEGACY_CRON_PREFLIGHT, "enabled": True}, True),
+        ],
+        ids=[
+            "legacy-defaults",
+            "custom-timeout",
+            "custom-marker",
+            "extra-key",
+            "partial-opt-out",
+            "absent",
+            "enabled",
+        ],
+    )
+    def test_migrates_only_exact_legacy_cron_preflight(
+        self, tmp_path: Path, preflight: dict[str, object] | None, enabled: bool
+    ) -> None:
+        from ductor_bot.__main__ import load_config
+
+        paths = DuctorPaths(ductor_home=tmp_path / "home", framework_root=tmp_path / "framework")
+        paths.config_path.parent.mkdir(parents=True)
+        data = AgentConfig().model_dump(mode="json")
+        data["gemini_api_key"] = "null"
+        if preflight is None:
+            del data["cron_preflight"]
+        else:
+            data["cron_preflight"] = preflight
+        paths.config_path.write_text(json.dumps(data), encoding="utf-8")
+
+        expected = {**(preflight or _LEGACY_CRON_PREFLIGHT), "enabled": enabled}
+        with (
+            patch("ductor_bot.__main__.resolve_paths", return_value=paths),
+            patch("ductor_bot.__main__.init_workspace"),
+        ):
+            for _ in range(2):
+                config = load_config().cron_preflight
+                assert config.enabled is enabled
+                assert config.timeout_seconds == expected.get("timeout_seconds", 15.0)
+                assert config.skip_marker == expected.get("skip_marker", "HEARTBEAT_OK")
+                saved = json.loads(paths.config_path.read_text(encoding="utf-8"))
+                assert saved["cron_preflight"] == expected
 
     def test_creates_config_from_example(self, tmp_path: Path) -> None:
         from ductor_bot.__main__ import load_config
