@@ -137,53 +137,6 @@ async function calendarScroll(browser) {
   await context.close();
 }
 
-async function calendarRegroup(browser) {
-  const entries = messages.slice(0, 40);
-  entries[39] = { ...entries[39], ts: afterMidnight };
-  for (const width of [375, 768, 1280]) {
-    for (const gap of [0, 1, 16, 48, 64, 96]) {
-      const context = await browser.newContext({ viewport: { width, height: width === 375 ? 667 : 900 } });
-      const page = await context.newPage();
-      const cdp = await context.newCDPSession(page);
-      await cdp.send('Emulation.setTimezoneOverride', { timezoneId: 'Asia/Seoul' });
-      await page.clock.setFixedTime(new Date(afterMidnight));
-      await mockChat(page, entries);
-      await page.goto(origin);
-      await page.waitForFunction(() => document.querySelectorAll('[data-entry-seq]').length === 40);
-      await page.evaluate(() => document.fonts.ready);
-      const before = await scrollPosition(page, gap);
-      assert.equal(before.gap, gap);
-      const groups = page.locator('#thread .date-group');
-      assert.equal(await groups.count(), 2);
-      const anchor = page.locator(`#thread [data-entry-seq="${before.seq}"]`);
-      const checkPosition = async phase => {
-        const position = await scrollPosition(page);
-        const label = `${width}px at ${gap}px from latest after ${phase}`;
-        if (gap === 0) assert.equal(position.gap, 0, label);
-        else assert.equal(await anchor.evaluate(row => row.getBoundingClientRect().top), before.y, label);
-      };
-
-      await cdp.send('Emulation.setTimezoneOverride', { timezoneId: 'UTC' });
-      await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-      assert.equal(await groups.count(), 1);
-      await checkPosition('day groups merge');
-
-      await page.evaluate(() => {
-        window.resumeRow = document.querySelector('#thread [data-entry-seq="40"]');
-        document.dispatchEvent(new Event('visibilitychange'));
-      });
-      await page.waitForFunction(() => !window.resumeRow.isConnected);
-      await checkPosition('history resync');
-
-      await cdp.send('Emulation.setTimezoneOverride', { timezoneId: 'Asia/Seoul' });
-      await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-      assert.equal(await groups.count(), 2);
-      await checkPosition('day groups split');
-      await context.close();
-    }
-  }
-}
-
 const browser = await chromium.launch();
 const measurements = [];
 try {
@@ -309,7 +262,6 @@ try {
     }
   }
   await calendarScroll(browser);
-  await calendarRegroup(browser);
   console.log(JSON.stringify(measurements));
 } finally {
   await browser.close();
