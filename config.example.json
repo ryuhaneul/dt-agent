@@ -136,7 +136,7 @@
         "max_attempts": 12
     },
     "cron_preflight": {
-        "enabled": false,
+        "enabled": true,
         "timeout_seconds": 15.0,
         "skip_marker": "HEARTBEAT_OK"
     },

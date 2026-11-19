@@ -197,7 +197,7 @@ Host paths written as `~/.ductor` below mean the default home; substitute the co
 | `project_roots` | `dict[str, str]` | `{}` | Topic name, topic ID, or `chat_id:topic_id` mapped to a project path |
 | `claude_accounts` | `list[str]` | `[]` | Claude authentication slots |
 | `cron_delivery_retry` | `CronDeliveryRetryConfig` | disabled, interval `300`, max attempts `12` | Retry preserved delivery without rerunning the agent |
-| `cron_preflight` | `CronPreflightConfig` | disabled, timeout `15.0`, marker `HEARTBEAT_OK` | Task-local deterministic preflight gate |
+| `cron_preflight` | `CronPreflightConfig` | enabled, timeout `15.0`, marker `HEARTBEAT_OK` | Task-local deterministic preflight gate |
 | `streaming` | `StreamingConfig` | see below | Streaming tuning |
 | `heartbeat` | `HeartbeatConfig` | see below | Background heartbeat config |
 | `memory_flush` | `MemoryFlushConfig` | see below | Silent pre-compaction memory flush after streaming compact boundaries |
@@ -286,9 +286,12 @@ Requires the Slack image extra; the first allowed channel is the default chat fo
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `enabled` | `bool` | `false` | Run the task folder's `scripts/preflight.py` before the cron agent; missing/failed/timed-out preflight fails open (the agent runs) |
+| `enabled` | `bool` | `true` | Run the task folder's `scripts/preflight.py` before the cron agent when present. The agent runs if the script is missing, fails, or times out. An explicit `false` disables preflight. |
 | `timeout_seconds` | `float` (> 0) | `15.0` | Time limit for the preflight script |
 | `skip_marker` | `str` | `"HEARTBEAT_OK"` | Exit 0 with this as the last stdout line skips the agent run (recorded as `success:preflight`) |
+
+Existing installations keep their saved setting after an upgrade. To enable preflight if it is set to `false`,
+set `cron_preflight.enabled` to `true` in `config.json` and restart the bot.
 
 ## `CLIParametersConfig`
 

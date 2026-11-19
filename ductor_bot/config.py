@@ -350,7 +350,7 @@ class CronDeliveryRetryConfig(BaseModel):
 class CronPreflightConfig(BaseModel):
     """Task-local deterministic gate that can skip a cron agent run."""
 
-    enabled: bool = False
+    enabled: bool = True
     timeout_seconds: float = Field(default=15.0, gt=0)
     skip_marker: str = "HEARTBEAT_OK"
 

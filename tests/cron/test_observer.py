@@ -294,14 +294,14 @@ class TestCronObserverScheduling:
 class TestCronObserverExecution:
     """Job execution tests."""
 
-    async def test_preflight_skip_avoids_agent_execution(self, tmp_path: Path) -> None:
+    async def test_preflight_enabled_by_default_skips_agent_execution(self, tmp_path: Path) -> None:
         paths = _make_paths(tmp_path)
         mgr = _make_manager(paths)
         mgr.add_job(_make_job("daily"))
         scripts = paths.cron_tasks_dir / "daily" / "scripts"
         scripts.mkdir(parents=True)
         (scripts / "preflight.py").write_text("print('HEARTBEAT_OK')\n")
-        observer = _make_observer(paths, mgr, cron_preflight={"enabled": True})
+        observer = _make_observer(paths, mgr)
 
         preflight_proc = AsyncMock()
         preflight_proc.returncode = 0
@@ -318,13 +318,13 @@ class TestCronObserverExecution:
         assert job.last_run_status == "success:preflight"
         assert job.last_delivery_status == "skipped"
 
-    async def test_preflight_is_opt_in(self, tmp_path: Path) -> None:
+    async def test_preflight_respects_explicit_disable(self, tmp_path: Path) -> None:
         paths = _make_paths(tmp_path)
         mgr = _make_manager(paths)
         scripts = paths.cron_tasks_dir / "daily" / "scripts"
         scripts.mkdir(parents=True)
         (scripts / "preflight.py").write_text("print('HEARTBEAT_OK')\n")
-        observer = _make_observer(paths, mgr)
+        observer = _make_observer(paths, mgr, cron_preflight={"enabled": False})
 
         with patch("asyncio.create_subprocess_exec") as spawn:
             assert await observer._run_preflight("Daily Report", "daily") is False
@@ -505,12 +505,12 @@ class TestCronObserverExecution:
         assert job.last_run_status is not None
         assert job.last_run_status.startswith("error:cli_not_found")
 
-    async def test_executes_claude_job_success(self, tmp_path: Path) -> None:
+    async def test_executes_claude_job_without_preflight_script(self, tmp_path: Path) -> None:
         paths = _make_paths(tmp_path)
         mgr = _make_manager(paths)
         mgr.add_job(_make_job("daily"))
         task_folder = paths.cron_tasks_dir / "daily"
-        task_folder.mkdir()
+        (task_folder / "scripts").mkdir(parents=True)
 
         observer = _make_observer(paths, mgr)
 
