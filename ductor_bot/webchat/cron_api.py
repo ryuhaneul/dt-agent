@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
+from cronsim import CronSimError
 
 from ductor_bot.chat_log.ids import from_tid
 from ductor_bot.cli.autocompact import (
@@ -21,7 +22,6 @@ from ductor_bot.cron import definitions
 from ductor_bot.cron.jobs_file import read_jobs_data
 from ductor_bot.cron.manager import DELIVERY_MODES
 from ductor_bot.infra.atomic_io import complete_write
-from ductor_bot.infra.input_context import input_lock
 from ductor_bot.infra.secret_runtime import vault_list_keys
 from ductor_bot.infra.secret_store import store_path
 from ductor_bot.infra.secret_vault import VaultError
@@ -154,6 +154,15 @@ def _detail(tasks: Path, job: dict[str, Any], inventory: set[str] | None) -> dic
     }
 
 
+def _stored_schedule_summary(schedule: str) -> str | None:
+    try:
+        if not definitions.schedule_problem(schedule):
+            return definitions.schedule_summary(schedule)
+    except (CronSimError, ValueError, OverflowError):
+        pass
+    return None
+
+
 class _CronAPI:
     def __init__(self, bot: TelegramBot, topics: WebTopics, turns: WebTurns) -> None:
         self.bot, self.topics, self.turns = bot, topics, turns
@@ -172,7 +181,11 @@ class _CronAPI:
         return str(resolve_user_timezone(job.get("timezone") or self.bot.config.user_timezone))
 
     async def metadata(self, job: dict[str, Any]) -> dict[str, Any]:
-        value = stored_autocompact(job.get("autocompact"), str(job["id"]), inherit=True)
+        raw_autocompact = job.get("autocompact", "default")
+        value = stored_autocompact(raw_autocompact, str(job["id"]), inherit=raw_autocompact is None)
+        schedule = job.get("schedule")
+        if not isinstance(schedule, str):
+            schedule = ""
         chat, topic, transport = (
             job.get("chat_id", 0),
             job.get("topic_id"),
@@ -190,8 +203,8 @@ class _CronAPI:
         return {
             "id": job["id"],
             "title": job.get("title", ""),
-            "schedule": job["schedule"],
-            "schedule_summary": definitions.schedule_summary(job["schedule"]),
+            "schedule": schedule,
+            "schedule_summary": _stored_schedule_summary(schedule),
             "timezone": self.timezone(job),
             "enabled": job.get("enabled", True),
             "last_run_at": job.get("last_run_at"),
@@ -335,7 +348,7 @@ class _CronAPI:
                     str(job["id"]),
                 )
                 result = {"ok": True, "id": job["id"]}
-            elif request.path.endswith("/toggle"):
+            elif request.method == "POST":
                 result = await self.toggle(job, data)
             else:
                 result = await self.update(job, data)
@@ -366,9 +379,7 @@ class _CronAPI:
             async with self.topics.gate(tid):
                 if tid in self.turns.blocked or await self.topics.lookup(tid) is None:
                     return _response({"error": "unknown_topic"}, 404)
-                key = from_tid(tid)
-                async with input_lock(self.bot._sequential.get_lock(key.lock_key)):
-                    return await self.dispatch(request, key, data)
+                return await self.dispatch(request, from_tid(tid), data)
         except _InvalidError as exc:
             result: dict[str, Any] = {"error": "validation", "fields": {exc.field: exc.code}}
             if request.path.endswith("/preview"):

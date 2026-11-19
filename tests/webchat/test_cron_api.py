@@ -19,6 +19,7 @@ import time_machine
 
 from ductor_bot.cron import definitions
 from ductor_bot.cron.jobs_file import read_jobs_data, write_jobs_data
+from ductor_bot.cron.manager import CronJob
 from ductor_bot.cron.observer import CronObserver
 from ductor_bot.infra import file_lock
 from ductor_bot.orchestrator.core import Orchestrator
@@ -482,55 +483,90 @@ async def test_archive_move_failure_leaves_definition_and_content(api, monkeypat
     ]
 
 
-async def test_archive_missing_folder_is_save_failure_and_toggle_still_works(api):
+async def test_archive_missing_folder_removes_definition(api):
     import shutil
 
     await add(api)
     shutil.rmtree(api.paths.cron_tasks_dir / "daily")
-    response = await api.client.delete(PATH + "/daily", headers=headers())
-    assert response.status == 503
-    assert len(read_jobs_data(api.paths.cron_jobs_path)["jobs"]) == 1
     response = await api.client.post(
         PATH + "/daily/toggle", json={"enabled": False}, headers=headers()
     )
     assert response.status == 200
     assert (await response.json())["job"]["enabled"] is False
+    response = await api.client.delete(PATH + "/daily", headers=headers())
+    assert response.status == 200, await response.text()
+    assert not read_jobs_data(api.paths.cron_jobs_path)["jobs"]
+    assert not (api.paths.cron_tasks_dir / ".archive").exists()
 
 
-async def test_write_waits_for_topic_gate_and_input_lock(api, monkeypatch):
-    from ductor_bot.webchat.topics import WebTopics
+async def test_invalid_schedule_is_local_to_job(api):
+    await add(api)
+    await add(api, id="broken")
+    path = api.paths.cron_jobs_path
+    stored = read_jobs_data(path)
+    stored["jobs"][1]["schedule"] = "every day"
+    write_jobs_data(path, stored)
 
-    entered = asyncio.Event()
-    original = definitions.create_job
-    gates = []
-    gate = WebTopics.gate
+    response = await api.client.get(PATH, headers=headers())
+    assert response.status == 200, await response.text()
+    jobs = {job["id"]: job for job in (await response.json())["jobs"]}
+    assert jobs["daily"]["schedule_summary"]
+    assert jobs["broken"]["schedule_summary"] is None
+    assert (await detail(api, "broken"))["schedule_summary"] is None
 
-    def capture_gate(self, tid):
-        result = gate(self, tid)
-        gates.append(result)
-        return result
 
-    def inspect_create(*args, **kwargs):
-        assert gates and gates[-1].locked()
-        assert api.pool.get(api.key.lock_key).locked()
-        entered.set()
-        return original(*args, **kwargs)
+async def test_invalid_schedule_job_can_be_disabled(api):
+    await add(api, id="broken")
+    path = api.paths.cron_jobs_path
+    stored = read_jobs_data(path)
+    stored["jobs"][0]["schedule"] = "every day"
+    write_jobs_data(path, stored)
 
-    monkeypatch.setattr(WebTopics, "gate", capture_gate)
-    monkeypatch.setattr(definitions, "create_job", inspect_create)
-    lock = api.pool.get(api.key.lock_key)
-    await lock.acquire()
-    task = asyncio.create_task(api.client.post(PATH, json=payload(), headers=headers()))
-    try:
-        # A blocked input lock cannot permit writes, even after request dispatch.
-        with pytest.raises(TimeoutError):
-            await asyncio.wait_for(entered.wait(), 0.05)
-        assert not read_jobs_data(api.paths.cron_jobs_path)["jobs"]
-    finally:
-        lock.release()
-    response = await asyncio.wait_for(task, 2)
-    assert response.status == 201
-    assert entered.is_set()
+    response = await api.client.post(
+        PATH + "/broken/toggle", json={"enabled": False}, headers=headers()
+    )
+    assert response.status == 200, await response.text()
+    assert (await response.json())["job"]["enabled"] is False
+    response = await api.client.post(
+        PATH + "/broken/toggle", json={"enabled": True}, headers=headers()
+    )
+    assert response.status == 503
+    assert await response.json() == {"error": "save_failed"}
+    saved = read_jobs_data(path)["jobs"][0]
+    assert saved["enabled"] is False
+    assert saved["schedule"] == "every day"
+
+
+async def test_toggle_id_uses_update_and_toggle_routes(api):
+    await add(api, id="toggle")
+    response = await api.client.put(PATH + "/toggle", json={"title": "Updated"}, headers=headers())
+    assert response.status == 200, await response.text()
+    assert (await response.json())["job"]["title"] == "Updated"
+    response = await api.client.post(
+        PATH + "/toggle/toggle", json={"enabled": False}, headers=headers()
+    )
+    assert response.status == 200, await response.text()
+    assert (await response.json())["job"]["enabled"] is False
+
+
+@pytest.mark.parametrize("value", ["missing", "invalid", None])
+async def test_stored_autocompact_matches_cron_runtime(api, value):
+    await add(api)
+    path = api.paths.cron_jobs_path
+    stored = read_jobs_data(path)
+    job = stored["jobs"][0]
+    if value == "missing":
+        del job["autocompact"]
+    else:
+        job["autocompact"] = value
+    write_jobs_data(path, stored)
+    before = path.read_bytes()
+
+    runtime_value = CronJob.from_dict(job).autocompact
+    shown = await detail(api)
+    assert shown["autocompact"] == runtime_value
+    assert shown["effective_autocompact"] == (400000 if runtime_value is None else runtime_value)
+    assert path.read_bytes() == before
 
 
 @pytest.fixture
@@ -561,6 +597,28 @@ async def public_api(api, aiohttp_client):
         yield public, auth
     finally:
         await public.close()
+
+
+@pytest.mark.parametrize(
+    ("method", "suffix", "data", "status"),
+    [
+        ("GET", "", None, 200),
+        ("GET", "/daily", None, 200),
+        ("POST", "/preview", {"schedule": "0 9 * * *"}, 200),
+        ("POST", "", payload(id="second"), 201),
+        ("PUT", "/daily", {"title": "Updated"}, 200),
+        ("POST", "/daily/toggle", {"enabled": False}, 200),
+        ("DELETE", "/daily", None, 200),
+    ],
+)
+async def test_cron_requests_proceed_during_topic_turn(
+    api, public_api, *, method, suffix, data, status
+):
+    await add(api)
+    public, auth = public_api
+    async with api.pool.get(api.key.lock_key):
+        response = await public.request(method, BROWSER + suffix, json=data, headers=auth)
+        assert response.status == status, await response.text()
 
 
 async def test_real_public_relay_creates_updates_and_archives_on_bridge(api, public_api):

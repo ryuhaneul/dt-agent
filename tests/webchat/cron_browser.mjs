@@ -141,7 +141,16 @@ try {
   assert.equal((await definitions()).find(job=>job.id===id).enabled,false);
   await toggle.click();await page.waitForFunction(id=>document.querySelector(`[data-cron-toggle="${id}"]`)?.getAttribute('aria-checked')==='true',id);
   assert.equal((await definitions()).find(job=>job.id===id).enabled,true);
+  const registry=JSON.parse(await fs.readFile(jobsFile,'utf8'));
+  registry.jobs.find(job=>job.id===id).schedule='every day';
+  await fs.writeFile(jobsFile,JSON.stringify(registry));
+  await page.click('#cronClose');await page.click('#headerCron');
+  const card=page.locator('.cron-job').filter({has:page.locator(`[data-cron-id="${id}"]`)});
+  await card.locator('.cron-invalid').waitFor();
+  await toggle.click();await page.waitForFunction(id=>document.querySelector(`[data-cron-toggle="${id}"]`)?.getAttribute('aria-checked')==='false',id);
+  assert.equal((await definitions()).find(job=>job.id===id).enabled,false);
   await page.locator(`[data-cron-id="${id}"]`).click();await page.waitForSelector('.cron-instruction');
+  await page.locator('.cron-detail .cron-invalid').waitFor();
   await page.click('[data-cron-action=delete]');await checkGeometry('delete');await page.screenshot({path:path.join(output,`${prefix}-delete.png`),fullPage:true});
   await page.click('[data-cron-action=confirm-delete]');await page.waitForSelector('.cron-empty');
   assert.equal((await definitions()).some(job=>job.id===id),false);

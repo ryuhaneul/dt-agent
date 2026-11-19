@@ -587,7 +587,9 @@ def update_job(  # noqa: PLR0913
         data = read_jobs_data(jobs_path)
         job = _job_by_id(data, job_id)
         job.update(fields)
-        _validate_job(job)
+        # Allow a broken stored definition to be disabled without editing it.
+        if body is not None or fields.keys() != {"enabled"} or fields["enabled"] is not False:
+            _validate_job(job)
         folder = _workspace_job_dir(job, tasks_dir)
         data["jobs"] = [job if entry.get("id") == job_id else entry for entry in data["jobs"]]
         saved_body = _save_body(folder, body, expected_sha256) if body is not None else None
@@ -600,24 +602,27 @@ def update_job(  # noqa: PLR0913
         return job
 
 
-def archive_job(jobs_path: Path, tasks_dir: Path, job_id: str) -> Path:
-    """Move a task to the archive before removing JSON; restore on save failure."""
+def archive_job(jobs_path: Path, tasks_dir: Path, job_id: str) -> Path | None:
+    """Archive any existing task folder and restore it if removing the definition fails."""
     if not job_id or job_id.startswith(".") or "/" in job_id or "\\" in job_id:
         raise ValueError("Invalid job id")
     with exclusive_file_lock(tasks_dir / ".definitions"), exclusive_file_lock(jobs_path):
         data = read_jobs_data(jobs_path)
         job = _job_by_id(data, job_id)
         folder = _workspace_job_dir(job, tasks_dir)
-        archive = tasks_dir / ".archive"
-        if archive.is_symlink():
-            raise ValueError("Linked archive directories cannot be modified")
-        archive.mkdir(exist_ok=True)
-        destination = archive / f"{job_id}-{_kst_stamp()}"
         data["jobs"] = [entry for entry in data["jobs"] if entry.get("id") != job_id]
-        folder.rename(destination)
+        destination = None
+        if folder.exists():
+            archive = tasks_dir / ".archive"
+            if archive.is_symlink():
+                raise ValueError("Linked archive directories cannot be modified")
+            archive.mkdir(exist_ok=True)
+            destination = archive / f"{job_id}-{_kst_stamp()}"
+            folder.rename(destination)
         try:
             write_jobs_data(jobs_path, data)
         except BaseException:
-            destination.rename(folder)
+            if destination is not None:
+                destination.rename(folder)
             raise
     return destination
