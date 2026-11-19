@@ -229,7 +229,7 @@ async def _autocompact_state(orch: Orchestrator, key: SessionKey) -> dict[str, A
 async def _save_autocompact_values(
     orch: Orchestrator, key: SessionKey, data: dict[str, Any]
 ) -> bool:
-    """Caller holds the topic and global locks across both saves and any rollback."""
+    """Caller holds the global settings lock across both saves and any rollback."""
     previous_global = orch._config.autocompact
     for scope in ("global", "topic"):
         if scope not in data:
@@ -413,16 +413,12 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
                         data[scope] = parse_autocompact_input(value)
             except ValueError:
                 return _error("bad_request", 400)
-        async with topics.gate(tid):
-            if tid in turns.blocked or await topics.lookup(tid) is None:
+        async with bot._orch._autocompact_global_lock:
+            if await topics.lookup(tid) is None or tid in turns.blocked:
                 return _error("unknown_topic", 404)
             key = from_tid(tid)
-            async with (
-                input_lock(bot._sequential.get_lock(key.lock_key)),
-                bot._orch._autocompact_global_lock,
-            ):
-                saved = not data or await _save_autocompact_values(bot._orch, key, data)
-                state = await _autocompact_state(bot._orch, key)
+            saved = not data or await _save_autocompact_values(bot._orch, key, data)
+            state = await _autocompact_state(bot._orch, key)
         if not saved:
             return web.json_response({"error": "generic", **state}, status=503)
         return web.json_response(state)

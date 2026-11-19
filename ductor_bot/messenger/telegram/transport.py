@@ -25,7 +25,6 @@ from ductor_bot.messenger.telegram.callbacks import recorded_keyboard_observer
 from ductor_bot.messenger.telegram.sender import (
     SendRichOpts,
     send_rich,
-    send_rich_checked_progress,
     send_rich_progress_detailed,
 )
 from ductor_bot.messenger.telegram.typing import TypingContext
@@ -192,7 +191,7 @@ class TelegramTransport:
                     self._bot.bot_instance,
                     chat_id,
                     text,
-                    replace(opts, skip_unavailable_files=True),
+                    replace(opts, skip_unavailable_files=True, outbox_chunk_layout=True),
                     start_chunk=0,
                 )
                 if progress.delivered:
@@ -343,9 +342,10 @@ class TelegramTransport:
         opts = self._opts(env)
         opts.ia_task_id = env.metadata.get("ia_task_id", "")
 
+        text = env.result_text
         if env.is_error:
             session_info = t("notice.ia_session", name=env.session_name) if env.session_name else ""
-            error_text = t(
+            text = t(
                 "notice.ia_failed",
                 agent=env.metadata.get("recipient", "?"),
                 session=session_info,
@@ -356,19 +356,23 @@ class TelegramTransport:
                 ),
                 request=env.prompt_preview,
             )
-            env.delivered_text_sha256 = hashlib.sha256(error_text.encode("utf-8")).hexdigest()
-            env.delivered, env.delivered_chunks = await send_rich_checked_progress(
-                self._bot.bot_instance,
-                env.chat_id,
-                error_text,
-                opts,
-                start_chunk=env.start_chunk,
-            )
-            if not env.delivered:
-                env.delivery_error = "telegram send failed"
-            return
+            env.delivered_text_sha256 = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        else:
+            await self._deliver_interagent_provider_notice(env, opts)
 
-        # Provider switch notice (before result)
+        if text.strip():
+            progress = await send_rich_progress_detailed(
+                self._bot.bot_instance, env.chat_id, text, opts, start_chunk=env.start_chunk
+            )
+            env.delivered = progress.delivered
+            env.delivered_chunks = progress.sent_chunks
+            env.delivery_failure = progress.failure
+        else:
+            env.delivered = False
+        if not env.delivered:
+            env.delivery_error = "telegram send failed"
+
+    async def _deliver_interagent_provider_notice(self, env: Envelope, opts: SendRichOpts) -> None:
         notice = env.metadata.get("provider_switch_notice", "")
         if notice:
             try:
@@ -385,20 +389,6 @@ class TelegramTransport:
             else:
                 if not notice_sent:
                     logger.warning("Provider switch notice was not delivered")
-
-        # Result text (filled by bus injection)
-        if env.result_text.strip():
-            env.delivered, env.delivered_chunks = await send_rich_checked_progress(
-                self._bot.bot_instance,
-                env.chat_id,
-                env.result_text,
-                opts,
-                start_chunk=env.start_chunk,
-            )
-        else:
-            env.delivered = False
-        if not env.delivered:
-            env.delivery_error = "telegram send failed"
 
     async def _deliver_task_result(self, env: Envelope) -> None:
         """Deliver task result notification + injected response."""
@@ -547,10 +537,14 @@ class TelegramTransport:
             allowed_roots=self._roots(),
             ia_task_id=env.metadata.get("ia_task_id", ""),
         )
-        all_sent = True
+        outcomes = env.telegram_broadcast_outcomes.copy()
+        transient_failure = False
         for chat_id in recipients:
+            recipient = str(chat_id)
+            if recipient in outcomes:
+                continue
             try:
-                sent, _chunks = await send_rich_checked_progress(
+                progress = await send_rich_progress_detailed(
                     self._bot.bot_instance,
                     chat_id,
                     env.result_text,
@@ -559,10 +553,20 @@ class TelegramTransport:
                 )
             except Exception as exc:
                 logger.warning("Telegram IA broadcast recipient failed: %s", type(exc).__name__)
-                sent = False
-            all_sent = all_sent and sent
-        env.delivered = all_sent
-        if not all_sent:
+                transient_failure = True
+            else:
+                if progress.delivered:
+                    outcomes[recipient] = "delivered"
+                elif progress.failure == "permanent":
+                    outcomes[recipient] = "permanent"
+                else:
+                    transient_failure = True
+        env.telegram_broadcast_outcomes = outcomes
+        all_permanent = all(outcomes.get(str(chat_id)) == "permanent" for chat_id in recipients)
+        env.delivered = not (transient_failure or all_permanent)
+        if all_permanent:
+            env.delivery_failure = "permanent"
+        if not env.delivered:
             env.delivery_error = "telegram broadcast send failed"
 
     async def _broadcast_webhook_cron(self, env: Envelope) -> None:

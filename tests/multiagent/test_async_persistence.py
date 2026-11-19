@@ -18,6 +18,7 @@ import pytest
 from ductor_bot.bus.adapters import build_interagent_injection_prompt, from_interagent_result
 from ductor_bot.bus.bus import MessageBus
 from ductor_bot.bus.envelope import IA_CHUNK_SCHEMES, DeliveryOutcome
+from ductor_bot.messenger.telegram.sender import SendProgress
 from ductor_bot.multiagent.bus import (
     AsyncInterAgentResult,
     AsyncInterAgentTask,
@@ -1464,7 +1465,7 @@ async def test_corrupt_record_recovers_injected_stage_from_memory_result(
 
 @pytest.mark.parametrize(
     ("scheme", "expected"),
-    [(None, 0), ("tg-ia-v2", 0), ("tg-ia-v3", 0), (IA_CHUNK_SCHEMES["mx"], 0), (IA_CHUNK_SCHEMES["tg"], 1)],
+    [(None, 0), ("tg-ia-v2", 0), ("tg-ia-v3", 0), ("tg-ia-v4", 0), (IA_CHUNK_SCHEMES["mx"], 0), (IA_CHUNK_SCHEMES["tg"], 1)],
 )
 def test_chunk_scheme_must_match_to_resume(
     tmp_path: Path, caplog: pytest.LogCaptureFixture, scheme: str | None, expected: int,
@@ -2797,11 +2798,16 @@ async def test_cron_broadcast_recipient_outcome_controls_record(
 
     ia.set_async_result_handler("main", deliver)
     values = (
-        [(True, 1), (False, 0), (True, 1)] * 2
-        if scenario == "partial" else [(True, 1)] * 3
+        [
+            SendProgress(True, 1, None, "", None),
+            SendProgress(False, 0, "transient", "timeout", None),
+            SendProgress(True, 1, None, "", None),
+            SendProgress(False, 0, "transient", "timeout", None),
+        ]
+        if scenario == "partial" else [SendProgress(True, 1, None, "", None)] * 3
     )
     with patch(
-        "ductor_bot.messenger.telegram.transport.send_rich_checked_progress",
+        "ductor_bot.messenger.telegram.transport.send_rich_progress_detailed",
         new=AsyncMock(side_effect=values),
     ) as send:
         task_id = ia.send_async(
@@ -2817,8 +2823,8 @@ async def test_cron_broadcast_recipient_outcome_controls_record(
     store = AsyncRecordStore(tmp_path)
     parked = store.path_for("main", task_id, area="undelivered")
     assert injector.inject_prompt.await_count == 1
-    assert send.await_count == {
-        "none": 0, "partial": 6, "all": 3,
+    assert [call.args[1] for call in send.await_args_list] == {
+        "none": [], "partial": [101, 102, 103, 102], "all": [101, 102, 103],
     }[scenario]
     assert parked.exists() is (scenario != "all")
     assert not store.path_for("main", task_id).exists()
@@ -2979,6 +2985,64 @@ async def test_cron_broadcast_partial_retry_keeps_current_scope(
     assert [t.deliver_broadcast.await_count for t in transports] == [2, 2, 2]
 
 
+@pytest.mark.parametrize("scenario", ["retry", "restart", "all_permanent"])
+async def test_cron_broadcast_permanent_recipient_outcomes(
+    tmp_path: Path, scenario: str,
+) -> None:
+    from aiogram.exceptions import TelegramForbiddenError, TelegramNetworkError
+    from aiogram.methods import SendMessage
+
+    from ductor_bot.messenger.telegram.transport import TelegramTransport
+
+    task = _task(
+        task_id="abc000000094", chat_id=0, topic_id=None, transport="tg",
+        result_origin="cron-broadcast", broadcast_ref="job-94",
+    )
+    store = AsyncRecordStore(tmp_path)
+    store.create(task)
+    store.update("main", task.task_id, result=_result(task))
+    calls: list[tuple[int, str]] = []
+
+    async def send_message(*, chat_id: int, text: str, **kwargs: object) -> object:
+        method = SendMessage(chat_id=chat_id, text=text)
+        calls.append((chat_id, text))
+        if scenario == "all_permanent" or chat_id == 102:
+            raise TelegramForbiddenError(method, "blocked")
+        if chat_id == 101 and len(calls) == 1:
+            raise TelegramNetworkError(method, "temporary")
+        return SimpleNamespace(message_id=1)
+
+    def setup() -> tuple[InterAgentBus, AsyncMock]:
+        ia, bus, injector, transports, bot = _broadcast_recovery_bus(tmp_path)
+        bot._config.allowed_user_ids = [101, 102, 103]
+        bot.file_roots.return_value = []
+        bot.bot_instance.send_message = AsyncMock(side_effect=send_message)
+        bus._transports.remove(transports[0])
+        bus.register_transport(TelegramTransport(bot))
+        return ia, injector
+
+    ia, injector = setup()
+    if scenario == "retry":
+        ia._retry_delays = (0,)
+    assert await ia.recover_inflight("main") == (1 if scenario == "retry" else 0)
+    injector.inject_prompt.assert_awaited_once()
+    if scenario == "restart":
+        record = store.load("main", task.task_id, area="undelivered")
+        assert record["telegram_broadcast_outcomes"] == {"102": "permanent", "103": "delivered"}
+        restarted, restarted_injector = setup()
+        assert await restarted.redeliver_undelivered("main") == 1
+        restarted_injector.inject_prompt.assert_not_awaited()
+    report = "Public final report"
+    assert [chat_id for chat_id, text in calls if text == report] == (
+        [101, 102, 103] if scenario == "all_permanent" else [101, 102, 103, 101]
+    )
+    assert [chat_id for chat_id, text in calls if text != report] == (
+        [101, 102, 103] if scenario == "all_permanent" else []
+    )
+    assert not store.path_for("main", task.task_id).exists()
+    assert not store.path_for("main", task.task_id, area="undelivered").exists()
+
+
 def test_redelivery_metadata_is_top_level_and_result_unchanged(tmp_path: Path) -> None:
     store = AsyncRecordStore(tmp_path)
     task = _task()
@@ -3129,7 +3193,7 @@ async def test_delivery_success_clears_memory_backoff_even_if_store_fails(
     ia._park_record(result, "main")
     assert task.task_id in ia._unpersisted_results
     assert task.task_id in ia._unpersisted_redelivery
-    assert await ia._attempt_delivery(result, "main")
+    assert await ia._attempt_delivery(result, "main") == "delivered"
     assert task.task_id not in ia._unpersisted_results
     assert task.task_id not in ia._unpersisted_redelivery
 
@@ -4021,6 +4085,61 @@ async def test_cli_notice_send_failure_does_not_loop(tmp_path: Path) -> None:
     assert store.load("main", task.task_id, area="undelivered")["result"] is not None
 
 
+@pytest.mark.parametrize("route", ["initial", "parked", "recovery"])
+async def test_permanent_telegram_failure_stops_delivery_with_one_notice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: str
+) -> None:
+    from ductor_bot.i18n import t
+    from ductor_bot.messenger.telegram.transport import TelegramTransport
+
+    report = f"Report ready. <file:{tmp_path / 'missing.txt'}>"
+    ia, message_bus, _transport = _setup_bus(tmp_path, response=report)
+    ia._retry_delays = (0, 0)
+    bot = MagicMock()
+    bot.file_roots.return_value = [tmp_path]
+    bot.bot_instance.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+    message_bus._transports = [TelegramTransport(bot)]
+    store = ia._record_store
+    assert store is not None
+    task = _task()
+    result = _result(task, provider_switch_notice="")
+    store.create(task)
+    # A failed cleanup leaves the terminal stage on disk for recovery to see.
+    monkeypatch.setattr(store, "delete", MagicMock(side_effect=OSError("synthetic")))
+    if route == "initial":
+        await ia._deliver_async_result(result)
+    else:
+        store.update("main", task.task_id, stage="injected", result=result, main_response=report)
+        if route == "parked":
+            store.move_to_undelivered("main", task.task_id)
+            assert await ia.redeliver_undelivered("main") == 0
+        else:
+            assert await ia.recover_inflight("main") == 0
+
+    assert [call.kwargs["text"] for call in bot.bot_instance.send_message.await_args_list] == [
+        "Report ready.",
+        t("notice.ia_delivery_failed"),
+    ]
+    assert all(
+        call.kwargs["message_thread_id"] == task.topic_id
+        for call in bot.bot_instance.send_message.await_args_list
+    )
+    record = store.load("main", task.task_id)
+    assert record["stage"] == "abandoned"
+    assert record["redelivery_attempts"] == 0
+    assert record["next_redelivery_at"] is None
+    assert not message_bus._noticed_errors
+    assert not message_bus._injection_notices
+    assert await ia.recover_inflight("main") == 0
+    assert bot.bot_instance.send_message.await_count == 2
+
+    resumed, _, resumed_transport = _setup_bus(tmp_path)
+    assert await resumed.recover_inflight("main") == 0
+    assert await resumed.redeliver_undelivered("main") == 0
+    resumed_transport.deliver.assert_not_awaited()
+    assert not store.path_for("main", task.task_id).exists()
+
+
 async def test_transport_failure_without_cli_error_has_no_failure_notice(tmp_path: Path) -> None:
     ia, bus, transport = _setup_bus(tmp_path)
     ia._retry_delays = (0, 0)
@@ -4076,8 +4195,8 @@ async def test_cli_notice_telegram_adapter_sends_raw_text_in_origin_topic(
     store = AsyncRecordStore(tmp_path)
     store.create(task)
     with patch(
-        "ductor_bot.messenger.telegram.transport.send_rich_checked_progress",
-        new=AsyncMock(return_value=(send_ok, 1 if send_ok else 0)),
+        "ductor_bot.messenger.telegram.transport.send_rich_progress_detailed",
+        new=AsyncMock(return_value=SendProgress(send_ok, int(send_ok), None, "", None)),
     ) as send:
         await ia._deliver_async_result(_result(task, result_text="PRIVATE WORK RESULT"))
         assert await ia.redeliver_undelivered("main") == 0

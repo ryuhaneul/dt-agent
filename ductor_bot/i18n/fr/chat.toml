@@ -518,6 +518,7 @@ extras_hint = "extras de l'image : '{extras}'. Ajoute la fonction à DUCTOR_EXTR
 only_sub = "seul le sous-agent '{sub}' est exclu"
 
 [notice]
+ia_delivery_failed = "Le résultat de la tâche déléguée n’a pas pu être transmis. Les tentatives d’envoi ont cessé."
 ia_result_preserved = "Le résultat est conservé. Corrige l’erreur CLI et attends la livraison automatique, ou redémarre le bot pour réessayer immédiatement."
 session_cancelled = "**[{name}] Annulé**"
 session_failed = "**[{name}] Échec** ({elapsed})"

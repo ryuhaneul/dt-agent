@@ -514,6 +514,7 @@ extras_hint = "Image-Build-Extras: '{extras}'. Füge die Funktion in der Root-.e
 only_sub = "nur Sub-Agent '{sub}' wird ausgeschlossen"
 
 [notice]
+ia_delivery_failed = "Die Zustellung des Auftragsergebnisses ist dauerhaft fehlgeschlagen."
 ia_result_preserved = "Das Ergebnis ist gespeichert. Behebe den CLI-Fehler und warte auf die automatische Zustellung oder starte den Bot neu, um es sofort erneut zu versuchen."
 session_cancelled = "**[{name}] Abgebrochen**"
 session_failed = "**[{name}] Fehlgeschlagen** ({elapsed})"

@@ -90,7 +90,7 @@ Tell the user you delegated, then keep chatting.
 
 Key rules:
 - Do NOT attempt long-running work yourself — delegate it
-- Do NOT background a shell command (e.g. Bash `run_in_background`) for results you need later — the turn's process exits and the notification is lost; use `create_task.py`
+- Do NOT background a shell command (e.g. Bash `run_in_background`) for results you need later — it can prevent the CLI from exiting, lock the chat, and lose its completion notification. Use `create_task.py`
 - Do NOT wait silently — keep talking with the user
 - Do NOT present task results unchecked — verify first
 - Resume finished tasks instead of creating new ones when refining results

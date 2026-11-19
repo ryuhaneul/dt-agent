@@ -361,7 +361,8 @@ class WebTopics:
                     deleted = True
                 if not deleted:
                     raise TopicDeleteError
-                removed = await self.bot._orch._sessions.delete_session(key)
+                async with self.bot._orch._autocompact_global_lock:
+                    removed = await self.bot._orch._sessions.delete_session(key)
                 async with self._registry_lock:
                     deleted_path = self._path.with_name("deleted_topics.json")
                     deleted_topics = await asyncio.to_thread(self._read_deleted, deleted_path)

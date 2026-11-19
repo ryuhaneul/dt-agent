@@ -5,10 +5,14 @@ from __future__ import annotations
 import enum
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 # Bump a transport value whenever IA chunk preparation or ordering changes.
-IA_CHUNK_SCHEMES = {"tg": "tg-ia-v4", "mx": "mx-ia-v1", "sl": "sl-ia-v1"}
+IA_CHUNK_SCHEMES = {"tg": "tg-ia-v6", "mx": "mx-ia-v1", "sl": "sl-ia-v1"}
+
+
+DeliveryFailure = Literal["transient", "permanent"]
+TelegramBroadcastOutcomes = dict[str, Literal["delivered", "permanent"]]
 
 
 class Origin(enum.Enum):
@@ -48,11 +52,15 @@ class DeliveryOutcome:
     injected: bool
     delivered: bool
     error: str = ""
+    delivery_failure: DeliveryFailure | None = field(default=None, kw_only=True)
     injection_error_kind: str = field(default="", kw_only=True)
     injection_error_text: str = field(default="", kw_only=True)
     delivered_chunks: int = 0
     delivered_text_sha256: str = ""
     chunk_scheme: str = ""
+    telegram_broadcast_outcomes: TelegramBroadcastOutcomes = field(
+        default_factory=dict, kw_only=True
+    )
 
 
 @dataclass(slots=True)
@@ -90,6 +98,7 @@ class Envelope:
     # Broadcast delivery records each failed transport for targeted retries.
     delivered: bool = True
     delivery_error: str = ""
+    delivery_failure: DeliveryFailure | None = field(default=None, kw_only=True)
     injection_error_kind: str = field(default="", kw_only=True)
     injection_error_text: str = field(default="", kw_only=True)
     # IA final report: absolute count of leading chunks sent, and retry offset.
@@ -99,6 +108,9 @@ class Envelope:
     chunk_scheme: str = ""
     broadcast_targets: list[str] | None = None
     failed_transports: list[str] = field(default_factory=list)
+    telegram_broadcast_outcomes: TelegramBroadcastOutcomes = field(
+        default_factory=dict, kw_only=True
+    )
 
     # -- Origin-specific metadata --
     metadata: dict[str, Any] = field(default_factory=dict)

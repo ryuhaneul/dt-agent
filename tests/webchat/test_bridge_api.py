@@ -298,6 +298,7 @@ async def conversation(tmp_path, monkeypatch):
     orch = SimpleNamespace(
         paths=paths,
         _sessions=sessions,
+        _autocompact_global_lock=asyncio.Lock(),
         _lock_pool=pool,
         _process_registry=registry,
         is_chat_busy=lambda chat, topic: pool.is_locked((chat, topic)),

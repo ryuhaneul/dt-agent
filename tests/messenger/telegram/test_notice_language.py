@@ -14,6 +14,7 @@ from ductor_bot.bus.adapters import from_task_result
 from ductor_bot.bus.bus import MessageBus
 from ductor_bot.bus.envelope import DeliveryMode, Envelope, Origin
 from ductor_bot.i18n import t
+from ductor_bot.messenger.telegram.sender import SendProgress
 from ductor_bot.messenger.telegram.transport import TelegramTransport
 from ductor_bot.tasks.hub import TaskHub
 from ductor_bot.tasks.models import TaskEntry
@@ -235,9 +236,9 @@ class TestFailureNotices:
             metadata={"recipient": "worker", "error": "boom"},
         )
         with patch(
-            "ductor_bot.messenger.telegram.transport.send_rich_checked_progress",
+            "ductor_bot.messenger.telegram.transport.send_rich_progress_detailed",
             new_callable=AsyncMock,
-            return_value=(True, 1),
+            return_value=SendProgress(True, 1, None, "", None),
         ) as send:
             await transport.deliver(failed)
         assert send.call_args[0][2] == t(
@@ -249,9 +250,9 @@ class TestFailureNotices:
         )
         missing = _env(origin=Origin.INTERAGENT, is_error=True, metadata={})
         with patch(
-            "ductor_bot.messenger.telegram.transport.send_rich_checked_progress",
+            "ductor_bot.messenger.telegram.transport.send_rich_progress_detailed",
             new_callable=AsyncMock,
-            return_value=(True, 1),
+            return_value=SendProgress(True, 1, None, "", None),
         ) as send:
             await transport.deliver(missing)
         assert t("notice.unknown") in send.call_args[0][2]
@@ -265,9 +266,9 @@ class TestFailureNotices:
                 "ductor_bot.messenger.telegram.transport.send_rich", new_callable=AsyncMock
             ) as plain,
             patch(
-                "ductor_bot.messenger.telegram.transport.send_rich_checked_progress",
+                "ductor_bot.messenger.telegram.transport.send_rich_progress_detailed",
                 new_callable=AsyncMock,
-                return_value=(True, 1),
+                return_value=SendProgress(True, 1, None, "", None),
             ),
         ):
             await transport.deliver(switched)

@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from aiogram.exceptions import TelegramBadRequest
 
 
@@ -875,6 +876,43 @@ async def test_ia_button_only_report_sends_keyboard_with_prompt() -> None:
     assert bot.send_message.await_args.kwargs["reply_markup"].inline_keyboard[0][0].text == (
         "Go"
     )
+
+
+@pytest.mark.parametrize(
+    "example",
+    [
+        "Example: `{tag}`",
+        "Example: ``with a ` backtick and {tag}``",
+        "Example:\n```text\n{tag}\n```",
+        "1. Example\n    ```text\n    value\n\n    {tag}\n    ```",
+        "Example:\n\t```\n\tvalue\n\n\t{tag}\n\t```",
+        "Example:\n````text\n```\n{tag}\n```\n````",
+        "Example:\n~~~text\n{tag}\n~~~",
+        "Example:\r\n```text\r\n{tag}\r\n```\r",
+    ],
+)
+async def test_ia_quoted_file_tags_are_sent_as_text(tmp_path: Path, example: str) -> None:
+    from ductor_bot.messenger.telegram.sender import SendRichOpts, send_rich_progress_detailed
+
+    tag = "<file:/example/missing.txt>"
+    attachment = tmp_path / "report.txt"
+    attachment.write_text("actual attachment")
+    bot = MagicMock()
+    bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+    bot.send_document = AsyncMock(return_value=SimpleNamespace(message_id=2))
+
+    text = f"{example.format(tag=tag)}\n<file:{attachment}> [button:Continue]"
+    progress = await send_rich_progress_detailed(
+        bot, 42, text, SendRichOpts(allowed_roots=[tmp_path])
+    )
+
+    assert progress.delivered
+    assert progress.sent_chunks == 2
+    assert "&lt;file:/example/missing.txt&gt;" in bot.send_message.await_args.kwargs["text"]
+    bot.send_document.assert_awaited_once()
+    upload = bot.send_document.await_args.kwargs
+    assert Path(upload["document"].path) == attachment
+    assert upload["reply_markup"].inline_keyboard[0][0].text == "Continue"
 
 
 async def test_ia_file_path_button_marker_is_not_parsed_as_button(tmp_path: Path) -> None:

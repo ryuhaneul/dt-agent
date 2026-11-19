@@ -24,7 +24,7 @@ source .venv/bin/activate
 For operations that take more than 30 seconds, use `tools/task_tools/create_task.py`
 with all necessary context. The task runs independently and delivers its result back
 to the chat. Keep the user informed and verify the result before presenting it.
-Do not background shell commands for results needed later in the conversation.
+Do not background shell commands for results needed later in the conversation. A background shell can prevent the CLI from exiting and keep that chat locked.
 
 ## Memory
 
