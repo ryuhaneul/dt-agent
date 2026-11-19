@@ -305,7 +305,7 @@ function updateThreadNavigation() {
   top.hidden = !state || (!state.range?.older && !state.hasMore && thread.scrollTop < 80);
   const gap = thread.scrollHeight - thread.clientHeight - thread.scrollTop;
   bottom.hidden = !state || (!state.range?.newer && gap < 80);
-  const readingHistory = !!state && (state.range?.newer || gap > 2);
+  const readingHistory = !!state && (state.range?.newer || gap > 2 || !!threadOffset(thread, 'end'));
   if (thread.dataset.readingHistory !== String(readingHistory)) {
     thread.dataset.readingHistory = String(readingHistory);
   }
@@ -486,7 +486,7 @@ function cancelHistoryRender() {
 function loadWindowAttachments(tid, rows) {
   attachmentView?.load(tid, rows.filter(row => row.kind === 'entry').map(row => row.entry));
 }
-function scheduleHistoryRender(topic, rows, start, limit, end, showBusy) {
+function scheduleHistoryRender(topic, rows, start, limit, end, showBusy, preserveReading) {
   const state = history(topic.tid), thread = document.querySelector('#thread');
   const job = { tid: topic.tid, start, idle: typeof requestIdleCallback === 'function', id: null };
   historyRender = job;
@@ -497,11 +497,13 @@ function scheduleHistoryRender(topic, rows, start, limit, end, showBusy) {
     if (historyRender !== job || !active || getTopic()?.tid !== job.tid) return;
     const next = Math.max(limit, job.start - 12), batch = rows.slice(next, job.start);
     const top = thread.scrollTop, height = thread.scrollHeight;
-    const pinned = !state.range.newer && height - thread.clientHeight - top < 80;
+    const endOffset = threadOffset(thread, 'end');
+    const pinned = !state.range.newer && !endOffset && height - thread.clientHeight - top < (preserveReading ? 1 : 80);
     const viewport = pinned ? null : viewportMessages(thread);
+    endOffset?.remove();
     patchThread(thread, threadGroups(mountedRows(rows, next, end, showBusy)), {});
     if (pinned) thread.scrollTop = thread.scrollHeight;
-    else restoreViewport(thread, viewport, top, null);
+    else restoreViewport(thread, viewport, top, null, preserveReading);
     loadWindowAttachments(topic.tid, batch);
     updateThreadNavigation();
     job.start = next; state.renderStart = rows[next].key;
@@ -553,7 +555,7 @@ function viewportMessages(thread) {
   }
   return { first, last };
 }
-function restoreViewport(thread, viewport, previousTop, changes) {
+function restoreViewport(thread, viewport, previousTop, changes, preserveReading) {
   const anchor = viewport.first && threadRows(thread).find(node => nodeKey(node) === viewport.first.key);
   if (!anchor) {
     if (!changes) thread.scrollTop = previousTop;
@@ -563,27 +565,34 @@ function restoreViewport(thread, viewport, previousTop, changes) {
   const shift = anchor.getBoundingClientRect().top - viewport.first.top;
   if (!shift) return;
   const target = thread.scrollTop + shift;
-  if (Number.isInteger(target) || target < 0 || target >= thread.scrollHeight - thread.clientHeight) {
-    thread.scrollTop = target;
-    return;
+  let pixel = target;
+  const fractional = !Number.isInteger(target)
+    && (preserveReading || (target >= 0 && target < thread.scrollHeight - thread.clientHeight));
+  if (fractional || (preserveReading && target < 0)) {
+    // A fresh spacer establishes the fractional offset during layout of the new window.
+    const previous = threadOffset(thread, 'start');
+    const unpadded = target - (previous?.getBoundingClientRect().height ?? 0);
+    pixel = Math.max(0, Math.ceil(unpadded));
+    previous?.remove();
+    if (pixel > unpadded) insertThreadOffset(thread, 'start', pixel - unpadded);
   }
-  // A fresh spacer establishes the fractional offset during layout of the new window.
-  const previous = threadOffset(thread);
-  const unpadded = target - (previous?.getBoundingClientRect().height ?? 0);
-  const pixel = Math.ceil(unpadded), remainder = pixel - unpadded;
-  previous?.remove();
-  if (remainder) {
-    const offset = document.createElement('div');
-    offset.dataset.threadOffset = '';
-    offset.setAttribute('aria-hidden', 'true');
-    offset.style.height = `${remainder}px`;
-    thread.insertBefore(offset, thread.firstElementChild);
+  if (preserveReading) {
+    // Removing a date divider can shorten the thread below the required scroll position.
+    const overflow = pixel - (thread.scrollHeight - thread.clientHeight);
+    if (overflow > 0) insertThreadOffset(thread, 'end', overflow);
   }
   thread.scrollTop = pixel;
 }
-function threadOffset(thread) {
-  const offset = thread.firstElementChild;
-  return offset?.dataset.threadOffset !== undefined ? offset : null;
+function threadOffset(thread, edge) {
+  const offset = edge === 'start' ? thread.firstElementChild : thread.lastElementChild;
+  return offset?.dataset.threadOffset === edge ? offset : null;
+}
+function insertThreadOffset(thread, edge, height) {
+  const offset = document.createElement('div');
+  offset.dataset.threadOffset = edge;
+  offset.setAttribute('aria-hidden', 'true');
+  offset.style.height = `${height}px`;
+  thread.insertBefore(offset, edge === 'start' ? thread.firstElementChild : null);
 }
 
 function messageRange(state, rows, { seq, bottom, move, viewport, keepReading }) {
@@ -640,7 +649,9 @@ export function renderThread({
   const state = history(topic.tid);
   const previousTop = thread.scrollTop;
   const gap = thread.scrollHeight - thread.clientHeight - previousTop;
-  const followLatest = !state.range?.newer && gap < (preserveReading ? 1 : 80);
+  const endOffset = threadOffset(thread, 'end');
+  const followLatest = !state.range?.newer && gap < (preserveReading ? 1 : 80)
+    && !(preserveReading && endOffset);
   const viewport = sameTopic && !bottom && seq === null && (move || !followLatest)
     ? viewportMessages(thread) : {};
   const entries = sorted(topic.tid);
@@ -655,7 +666,8 @@ export function renderThread({
     const resumed = rows.findIndex(row => row.key === state.renderStart);
     start = resumed >= limit && resumed < end ? resumed : end - 12;
   }
-  if (!sameTopic || bottom || seq !== null || move === 'top') threadOffset(thread)?.remove();
+  endOffset?.remove();
+  if (!sameTopic || bottom || seq !== null || move === 'top') threadOffset(thread, 'start')?.remove();
   const showBusy = !state.range.newer && (busy.get(topic.tid) ?? topic.busy) && !liveTurns.length;
   const mounted = mountedRows(rows, start, end, showBusy), groups = threadGroups(mounted);
   if (changes) patchThread(thread, groups, changes);
@@ -666,12 +678,12 @@ export function renderThread({
     thread.querySelector(`[data-entry-seq="${Number(seq)}"]`)?.scrollIntoView({ block: 'center' });
   } else if (move === 'top') thread.scrollTop = 0;
   else if (pinned) thread.scrollTop = thread.scrollHeight;
-  else restoreViewport(thread, viewport, previousTop, changes);
+  else restoreViewport(thread, viewport, previousTop, changes, preserveReading);
   updateThreadNavigation();
   if (visibleChat() && pinned && entries.length) markSeen(topic.tid, entries.at(-1).seq);
   if (start > limit) {
     state.renderStart = rows[start].key;
-    scheduleHistoryRender(topic, rows, start, limit, end, showBusy);
+    scheduleHistoryRender(topic, rows, start, limit, end, showBusy, preserveReading);
   } else if (rows.length) { state.rendered = true; state.renderStart = null; }
 }
 async function loadHistory(tid, { older = false, target = null, turnId = null } = {}) {
@@ -1072,6 +1084,10 @@ export function initChat() {
     if (selector && !selector.disabled) void chooseButton(selector.dataset.callbackEntry, selector.dataset.callbackData, 'selector');
   });
   thread.addEventListener('scroll', async () => {
+    const endOffset = threadOffset(thread, 'end');
+    if (endOffset && thread.scrollHeight - thread.clientHeight - thread.scrollTop >= endOffset.getBoundingClientRect().height) {
+      endOffset.remove();
+    }
     refreshCalendar();
     updateThreadNavigation();
     const topic = getTopic();
