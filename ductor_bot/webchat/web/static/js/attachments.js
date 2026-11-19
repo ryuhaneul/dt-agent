@@ -50,8 +50,9 @@ export function initAttachments({ getTopic, changed, resume }) {
   function resize() {
     input.style.height = 'auto';
     const maximum = (window.visualViewport?.height || innerHeight) * 0.4;
-    input.style.height = Math.min(input.scrollHeight, maximum) + 'px';
-    input.style.overflowY = input.scrollHeight > maximum ? 'auto' : 'hidden';
+    const height = input.scrollHeight;
+    input.style.height = Math.min(height, maximum) + 'px';
+    input.style.overflowY = height > maximum ? 'auto' : 'hidden';
     position();
   }
   function render() {
@@ -242,8 +243,7 @@ export function initAttachments({ getTopic, changed, resume }) {
     if(!event.detail.authenticated){++generation;controller?.abort();closeMenu(false);for(const list of topics.values())list.forEach(free);topics.clear();busy=false;posting=false;activeRun=null;activeItem=null;}
     render();changed();
   });
-  input.addEventListener('input',resize); wrap.addEventListener('scroll',position);
-  addEventListener('resize',resize); window.visualViewport?.addEventListener('resize',resize);
+  wrap.addEventListener('scroll',position);
   async function digest(file, signal) {
     const hash=new Sha256();
     for(let offset=0;offset<file.size;offset+=1024*1024){

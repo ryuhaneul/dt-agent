@@ -106,6 +106,42 @@ try{
   assert.equal(results.emptyPage.attachmentRequests,0);
   results.checks.push('100 attachment-free messages issue zero attachment requests');
   await page.screenshot({path:path.join(cfg.shots,'attachment-free-100.png')});
+  const event = detail => wsPeer.send(JSON.stringify(detail));
+  const queueItem = {id:'queue-part',tid:topic.tid,state:'sent'};
+  const historyRequests = () => requests.filter(item=>item.method==='GET'&&item.p.endsWith('/messages')).length;
+  const readCount = historyRequests();
+  await page.evaluate(()=>{
+    const thread=document.querySelector('#thread');
+    thread.scrollTop=120;
+    window.initialEntry=thread.querySelector('[data-entry-seq="1"]');
+  });
+  event({type:'busy',tid:'123.8',busy:true});
+  event({type:'outbox',pending:1,item:queueItem,history_id:'000000000000',mirror:'pending'});
+  await page.locator('[data-entry-seq="1"] .dirty').waitFor({state:'attached'});
+  event({type:'outbox',pending:0,item:queueItem,history_id:'000000000000',mirror:'sent'});
+  await page.locator('[data-entry-seq="1"] .deliv').waitFor({state:'attached'});
+  assert.equal(historyRequests(),readCount);
+  await page.evaluate(()=>{window.initialTop=document.querySelector('#thread').scrollTop;});
+  const newEntry = seq => ({type:'entry',tid:topic.tid,entry:{
+    id:`live-${seq}`,seq,role:'bot',source:'web',text:`Live message ${seq}`,ts:'2026-11-18T10:00:00Z',
+  }});
+  event(newEntry(101));
+  await page.locator('[data-entry-seq="101"]').waitFor({state:'attached'});
+  assert(await page.evaluate(()=>{
+    const thread=document.querySelector('#thread');
+    return window.initialEntry.isConnected&&Math.abs(thread.scrollTop-window.initialTop)<1;
+  }));
+  await page.evaluate(()=>{const thread=document.querySelector('#thread');thread.scrollTop=thread.scrollHeight;});
+  event(newEntry(102));
+  await page.locator('[data-entry-seq="102"]').waitFor({state:'attached'});
+  assert(await page.evaluate(()=>{
+    const thread=document.querySelector('#thread');
+    return thread.scrollHeight-thread.clientHeight-thread.scrollTop<2;
+  }));
+  event({type:'outbox',pending:0,item:queueItem});
+  await page.waitForFunction(()=>!window.initialEntry.isConnected);
+  assert.equal(historyRequests(),readCount+1);
+  results.checks.push('targeted mirror and entry events preserve message nodes and scroll; legacy receipt reloads');
   emptyHistoryEnabled=false;
   // Keep the requested resize format; unsupported raster formats use PNG.
   await reset();

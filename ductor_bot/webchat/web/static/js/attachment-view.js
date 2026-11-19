@@ -71,7 +71,7 @@ export function initAttachmentView({changed}) {
         const identity=key(tid,entry.id);if(!entry.has_attachments){cache.delete(identity);continue;}if(cache.has(identity))continue;
         const pending={files:[]};cache.set(identity,pending);
         void api(`/topics/${encodeURIComponent(tid)}/messages/${encodeURIComponent(entry.id)}/attachments`).then(result=>{
-          if(epoch!==generation||cache.get(identity)!==pending)return;cache.set(identity,{files:validate(tid,entry,result.attachments)});changed();
+          if(epoch!==generation||cache.get(identity)!==pending)return;cache.set(identity,{files:validate(tid,entry,result.attachments)});changed(tid,entry.id);
         }).catch(()=>{});
       }
     },

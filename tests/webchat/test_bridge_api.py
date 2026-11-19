@@ -776,6 +776,42 @@ async def test_websocket_disconnect_does_not_cancel_turn(conversation):
     h.runtime.events.unsubscribe(queue)
 
 
+async def test_outbox_events_include_combined_history_receipt(conversation):
+    h = conversation
+    row = await h.runtime.history.append(
+        "-123.7", Entry(role="user", source="web", text="with two mirror parts")
+    )
+    async with h.client.ws_connect(f"{_PREFIX}/events", headers=headers()) as ws:
+        first = await h.runtime.outbox.enqueue(
+            kind="user_mirror", chat_id=-123, topic_id=7, text="first", history_id=row.id
+        )
+        frame = await ws.receive_json(timeout=2)
+        assert frame == {
+            "type": "outbox",
+            "pending": 1,
+            "item": first.view(),
+            "history_id": row.id,
+            "mirror": "pending",
+        }
+        second = await h.runtime.outbox.enqueue(
+            kind="user_mirror", chat_id=-123, topic_id=7, text="second", history_id=row.id
+        )
+        assert (await ws.receive_json(timeout=2))["mirror"] == "pending"
+        await h.runtime.outbox.mark_sent(first.id)
+        frame = await ws.receive_json(timeout=2)
+        assert frame["item"]["state"] == "sent"
+        assert frame["mirror"] == "pending"
+        await h.runtime.outbox.mark_failed(second.id)
+        assert (await ws.receive_json(timeout=2))["mirror"] == "failed"
+
+        await h.runtime.outbox.enqueue(kind="bus", chat_id=-123, topic_id=7, text="no history")
+        frame = await ws.receive_json(timeout=2)
+        assert frame["history_id"] is None and frame["mirror"] is None
+        legacy = {"type": "outbox", "pending": 0}
+        h.runtime.events.publish(legacy)
+        assert await ws.receive_json(timeout=2) == legacy
+
+
 async def test_events_ignore_client_frames_and_disconnect_on_overflow(conversation):
     h = conversation
     ws = await h.client.ws_connect(f"{_PREFIX}/events", headers=headers())

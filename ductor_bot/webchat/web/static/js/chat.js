@@ -17,7 +17,7 @@ let view = 'chat', loading = false, selection = 0, commandMenu = null, secretDia
 let streamFrame = null, historyRender = null, composerFiles = null, attachmentView = null;
 const streamUpdates = new Set();
 function history(tid) {
-  if (!histories.has(tid)) histories.set(tid, { entries: new Map(), meta: new Map(), choices: new Map(), hasMore: false, loaded: false, rendered: false, renderStart: null, markdown: createMarkdownCache(`entry:${tid}`) });
+  if (!histories.has(tid)) histories.set(tid, { entries: new Map(), meta: new Map(), choices: new Map(), mirrorReaders: new Set(), hasMore: false, loaded: false, rendered: false, renderStart: null, markdown: createMarkdownCache(`entry:${tid}`) });
   return histories.get(tid);
 }
 export function mergeEntries(entries, incoming) {
@@ -25,8 +25,8 @@ export function mergeEntries(entries, incoming) {
   return [...entries.values()].sort((a, b) => a.seq - b.seq);
 }
 function sorted(tid) { return mergeEntries(history(tid).entries, []); }
-function running(tid) {
-  return [...turns.values()].find(turn => turn.tid === tid && ['queued', 'started'].includes(turn.phase));
+function hasTurnEntry(turn, role) {
+  return [...history(turn.tid).entries.values()].some(entry => entry.role === role && entry.turn_id === turn.id);
 }
 function started(tid) {
   return [...turns.values()].find(turn => turn.tid === tid && turn.phase === 'started');
@@ -45,7 +45,7 @@ function mirror(entry) {
   if (!entry.mirror || !(entry.source === 'web' || entry.role === 'event' || entry.source === 'system')) return '';
   const state = entry.mirror.state;
   const key = state === 'sent' ? 'delivered' : state === 'pending' ? 'pending_mirror' : 'mirror_failed';
-  return `<div class="${state === 'sent' ? 'deliv' : state === 'pending' ? 'dirty' : 'stopped'}">${esc(t(`chat.${key}`))}</div>`;
+  return `<div data-mirror class="${state === 'sent' ? 'deliv' : state === 'pending' ? 'dirty' : 'stopped'}">${esc(t(`chat.${key}`))}</div>`;
 }
 function sourceTag(entry) {
   if (entry.kind === 'command') return `<span class="tag">${esc(t('commands.run'))}</span>`;
@@ -101,7 +101,7 @@ async function chooseButton(entryId, value, kind) {
         entry.button_kinds?.[rowIndex]?.[buttonIndex] === kind
         && (kind === 'selector' ? button.callback_data : button.text) === value))) return;
   const generation = epoch;
-  state.choices.set(entryId, value); renderThread();
+  state.choices.set(entryId, value); updateEntries(topic.tid, [entryId]);
   try {
     const selector = kind === 'selector';
     const result = await api(`/topics/${encodeURIComponent(topic.tid)}/${selector ? 'callbacks' : 'buttons'}`, {
@@ -124,7 +124,7 @@ async function chooseButton(entryId, value, kind) {
     else errorNotice(error);
   } finally {
     state.choices.delete(entryId);
-    if (active && generation === epoch) renderThread();
+    if (active && generation === epoch) updateEntries(topic.tid, [entryId]);
   }
 }
 function queueStatus(turnId, status = null) {
@@ -140,12 +140,12 @@ function queuedMarkup(turn) {
 async function cancelQueued(turnId) {
   const turn = turns.get(turnId), generation = epoch;
   if (!active || !turn || turn.phase !== 'queued' || turn.cancelling || getTopic()?.read_only) return;
-  turn.cancelling = true; renderThread();
+  turn.cancelling = true; updateTurn(turn);
   try {
     await api(`/topics/${encodeURIComponent(turn.tid)}/turns/${encodeURIComponent(turnId)}/cancel`, { method: 'POST' });
     if (!active || generation !== epoch) return;
     turn.phase = 'cancelled';
-    await loadHistory(turn.tid);
+    if (!hasTurnEntry(turn, 'user')) await loadHistory(turn.tid, { turnId });
   } catch (error) {
     if (!active || generation !== epoch) return;
     if (error.status === 409 && error.code === 'turn_started') {
@@ -155,7 +155,7 @@ async function cancelQueued(turnId) {
     } else errorNotice(error);
   } finally {
     turn.cancelling = false;
-    if (active && generation === epoch) renderThread();
+    if (active && generation === epoch) updateTurn(turn);
   }
 }
 const systemLabels = {
@@ -240,11 +240,11 @@ function scheduleStreamRender(turnId) {
     for (const id of updates) {
       const turn = turns.get(id);
       if (!turn || turn.tid !== topic.tid) continue;
-      const element = [...thread.querySelectorAll('[data-turn]')].find(node => node.dataset.turn === id);
+      const element = thread.querySelector(`[data-turn="${CSS.escape(id)}"]`);
       if (element) {
-        if (turn.renderedActivityRevision !== turn.activityRevision) {
-          renderThread();
-          return;
+        if (turn.renderedActivityRevision !== turn.activityRevision || !element.querySelector('[data-stream-complete]')) {
+          updateTurn(turn);
+          continue;
         }
         turn.markdown.render(turn.text.slice(turn.markdownOffset || 0));
         const complete = element.querySelector('[data-stream-complete]');
@@ -255,13 +255,12 @@ function scheduleStreamRender(turnId) {
         complete.dataset.length = turn.markdown.completeHTML.length;
         complete.dataset.revision = turn.markdown.revision;
         tail.innerHTML = turn.markdown.tailHTML;
-      } else if (![...history(topic.tid).entries.values()].some(entry => entry.role === 'bot' && entry.turn_id === id)) {
-        renderThread();
-        return;
+      } else if (!hasTurnEntry(turn, 'bot')) {
+        updateTurn(turn);
       }
     }
-    renderHeader();
-    thread.scrollTop = nearBottom ? thread.scrollHeight : previousTop;
+    updateStopButton(topic);
+    if (nearBottom) thread.scrollTop = thread.scrollHeight;
     updateThreadNavigation();
   });
 }
@@ -285,11 +284,17 @@ function renderHeader() {
   document.querySelector('#headerAutocompact').disabled = !active || !topic || topic.read_only || topic.tid === 'unknown';
   document.querySelector('#topicDelete').hidden = !topic?.deletable;
   document.querySelector('.composer').hidden = !topic || topic.read_only || topic.tid === 'unknown';
-  const stop = document.querySelector('#stopBtn');
-  stop.hidden = !topic || !started(topic.tid);
-  stop.disabled = !topic || !started(topic.tid);
-  document.querySelector('#sendBtn').disabled = !topic || (sending && !isControlCommand(document.querySelector('#msgIn').value));
-  composerFiles?.render();
+  updateStopButton(topic);
+  updateSendButton();
+}
+function updateStopButton(topic) {
+  const stop = document.querySelector('#stopBtn'), unavailable = !topic || !started(topic.tid);
+  stop.hidden = unavailable;
+  stop.disabled = unavailable;
+}
+function updateSendButton() {
+  const input = document.querySelector('#msgIn');
+  document.querySelector('#sendBtn').disabled = !getTopic() || (sending && !isControlCommand(input.value));
 }
 function updateThreadNavigation() {
   const thread = document.querySelector('#thread');
@@ -298,22 +303,83 @@ function updateThreadNavigation() {
   top.hidden = !hasTopic || thread.scrollTop < 80;
   bottom.hidden = !hasTopic || thread.scrollHeight - thread.clientHeight - thread.scrollTop < 80;
 }
-function entryDay(entry) {
-  const date = entry.ts && !Number.isNaN(Date.parse(entry.ts)) ? new Date(entry.ts) : null;
-  const key = `${date?.toLocaleDateString() || '—'}:${!!entry.imported}`;
-  const today = date && date.toLocaleDateString() === new Date().toLocaleDateString();
-  const label = today ? t('chat.today') : date ? date.toLocaleDateString(document.documentElement.lang) : '—';
-  return { key, html: `<div class="day">${esc(label)}${entry.imported ? ` · ${esc(t('chat.imported_day'))}` : ''}</div>` };
+function localDay(date) {
+  return Number.isNaN(+date) ? '' : `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
 }
-function entryRange(entries, start, end) {
-  let html = '', previousDay = '';
+function entryDayKey(entry) {
+  const day = entry.ts ? localDay(new Date(entry.ts)) : '';
+  return `${day}:${!!entry.imported}`;
+}
+function entryItems(entries, start, end) {
+  const items = [], todayPrefix = `${localDay(new Date())}:`;
+  let previousDay;
   for (let index = start; index < end; index++) {
-    const entry = entries[index], day = entryDay(entry);
-    if (day.key !== previousDay) html += day.html;
-    previousDay = day.key;
-    html += entryMarkup(entry);
+    const entry = entries[index], day = entryDayKey(entry);
+    if (day !== previousDay) {
+      const today = day.startsWith(todayPrefix);
+      items.push({ kind: 'day', entry, today, key: `day:${entry.seq}:${day}:${today}` });
+    }
+    items.push({ kind: 'entry', entry, key: `entry:${entry.seq}` });
+    previousDay = day;
   }
-  return html;
+  return items;
+}
+function itemMarkup(item) {
+  const { kind, key, entry, turn } = item;
+  if (kind === 'entry') return entryMarkup(entry);
+  if (kind === 'queue') return queuedMarkup(turn);
+  if (kind === 'stream') return streamMarkup(turn);
+  if (kind === 'busy') return `<div class="meta" data-thread-key="busy">${esc(t('chat.answering'))}<span class="typing" aria-hidden="true"><i></i><i></i><i></i></span></div>`;
+  const date = entry.ts && !Number.isNaN(Date.parse(entry.ts)) ? new Date(entry.ts) : null;
+  const label = item.today ? t('chat.today') : date ? date.toLocaleDateString(document.documentElement.lang) : '—';
+  return `<div class="day" data-thread-key="${key}">${esc(label)}${entry.imported ? ` · ${esc(t('chat.imported_day'))}` : ''}</div>`;
+}
+function nodeKey(node) {
+  const { entrySeq, queueTurn, turn, threadKey } = node.dataset;
+  if (entrySeq !== undefined) return `entry:${entrySeq}`;
+  if (queueTurn !== undefined) return `queue:${queueTurn}`;
+  if (turn !== undefined) return `stream:${turn}`;
+  return threadKey;
+}
+function rememberActivity(node) {
+  for (const element of node.querySelectorAll('details[data-activity-turn]')) {
+    const turn = turns.get(element.dataset.activityTurn);
+    if (turn) turn.activityOpen = element.open;
+  }
+}
+function patchThread(thread, items, changes) {
+  // History and queued turns share one order. Keep unchanged nodes in place as that order evolves.
+  const wanted = new Set(items.map(item => item.key)), existing = new Map();
+  for (const node of thread.children) existing.set(nodeKey(node), node);
+  for (const [key, node] of existing) {
+    if (!wanted.has(key)) { rememberActivity(node); node.remove(); }
+  }
+  const template = document.createElement('template');
+  let next = null;
+  for (let index = items.length - 1; index >= 0; index--) {
+    const item = items[index], { entry, turn } = item;
+    let node = existing.get(item.key);
+    const dirty = item.kind === 'entry'
+      ? changes.entries?.has(entry.id) || changes.turns?.has(entry.turn_id)
+      : turn && changes.turns?.has(turn.id);
+    if (!node || dirty) {
+      if (node) rememberActivity(node);
+      template.innerHTML = itemMarkup(item);
+      const replacement = template.content.firstElementChild;
+      if (node) node.replaceWith(replacement);
+      node = replacement;
+    }
+    if (node.parentNode !== thread || node.nextElementSibling !== next) thread.insertBefore(node, next);
+    next = node;
+  }
+}
+function updateEntries(tid, entries) {
+  if (!active || tid !== getTopic()?.tid) return;
+  renderThread({ changes: { entries: new Set(entries) } });
+}
+function updateTurn(turn, bottom = false) {
+  if (!active || turn.tid !== getTopic()?.tid) return;
+  renderThread({ bottom, changes: { turns: new Set([turn.id]) } });
 }
 function cancelHistoryRender() {
   if (!historyRender) return;
@@ -330,10 +396,10 @@ function scheduleHistoryRender(topic, entries, start) {
   }
   function appendOlder() {
     if (historyRender !== job || !active || getTopic()?.tid !== job.tid) return;
-    const next = Math.max(0, job.start - 12), html = entryRange(entries, next, job.start);
+    const next = Math.max(0, job.start - 12), html = entryItems(entries, next, job.start).map(itemMarkup).join('');
     const top = thread.scrollTop, height = thread.scrollHeight;
     const pinned = height - thread.clientHeight - top < 80;
-    if (entryDay(entries[job.start - 1]).key === entryDay(entries[job.start]).key) thread.firstElementChild?.remove();
+    if (entryDayKey(entries[job.start - 1]) === entryDayKey(entries[job.start])) thread.firstElementChild?.remove();
     thread.insertAdjacentHTML('afterbegin', html);
     // All writes precede the single layout read; preserve the existing viewport.
     const newHeight = thread.scrollHeight;
@@ -345,14 +411,14 @@ function scheduleHistoryRender(topic, entries, start) {
   }
   schedule();
 }
-export function renderThread({ bottom = false, seq = null } = {}) {
-  cancelStreamRender(); cancelHistoryRender();
-  const topic = getTopic(); renderHeader();
+export function renderThread({ bottom = false, seq = null, changes = null } = {}) {
+  if (!changes) cancelStreamRender();
+  cancelHistoryRender();
+  const topic = getTopic();
+  if (!changes || changes.header) renderHeader();
+  else if (changes.turns) updateStopButton(topic);
   const thread = document.querySelector('#thread');
-  for (const element of thread.querySelectorAll('details[data-activity-turn]')) {
-    const turn = turns.get(element.dataset.activityTurn);
-    if (turn) turn.activityOpen = element.open;
-  }
+  if (!changes) rememberActivity(thread);
   const previousTop = thread.scrollTop;
   const nearBottom = thread.scrollHeight - thread.clientHeight - previousTop < 80;
   if (!topic) { thread.replaceChildren(); updateThreadNavigation(); return; }
@@ -361,46 +427,51 @@ export function renderThread({ bottom = false, seq = null } = {}) {
   const liveTurns = topicTurns.filter(turn => ['queued', 'started'].includes(turn.phase));
   const received = liveTurns.map(turn => Date.parse(turn.received));
   const boundary = received.length && received.every(Number.isFinite) ? Math.min(...received) : null;
-  const waiting = [], deferred = new Set();
+  const waiting = [], userTurns = new Set(), botTurns = new Set();
+  for (const entry of entries) {
+    if (entry.role === 'user') userTurns.add(entry.turn_id);
+    if (entry.role === 'bot') botTurns.add(entry.turn_id);
+  }
   const visibleEntries = entries.filter(entry => {
     const turn = turns.get(entry.turn_id);
     if (entry.role === 'user' && boundary !== null && (
       turn?.phase === 'queued' || (entry.status === 'cancelled' && Date.parse(entry.ts) >= boundary)
     )) {
-      waiting.push({ received: turn?.received || entry.ts, markup: entryMarkup(entry) });
-      deferred.add(entry.turn_id); return false;
+      waiting.push({ received: turn?.received || entry.ts, kind: 'entry', entry, key: `entry:${entry.seq}` });
+      return false;
     }
     return true;
   });
   const state = history(topic.tid);
   let start = 0;
   if (!state.rendered && seq === null && visibleEntries.length > 12) {
-    const resumed = visibleEntries.findIndex(entry => entry.seq === state.renderStart);
+    const resumed = visibleEntries.findIndex(entry => state.renderStart !== null && entry.seq >= state.renderStart);
     start = resumed >= 0 ? resumed : visibleEntries.length - 12;
   }
-  let html = entryRange(visibleEntries, start, visibleEntries.length);
+  const items = entryItems(visibleEntries, start, visibleEntries.length);
   for (const turn of topicTurns) {
-    const userExists = entries.some(entry => entry.role === 'user' && entry.turn_id === turn.id);
+    const userExists = userTurns.has(turn.id);
+    const queued = { kind: 'queue', turn, key: `queue:${turn.id}`, received: turn.received };
     if (['queued', 'cancelled'].includes(turn.phase)) {
-      if (!deferred.has(turn.id) && !userExists && turn.userText !== undefined) {
-        waiting.push({ received: turn.received, markup: queuedMarkup(turn) });
-      }
+      if (!userExists && turn.userText !== undefined) waiting.push(queued);
       continue;
     }
-    if (!userExists && turn.userText !== undefined) html += queuedMarkup(turn);
-    if (!entries.some(entry => entry.role === 'bot' && entry.turn_id === turn.id)) html += streamMarkup(turn);
+    if (!userExists && turn.userText !== undefined) items.push(queued);
+    if (!botTurns.has(turn.id)) items.push({ kind: 'stream', turn, key: `stream:${turn.id}` });
   }
-  // Receipt times preserve the position of cancellations across reconnects. Legacy snapshots
-  // without receipt times leave persisted messages in their original history sequence.
+  // Receipt times preserve the position of cancellations across reconnects.
   if (boundary !== null) waiting.sort((a, b) => Date.parse(a.received) - Date.parse(b.received));
-  html += waiting.map(item => item.markup).join('');
-  if ((busy.get(topic.tid) ?? topic.busy) && !running(topic.tid)) html += `<div class="meta">${esc(t('chat.answering'))}<span class="typing" aria-hidden="true"><i></i><i></i><i></i></span></div>`;
-  thread.innerHTML = html;
-  attachmentView?.load(topic.tid,entries);
+  items.push(...waiting);
+  if ((busy.get(topic.tid) ?? topic.busy) && !liveTurns.length) items.push({ kind: 'busy', key: 'busy' });
+  if (changes) patchThread(thread, items, changes);
+  else {
+    thread.innerHTML = items.map(itemMarkup).join('');
+    attachmentView?.load(topic.tid, entries);
+  }
   if (seq !== null) {
     thread.querySelector(`[data-entry-seq="${Number(seq)}"]`)?.scrollIntoView({ block: 'center' });
   } else if (bottom || nearBottom) thread.scrollTop = thread.scrollHeight;
-  else thread.scrollTop = previousTop;
+  else if (!changes) thread.scrollTop = previousTop;
   updateThreadNavigation();
   if (visibleChat() && (bottom || nearBottom) && entries.length) markSeen(topic.tid, entries.at(-1).seq);
   if (start) {
@@ -408,22 +479,38 @@ export function renderThread({ bottom = false, seq = null } = {}) {
     scheduleHistoryRender(topic, visibleEntries, start);
   } else if (entries.length) { state.rendered = true; state.renderStart = null; }
 }
-async function loadHistory(tid, { older = false, target = null } = {}) {
+async function loadHistory(tid, { older = false, target = null, turnId = null } = {}) {
   const generation = epoch, state = history(tid), entries = sorted(tid);
   let before = older && entries.length ? `&before=${entries[0].seq}` : '';
   const lower = target ?? (!older && entries.length ? entries[0].seq : null);
   let more;
   do {
-    const data = await api(`/topics/${encodeURIComponent(tid)}/messages?limit=100${before}`);
+    const liveMirrors = new Map();
+    state.mirrorReaders.add(liveMirrors);
+    let data;
+    try {
+      data = await api(`/topics/${encodeURIComponent(tid)}/messages?limit=100${before}`);
+    } finally {
+      state.mirrorReaders.delete(liveMirrors);
+    }
     if (!active || generation !== epoch) return;
-    mergeHistory(state, data.entries);
-    for (const entry of data.entries) {
+    const incoming = turnId === null ? data.entries : data.entries.filter(entry => entry.turn_id === turnId);
+    for (const entry of incoming) {
+      if (liveMirrors.has(entry.id)) entry.mirror = liveMirrors.get(entry.id);
+      if (turnId !== null && !state.entries.has(entry.id)) noteEntry(tid, entry);
+    }
+    mergeHistory(state, incoming);
+    for (const entry of incoming) {
       const turn = turns.get(entry.turn_id);
       if (turn && entry.role === 'user' && entry.status === 'cancelled') turn.phase = 'cancelled';
       if (turn && entry.role === 'bot') {
         turn.phase = entry.status === 'aborted' ? 'aborted' : entry.status === 'error' ? 'error' : 'done';
         turn.finished = entry.ts;
       }
+    }
+    if (turnId !== null) {
+      if (tid === getTopic()?.tid) attachmentView?.load(tid, incoming);
+      return incoming.length;
     }
     more = data.has_more;
     state.hasMore = more; state.loaded = true;
@@ -446,8 +533,6 @@ function renderStatus() {
   badge('#telegramDetail', key, className, { minutes });
   badge('#botBadge', botUp ? 'status.bot_up' : 'status.bot_down', botUp ? 'badge-ok' : 'badge-down');
   badge('#botDetail', botUp ? 'status.bot_up' : 'status.bot_down', botUp ? 'badge-ok' : 'badge-down');
-  document.querySelector('#pendingBadge').hidden = pending === 0;
-  badge('#pendingBadge', 'status.pending', 'badge-warn', { n: pending });
   document.querySelector('#downSince').textContent = formatTime(telegram.down_since, true);
   document.querySelector('#lastRetry').textContent = formatTime(telegram.last_check, true);
   document.querySelector('#retryInterval').textContent = t('status.interval', { s: telegram.interval_s || 30 });
@@ -459,6 +544,11 @@ function renderStatus() {
   bars.title = formatTime(telegram.strip_end, true);
   document.querySelector('#stripEnd').textContent = formatTime(telegram.strip_end);
   document.querySelector('.composer .line').hidden = telegram.state !== 'down';
+  renderOutboxStatus();
+}
+function renderOutboxStatus() {
+  document.querySelector('#pendingBadge').hidden = pending === 0;
+  badge('#pendingBadge', 'status.pending', 'badge-warn', { n: pending });
   document.querySelector('#outboxCount').textContent = pending;
   document.querySelector('#outboxRows').innerHTML = outbox.filter(item => item.state === 'pending').map(item => {
     const key = item.kind === 'user_mirror' ? 'web' : item.kind === 'reply_mirror' ? 'reply' : 'result';
@@ -478,7 +568,7 @@ async function refreshOutbox() {
   const generation = epoch;
   const data = await api('/outbox');
   if (!active || epoch !== generation) return;
-  outbox = data.items; renderStatus();
+  outbox = data.items; renderOutboxStatus();
 }
 async function resync() {
   attachmentView?.reset?.();
@@ -512,12 +602,35 @@ async function resync() {
       }
     }
     const topic = getTopic();
-    if (topic) { await loadHistory(topic.tid); if (active && generation === epoch) renderThread(); }
+    if (topic) {
+      await loadHistory(topic.tid);
+      if (active && generation === epoch && getTopic()?.tid === topic.tid) renderThread();
+    }
   } catch (error) { if (active && generation === epoch) errorNotice(error); }
+}
+function updateMirror(item, historyId, status) {
+  if (!item || !historyId) return;
+  const state = history(item.tid), entry = state.entries.get(historyId);
+  const receipt = status ? { state: status } : null;
+  // A history response already in flight can contain an older receipt.
+  for (const reader of state.mirrorReaders) reader.set(historyId, receipt);
+  if (!entry || (entry.mirror?.state ?? null) === status) return;
+  entry.mirror = receipt;
+  if (getTopic()?.tid !== item.tid) return;
+  const thread = document.querySelector('#thread');
+  const node = thread.querySelector(`[data-entry-seq="${Number(entry.seq)}"]`);
+  if (!node) return;
+  const existing = node.querySelector('[data-mirror]'), html = mirror(entry);
+  if (!existing && !html) return;
+  const pinned = thread.scrollHeight - thread.clientHeight - thread.scrollTop < 80;
+  if (existing) existing.remove();
+  if (html) (node.classList.contains('event') ? node.lastElementChild : node).insertAdjacentHTML('beforeend', html);
+  if (pinned) thread.scrollTop = thread.scrollHeight;
+  updateThreadNavigation();
 }
 export async function handleEvent(event) {
   if (!active) return;
-  const topic = getTopic(), tid = event.tid;
+  const tid = event.tid, generation = epoch;
   if (tid && ['turn', 'delta', 'tool', 'system_status'].includes(event.type)) {
     topicVersions.set(tid, (topicVersions.get(tid) || 0) + 1);
   }
@@ -529,63 +642,87 @@ export async function handleEvent(event) {
       const turn = turns.get(entry.turn_id);
       if (turn && entry.role === 'user' && entry.status === 'cancelled') turn.phase = 'cancelled';
       if (!getTopics().some(item => item.tid === tid)) await refreshTopics();
-      break;
+      if (!active || generation !== epoch || tid !== getTopic()?.tid) return;
+      attachmentView?.load(tid, [state.entries.get(entry.id)]);
+      const entries = new Set([entry.id]);
+      const changedTurns = turn && entry.role === 'user' && entry.status === 'cancelled' ? new Set([turn.id]) : null;
+      renderThread({ changes: { entries, turns: changedTurns, header: true } });
+      return;
     }
     case 'attachments_changed': {
       const entry = history(tid).entries.get(event.entry_id);
-      if (entry) entry.has_attachments = true;
-      attachmentView?.invalidate?.(tid,event.entry_id);
-      break;
+      attachmentView?.invalidate(tid, event.entry_id);
+      if (entry) {
+        entry.has_attachments = true;
+        if (tid === getTopic()?.tid) attachmentView?.load(tid, [entry]);
+      }
+      return;
     }
     case 'entry_meta': {
       const state = history(tid);
       mergeButtonMeta(state, event.entry_id, event.meta || {});
       const entry = state.entries.get(event.entry_id);
-      if (entry) mergeHistory(state, [entry]);
-      break;
+      if (entry) {
+        mergeHistory(state, [entry]);
+        updateEntries(tid, [entry.id]);
+      }
+      return;
     }
     case 'busy':
       busyVersions.set(tid, (busyVersions.get(tid) || 0) + 1);
-      busy.set(tid, event.busy); break;
+      if (busy.get(tid) === event.busy) return;
+      busy.set(tid, event.busy);
+      if (tid === getTopic()?.tid) renderThread({ changes: {} });
+      return;
     case 'turn': {
       const turn = turns.get(event.turn_id) || { id: event.turn_id, tid, text: '' };
       turn.phase = event.phase;
       turn.startedAt = event.started_at ?? turn.startedAt;
       if (event.phase === 'started') turn.startedAt ??= new Date().toISOString();
       turns.set(turn.id, turn);
-      if (event.phase === 'queued' && turn.userText === undefined) await resync();
-      if (!['queued', 'started'].includes(event.phase)) {
-        turn.finished = new Date().toISOString();
-        if (topic?.tid === tid) renderThread();
-        if (topic?.tid === tid) await loadHistory(tid);
-        await refreshTopics();
+      if (event.phase === 'queued' && turn.userText === undefined) {
+        const data = await api('/topics');
+        if (!active || generation !== epoch) return;
+        const snapshot = data.topics.find(item => item.tid === tid)?.turns?.find(item => item.turn_id === turn.id);
+        if (snapshot) {
+          turn.userText ??= snapshot.text;
+          turn.received ??= snapshot.received;
+          if (turn.phase === 'queued' && snapshot.activity) addActivity(turn, snapshot.activity);
+        }
       }
-      break;
+      const terminal = !['queued', 'started'].includes(event.phase);
+      if (terminal) turn.finished = new Date().toISOString();
+      updateTurn(turn);
+      if (terminal && tid === getTopic()?.tid && !hasTurnEntry(turn, event.phase === 'cancelled' ? 'user' : 'bot')) {
+        const recovered = await loadHistory(tid, { turnId: turn.id });
+        if (active && generation === epoch && recovered) updateTurn(turn);
+      }
+      return;
     }
     case 'delta': {
       const turn = turns.get(event.turn_id) || { id: event.turn_id, tid, phase: 'started', text: '' };
       if (turn.phase === 'queued') turn.phase = 'started';
       turn.text += event.text; turns.set(turn.id, turn);
-      if (topic?.tid === tid) scheduleStreamRender(turn.id);
+      if (tid === getTopic()?.tid) scheduleStreamRender(turn.id);
       return;
     }
     case 'tool':
     case 'system_status': {
       const turn = turns.get(event.turn_id) || { id: event.turn_id, tid, phase: 'started', text: '' };
       addActivity(turn, event); turns.set(turn.id, turn);
-      if (topic?.tid === tid) scheduleStreamRender(turn.id);
+      if (tid === getTopic()?.tid) scheduleStreamRender(turn.id);
       return;
     }
-    case 'telegram': telegram = event; renderStatus(); break;
+    case 'telegram': telegram = event; renderStatus(); return;
     case 'secrets_changed':
-      document.dispatchEvent(new CustomEvent('vault-refresh')); break;
+      document.dispatchEvent(new CustomEvent('vault-refresh')); return;
     case 'bridge':
       if (event.up) document.dispatchEvent(new CustomEvent('vault-refresh'));
       botUp = event.up; renderStatus();
       if (event.up) await resync();
-      break;
-    case 'topics': await refreshTopics(); break;
-    case 'outbox':
+      return;
+    case 'topics': await refreshTopics(); return;
+    case 'outbox': {
       pending = event.pending;
       if (event.item) {
         const index = outbox.findIndex(item => item.id === event.item.id);
@@ -593,13 +730,19 @@ export async function handleEvent(event) {
         else outbox[index] = event.item;
         outbox.sort((a, b) => (a.created || '').localeCompare(b.created || ''));
       }
-      renderStatus();
-      // Entries join all queue parts by history_id on the server, never by turn_id here.
-      if (topic) await loadHistory(topic.tid);
-      break;
-    default: return;
+      renderOutboxStatus();
+      if (Object.hasOwn(event, 'history_id') && Object.hasOwn(event, 'mirror')) {
+        updateMirror(event.item, event.history_id, event.mirror);
+      } else {
+        // Older bridges only publish queue items without the aggregate receipt.
+        const topic = getTopic();
+        if (!topic || (event.item?.tid && event.item.tid !== topic.tid)) return;
+        await loadHistory(topic.tid);
+        if (active && generation === epoch && getTopic()?.tid === topic.tid) renderThread();
+      }
+      return;
+    }
   }
-  if (active) renderThread();
 }
 function resizeComposer() {
   if (composerFiles) { composerFiles.resize(); return; }
@@ -629,7 +772,7 @@ async function sendMessage() {
   if (!control) sending = true;
   renderHeader();
   const generation = epoch;
-  let uploaded = null, attachmentError = null;
+  let uploaded = null, attachmentError = null, sentTurn = null;
   try {
     uploaded = hasFiles ? await composerFiles.upload(topic.tid) : null;
     if (!active || generation !== epoch) return;
@@ -641,16 +784,29 @@ async function sendMessage() {
     if (result.turn_id) {
       const turn = turns.get(result.turn_id) || { id: result.turn_id, tid: topic.tid, phase: 'queued', text: '' };
       turn.userText = text; turn.received ??= new Date().toISOString(); turns.set(turn.id, turn);
+      sentTurn = turn;
     }
     if (result.secret && getTopic()?.tid === topic.tid) secretDialog.show(result, topic.tid);
     drafts.delete(topic.tid);
     if (getTopic()?.tid === topic.tid && input.value === text) { input.value = ''; resizeComposer(); }
   } catch (error) { attachmentError = error; if (active && generation === epoch) errorNotice(error); }
-  finally { composerFiles?.finish?.(uploaded?.run || attachmentError?.attachmentRun, attachmentError); if (!control) sending = false; if (active && generation === epoch) { renderHeader(); renderThread({ bottom: true }); } }
+  finally {
+    composerFiles?.finish?.(uploaded?.run || attachmentError?.attachmentRun, attachmentError);
+    if (!control) sending = false;
+    if (active && generation === epoch) {
+      updateSendButton();
+      if (sentTurn) updateTurn(sentTurn, true);
+      else if (getTopic()?.tid === topic.tid) {
+        const thread = document.querySelector('#thread');
+        thread.scrollTop = thread.scrollHeight;
+        updateThreadNavigation();
+      }
+    }
+  }
 }
 export function initChat() {
   secretDialog = initSecret();
-  attachmentView = initAttachmentView({ changed: () => { if (active) renderThread(); } });
+  attachmentView = initAttachmentView({ changed: (tid, entryId) => updateEntries(tid, [entryId]) });
   autocompactDialog = initAutocompact(getTopic, () => {
     notify('autocompact.saved');
     const toast = document.querySelector('#toasts').lastElementChild;
@@ -703,9 +859,15 @@ export function initChat() {
   new ResizeObserver(updateThreadNavigation).observe(thread);
   initMarkdownLinks(thread);
   input.maxLength = 32000;
-  composerFiles = initAttachments({ getTopic, changed: renderHeader, resume: () => void sendMessage() });
-  commandMenu = initCommands(input, value => { if (getTopic()) drafts.set(getTopic().tid, value); resizeComposer(); });
-  input.addEventListener('input', () => { if (getTopic()) drafts.set(getTopic().tid, input.value); resizeComposer(); renderHeader(); });
+  composerFiles = initAttachments({ getTopic, changed: updateSendButton, resume: () => void sendMessage() });
+  function updateDraft() {
+    const topic = getTopic();
+    if (topic) drafts.set(topic.tid, input.value);
+    updateSendButton();
+    resizeComposer();
+  }
+  input.addEventListener('input', updateDraft);
+  commandMenu = initCommands(input, updateDraft);
   window.addEventListener('resize', resizeComposer);
   globalThis.visualViewport?.addEventListener('resize', resizeComposer);
   input.addEventListener('keydown', event => {
