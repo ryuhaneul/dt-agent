@@ -654,6 +654,7 @@ async function refreshOutbox() {
 }
 async function resync() {
   attachmentView?.reset?.();
+  for (const state of histories.values()) state.loaded = false;
   const generation = epoch, versions = new Map(topicVersions), busySnapshot = new Map(busyVersions);
   try {
     await Promise.all([refreshTopics(), refreshState(), refreshOutbox()]);
@@ -684,7 +685,6 @@ async function resync() {
       }
     }
     const topic = getTopic();
-    for (const [tid, state] of histories) if (tid !== topic?.tid) state.loaded = false;
     if (topic) {
       await loadHistory(topic.tid);
       if (active && generation === epoch && getTopic()?.tid === topic.tid) renderThread();
