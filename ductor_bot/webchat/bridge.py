@@ -956,6 +956,10 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
                             "mirror": {"state": mirror} if mirror else None,
                         },
                     }
+                if event.get("type") == "outbox" and "history_id" in event:
+                    history_id = event["history_id"]
+                    mirror = await runtime.outbox.mirror_state(history_id) if history_id else None
+                    event = {**event, "mirror": mirror}
                 if event.get("type") == "entry_meta":
                     event = {**event, "meta": {**event["meta"], **selector_fields(event["meta"])}}
                 if tid not in turns.blocked:

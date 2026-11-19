@@ -22,7 +22,7 @@ async function serve(root) {
   return {server,origin:`http://127.0.0.1:${server.address().port}`};
 }
 const servers = {current:await serve(cfg.root),baseline:await serve(cfg.baseline)};
-async function open(kind,width,entries) {
+async function open(kind,width,entries,secondEntries=entries) {
   const context=await browser.newContext({viewport:{width,height:900},reducedMotion:'reduce'});
   await context.addInitScript(()=>{
     localStorage.setItem('dtw-theme','light');
@@ -45,20 +45,23 @@ async function open(kind,width,entries) {
   });
   const page=await context.newPage();
   page.on('pageerror',error=>failures.push(error.message));
-  await page.routeWebSocket('**/api/ws',()=>{});
+  let socket;
+  await page.routeWebSocket('**/api/ws',peer=>{socket=peer;});
   const topic={tid:'1.2',chat_id:1,topic_id:2,name:'Markdown fixture',group:'telegram',count:entries.length,seen:entries.length,renamable:true,deletable:true,read_only:false,preview:'',last_ts:null,created_at:null,imported_count:0,busy:false};
+  const secondTopic={...topic,tid:'1.3',topic_id:3,name:'Second topic',seen:secondEntries.length};
   await page.route('**/api/**',async route=>{
     const url=new URL(route.request().url());let result;
+    const tid=url.pathname.split('/')[3], topicEntries=tid==='1.3'?secondEntries:entries;
     if(url.pathname==='/api/i18n')result={lang:'en',strings:cfg.strings};
     else if(url.pathname==='/api/auth/state')result={authenticated:true,csrf:'fake-csrf',bridge_up:true};
     else if(url.pathname==='/api/commands')result={commands:[]};
-    else if(url.pathname==='/api/topics')result={topics:[topic,{...topic,tid:'1.3',topic_id:3,name:'Second topic'},...(cfg.mode==='navigation'?[{...topic,tid:'1.4',topic_id:4,name:'Third topic'}]:[])]};
+    else if(url.pathname==='/api/topics')result={topics:[topic,{...secondTopic,count:secondEntries.length},...(cfg.mode==='navigation'?[{...topic,tid:'1.4',topic_id:4,name:'Third topic'}]:[])]};
     else if(url.pathname==='/api/state')result={telegram:{state:'up',strip:Array(30).fill('ok')},outbox:{pending:0},bot:{up:true},web_sessions:1};
     else if(url.pathname==='/api/outbox')result={items:[]};
     else if(url.pathname.endsWith('/messages')){
-      const before=Number(url.searchParams.get('before')||Infinity),rows=entries.filter(entry=>entry.seq<before);
-      result={entries:rows.slice(-100).map(entry=>({...entry,text:`Topic ${url.pathname.split('/')[3]}\n\n${entry.text}`})),has_more:rows.length>100};
-    }else if(url.pathname.endsWith('/seen'))result={seen:entries.at(-1)?.seq||0};
+      const before=Number(url.searchParams.get('before')||Infinity),rows=topicEntries.filter(entry=>entry.seq<before);
+      result={entries:rows.slice(-100).map(entry=>({...entry,text:`Topic ${tid}\n\n${entry.text}`})),has_more:rows.length>100};
+    }else if(url.pathname.endsWith('/seen'))result={seen:topicEntries.at(-1)?.seq||0};
     else if(url.pathname==='/api/cli-login/status')result={providers:{},claude_slots:[],running:false};
     else if(url.pathname==='/api/masterkey/status')result={state:'unconfigured',ttl_seconds:0};
     else if(url.pathname==='/api/files')result={files:[{name:'PERSONA.md'}]};
@@ -70,15 +73,17 @@ async function open(kind,width,entries) {
   await page.waitForFunction(()=>!document.querySelector('#app').classList.contains('hidden'));
   await page.waitForFunction(count=>document.querySelectorAll('[data-entry-seq]').length===count,Math.min(entries.length,100));
   await page.evaluate(()=>document.fonts.ready);
-  return {page,context};
+  return {page,context,get socket(){return socket;}};
 }
 const entries=Array.from({length:600},(_,index)=>({id:`e${index+1}`,seq:index+1,role:'bot',source:'telegram',text:`Entry ${index+1}\n\n**Message** https://example.test/${index+1}\n\n- item\n- next`,ts:null}));
 async function loadAll(page){
-  for(let expected=200;expected<=600;expected+=100){
-    await page.evaluate(()=>{const thread=document.querySelector('#thread');thread.scrollTop=0;thread.dispatchEvent(new Event('scroll'));});
-    await page.waitForFunction(count=>document.querySelectorAll('[data-entry-seq]').length>=count,expected);
-  }
-  await page.evaluate(()=>{const thread=document.querySelector('#thread');thread.scrollTop=thread.scrollHeight;});
+  await page.locator('#threadTop').click();
+  await page.waitForFunction(()=>document.querySelector('[data-entry-seq]').dataset.entrySeq==='1');
+  await page.locator('#threadBottom').click();
+  await page.waitForFunction(()=>{
+    const thread=document.querySelector('#thread');
+    return !!thread.querySelector('[data-entry-seq="600"]') && thread.scrollHeight-thread.clientHeight-thread.scrollTop<1;
+  });
 }
 async function stream(page,text,phase,id){
   return page.evaluate(async({text,phase,id})=>{
@@ -206,8 +211,131 @@ async function navigation() {
   assert.deepEqual(failures,[]);assert.deepEqual(violations,[]);console.log(JSON.stringify({results,failures,violations}));
 }
 
+async function historyWindow() {
+  const results=[];
+  fs.mkdirSync(cfg.artifacts,{recursive:true});
+  for(const width of [375,768,1280]){
+    const rows=entries.map(entry=>({...entry,source:'web'})),secondRows=entries.slice(0,300);
+    const session=await open('current',width,rows,secondRows);
+    const {page,context}=session;
+    const historyRequests=[],secondRequests=[];
+    page.on('request',request=>{
+      const url=new URL(request.url());
+      if(url.pathname==='/api/topics/1.2/messages')historyRequests.push(url.searchParams.get('before'));
+      if(url.pathname==='/api/topics/1.3/messages')secondRequests.push(url.searchParams.get('before'));
+    });
+    await page.evaluate(async()=>{
+      const {selectTopic}=await import('/static/js/topics.js');
+      selectTopic('1.2');
+      const thread=document.querySelector('#thread');
+      window.maxMounted=0;
+      new MutationObserver(()=>{
+        window.maxMounted=Math.max(window.maxMounted,thread.querySelectorAll('[data-entry-seq]').length);
+      }).observe(thread,{childList:true});
+    });
+    await page.waitForFunction(()=>document.querySelector('#msgIn')===document.activeElement);
+    async function boundary(toOlder){
+      const snapshot=await page.evaluate(toOlder=>{
+        const thread=document.querySelector('#thread');
+        thread.scrollTop=toOlder?0:thread.scrollHeight;
+        const nodes=[...thread.querySelectorAll('[data-entry-seq]')], box=thread.getBoundingClientRect();
+        const anchor=nodes.find(node=>node.getBoundingClientRect().bottom>box.top);
+        window.windowTestAnchor=anchor;
+        return {first:nodes[0].dataset.entrySeq,top:anchor.getBoundingClientRect().top};
+      },toOlder);
+      await page.waitForFunction(first=>document.querySelector('[data-entry-seq]').dataset.entrySeq!==first,snapshot.first);
+      const drift=await page.evaluate(top=>{
+        if(!window.windowTestAnchor.isConnected)throw Error('Visible message was detached');
+        return Math.abs(window.windowTestAnchor.getBoundingClientRect().top-top);
+      },snapshot.top);
+      assert.equal(drift,0);
+      return drift;
+    }
+    await boundary(true);
+    assert(historyRequests.includes('501'));
+    await page.locator('#threadTop').click();
+    await page.waitForFunction(()=>document.querySelector('[data-entry-seq]').dataset.entrySeq==='1');
+    const afterFetch=historyRequests.length;
+    const down=await boundary(false), up=await boundary(true);
+    assert.equal(historyRequests.length,afterFetch);
+    await page.locator('#threadBottom').click();
+    await page.waitForFunction(()=>document.querySelector('[data-entry-seq]').dataset.entrySeq==='501');
+    assert.equal(await page.locator('[data-entry-seq="1"]').count(),0);
+    await page.evaluate(async()=>{
+      const {handleEvent}=await import('/static/js/chat.js');
+      await handleEvent({type:'outbox',pending:0,item:{id:'receipt',tid:'1.2',state:'sent'},history_id:'e1',mirror:'sent'});
+    });
+    await page.locator('#threadTop').click();
+    await page.waitForFunction(()=>document.querySelector('[data-entry-seq]').dataset.entrySeq==='1');
+    await page.locator('[data-entry-seq="1"] .deliv').waitFor();
+    assert.equal(historyRequests.length,afterFetch);
+    await page.evaluate(async()=>{const {selectTopic}=await import('/static/js/topics.js');selectTopic('1.2',260);});
+    await page.waitForFunction(()=>{
+      const node=document.querySelector('[data-entry-seq="260"]'), range=document.querySelector('#thread').getBoundingClientRect();
+      return node && node.getBoundingClientRect().top>=range.top && node.getBoundingClientRect().bottom<=range.bottom;
+    });
+    assert.equal(historyRequests.length,afterFetch);
+    const maxMounted=await page.evaluate(()=>window.maxMounted);
+    assert.equal(maxMounted,100);
+    const olderRequests=historyRequests.filter(Boolean).length;
+
+    const live={...entries[300],ts:'2025-01-01T12:00:00Z',text:'Live search hit'};
+    secondRows.push(live);
+    session.socket.send(JSON.stringify({type:'entry',tid:'1.3',entry:live}));
+    await page.locator('#tlist [data-tid="1.3"] .pv').filter({hasText:live.text}).waitFor({state:'attached'});
+    const beforeFirstSearch=secondRequests.length;
+    await page.evaluate(async()=>{const {selectTopic}=await import('/static/js/topics.js');selectTopic('1.3',301);});
+    const mounted=page.locator('#thread [data-entry-seq]');
+    await mounted.first().and(page.locator('[data-entry-seq="202"]')).waitFor({timeout:5000});
+    assert.equal(await mounted.count(),100);
+    assert.equal(await mounted.last().getAttribute('data-entry-seq'),'301');
+    assert(await page.locator('#threadTop').isVisible());
+    assert.deepEqual(secondRequests.slice(beforeFirstSearch),[null]);
+    await page.locator('#thread').evaluate(thread=>{thread.scrollTop=0;});
+    await mounted.first().and(page.locator('[data-entry-seq="152"]')).waitFor({timeout:5000});
+    assert.deepEqual(secondRequests.slice(beforeFirstSearch),[null,'202']);
+
+    const reconnectResults=[];
+    for(const failTopics of [false,true]){
+      await page.evaluate(async()=>{const {selectTopic}=await import('/static/js/topics.js');selectTopic('1.2');});
+      await page.waitForFunction(()=>document.querySelector('#msgIn')===document.activeElement);
+      if(failTopics){
+        await page.route('**/api/topics',route=>route.fulfill({status:500,json:{error:'generic'}}),{times:1});
+      }
+      await session.socket.close();
+      const missed=entries.slice(secondRows.length,secondRows.length+4);
+      secondRows.push(...missed);
+      if(failTopics){
+        await page.locator('#toasts [role="alert"]').filter({hasText:cfg.strings['error.generic']}).waitFor();
+      }else{
+        rows.push({...rows.at(-1),id:'e601',seq:601,text:'Resynced current topic'});
+        await page.locator('#thread [data-entry-seq="601"]').waitFor();
+      }
+      const beforeReconnectSearch=secondRequests.length;
+      await page.evaluate(async()=>{const {selectTopic}=await import('/static/js/topics.js');selectTopic('1.3',250);});
+      await page.waitForFunction(()=>{
+        const node=document.querySelector('[data-entry-seq="250"]'), range=document.querySelector('#thread').getBoundingClientRect();
+        return node && node.getBoundingClientRect().top>=range.top && node.getBoundingClientRect().bottom<=range.bottom;
+      });
+      await page.locator('#threadBottom').click();
+      const recovered=await mounted.evaluateAll(nodes=>nodes.slice(-4).map(node=>Number(node.dataset.entrySeq)));
+      assert.deepEqual(recovered,missed.map(entry=>entry.seq),`Missed messages after ${failTopics?'failed':'successful'} resync and search`);
+      assert.deepEqual(secondRequests.slice(beforeReconnectSearch),[null]);
+      const screenshot=failTopics?'failed-resync-search':'reconnect-search';
+      await page.screenshot({path:path.join(cfg.artifacts,`${screenshot}-${width}.png`)});
+      reconnectResults.push({failTopics,recovered});
+    }
+    results.push({width,maxMounted,down,up,olderRequests,searchBefore:secondRequests[beforeFirstSearch+1],reconnectResults});
+    await context.close();
+  }
+  assert.deepEqual(failures,[]);
+  fs.writeFileSync(path.join(cfg.artifacts,'window.json'),JSON.stringify(results,null,2));
+  console.log(JSON.stringify(results));
+}
+
 try {
-  if(cfg.mode==='navigation')await navigation();
+  if(cfg.mode==='window')await historyWindow();
+  else if(cfg.mode==='navigation')await navigation();
   else if(cfg.mode==='visual') await visual();
   else {
   const texts={
