@@ -467,3 +467,5 @@ dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(2px)}
 @media(max-width:700px){.ac-settings,.ac-automations,.ac-automation-editor{gap:16px}}
 
 .ac-automation-card h3,.ac-automation-card h4,.ac-automation-card p,.ac-automation-editor h3,.ac-automation-editor p{margin:0}
+
+#chatTitle:focus:not(:focus-visible){outline:none}

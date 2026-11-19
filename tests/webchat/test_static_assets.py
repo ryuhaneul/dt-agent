@@ -452,7 +452,7 @@ const query=document.querySelector;
 const headings={};
 const views=['chat','manage','files'].map(view=>{const element=new Element();element.dataset.view=view;return element});
 ['pw','totp','setup'].forEach(name=>{ids[name+'Form'].dataset.auth=name});
-ids.connPanel=new Element();ids.info=new Element();
+ids.connPanel=new Element();ids.info=new Element();ids.msgIn=new Element();
 const dialogs=['delDlg','diffDlg'].map(id=>{
  const dialog=new Element(id);dialog.showModal=()=>{dialog.open=true};dialog.close=()=>{dialog.open=false};return dialog;
 });
@@ -468,7 +468,11 @@ await realRouter.link(()=>emptyTheme);await realRouter.evaluate();
 realRouter.namespace.renderRoute();assert.equal(context.location.hash,'#pw');assert.ok(ids.app.classList.contains('hidden'));
 context.location.hash='#setup';realRouter.namespace.renderRoute();assert.equal(context.location.hash,'#pw');
 realRouter.namespace.setPreauth(true);context.location.hash='#totp';realRouter.namespace.renderRoute();assert.equal(context.location.hash,'#totp');
+context.matchMedia=()=>({matches:true});
 realRouter.namespace.setAuthenticated(true);context.location.hash='#chat';realRouter.namespace.renderRoute();assert.ok(!ids.app.classList.contains('hidden'));
+assert.equal(document.activeElement,document.querySelector('#msgIn'));
+context.matchMedia=()=>({matches:false});context.location.hash='#manage';realRouter.namespace.renderRoute();
+const beforeTouch=document.activeElement;context.location.hash='#chat';realRouter.namespace.renderRoute();assert.equal(document.activeElement,beforeTouch);
 const opener=new Element();document.activeElement=opener;context.location.hash='#delete';realRouter.namespace.renderRoute();assert.equal(dialogs[0].open,true);
 context.location.hash='#manage';realRouter.namespace.renderRoute();assert.equal(dialogs[0].open,false);assert.equal(document.activeElement,opener);
 console.log('Client contracts passed: authentication, setup, OTP, CSRF, i18n, theme changes and route guards');
@@ -503,7 +507,7 @@ const {chromium} = await import(process.env.DTW_PLAYWRIGHT_MODULE);
 const {origin, width, artifactDir, strings, commands} = JSON.parse(fs.readFileSync(0,'utf8'));
 const browser = await chromium.launch({headless:true});
 try {
-  const context = await browser.newContext({viewport:{width,height:900},reducedMotion:'reduce'});
+  const context = await browser.newContext({viewport:{width,height:900},isMobile:width<=760,hasTouch:width<=760,reducedMotion:'reduce'});
   const page = await context.newPage();
   let configured = true, authenticated = false, newQrCount = 0, wsPeer=null;
   const topic={tid:'1.2',chat_id:1,topic_id:2,name:'Example topic',group:'telegram',last_ts:null,preview:'',count:205,imported_count:0,created_at:null,busy:false,renamable:true,deletable:true,read_only:false};
@@ -593,6 +597,20 @@ try {
   await page.locator('#app').waitFor({state:'visible'});
   await page.locator('[data-entry-seq="205"]').waitFor();
   await page.screenshot({path:path.join(artifactDir,`shell-${width}.png`),fullPage:true});
+  // First entry and reload must never focus or outline the topic title.
+  for (const phase of ['entry','reload']) {
+    if (phase === 'reload') {await page.reload();await page.locator('[data-entry-seq="205"]').waitFor();}
+    assert.equal(await page.locator('#chatTitle').evaluate(el=>el===document.activeElement),false);
+    assert.equal(await page.locator('#chatTitle').evaluate(el=>getComputedStyle(el).outlineStyle),'none');
+    assert.equal(await page.locator('#msgIn').evaluate(el=>el===document.activeElement),width>760);
+    await page.screenshot({path:path.join(artifactDir,`focus-${phase}-${width}.png`),fullPage:true});
+  }
+  if(width<=760)await page.locator('[data-route="list"]').click();
+  await page.locator('#tlist [data-tid="1.2"]').click();
+  assert.equal(await page.locator('#msgIn').evaluate(el=>el===document.activeElement),true);
+  await page.keyboard.press('Tab');
+  assert.equal(await page.locator('#sendBtn').evaluate(el=>el===document.activeElement&&el.matches(':focus-visible')),true);
+  assert.equal(await page.locator('#sendBtn').evaluate(el=>getComputedStyle(el).outlineStyle),'solid');
   // CLI stages focus the fixed input, preserve drafts/cursors on polling, and respect raw controls.
   await page.locator('#accountButton').click();await page.locator('#openCliLogin').click();
   await page.locator('.cli-slot button').first().click();await page.locator('#cliConfirmYes').click();
@@ -643,6 +661,7 @@ try {
   if(width<=1180)await page.locator('.info-close').click();
   await page.locator('[data-view="chat"] .pane-head [data-route="manage"]').click();
   await page.locator('#mlist [data-rename="1.2"]').click();
+  assert.equal(await page.locator('#renameInput').evaluate(el=>el===document.activeElement),true);
   await page.locator('#renameInput').fill('Renamed <script>');await page.locator('#renameInput').press('Enter');
   await page.locator('#mlist .nm').filter({hasText:'Renamed <script>'}).waitFor();
   assert.equal(await page.locator('#mlist script').count(),0);
@@ -917,16 +936,19 @@ list.emit('click',{target:topicButton,isTrusted:true});
 assert.equal(document.activeElement,composer,'list selection focuses synchronously');
 await flush();assert.equal(document.activeElement,composer,'history completion preserves composer focus');
 composer.focus();topics.selectTopic('1.2');await flush();
-assert.equal(document.activeElement,chatHeading,'programmatic selection retains heading announcement');
+assert.equal(document.activeElement,composer,'programmatic writable selection focuses the desktop composer');
 composer.focus();topics.selectTopic('1.2',null,false);await flush();
-assert.equal(document.activeElement,chatHeading,'restoration retains heading announcement');
+assert.equal(document.activeElement,composer,'restoration focuses the desktop composer');
+coarse=true;document.activeElement=null;topics.selectTopic('1.2',null,false);await flush();
+assert.equal(document.activeElement,null,'touch restoration does not request a virtual keyboard');
+coarse=false;
 topicButton.dataset.seq='2';composer.focus();list.emit('click',{target:topicButton,isTrusted:true});await flush();
 assert.equal(document.activeElement,chatHeading,'search results retain heading announcement');
 delete topicButton.dataset.seq;topicButton.dataset.tid='unknown';composer.focus();
 list.emit('click',{target:topicButton,isTrusted:true});await flush();
-assert.equal(document.activeElement,chatHeading,'read-only selection excludes composer focus');
+assert.notEqual(document.activeElement,chatHeading,'read-only selection does not force title focus');
 topicButton.dataset.tid='1.2';composer.focus();list.emit('click',{target:topicButton,isTrusted:false});await flush();
-assert.equal(document.activeElement,chatHeading,'synthetic clicks exclude composer focus');
+assert.equal(document.activeElement,composer,'desktop selection focuses the composer after loading');
 topics.selectTopic('1.2');await flush();assert.equal(topicRows[0].seen,205);
 assert.equal(document.querySelector('#outboxCount').textContent,3);
 assert.ok(document.querySelector('#outboxRows').innerHTML.includes('Result &lt;img&gt;'));
@@ -1356,7 +1378,7 @@ async function fetch(url,options={}){
  }
  throw Error(`Unexpected contract path ${url}`);
 }
-const context=vm.createContext({document,window,location,history,CustomEvent,fetch,TextEncoder,console,
+const context=vm.createContext({document,window,location,history,CustomEvent,fetch,TextEncoder,console,matchMedia:()=>({matches:true}),
  localStorage:{getItem:()=>null,setItem(){}},setTimeout:()=>0,clearTimeout() {}});
 const modules=new Map();
 for(const [name,exports]of Object.entries({'auth.js':{notify:key=>notices.push(key)},'theme.js':{closeMenus:()=>{}}})){

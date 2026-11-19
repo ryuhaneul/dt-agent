@@ -78,7 +78,10 @@ export function renderRoute() {
     const heading = isAuth ? document.querySelector(`[data-auth="${route}"] h2`)
       : route === 'status' ? document.querySelector('#connPanel h2')
       : document.querySelector(`[data-view="${view}"] h2`);
-    heading?.focus();
+    if (route === 'chat') {
+      // Touch devices need a user gesture before opening the composer keyboard.
+      if (matchMedia('(pointer: fine)').matches) document.querySelector('#msgIn')?.focus();
+    } else heading?.focus();
   }
   current = route;
   document.dispatchEvent(new CustomEvent('route-change', { detail: { route, view } }));

@@ -720,7 +720,11 @@ export function initChat() {
       await loadHistory(topic.tid, { target: seq });
       if (active && generation === epoch && selected === selection && getTopic()?.tid === topic.tid) {
         renderThread({ bottom: seq === null, seq });
-        if (location.hash === '#chat' && (!event.detail.focusComposer || document.activeElement !== input)) document.querySelector('[data-view="chat"] h2').focus();
+        if (location.hash === '#chat' && !event.detail.focusComposer) {
+          if (seq === null && !topic.read_only && topic.tid !== 'unknown') {
+            if (matchMedia('(pointer: fine)').matches) input.focus();
+          } else if (seq !== null) document.querySelector('[data-view="chat"] h2').focus();
+        }
       }
     } catch (error) { if (active && generation === epoch) errorNotice(error); }
   });
