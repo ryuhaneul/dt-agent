@@ -126,14 +126,16 @@ def remove(home: Path, slot: str, *, expected: SlotIdentity | None = None) -> No
 
         def unregister(data: dict[str, object]) -> None:
             accounts = _accounts(data)
-            if slot in accounts:
-                data["claude_accounts"] = [name for name in accounts if name != slot]
-            elif not directory.is_dir():
+            if slot not in accounts and not directory.is_dir():
                 raise SlotDeleteError("slot_not_found")
 
-        transform_config_file(home / "config" / "config.json", unregister)
+            # Keep the config lock through cleanup so the membership check and
+            # unregister use the same snapshot, in the existing lock order.
+            _clear_slot_state(home, slot)
+            if slot in accounts:
+                data["claude_accounts"] = [name for name in accounts if name != slot]
 
-        _clear_slot_state(home, slot)
+        transform_config_file(home / "config" / "config.json", unregister)
         _remove_directory(directory)
 
 
@@ -145,7 +147,11 @@ def _clear_slot_state(home: Path, slot: str) -> None:
         if snapshot.last_used == slot:
             snapshot.last_used = None
 
-    SlotRegistry(state_file_path(home)).update(clear)
+    try:
+        SlotRegistry(state_file_path(home)).update(clear, strict=True)
+    except (ValueError, RecursionError) as exc:
+        msg = "Could not update cooldown records"
+        raise OSError(msg) from exc
 
 
 def _remove_directory(directory: Path) -> None:

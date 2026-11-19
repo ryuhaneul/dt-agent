@@ -899,15 +899,16 @@ async def test_stream_terminates_child_before_releasing_slot(
         working_dir=deletion_home, ductor_home=deletion_home, claude_accounts=["claude-a"]
     ))
     killed = []
+    terminate = executor._terminate_stream_group
 
-    def kill(pid):
-        assert pid == int(child_pid.read_text())
-        force_kill_process_tree(pid)
+    async def kill(process):
+        assert process.pid == int(child_pid.read_text())
         with pytest.raises(ValueError, match="slot_busy"):
             remove(deletion_home, "claude-a")
-        killed.append(pid)
+        await terminate(process)
+        killed.append(process.pid)
 
-    monkeypatch.setattr(executor, "force_kill_process_tree", kill)
+    monkeypatch.setattr(executor, "_terminate_stream_group", kill)
     stream = cli.send_streaming("fixture")
     try:
         await asyncio.wait_for(anext(stream), 5)
@@ -965,9 +966,9 @@ def test_slot_locks_coordinate_with_other_processes(deletion_home):
 
 
 @pytest.mark.parametrize("model_override", [False, True])
-@pytest.mark.parametrize("streaming", [False, True])
-async def test_subagent_executes_inherited_main_slot(
-    deletion_home, monkeypatch, model_override, streaming
+@pytest.mark.parametrize("driver", ["regular", "streaming", "one-shot"])
+async def test_subagent_executes_replacement_main_slot(
+    deletion_home, monkeypatch, model_override, driver
 ):
     import json
     import sys
@@ -975,45 +976,188 @@ async def test_subagent_executes_inherited_main_slot(
     from ductor_bot.cli.base import CLIConfig
     from ductor_bot.cli.claude_accounts import state_file_path
     from ductor_bot.cli.claude_provider import ClaudeCodeCLI
+    from ductor_bot.cli.claude_slots import remove
+    from ductor_bot.cli.param_resolver import TaskExecutionConfig
+    from ductor_bot.cli.stream_events import ResultEvent
     from ductor_bot.config import AgentConfig
+    from ductor_bot.infra.task_runner import TaskRunOptions, run_oneshot_task
     from ductor_bot.multiagent.models import merge_sub_agent_config
     from ductor_bot.multiagent.registry import AgentRegistry
+    from ductor_bot.webchat.cli_login_slots import ClaudeLoginSlots
+    from ductor_bot.workspace.paths import DuctorPaths
 
     agents_path = deletion_home / "agents.json"
     entry = {"name": "fixture", "transport": "headless"}
     if model_override:
-        # The registry accepts provider/model overrides; claude_accounts is inherited.
         entry.update(provider="claude", model="sonnet", claude_accounts=["claude-unrecognized"])
     agents_path.write_text(json.dumps([entry]))
-    main = AgentConfig.model_validate_json(
-        (deletion_home / "config" / "config.json").read_text()
-    )
+    main_paths = DuctorPaths(deletion_home)
+    main_paths.config_path.write_text('{"claude_accounts": ["claude-a"]}')
+    main = AgentConfig.model_validate_json(main_paths.config_path.read_text())
     child_home = deletion_home / "agents" / "fixture"
     child_config = child_home / "config" / "config.json"
     child_config.parent.mkdir(parents=True)
     child_config.write_text('{"claude_accounts": []}')
     sub, = AgentRegistry(agents_path).load()
     child = merge_sub_agent_config(main, sub, child_home)
-    assert child.claude_accounts == main.claude_accounts == ["claude-a", "claude-b"]
+    assert child.claude_accounts == main.claude_accounts == ["claude-a"]
     assert child.model == ("sonnet" if model_override else main.model)
 
+    calls = deletion_home / "calls"
+    (deletion_home / ".cli-auth" / "claude-a" / ".credentials.json").write_text("{}")
     fake = deletion_home / "fake-claude"
     fake.write_text(
         f"#!{sys.executable}\n"
         "import json, os, sys\n"
+        "from pathlib import Path\n"
         "sys.stdin.read()\n"
-        "print(json.dumps({'type': 'result', 'result': os.environ['CLAUDE_CONFIG_DIR']}))\n"
+        "slot = Path(os.environ['CLAUDE_CONFIG_DIR'])\n"
+        f"with Path({str(calls)!r}).open('a') as log: log.write(slot.name + '\\n')\n"
+        "ok = (slot / '.credentials.json').is_file()\n"
+        "print(json.dumps({'type': 'result', 'result': str(slot), 'is_error': not ok}))\n"
+        "sys.exit(0 if ok else 1)\n"
     )
     fake.chmod(0o700)
     monkeypatch.setattr(ClaudeCodeCLI, "_find_cli", staticmethod(lambda: str(fake)))
+    monkeypatch.setattr("ductor_bot.cron.execution.which", lambda _name: str(fake))
     cli = ClaudeCodeCLI(CLIConfig(
         working_dir=child_home, ductor_home=child.ductor_home, model=child.model,
         agent_name=sub.name, claude_accounts=child.claude_accounts,
     ))
     assert cli._registry.state_path == state_file_path(deletion_home)
-    if streaming:
-        results = [event.result async for event in cli.send_streaming("fixture") if event.type == "result"]
-        result, = results
-    else:
-        result = (await cli.send("fixture")).result
-    assert result == str(deletion_home / ".cli-auth" / "claude-a")
+    task = TaskExecutionConfig(
+        provider="claude", model=child.model, reasoning_effort="medium", cli_parameters=[],
+        permission_mode="bypassPermissions", working_dir=str(child_home), file_access="full",
+        claude_accounts=child.claude_accounts,
+    )
+
+    async def execute():
+        if driver == "streaming":
+            result, = [e async for e in cli.send_streaming("fixture") if isinstance(e, ResultEvent)]
+            assert not result.is_error
+            return result.result
+        if driver == "one-shot":
+            result = await run_oneshot_task(task, "fixture", TaskRunOptions(child_home, 3, "fixture"))
+            assert result.status == "success"
+            return result.result_text
+        result = await cli.send("fixture")
+        assert not result.is_error
+        return result.result
+
+    assert await execute() == str(deletion_home / ".cli-auth" / "claude-a")
+    login = ClaudeLoginSlots(main_paths)
+    prepared = login.prepare("claude-b", new_slot=True)
+    (prepared.path / ".credentials.json").write_text("{}")
+    login.finish(prepared, succeeded=True)
+    remove(deletion_home, "claude-a")
+
+    assert child.claude_accounts == ["claude-a"]
+    assert await execute() == str(prepared.path)
+    assert calls.read_text().splitlines() == ["claude-a", "claude-b"]
+
+
+@pytest.mark.parametrize("mode", ["cancel", "timeout", "normal"])
+async def test_stream_handles_child_after_leader_exits(deletion_home, monkeypatch, mode):
+    import asyncio
+    import os
+    import signal
+    import sys
+
+    from ductor_bot.cli.base import CLIConfig
+    from ductor_bot.cli.claude_provider import ClaudeCodeCLI
+    from ductor_bot.cli.claude_slots import remove
+
+    folder = deletion_home / ".cli-auth" / "claude-a"
+    pid_file = deletion_home / "child.pid"
+    leader_file = deletion_home / "leader.pid"
+    release_pipes = deletion_home / "release-pipes"
+    write_slot = deletion_home / "write-slot"
+    marker = folder / "child-wrote"
+    fake = deletion_home / "fake-claude"
+    result_line = "    print(json.dumps({'type':'result','result':'OK'}), flush=True)\n"
+    fake.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, time\n"
+        "from pathlib import Path\n"
+        f"Path({str(leader_file)!r}).write_text(str(os.getpid()))\n"
+        "if os.fork():\n"
+        "    print(json.dumps({'type':'system','subtype':'init','session_id':'fixture'}), flush=True)\n"
+        + (result_line if mode == "normal" else "")
+        + "    os._exit(0)\n"
+        f"Path({str(pid_file)!r}).write_text(str(os.getpid()))\n"
+        f"release = Path({str(release_pipes)!r})\n"
+        f"write = Path({str(write_slot)!r})\n"
+        "deadline = time.monotonic() + 15\n"
+        "while not release.exists() and time.monotonic() < deadline: time.sleep(0.01)\n"
+        "os.close(1)\n"
+        "os.close(2)\n"
+        "while not write.exists() and time.monotonic() < deadline: time.sleep(0.01)\n"
+        "if write.exists():\n"
+        "    slot = Path(os.environ['CLAUDE_CONFIG_DIR'])\n"
+        "    slot.mkdir(exist_ok=True)\n"
+        "    (slot / 'child-wrote').touch()\n"
+    )
+    fake.chmod(0o700)
+    monkeypatch.setattr(ClaudeCodeCLI, "_find_cli", staticmethod(lambda: str(fake)))
+    cli = ClaudeCodeCLI(CLIConfig(
+        working_dir=deletion_home, ductor_home=deletion_home, claude_accounts=["claude-a"]
+    ))
+
+    def alive(pid):
+        try:
+            status = (Path("/proc") / str(pid) / "stat").read_text().rpartition(") ")[2]
+        except (FileNotFoundError, ProcessLookupError):
+            return False
+        return not status.startswith("Z ")
+
+    async def until(predicate):
+        async with asyncio.timeout(5):
+            while not predicate():
+                await asyncio.sleep(0.01)
+
+    stream = cli.send_streaming("fixture", timeout_seconds=2 if mode == "timeout" else 10)
+    reader = None
+    try:
+        await asyncio.wait_for(anext(stream), 5)
+        await until(lambda: pid_file.exists() and not alive(int(leader_file.read_text())))
+        pid = int(pid_file.read_text())
+        assert alive(pid)
+        reader = asyncio.create_task(anext(stream))
+        await asyncio.sleep(0)
+        assert not reader.done()
+        with pytest.raises(ValueError, match="slot_busy"):
+            remove(deletion_home, "claude-a")
+
+        if mode == "normal":
+            release_pipes.touch()
+            assert (await asyncio.wait_for(reader, 5)).result == "OK"
+            with pytest.raises(StopAsyncIteration):
+                await anext(stream)
+            assert alive(pid)
+            write_slot.touch()
+            await until(marker.exists)
+        elif mode == "cancel":
+            reader.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(reader, 5)
+        else:
+            result = await asyncio.wait_for(reader, 5)
+            assert result.is_error and result.result.startswith("__TIMEOUT__")
+            with pytest.raises(StopAsyncIteration):
+                await anext(stream)
+
+        if mode != "normal":
+            assert not alive(pid)
+            remove(deletion_home, "claude-a")
+            write_slot.touch()
+            assert not folder.exists()
+    finally:
+        if pid_file.exists() and alive(pid := int(pid_file.read_text())):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if reader is not None and not reader.done():
+            reader.cancel()
+            await asyncio.gather(reader, return_exceptions=True)
+        await stream.aclose()

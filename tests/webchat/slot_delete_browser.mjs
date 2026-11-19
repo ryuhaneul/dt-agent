@@ -40,7 +40,7 @@ async function run(width, theme) {
     const errors = [], deletions = [];
     page.on('pageerror', error => errors.push(error.message));
     await page.routeWebSocket('**/api/ws', () => {});
-    let blockWork = true;
+    let blockWork = true, blockCooldownRead = true;
     let slots = [
       { name: 'claude', authenticated: true, priority: 1 },
       { name: 'claude-work', authenticated: true, priority: 2 },
@@ -68,6 +68,9 @@ async function run(width, theme) {
         const name = endpoint.split('/').at(-1);
         deletions.push(name);
         if (name === 'claude-work' && blockWork) return reply({ error: 'slot_busy' }, 409);
+        if (name === 'claude-work' && blockCooldownRead) {
+          return reply({ error: 'slot_delete_error' }, 500);
+        }
         if (name === 'claude-api') {
           return reply({
             error: 'slot_delete_failed', path: '.cli-auth/claude-api', reason: 'Permission denied',
@@ -116,6 +119,15 @@ async function run(width, theme) {
     blockWork = false;
     await remove('claude-work').click();
     await confirm.locator('#cliConfirmYes').click();
+    await confirm.waitFor({ state: 'hidden' });
+    assert.equal(await slot('claude-work').locator('+ .slot-error').textContent(),
+      config.strings['cli_login.delete_error'].replace('{name}', 'claude-work'));
+    assert.equal(await slot('claude-work').locator('.badge').textContent(),
+      config.strings['cli_login.authenticated']);
+    await shot('cooldown-error');
+    blockCooldownRead = false;
+    await remove('claude-work').click();
+    await confirm.locator('#cliConfirmYes').click();
     await slot('claude-work').waitFor({ state: 'detached' });
     assert.equal(await remove('claude-unused').evaluate(button => document.activeElement === button), true);
     await remove('claude-unused').click();
@@ -126,7 +138,7 @@ async function run(width, theme) {
     await confirm.waitFor({ state: 'hidden' });
     assert.match(await slot('claude-api').locator('+ .slot-error').textContent(),
       /\.cli-auth\/claude-api.*Permission denied/);
-    assert.deepEqual(deletions, ['claude-work', 'claude-work', 'claude-unused', 'claude-api']);
+    assert.deepEqual(deletions, ['claude-work', 'claude-work', 'claude-work', 'claude-unused', 'claude-api']);
     assert.deepEqual(errors, []);
     console.log(width, theme, 'passed');
   } finally {

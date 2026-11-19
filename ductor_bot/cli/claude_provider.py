@@ -35,6 +35,7 @@ from ductor_bot.cli.claude_accounts import (
     SlotRegistry,
     detect_auth_failure_kind,
     detect_rate_limit,
+    resolve_ductor_home,
     slot_is_api_key,
 )
 from ductor_bot.cli.claude_usage import UsageStore, extract_usage_events, usage_file_path
@@ -55,6 +56,7 @@ from ductor_bot.cli.slot_rotation import (
     build_reauth_notice,
     build_unparsable_prefix,
     clear_auth_failure,
+    current_slot_candidates,
     hot_slots,
     make_registry,
     parse_reset_from_text,
@@ -115,11 +117,10 @@ class ClaudeCodeCLI(BaseCLI):
         self._cli = self._find_cli()
         self._registry: SlotRegistry | None = None
         self._usage_store = UsageStore(usage_file_path(Path(config.ductor_home) / "workspace"))
-        if config.claude_accounts:
-            # This project is container-only: share cooldown state across all agents
-            self._registry = make_registry(
-                working_dir=str(Path(config.ductor_home) / "workspace"),
-            )
+        home = Path(config.ductor_home).expanduser()
+        slot_workspace = home / "workspace"
+        if config.claude_accounts or resolve_ductor_home(slot_workspace) != home:
+            self._registry = make_registry(working_dir=slot_workspace)
         logger.info("CLI wrapper: cwd=%s, model=%s", self._working_dir, config.model)
 
     @staticmethod
@@ -237,8 +238,11 @@ class ClaudeCodeCLI(BaseCLI):
             )
             return outcome, response.model_copy(update={"stderr": response.stderr[:2000]})
 
+        accounts = await current_slot_candidates(
+            Path(self._config.ductor_home), self._config.claude_accounts
+        )
         rotation = await run_with_rotation(
-            accounts=list(self._config.claude_accounts),
+            accounts=accounts,
             registry=self._registry,
             default_tz=self._default_timezone(),
             attempt=_attempt,
@@ -374,8 +378,9 @@ class ClaudeCodeCLI(BaseCLI):
         final emitted ``ResultEvent`` carries the fallback prefix so the
         user sees ``[Claude: A → B ...]`` when a switch happened.
         """
-        accounts = list(self._config.claude_accounts)
-
+        accounts = await current_slot_candidates(
+            Path(self._config.ductor_home), self._config.claude_accounts
+        )
         hot = await hot_slots(self._registry, accounts) if accounts else []
 
         first_auth_slot: str | None = None

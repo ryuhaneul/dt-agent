@@ -10,9 +10,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
+import signal
 from asyncio import CancelledError, ensure_future, shield
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar
 
 from ductor_bot.cli.autocompact import autocompact_env
@@ -214,6 +217,48 @@ async def _default_post_handler(result: SubprocessResult) -> AsyncGenerator[Stre
         )
 
 
+def _stream_group_is_live(pgid: int) -> bool:
+    """Check for group members that can still execute, including after the leader exits."""
+    group = str(pgid).encode()
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdecimal():
+            continue
+        try:
+            if os.getpgid(int(entry.name)) != pgid:
+                continue
+            fields = (entry / "stat").read_bytes().rpartition(b") ")[2].split()
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        if len(fields) > 2 and fields[2] == group and fields[0] not in {b"Z", b"X", b"x"}:
+            return True
+    return False
+
+
+async def _terminate_stream_group(process: asyncio.subprocess.Process) -> None:
+    """Stop the dedicated stream group and wait until its members cannot access the slot."""
+    while True:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            break
+        if not await asyncio.to_thread(_stream_group_is_live, process.pid):
+            break
+        await asyncio.sleep(0.05)
+    # Drain the pipes as asyncio also waits for them to close when reaping the child.
+    await process.communicate()
+
+
+async def _cleanup_interrupted_stream(
+    process: asyncio.subprocess.Process, error: BaseException, *, group_terminated: bool
+) -> None:
+    if isinstance(error, (CancelledError, GeneratorExit)):
+        if not group_terminated:
+            await _terminate_stream_group(process)
+    elif process.returncode is None:
+        force_kill_process_tree(process.pid)
+        await process.communicate()
+
+
 async def run_streaming_subprocess(
     config: CLIConfig,
     spec: SubprocessSpec,
@@ -244,6 +289,7 @@ async def run_streaming_subprocess(
         env=subprocess_env,
         limit=4 * 1024 * 1024,
         creationflags=_CREATION_FLAGS,
+        start_new_session=spec.terminate_on_close,
     )
     if process.stdout is None or process.stderr is None:
         msg = "Subprocess created without stdout/stderr pipes"
@@ -267,6 +313,7 @@ async def run_streaming_subprocess(
         else None
     )
     stderr_drain = asyncio.create_task(process.stderr.read())
+    group_terminated = False
 
     try:
         try:
@@ -274,8 +321,13 @@ async def run_streaming_subprocess(
                 yield _flag_stale(event, tracked)
             stderr_bytes = await stderr_drain
         except TimeoutError:
-            force_kill_process_tree(process.pid)
-            await process.wait()
+            if spec.terminate_on_close:
+                await _cancel_drain(stderr_drain)
+                await await_process_cleanup(_terminate_stream_group(process))
+                group_terminated = True
+            else:
+                force_kill_process_tree(process.pid)
+                await process.wait()
             timeout_s = spec.timeout_seconds or 0
             logger.warning("%s stream timed out after %.0fs", provider_label, timeout_s)
             yield ResultEvent(
@@ -294,11 +346,11 @@ async def run_streaming_subprocess(
                 reg.unregister(tracked)
 
         await process.wait()
-    except BaseException:
-        if spec.terminate_on_close and process.returncode is None:
-            force_kill_process_tree(process.pid)
-            # Drain closed pipes while reaping the child, even on another cancellation.
-            await await_process_cleanup(process.communicate())
+    except BaseException as exc:
+        if spec.terminate_on_close:
+            await await_process_cleanup(
+                _cleanup_interrupted_stream(process, exc, group_terminated=group_terminated)
+            )
         raise
 
     handler = post_handler or _default_post_handler

@@ -495,3 +495,31 @@ async def test_long_unregistered_slot_has_short_delete_controls(page):
     result = await selector.handle_account_callback(home, config, _data(confirmed)[1])
     assert t("accounts.deleted", name=name) in result.text
     assert not folder.exists()
+
+
+async def test_delete_confirmation_reports_cooldown_state_error(page, monkeypatch):
+    from pathlib import Path
+
+    selector, home, config = page
+    confirmation = await selector.handle_account_callback(home, config, "acs:x:claude-a")
+    state = state_file_path(home)
+    saved = state.read_bytes()
+    read_text = Path.read_text
+
+    def deny_read(path, *args, **kwargs):
+        if path == state:
+            raise PermissionError(13, "Permission denied", path)
+        return read_text(path, *args, **kwargs)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(Path, "read_text", deny_read)
+        result = await selector.handle_account_callback(home, config, _data(confirmation)[1])
+    assert result.text == t("accounts.error")
+    assert state.read_bytes() == saved
+    assert "claude-a" in _names(home)
+    assert (home / ".cli-auth" / "claude-a").is_dir()
+
+    confirmation = await selector.handle_account_callback(home, config, "acs:x:claude-a")
+    result = await selector.handle_account_callback(home, config, _data(confirmation)[1])
+    assert t("accounts.deleted", name="claude-a") in result.text
+    assert "claude-a" not in _names(home)

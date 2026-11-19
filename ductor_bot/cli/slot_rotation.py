@@ -103,13 +103,27 @@ def slot_use_lock(root: Path, slot: str, *, deleting: bool = False) -> Iterator[
         os.close(fd)
 
 
-def _slot_is_configured(home: Path, slot: str) -> bool:
+def _read_configured_slots(home: Path) -> list[str] | None:
     try:
         data = json.loads((home / "config" / "config.json").read_text(encoding="utf-8"))
     except FileNotFoundError:
         # Standalone callers can supply accounts without an on-disk bot config.
-        return True
-    return slot in (data.get("claude_accounts") or [])
+        return None
+    accounts = (data.get("claude_accounts") or []) if isinstance(data, dict) else None
+    if not isinstance(accounts, list) or not all(isinstance(slot, str) for slot in accounts):
+        msg = "Invalid Claude accounts in config"
+        raise ValueError(msg)
+    return list(accounts)
+
+
+async def current_slot_candidates(agent_home: Path, accounts: Sequence[str]) -> list[str]:
+    """Refresh inherited candidates from the same home that owns the slot directories."""
+    if agent_home.parent.name == "agents":
+        main_home = resolve_ductor_home(agent_home / "workspace")
+        current = await asyncio.to_thread(_read_configured_slots, main_home)
+        if current is not None:
+            return current
+    return list(accounts)
 
 
 @contextmanager
@@ -120,7 +134,8 @@ def reserve_slot(registry: SlotRegistry | None, slot: str) -> Iterator[bool]:
         return
     root = registry.state_path.parent
     with slot_use_lock(root, slot) as reserved:
-        yield reserved and _slot_is_configured(root.parent, slot)
+        current = _read_configured_slots(root.parent) if reserved else []
+        yield current is None or slot in current
 
 
 @dataclass(slots=True)

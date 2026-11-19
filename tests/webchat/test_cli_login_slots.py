@@ -785,3 +785,56 @@ async def test_browser_delete_requires_session_and_csrf_before_relay(site):
     path, owner = fake.owner_headers[-1]
     assert path == "/cli-login/slots/claude-work"
     assert owner and owner != "forged-owner"
+
+
+@pytest.mark.parametrize("has_directory", [True, False])
+async def test_delete_preserves_unreadable_cooldowns_and_allows_retry(
+    cli_bridge, monkeypatch, has_directory
+):
+    from ductor_bot.cli.claude_accounts import SlotRegistry, SlotSnapshot, state_file_path
+
+    client, _, _, paths, _ = cli_bridge
+    route = f"{_PREFIX}/cli-login/slots/claude-work"
+    paths.config_path.write_text('{"claude_accounts":["claude-work","claude-other"]}')
+    folder = paths.ductor_home / ".cli-auth" / "claude-work"
+    if has_directory:
+        folder.mkdir()
+    config_before = paths.config_path.read_bytes()
+    config_inode = paths.config_path.stat().st_ino
+    state = state_file_path(paths.ductor_home)
+    registry = SlotRegistry(state)
+    registry.save(SlotSnapshot(cooldowns={"claude-work": 100, "claude-other": 200}))
+    before = state.stat()
+    contents = state.read_bytes()
+
+    with monkeypatch.context() as patcher:
+        if os.geteuid() == 0:
+            read_text = Path.read_text
+
+            def deny_read(path, *args, **kwargs):
+                if path == state:
+                    raise PermissionError(13, "Permission denied", path)
+                return read_text(path, *args, **kwargs)
+
+            patcher.setattr(Path, "read_text", deny_read)
+        state.chmod(0)
+        try:
+            response = await client.delete(route, headers=cli_headers())
+            assert (response.status, await response.json()) == (
+                500, {"error": "slot_delete_error"}
+            )
+            assert state.stat().st_ino == before.st_ino
+        finally:
+            state.chmod(before.st_mode)
+
+    assert state.read_bytes() == contents
+    assert registry.load().cooldowns == {"claude-work": 100, "claude-other": 200}
+    assert paths.config_path.read_bytes() == config_before
+    assert paths.config_path.stat().st_ino == config_inode
+    assert folder.is_dir() == has_directory
+
+    response = await client.delete(route, headers=cli_headers())
+    assert (response.status, await response.json()) == (200, {"ok": True})
+    assert registry.load().cooldowns == {"claude-other": 200}
+    assert json.loads(paths.config_path.read_text())["claude_accounts"] == ["claude-other"]
+    assert not folder.exists()
