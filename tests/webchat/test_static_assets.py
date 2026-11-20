@@ -2509,13 +2509,16 @@ class Element {
  append(...children){this.children.push(...children)}
  replaceChildren(...children){this.children=children}
  get childElementCount(){return this.children.length}
- querySelector(selector){return selector==='a[href]'?this.children[0]?.children.find(child=>child.href):null}
+ querySelector(selector){
+  if(this.id==='cliLoginDlg'&&selector==='.cli-body')return cliBody;
+  return selector==='a[href]'?this.children[0]?.children.find(child=>child.href):null
+ }
  setAttribute(){} removeAttribute(){} getClientRects(){return this.hidden?[]:[{}]}
  focus(){focus=this.id;fakeDocument.activeElement=this} contains(element){return this===element||this.children.some(child=>child.contains(element))} querySelectorAll(selector){return this.id==='cliLoginDlg'&&selector==='[data-cli-list]'?[listControl]:[]}
  showModal(){this.open=true} close(){this.open=false;this.emit('close')}
  reset(){for(const id of {'cliSlotForm':['cliSlotName'],'cliCodeForm':['cliCodeInput'],'cliRawForm':['cliRawInput']}[this.id]||[])get(id).value=''}
 }
-const elements=new Map(ids.map(id=>[id,new Element(id)]));const get=id=>elements.get(id);const listControl=new Element('back-to-list');
+const elements=new Map(ids.map(id=>[id,new Element(id)]));const get=id=>elements.get(id);const listControl=new Element('back-to-list'), cliBody=new Element('cli-body');
 const current={job_id:'demo',provider:'grok',slot:null,state:'running',reason:null,seq:1,output:[{seq:1,text:'terminal output'}],urls:['javascript:alert(1)','http://unsafe.invalid','https://safe.invalid/auth'],code:null,needs_input:false,restart_required:false};
 const clone=value=>JSON.parse(JSON.stringify(value));
 const windowEvents={}, openedTabs=[];
@@ -2540,16 +2543,15 @@ const module=new vm.SourceTextModule(source,{context});await module.link(name=>n
 const flush=async()=>{for(let i=0;i<8;i++)await new Promise(setImmediate)};
 module.namespace.initCliLogin();module.namespace.openCliLogin();await flush();
 const rows=get('cliProviders').children[0].children[1].children;
-for(const [index,state] of ['authenticated','unauthenticated','expired','unused'].entries()){
+for(const [index,state] of ['authenticated','logged_out','expired','unused'].entries()){
  assert.equal(rows[index].children[1].textContent,'ko:cli_login.'+state);
  assert.equal(rows[index].children[1].className,'badge '+(index===0?'badge-ok':index===2?'badge-warn':'badge-off'));
- assert.equal(rows[index].children[2].textContent,'ko:cli_login.'+(index===1?'login':'relogin'));
+ assert.equal(rows[index].children[3].children[0].textContent,'ko:cli_login.'+(index===1?'login':'relogin'));
 }
-assert.equal(rows[4].children.length,3,'API key slots have a badge and delete control');
-assert.equal(rows[4].children[2].dataset.delete,'claude-api');
-assert.equal(rows[0].children.length,3,'the default slot has no delete control');
-assert.equal(rows[4].children[1].textContent,'ko:cli_login.api_key');
-assert.equal(rows[4].children[1].dataset.i18n,'cli_login.api_key');
+assert.equal(rows[4].children[3].children.at(-1).dataset.delete,'claude-api');
+assert.ok(rows[0].children[3].children.every(action=>!action.dataset.delete),'the default slot has no delete action');
+assert.equal(rows[4].children[1].textContent,'ko:cli_login.key_connected');
+assert.equal(rows[4].children[1].dataset.i18n,'cli_login.key_connected');
 assert.equal(rows[4].children[1].className,'badge badge-ok');
 await get('cliProviders').children[0].children[0].children.at(-1).emit('click');
 for(const name of ['api','claude-api']){
@@ -2559,7 +2561,7 @@ for(const name of ['api','claude-api']){
  assert.equal(calls.filter(call=>call.path==='/cli-login/jobs').length,0);
 }
 get('cliLoginDlg').close();module.namespace.openCliLogin();await flush();
-await get('cliProviders').children[0].children[1].children[3].children[2].emit('click');await get('cliConfirmYes').emit('click');await flush();
+await get('cliProviders').children[0].children[1].children[3].children[3].children[0].emit('click');await get('cliConfirmYes').emit('click');await flush();
 assert.deepEqual(calls.filter(call=>call.path==='/cli-login/jobs').at(-1).options.body,{provider:'claude',slot:'claude-unused',new_slot:false});
 current.state='cancelled';get('cliLoginDlg').close();fakeSlots.splice(1);module.namespace.openCliLogin();await flush();
 const stableProvider=get('cliProviders').children[0];language='en';events['language-changed']();

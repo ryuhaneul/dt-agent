@@ -22,8 +22,8 @@ from ductor_bot.cli.autocompact import parse_autocompact_input, resolve_autocomp
 from ductor_bot.cli.claude_accounts import (
     SlotRegistry,
     host_slot_config_dir,
-    slot_is_api_key,
     slot_is_authenticated,
+    slot_kind,
     state_file_path,
 )
 from ductor_bot.config import resolve_user_timezone
@@ -1073,9 +1073,7 @@ def _register_cli_login_routes(app: web.Application, bot: TelegramBot) -> None: 
         return [
             {
                 "name": name,
-                "kind": "api_key"
-                if slot_is_api_key(host_slot_config_dir(paths.ductor_home, name))
-                else "oauth",
+                "kind": slot_kind(host_slot_config_dir(paths.ductor_home, name)),
                 "auth_expired": name in expired_slots,
                 "priority": priority.index(name) + 1 if name in priority else None,
                 "authenticated": slot_is_authenticated(
@@ -1144,13 +1142,17 @@ def _register_cli_login_routes(app: web.Application, bot: TelegramBot) -> None: 
         except CliLoginError as exc:
             return _error(exc.code, exc.status)
 
-    async def delete_slot(request: web.Request) -> web.Response:
+    async def mutate_slot(request: web.Request) -> web.Response:
         if not request.headers.get("X-Dtw-Owner", ""):
             return _error("forbidden", 403)
+        action = request.match_info.get("action", "delete")
+        operation, failure = {
+            "delete": (claude_slots.remove, "slot_delete_error"),
+            "logout": (claude_slots.logout, "logout_failed"),
+            "disconnect": (claude_slots.disconnect_api_key, "disconnect_failed"),
+        }[action]
         try:
-            await asyncio.to_thread(
-                claude_slots.remove, paths.ductor_home, request.match_info["slot"]
-            )
+            await asyncio.to_thread(operation, paths.ductor_home, request.match_info["slot"])
         except claude_slots.SlotDirectoryError as exc:
             return web.json_response(
                 {
@@ -1162,12 +1164,19 @@ def _register_cli_login_routes(app: web.Application, bot: TelegramBot) -> None: 
             )
         except claude_slots.SlotDeleteError as exc:
             code = str(exc)
-            return _error(code, {"slot_not_found": 404, "slot_busy": 409}.get(code, 400))
+            status = {
+                "slot_not_found": 404,
+                "slot_busy": 409,
+                "logout_failed": 500,
+                "disconnect_failed": 500,
+            }.get(code, 400)
+            return _error(code, status)
         except (OSError, ValueError):
-            return _error("slot_delete_error", 500)
+            return _error(failure, 500)
         return web.json_response({"ok": True})
 
-    app.router.add_delete(f"{_PREFIX}/cli-login/slots/{{slot}}", delete_slot)
+    app.router.add_delete(f"{_PREFIX}/cli-login/slots/{{slot}}", mutate_slot)
+    app.router.add_post(f"{_PREFIX}/cli-login/slots/{{slot}}/{{action:logout|disconnect}}", mutate_slot)
     app.router.add_post(f"{_PREFIX}/cli-login/cancel-owner", handle)
     app.router.add_get(f"{_PREFIX}/cli-login/status", handle)
     app.router.add_post(f"{_PREFIX}/cli-login/jobs", handle)

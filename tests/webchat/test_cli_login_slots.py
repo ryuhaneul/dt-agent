@@ -1051,3 +1051,95 @@ async def test_logout_refuses_slots_reserved_by_web_login(paths, manager_factory
     await until(record.exists)
     manager.cancel(job, OWNER)
     assert (await settled(manager, job))["state"] == "cancelled"
+
+
+@pytest.mark.parametrize(
+    ("action", "operation", "wrong_kind", "failure"),
+    [
+        ("logout", "logout", "api_key_slot", "logout_failed"),
+        ("disconnect", "disconnect_api_key", "not_api_key_slot", "disconnect_failed"),
+    ],
+)
+async def test_slot_auth_mutations_enforce_bridge_auth_and_map_errors(
+    cli_bridge, monkeypatch, action, operation, wrong_kind, failure
+):
+    from ductor_bot.cli import claude_slots
+
+    client, _, _, paths, _ = cli_bridge
+    route = f"{_PREFIX}/cli-login/slots/claude-work/{action}"
+    count = 0
+    expected_error = None
+    event_loop_thread = threading.get_ident()
+
+    def mutate(home, slot):
+        nonlocal count
+        assert threading.get_ident() != event_loop_thread
+        assert home == paths.ductor_home
+        assert slot == "claude-work"
+        count += 1
+        if expected_error is not None:
+            raise claude_slots.SlotDeleteError(expected_error)
+
+    monkeypatch.setattr(claude_slots, operation, mutate)
+    for headers in ({"X-Dtw-Owner": OWNER}, {
+        key: value for key, value in cli_headers().items() if key != "X-Dtw-Owner"
+    }):
+        response = await client.post(route, headers=headers)
+        assert response.status == 403
+        assert "WWW-Authenticate" not in response.headers
+    assert count == 0
+    for expected_error, status in [
+        ("slot_not_found", 404), ("slot_busy", 409), ("invalid_slot", 400),
+        (wrong_kind, 400), (failure, 500),
+    ]:
+        response = await client.post(route, headers=cli_headers())
+        assert response.status == status
+        assert await response.json() == {"error": expected_error}
+    expected_error = None
+    response = await client.post(route, headers=cli_headers())
+    assert response.status == 200
+    assert await response.json() == {"ok": True}
+    assert count == 6
+
+
+@pytest.mark.parametrize("action", ["logout", "disconnect"])
+async def test_web_slot_auth_mutations_require_session_and_csrf(site, action):
+    client, fake = site
+    route = f"/cli-login/slots/claude-work/{action}"
+    response = await client.post(f"/api{route}", headers=CLIENT)
+    assert response.status == 403
+    assert "WWW-Authenticate" not in response.headers
+    authorized, _ = await login(client)
+    headers = {key: value for key, value in authorized.items() if key != "X-Dtw-Csrf"}
+    response = await client.post(f"/api{route}", headers=headers)
+    assert response.status == 403
+    assert "WWW-Authenticate" not in response.headers
+    assert not any(call[1] == route for call in fake.calls)
+
+    response = await client.post(f"/api{route}", headers={**authorized, "X-Dtw-Owner": "forged"})
+    assert response.status == 200
+    assert fake.calls[-1][:2] == ("POST", route)
+    path, owner = fake.owner_headers[-1]
+    assert path == route
+    assert owner
+    assert owner != "forged"
+
+
+async def test_disconnect_updates_kind_in_slot_status(cli_bridge):
+    client, _, _, paths, _ = cli_bridge
+    target = paths.ductor_home / ".cli-auth" / "claude-manual"
+    target.mkdir()
+    (target / "settings.json").write_text('{"apiKeyHelper":"helper.sh"}')
+    base = f"{_PREFIX}/cli-login"
+    headers = cli_headers()
+
+    async def inventory():
+        response = await client.get(f"{base}/status", headers=headers)
+        return {slot["name"]: slot for slot in (await response.json())["claude_slots"]}
+
+    assert (await inventory())["claude-manual"]["kind"] == "api_key"
+    response = await client.post(f"{base}/slots/claude-manual/disconnect", headers=headers)
+    assert response.status == 200
+    slot = (await inventory())["claude-manual"]
+    assert slot["kind"] == "api_key_detached"
+    assert slot["authenticated"] is False

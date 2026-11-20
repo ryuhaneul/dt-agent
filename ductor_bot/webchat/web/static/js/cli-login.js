@@ -14,7 +14,7 @@ export function initCliLogin() {
   let view = 'list', status = null, target = null, job = null, seq = 0;
   let timer = null, generation = 0, busy = false, loading = false, polling = false, confirmMode = 'start';
   let noticeKey = null, copied = false, cancelRequested = false, refreshingProvider = null;
-  let accountsKey = null, linksKey = null, deleteError = null;
+  let accountsKey = null, linksKey = null, slotError = null, slotMenu = null, confirmReturn = null;
   let codeFocusPending = false, returnToCode = false;
   let loginTab = null, previousLoginHref = null;
   // Probes can take 10s (Claude) + 15s (Grok), plus a queued completion probe.
@@ -41,24 +41,133 @@ export function initCliLogin() {
   }
   function badge(authenticated, state = null) {
     const key = state ? `cli_login.${state}` : authenticated === null ? 'cli_login.checking' : authenticated ? 'cli_login.authenticated' : 'cli_login.unauthenticated';
-    const element = node('span', `badge ${['expired', 'slot_in_use'].includes(state) ? 'badge-warn' : (!state || state === 'api_key') && authenticated ? 'badge-ok' : 'badge-off'}`, t(key));
+    const element = node('span', `badge ${['expired', 'slot_in_use'].includes(state) ? 'badge-warn' : (!state || state === 'key_connected') && authenticated ? 'badge-ok' : 'badge-off'}`, t(key));
     element.dataset.i18n = key; return element;
   }
-  function labelDelete(control, name) {
-    const label = t('cli_login.delete_label', { name });
-    control.setAttribute('aria-label', label); control.title = label;
+  function closeSlotMenu(restoreFocus = false) {
+    if (!slotMenu) return;
+    const { menu, trigger } = slotMenu;
+    slotMenu = null;
+    trigger.setAttribute('aria-expanded', 'false');
+    if (restoreFocus || menu.contains(document.activeElement)) trigger.focus({ preventScroll: true });
+    menu.hidePopover();
+    schedule();
+  }
+  function positionSlotMenu() {
+    if (!slotMenu) return;
+    const { menu, trigger } = slotMenu;
+    const anchor = trigger.getBoundingClientRect(), body = dialog.querySelector('.cli-body').getBoundingClientRect();
+    if (anchor.top < body.top || anchor.bottom > body.bottom || !trigger.getClientRects().length) {
+      closeSlotMenu();
+      return;
+    }
+    const { width, height } = menu.getBoundingClientRect();
+    const below = anchor.bottom + 6, above = anchor.top - height - 6;
+    menu.style.left = `${Math.max(12, Math.min(anchor.right - width, innerWidth - width - 12))}px`;
+    menu.style.top = `${below + height <= innerHeight - 12 ? below : Math.max(12, above)}px`;
+  }
+  function renderSlotMenu(row, slot, provider) {
+    const name = slot.name;
+    const trigger = node('button', 'theme-btn cli-slot-more');
+    trigger.type = 'button';
+    trigger.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="6" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="18" cy="12" r="1.8"/></svg>';
+    trigger.setAttribute('aria-haspopup', 'menu');
+    trigger.setAttribute('aria-expanded', 'false');
+    const menu = node('div', 'menu cli-slot-menu');
+    menu.id = `cli-slot-menu-${name}`;
+    menu.setAttribute('popover', 'auto');
+    menu.setAttribute('role', 'menu');
+    trigger.setAttribute('aria-controls', menu.id);
+    trigger.setAttribute('popovertarget', menu.id);
+    const label = t('cli_login.slot_more', { name });
+    trigger.setAttribute('aria-label', label);
+    menu.setAttribute('aria-label', label);
+
+    function add(key, openConfirmation, options = {}) {
+      const action = button(`cli_login.${key}`, () => {
+        closeSlotMenu(true);
+        confirmReturn = trigger;
+        openConfirmation();
+      });
+      action.className = options.remove ? 'btn-danger' : '';
+      action.setAttribute('role', 'menuitem');
+      action.setAttribute('aria-haspopup', 'dialog');
+      if (options.mutation) {
+        action.dataset.slotMutation = '';
+        action.disabled = busy || loading;
+      }
+      if (options.remove) {
+        action.dataset.delete = name;
+        const label = t('cli_login.delete_label', { name });
+        action.setAttribute('aria-label', label);
+        action.title = label;
+      }
+      menu.append(action);
+    }
+    if (slot.kind === 'api_key') {
+      add('disconnect', () => askSlotChange('disconnect', name), { mutation: true });
+    } else if (slot.kind !== 'api_key_detached') {
+      add(slot.authenticated ? 'relogin' : 'login', () => askStart({ provider, slot: name, new_slot: false }));
+      if (slot.authenticated) add('logout', () => askSlotChange('logout', name), { mutation: true });
+    }
+    if (name !== 'claude') add('delete', () => askSlotChange('delete', name), { mutation: true, remove: true });
+    trigger.disabled = busy || loading || !menu.children.length || [...menu.children].every(item => item.disabled);
+    menu.addEventListener('beforetoggle', event => {
+      if (event.newState !== 'closed') return;
+      trigger.setAttribute('aria-expanded', 'false');
+      if (slotMenu?.menu === menu) { slotMenu = null; schedule(); }
+    });
+    menu.addEventListener('toggle', () => {
+      if (!menu.matches(':popover-open')) return;
+      slotMenu = { menu, trigger };
+      trigger.setAttribute('aria-expanded', 'true');
+      positionSlotMenu();
+      if (slotMenu?.menu === menu) menu.querySelector('button:not(:disabled)')?.focus();
+    });
+    trigger.addEventListener('keydown', event => {
+      if (!['ArrowDown', 'ArrowUp'].includes(event.key) || menu.matches(':popover-open')) return;
+      event.preventDefault();
+      menu.showPopover();
+    });
+    menu.addEventListener('keydown', event => {
+      if (event.key === 'Escape') {
+        event.preventDefault(); event.stopPropagation(); closeSlotMenu(true);
+        return;
+      }
+      if (!['Tab', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+      const items = [...menu.querySelectorAll('button:not(:disabled)')];
+      if (!items.length) return;
+      const index = items.indexOf(document.activeElement);
+      const backward = event.key === 'ArrowUp' || (event.key === 'Tab' && event.shiftKey);
+      const next = event.key === 'Home' ? items[0] : event.key === 'End' ? items.at(-1)
+        : items[(index + (backward ? -1 : 1) + items.length) % items.length];
+      event.preventDefault(); event.stopPropagation(); next?.focus();
+    });
+    row.append(trigger, menu);
   }
   function renderAccounts() {
     const root = $('cliProviders');
-    const key = JSON.stringify([status?.providers, status?.claude_slots, deleteError]);
+    const key = JSON.stringify([status?.providers, status?.claude_slots, slotError]);
     if (key === accountsKey) {
       root.querySelectorAll('button').forEach(element => {
-        element.disabled = busy || loading || (Boolean(status?.running) && !element.dataset.delete);
-        if (element.dataset.delete) labelDelete(element, element.dataset.delete);
+        const menu = element.classList.contains('cli-slot-more')
+          ? document.getElementById(element.getAttribute('aria-controls')) : null;
+        const canRun = menu
+          ? [...menu.children].some(item => !status?.running || Object.hasOwn(item.dataset, 'slotMutation'))
+          : !status?.running || Object.hasOwn(element.dataset, 'slotMutation');
+        element.disabled = busy || loading || !canRun;
+        if (menu) {
+          const label = t('cli_login.slot_more', { name: element.closest('[data-slot]').dataset.slot });
+          element.setAttribute('aria-label', label); menu.setAttribute('aria-label', label);
+        }
+        if (element.dataset.delete) {
+          const label = t('cli_login.delete_label', { name: element.dataset.delete });
+          element.setAttribute('aria-label', label); element.title = label;
+        }
       });
       return;
     }
-    accountsKey = key; root.replaceChildren();
+    closeSlotMenu(); accountsKey = key; root.replaceChildren();
     providers.forEach(provider => {
       const section = node('section', 'cli-provider');
       const head = node('div', 'cli-provider-head'); head.append(node('h3', 'mono', provider));
@@ -71,27 +180,21 @@ export function initCliLogin() {
         const slots = node('div', 'cli-slots');
         (status?.claude_slots || []).forEach(slot => {
           const row = node('div', 'cli-slot'); row.dataset.slot = slot.name;
-          const error = deleteError?.name === slot.name ? deleteError : null;
+          const error = slotError?.name === slot.name ? slotError : null;
           const name = node('span', 'cli-slot-name mono', slot.name === 'claude' ? t('cli_login.default_slot') : slot.name);
           if (slot.name === 'claude') name.dataset.i18n = 'cli_login.default_slot';
-          const state = error?.key === 'cli_login.delete_busy' ? 'slot_in_use'
-            : slot.kind === 'api_key' ? 'api_key'
+          const state = error?.busy ? 'slot_in_use'
+            : slot.kind === 'api_key_detached' ? 'key_disconnected'
+            : slot.kind === 'api_key' ? 'key_connected'
+            : !slot.authenticated ? 'logged_out'
             : slot.priority == null ? 'unused' : slot.auth_expired ? 'expired' : null;
-          if (slot.kind === 'api_key') {
-            row.append(name, badge(true, state));
-          } else {
-            row.append(name, badge(slot.authenticated, state),
-              button(slot.authenticated ? 'cli_login.relogin' : 'cli_login.login', () => askStart({ provider, slot: slot.name, new_slot: false }), !slot.authenticated));
-          }
-          if (slot.name !== 'claude') {
-            const remove = button('cli_login.delete', () => askDelete(slot.name));
-            remove.classList.toggle('btn-danger', true);
-            remove.dataset.delete = slot.name; remove.disabled = busy || loading;
-            labelDelete(remove, slot.name);
-            remove.setAttribute('aria-haspopup', 'dialog');
-            row.append(remove);
-          }
+          row.append(name, badge(slot.authenticated, state));
+          renderSlotMenu(row, slot, provider);
           slots.append(row);
+          if (slot.kind === 'api_key_detached') {
+            const hint = node('p', 'hint cli-slot-reconnect', t('cli_login.key_reconnect'));
+            hint.dataset.i18n = 'cli_login.key_reconnect'; slots.append(hint);
+          }
           if (error) {
             const message = node('p', 'cli-error slot-error', t(error.key, error.args));
             message.dataset.i18n = error.key;
@@ -111,18 +214,18 @@ export function initCliLogin() {
     });
   }
   function renderConfirmation() {
-    const cancel = confirmMode === 'cancel', remove = confirmMode === 'delete';
-    $('cliConfirmTitle').textContent = t(remove ? 'cli_login.delete_title' : cancel ? 'cli_login.cancel_title' : 'cli_login.confirm_title');
-    $('cliConfirmTarget').textContent = remove ? target?.slot || '' : targetName();
-    $('cliConfirmWarning').textContent = t(remove ? 'cli_login.delete_warning' : cancel ? 'cli_login.cancel_warning'
-      : 'cli_login.confirm_warning')
-      + (!cancel && !remove && target?.provider === 'codex' ? ` ${t('cli_login.confirm_codex')}` : '');
+    const start = confirmMode === 'start', cancel = confirmMode === 'cancel';
+    const prefix = start ? 'confirm' : confirmMode;
+    $('cliConfirmTitle').textContent = t(`cli_login.${prefix}_title`);
+    $('cliConfirmTarget').textContent = start || cancel ? targetName() : target?.slot || '';
+    $('cliConfirmWarning').textContent = t(`cli_login.${prefix}_warning`)
+      + (start && target?.provider === 'codex' ? ` ${t('cli_login.confirm_codex')}` : '');
     $('cliConfirmNo').textContent = t(cancel ? 'cli_login.keep_login' : 'common.cancel');
-    $('cliConfirmYes').textContent = t(remove ? 'cli_login.delete' : cancel ? 'cli_login.confirm_cancel' : 'cli_login.start');
-    $('cliConfirmYes').classList.toggle('btn-danger', cancel || remove);
-    $('cliConfirmYes').classList.toggle('btn-primary', !cancel && !remove);
+    $('cliConfirmYes').textContent = t(`cli_login.${cancel ? 'confirm_cancel' : confirmMode}`);
+    $('cliConfirmYes').classList.toggle('btn-danger', !start);
+    $('cliConfirmYes').classList.toggle('btn-primary', start);
     $('cliConfirmYes').disabled = busy;
-    $('cliConfirmNo').disabled = busy && remove;
+    $('cliConfirmNo').disabled = busy && !start && !cancel;
   }
   function focusCodeInput() {
     const input = $('cliCodeInput'), focused = document.activeElement;
@@ -207,16 +310,20 @@ export function initCliLogin() {
     if (view === 'slot') $('cliSlotPreview').textContent = t('cli_login.slot_preview', { name: slotName($('cliSlotName').value) });
     if (view === 'progress') renderProgress();
     if (['result', 'busy'].includes(view)) renderResult();
-    showNotice(noticeKey); renderConfirmation();
+    showNotice(noticeKey);
+    if (slotError && !status?.claude_slots?.some(slot => slot.name === slotError.name) && ['list', 'busy'].includes(view)) {
+      $('cliNotice').textContent = t(slotError.key, slotError.args); $('cliNotice').hidden = false;
+    }
+    renderConfirmation();
     if (!$('cliSlotError').hidden) $('cliSlotError').textContent = t($('cliSlotError').dataset.key);
   }
   function schedule() {
     stopPolling();
     if (active()) timer = setTimeout(pollJob, 1000);
-    else if (dialog.open && ['list', 'result'].includes(view) && !busy && statusChecksLeft > 0 && (refreshChecksLeft || Object.values(status?.providers || {}).some(value => value === null))) timer = setTimeout(loadStatus, 1000);
+    else if (dialog.open && !confirmation.open && !slotMenu && ['list', 'result'].includes(view) && !busy && statusChecksLeft > 0 && (refreshChecksLeft || Object.values(status?.providers || {}).some(value => value === null))) timer = setTimeout(loadStatus, 1000);
   }
   async function loadStatus() {
-    if (!dialog.open || confirmation.open || !['list', 'result'].includes(view) || busy || statusChecksLeft <= 0) return;
+    if (!dialog.open || confirmation.open || slotMenu || !['list', 'result'].includes(view) || busy || statusChecksLeft <= 0) return;
     const version = generation; statusChecksLeft--; loading = true; renderAccounts();
     try {
       const result = await api('/cli-login/status');
@@ -279,38 +386,53 @@ export function initCliLogin() {
     if (busy) return;
     target = selection; confirmMode = 'start'; renderConfirmation(); confirmation.showModal(); $('cliConfirmNo').focus();
   }
-  function askDelete(name) {
+  function askSlotChange(action, name) {
     if (busy || loading) return;
-    target = { slot: name }; confirmMode = 'delete'; renderConfirmation();
+    target = { slot: name }; confirmMode = action; renderConfirmation();
     confirmation.showModal(); $('cliConfirmNo').focus();
   }
-  async function deleteSlot() {
-    const version = generation, name = target.slot;
-    const currentSlots = status.claude_slots, index = currentSlots.findIndex(slot => slot.name === name);
-    busy = true; render();
+  async function mutateSlot() {
+    const version = generation, name = target.slot, action = confirmMode;
+    const deleting = action === 'delete', currentSlots = status.claude_slots;
+    const index = currentSlots.findIndex(slot => slot.name === name);
+    const live = () => version === generation && dialog.open;
+    const route = `/cli-login/slots/${encodeURIComponent(name)}`;
     let focusSlot = name;
+    busy = true; render();
     try {
-      await api(`/cli-login/slots/${encodeURIComponent(name)}`, { method: 'DELETE' });
-      if (version !== generation || !dialog.open) return;
-      deleteError = null;
-      status = { ...status, claude_slots: currentSlots.filter(slot => slot.name !== name) };
-      focusSlot = currentSlots.slice(index + 1).find(slot => slot.name !== 'claude')?.name;
+      await api(deleting ? route : `${route}/${action}`, { method: deleting ? 'DELETE' : 'POST' });
+      if (!live()) return;
+      slotError = null;
+      const slots = deleting ? currentSlots.filter(slot => slot.name !== name)
+        : currentSlots.map(slot => slot.name !== name ? slot : {
+          ...slot, authenticated: false, auth_expired: true,
+          kind: action === 'disconnect' ? 'api_key_detached' : slot.kind,
+        });
+      status = { ...status, claude_slots: slots };
+      if (deleting) focusSlot = currentSlots[index + 1]?.name;
     } catch (error) {
-      if (version !== generation || !dialog.open) return;
-      let key = 'cli_login.delete_error', args = { name };
-      if (error.code === 'slot_busy') key = 'cli_login.delete_busy';
-      else if (error.code === 'slot_not_found') key = 'cli_login.delete_missing';
-      else if (error.code === 'slot_delete_failed') {
+      if (!live()) return;
+      const inUse = error.code === 'slot_busy';
+      let key = `cli_login.${action}_${inUse ? 'busy' : 'error'}`, args = { name };
+      if (error.code === 'slot_not_found') key = 'cli_login.delete_missing';
+      if (deleting && error.code === 'slot_delete_failed') {
         key = 'cli_login.delete_failed';
         args = { path: error.details?.path || name, reason: error.details?.reason || '' };
         status = { ...status, claude_slots: currentSlots.map(slot => slot.name === name ? { ...slot, priority: null } : slot) };
       }
-      deleteError = { name, key, args };
+      slotError = { name, key, args, busy: inUse };
+    }
+    try {
+      const result = await api('/cli-login/status');
+      if (live()) status = result;
+    } catch (error) {
+      if (live() && !slotError) showNotice(error.code === 'bot_unreachable' ? 'error.bot_unreachable' : 'error.generic');
     } finally {
-      if (version === generation && dialog.open) {
-        busy = false; confirmation.close(); render();
+      if (live()) {
+        busy = false; confirmReturn = null;
+        confirmation.close(); render();
         const next = [...$('cliProviders').querySelectorAll('[data-slot]')].find(row => row.dataset.slot === focusSlot);
-        (next?.querySelector('[data-delete]') || $('cliProviders').querySelector('.cli-provider-head button'))?.focus();
+        (next?.querySelector('.cli-slot-more:not(:disabled)') || $('cliProviders').querySelector('.cli-provider-head button:not(:disabled)') || $('cliClose')).focus();
         schedule();
       }
     }
@@ -320,7 +442,7 @@ export function initCliLogin() {
     confirmMode = 'cancel'; renderConfirmation(); confirmation.showModal(); $('cliConfirmNo').focus();
   }
   async function startJob() {
-    const version = generation; busy = true; renderConfirmation();
+    const version = generation; busy = true; confirmReturn = null; renderConfirmation();
     try {
       const result = await api('/cli-login/jobs', { method: 'POST', body: target });
       if (version !== generation || !dialog.open) return;
@@ -386,7 +508,7 @@ export function initCliLogin() {
   openModal = () => {
     if (dialog.open) return;
     ++generation; status = null; target = null; job = null; view = 'list'; busy = false; loading = true; noticeKey = null;
-    deleteError = null; copied = false; cancelRequested = false; seq = 0; statusChecksLeft = 60; refreshChecksLeft = 0; refreshingProvider = null; $('cliRaw').open = false;
+    slotError = null; copied = false; cancelRequested = false; seq = 0; statusChecksLeft = 60; refreshChecksLeft = 0; refreshingProvider = null; $('cliRaw').open = false;
     dialog.showModal(); render(); $('cliClose').focus(); loadStatus();
   };
   const focusAfterReturn = () => {
@@ -416,11 +538,15 @@ export function initCliLogin() {
     catch { const range = document.createRange(); range.selectNodeContents($('cliDeviceCode')); getSelection().removeAllRanges(); getSelection().addRange(range); }
   });
   $('cliCancel').addEventListener('click', askCancel);
-  $('cliConfirmNo').addEventListener('click', () => { if (!busy) { confirmation.close(); schedule(); } });
+  function dismissConfirmation() {
+    if (busy) return;
+    confirmation.close(); confirmReturn?.focus(); confirmReturn = null; schedule();
+  }
+  $('cliConfirmNo').addEventListener('click', dismissConfirmation);
   $('cliConfirmYes').addEventListener('click', () => {
     if (busy) return;
-    if (confirmMode === 'delete') deleteSlot();
-    else if (confirmMode === 'cancel') cancelJob();
+    if (confirmMode === 'cancel') cancelJob();
+    else if (confirmMode !== 'start') mutateSlot();
     else {
       // Reserve the tab before the asynchronous job request consumes the gesture.
       previousLoginHref = null;
@@ -433,8 +559,13 @@ export function initCliLogin() {
   dialog.querySelectorAll('[data-cli-list]').forEach(control => control.addEventListener('click', () => { stopPolling(); view = 'list'; job = null; showNotice(null); render(); loadStatus(); }));
   function closeDialog() { if (active()) askCancel(); else dialog.close(); }
   $('cliClose').addEventListener('click', closeDialog);
-  dialog.addEventListener('cancel', event => { event.preventDefault(); closeDialog(); });
-  confirmation.addEventListener('cancel', event => { event.preventDefault(); if (!busy) { confirmation.close(); schedule(); } });
+  dialog.querySelector('.cli-body').addEventListener('scroll', positionSlotMenu);
+  window.addEventListener('resize', positionSlotMenu);
+  dialog.addEventListener('cancel', event => {
+    event.preventDefault();
+    if (slotMenu) closeSlotMenu(true); else closeDialog();
+  });
+  confirmation.addEventListener('cancel', event => { event.preventDefault(); dismissConfirmation(); });
   [dialog, confirmation].forEach(modal => modal.addEventListener('keydown', event => {
     if (event.key !== 'Tab') return;
     const controls = [...modal.querySelectorAll('button:not(:disabled),input:not(:disabled),select:not(:disabled),a[href],summary,[tabindex="0"]')].filter(element => element.getClientRects().length);
@@ -443,7 +574,7 @@ export function initCliLogin() {
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
   }));
   dialog.addEventListener('close', () => {
-    ++generation; stopPolling(); closeLoginTab(); confirmation.close(); accountsKey = null; linksKey = null;
+    ++generation; closeSlotMenu(); stopPolling(); closeLoginTab(); confirmation.close(); confirmReturn = null; accountsKey = null; linksKey = null;
     codeFocusPending = false; returnToCode = false; $('cliSlotForm').reset(); $('cliCodeForm').reset(); $('cliRawForm').reset();
     rawOutput.data = ''; job = null; target = null; status = null; $('accountButton').focus();
   });
