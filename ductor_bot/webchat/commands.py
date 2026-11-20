@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, NotRequired, TypedDict
 from ductor_bot.chat_log.ids import from_tid, to_tid
 from ductor_bot.errors import ProductError
 from ductor_bot.i18n import t
-from ductor_bot.i18n.loader import TranslationStore
+from ductor_bot.i18n.loader import TranslationStore, load_web_strings
 from ductor_bot.infra.secret_store import store_path
 from ductor_bot.messenger.telegram.app import (
     _build_help_text,
@@ -330,6 +330,9 @@ class WebCommandDispatcher:
         return await self._registry_response(name, key, text)
 
     async def _registry_response(self, name: str, key: SessionKey, text: str) -> CommandResponse:
+        # The browser opens the modal before sending /cron; legacy callers get no selector.
+        if name == "cron":
+            return _response(load_web_strings(self.bot.config.language)["cron.title"])
         orch = self.bot._orch
         if orch._inflight_tracker.shutting_down:
             return _response(t("error.shutting_down"))

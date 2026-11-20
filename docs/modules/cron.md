@@ -62,6 +62,38 @@ File: `~/.ductor/cron_jobs.json`
 - every status write logs `Cron job <id> status=<status> recorded` at INFO
 - `cron_add.py` and `cron_edit.py` check `--schedule` with `cronsim` (the scheduler's own parser, also a never-matching expression) before anything is created or renamed; an invalid expression prints an error and exits 1
 
+## Webchat management
+
+In webchat, open **Cron** from the chat header or enter `/cron` in the composer.
+Create a job with a name, instruction, timezone and schedule; use daily, weekdays,
+selected-weekday or every 1–23 hours presets, or a direct five-field cron expression.
+The preview shows up to three runs within five years, including annual schedules.
+The timezone defaults to `user_timezone`. The server sets the destination from
+the creation topic; delivery defaults to `inject` when a chat is available.
+
+New jobs copy the creation topic's stored autocompact setting. A topic that follows
+the global setting produces a job with `autocompact: null`, which follows later
+global changes. The menu also offers provider default, off and 100k–1M tokens;
+blank token input uses 500k. Editing preserves existing provider, model and effort
+overrides. Select a job to read its instruction and script names, edit its fields,
+or enable/disable it with the list switch. Telegram `/cron` remains unchanged.
+
+Instruction updates require the current body's SHA-256; a stale edit returns 409
+and must be reloaded before saving. Body updates keep the ten most recent backups
+in the task folder's `.history/`, including when a registry save fails and the
+previous body is restored. Web deletion requires confirmation, moves the task to
+`workspace/cron_tasks/.archive/<id>-<timestamp>`, then removes its registry entry.
+A failed registry save restores the original folder. The `cron_remove.py` tool
+keeps its existing folder-deletion behavior. Archived, history and staging folders
+are excluded from task discovery.
+
+The menu checks the instruction and scripts for static evidence of secret use and
+shows key names without fetching values. Warnings do not prevent saving. Runs that
+need an encrypted store can fail while it is locked. Dynamic names, imports and
+external commands can be missed; comments or unused code can cause false positives.
+An absent warning is no guarantee that secrets are unused. The check does not mask
+values; never put secret values or master keys in task files.
+
 ## Observer lifecycle
 
 `start()`:

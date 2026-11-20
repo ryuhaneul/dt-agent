@@ -128,12 +128,15 @@ async function calendarScroll(browser) {
   await page.waitForFunction(text => document.querySelector('#thread [data-entry-seq="40"] time').textContent !== text, oldStamp);
   assert.deepEqual(await scrollPosition(page), before, 'timezone refresh on focus');
 
+  const historyRefresh = page.waitForResponse(response =>
+    response.request().method() === 'GET' && new URL(response.url()).pathname.endsWith('/messages'));
   await page.evaluate(() => {
     window.resumeRow = document.querySelector('#thread [data-entry-seq="40"]');
     document.dispatchEvent(new Event('visibilitychange'));
   });
-  await page.waitForFunction(() => document.querySelector('#thread [data-entry-seq="40"]') !== window.resumeRow);
+  await (await historyRefresh).finished();
   assert.deepEqual(await scrollPosition(page), before, 'history resync after returning to the chat');
+  assert(await page.evaluate(() => document.querySelector('#thread [data-entry-seq="40"]') === window.resumeRow));
   await context.close();
 }
 

@@ -6,10 +6,10 @@ let setupMode = 'new';
 let preparedSeed = null;
 let setupReady = false;
 
-export function notify(key, values = {}) {
+export function notify(key, values = {}, { success = false } = {}) {
   const toast = document.createElement('div');
-  toast.className = 'toast toast-error';
-  toast.setAttribute('role', 'alert');
+  toast.className = success ? 'toast toast-ok' : 'toast toast-error';
+  toast.setAttribute('role', success ? 'status' : 'alert');
   const message = document.createElement('span');
   message.dataset.i18n = key; message.dataset.i18nArgs = JSON.stringify(values);
   message.textContent = t(key, values);

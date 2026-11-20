@@ -184,6 +184,45 @@ confirmations use `POST /api/topics/{tid}/secret/confirm`. Only sanitized comman
 text and result messages are recorded and mirrored. Values and input tokens never
 enter conversation history, the outbox, mirrors, logs or CLI input.
 
+## Cron menu
+
+Open **Cron** in the chat header or send `/cron` in the web composer. The modal
+lists registered jobs with their schedule, last run, destination, delivery mode
+and autocompact setting. Select a job to read its instruction and script names.
+On screens up to 768 px wide, the list and detail use separate views.
+Telegram `/cron` keeps its existing selector.
+
+Choose **Create cron** to enter a name, instruction, schedule and IANA timezone.
+The four presets cover daily, weekdays, selected weekdays and every 1–23 hours;
+use a direct five-field cron expression for other schedules. The server previews
+the next three runs after a 300 ms pause. It searches up to five years, so annual
+schedules show three runs; schedules with fewer matches can still be saved.
+The timezone defaults to `user_timezone`. The destination is the topic from which
+the job is created and is determined by the server. Delivery defaults to `inject`
+when a chat is available.
+
+Autocompact initially copies the creation topic's stored setting. If that topic
+follows the global setting, the job stores `null` and continues following global
+changes. Choose global inheritance, the provider default, off, or 100k–1M tokens;
+a blank token input uses 500k. Existing provider, model and effort overrides remain
+unchanged when editing a job.
+
+**Edit cron** changes the instruction, schedule, timezone, delivery mode and
+autocompact. The instruction is limited to 256 KiB. A concurrent instruction edit
+returns 409: reload the job before saving again. Successful or rolled-back body
+updates retain the ten most recent instruction backups in the task's `.history/`.
+The list switch enables or disables scheduling. **Delete** asks for confirmation,
+moves the task folder into `cron_tasks/.archive/<id>-<timestamp>`, then removes the
+registry entry. If the registry write fails, the folder is restored.
+
+Creation, editing and detail responses include a static secret-use check of the
+instruction and scripts. A warning lists key names only and does not block saving.
+Secret-dependent runs can fail while an encrypted secret store is locked; unlock
+it before execution. Static checks can miss dynamic names, imports and external
+commands, and comments can produce false positives. No warning does not guarantee
+that the task uses no secrets. This check does not mask values: task files must
+never contain secret values or master keys.
+
 ## Attachments
 
 Use the attachment button beside the message input to select multiple files, drop

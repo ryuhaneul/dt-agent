@@ -3,6 +3,7 @@ import { initCommands } from './commands.js';
 import { initAttachments } from './attachments.js';
 import { initAttachmentView } from './attachment-view.js';
 import { initSecret } from './secret.js';
+import { initCron } from './cron.js';
 import { initAutocompact } from './autocompact.js';
 import { t } from './i18n.js';
 import { notify } from './auth.js';
@@ -13,7 +14,7 @@ import { getTopic, getTopics, selectTopic, refreshTopics, noteEntry, markSeen, f
 const histories = new Map(), turns = new Map(), busy = new Map(), drafts = new Map(), topicVersions = new Map(), busyVersions = new Map();
 let active = false, epoch = 0, stopEvents = null, telegram = { state: 'unknown' };
 let botUp = false, webSessions = null, pending = 0, outbox = [], sending = false;
-let view = 'chat', selection = 0, commandMenu = null, secretDialog = null, autocompactDialog = null;
+let view = 'chat', selection = 0, commandMenu = null, secretDialog = null, autocompactDialog = null, cronDialog = null;
 let streamFrame = null, historyRender = null, composerFiles = null, attachmentView = null;
 const streamUpdates = new Set();
 const HISTORY_PAGE_SIZE = 100, MESSAGE_WINDOW_SIZE = 100, WINDOW_STEP = 50;
@@ -136,8 +137,11 @@ function queueStatus(turnId, status = null) {
   const cancel = !cancelled ? `<button class="btn queue-cancel" type="button" data-cancel-turn="${esc(turnId)}" aria-label="${esc(t('chat.cancel_queued'))}"${turn.cancelling ? ' disabled' : ''}>${esc(t('common.cancel'))}</button>` : '';
   return `<div class="queue-status${cancelled ? ' stopped' : ''}" role="status"><span>${esc(label)}</span>${cancel}</div>`;
 }
+function copyButton(entryId = '', hidden = false) {
+  return `<button class="btn btn-sm btn-ghost" type="button" data-copy-message="${esc(entryId)}"${hidden ? ' hidden' : ''}>${esc(t('chat.copy_message'))}</button>`;
+}
 function queuedMarkup(turn) {
-  return `<div class="msg me" data-queue-turn="${esc(turn.id)}"><div class="meta"><span class="tag">${esc(t('tag.web'))}</span>${messageTime(turn.received)}</div><div class="bubble md">${md(turn.userText)}</div>${queueStatus(turn.id)}</div>`;
+  return `<div class="msg me" data-queue-turn="${esc(turn.id)}"><div class="meta"><span class="tag">${esc(t('tag.web'))}</span>${messageTime(turn.received)}${turn.userText ? copyButton() : ''}</div><div class="bubble md">${md(turn.userText)}</div>${queueStatus(turn.id)}</div>`;
 }
 async function cancelQueued(turnId) {
   const turn = turns.get(turnId), generation = epoch;
@@ -208,22 +212,42 @@ function streamContent(turn, live) {
 function entryMarkup(entry) {
   const displayText=attachmentView?.text(getTopic().tid,entry)??entry.text;
   const attachmentCards=attachmentView?.markup(getTopic().tid,entry)||'';
+  const copy = displayText ? copyButton(entry.id) : '';
   const time = messageTime(entry.ts);
   const delegated = entry.role === 'event' && entry.kind === 'interagent';
   if (entry.role === 'event' && !delegated) {
     const failed = ['failed', 'error', 'cancelled'].includes(entry.status);
     const key = entry.kind === 'task_result' && failed ? 'task_failed' : entry.kind;
     const kind = ['task_result', 'task_failed', 'task_question', 'heartbeat', 'interagent', 'cron', 'webhook', 'background'].includes(key) ? key : 'background';
-    return `<div class="event${entry.imported ? ' old' : ''}" data-entry-seq="${entry.seq}"><span class="badge ${kind === 'task_result' ? 'badge-ok' : kind === 'task_failed' ? 'badge-down' : 'badge-off'}">${esc(t(`event.${kind}`))}</span><div><div class="meta">${sourceTag(entry)}${time}${entry.title ? `<b>${esc(entry.title)}</b>` : ''}</div><div class="md">${history(getTopic().tid).markdown({ ...entry, text: displayText })}</div>${attachmentCards}${responseButtons(entry)}${mirror(entry)}</div></div>`;
+    return `<div class="event${entry.imported ? ' old' : ''}" data-entry-seq="${entry.seq}"><span class="badge ${kind === 'task_result' ? 'badge-ok' : kind === 'task_failed' ? 'badge-down' : 'badge-off'}">${esc(t(`event.${kind}`))}</span><div><div class="meta">${sourceTag(entry)}${time}${entry.title ? `<b>${esc(entry.title)}</b>` : ''}${copy}</div><div class="md">${history(getTopic().tid).markdown({ ...entry, text: displayText })}</div>${attachmentCards}${responseButtons(entry)}${mirror(entry)}</div></div>`;
   }
   const turn = turns.get(entry.turn_id);
   const stopped = entry.status === 'aborted' || (entry.role === 'bot' && turn?.phase === 'aborted');
-  return `<div class="msg ${entry.role === 'user' ? 'me' : 'bot'}${entry.imported ? ' old' : ''}${entry.kind === 'command' ? ' command-message' : ''}" data-entry-seq="${entry.seq}"><div class="meta">${sourceTag(entry)}${delegated ? `<span class="tag">${esc(t('chat.delegated_response'))}</span>` : ''}${time}${delegated && entry.title ? `<span>${esc(entry.title)}</span>` : ''}</div><div class="bubble md">${entry.role === 'bot' ? activitySummary(turn) : ''}${entry.kind === 'command' ? esc(entry.text || '') : history(getTopic().tid).markdown({ ...entry, text: displayText })}${attachmentCards}${responseButtons(entry)}</div>${entry.role === 'user' ? queueStatus(entry.turn_id, entry.status) : ''}${stopped ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : ''}${mirror(entry)}</div>`;
+  return `<div class="msg ${entry.role === 'user' ? 'me' : 'bot'}${entry.imported ? ' old' : ''}${entry.kind === 'command' ? ' command-message' : ''}" data-entry-seq="${entry.seq}"><div class="meta">${sourceTag(entry)}${delegated ? `<span class="tag">${esc(t('chat.delegated_response'))}</span>` : ''}${time}${delegated && entry.title ? `<span>${esc(entry.title)}</span>` : ''}${copy}</div><div class="bubble md">${entry.role === 'bot' ? activitySummary(turn) : ''}${entry.kind === 'command' ? esc(entry.text || '') : history(getTopic().tid).markdown({ ...entry, text: displayText })}${attachmentCards}${responseButtons(entry)}</div>${entry.role === 'user' ? queueStatus(entry.turn_id, entry.status) : ''}${stopped ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : ''}${mirror(entry)}</div>`;
 }
 function streamMarkup(turn) {
   const live = ['queued', 'started'].includes(turn.phase);
   const dots = live ? '<span class="typing" aria-hidden="true"><i></i><i></i><i></i></span>' : '';
-  return `<div class="msg bot" ${live ? 'id="streamMsg"' : ''} data-turn="${esc(turn.id)}"><div class="meta"><span class="tag">${esc(t('tag.web'))}</span>${messageTime(streamTimestamp(turn))}${live ? `<span>${esc(t('chat.answering'))}</span>` : ''}${dots}</div><div class="bubble md">${streamContent(turn, live)}${live ? '<span class="caret" aria-hidden="true"></span>' : ''}</div>${turn.phase === 'aborted' ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : turn.phase === 'error' ? `<div class="stopped">${esc(t('error.generic'))}</div>` : ''}</div>`;
+  return `<div class="msg bot" ${live ? 'id="streamMsg"' : ''} data-turn="${esc(turn.id)}"><div class="meta"><span class="tag">${esc(t('tag.web'))}</span>${messageTime(streamTimestamp(turn))}${live ? `<span>${esc(t('chat.answering'))}</span>` : ''}${dots}${copyButton('', !turn.text)}</div><div class="bubble md">${streamContent(turn, live)}${live ? '<span class="caret" aria-hidden="true"></span>' : ''}</div>${turn.phase === 'aborted' ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : turn.phase === 'error' ? `<div class="stopped">${esc(t('error.generic'))}</div>` : ''}</div>`;
+}
+async function copyMessage(button) {
+  const row = button.closest('[data-entry-seq], [data-turn], [data-queue-turn]');
+  const { turn, queueTurn } = row.dataset, topic = getTopic();
+  if (!topic) return;
+  const entry = history(topic.tid).entries.get(button.dataset.copyMessage);
+  const text = entry ? attachmentView?.text(topic.tid, entry) ?? entry.text
+    : turns.get(turn)?.text ?? turns.get(queueTurn)?.userText;
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    if (button.isConnected) notify('common.copied', {}, { success: true });
+  } catch {
+    if (!button.isConnected) return;
+    const selection = window.getSelection(), range = document.createRange();
+    range.selectNodeContents(row.querySelector('.md'));
+    selection.removeAllRanges(); selection.addRange(range);
+    notify('common.copy_failed');
+  }
 }
 function cancelStreamRender() {
   if (streamFrame !== null) cancelAnimationFrame(streamFrame);
@@ -248,6 +272,7 @@ function scheduleStreamRender(turnId) {
           updateTurn(turn);
           continue;
         }
+        element.querySelector('[data-copy-message]').hidden = !turn.text;
         turn.markdown.render(turn.text.slice(turn.markdownOffset || 0));
         const complete = element.querySelector('[data-stream-complete]');
         const tail = element.querySelector('[data-stream-tail]');
@@ -283,6 +308,7 @@ function renderHeader() {
   });
   document.querySelector('#topicRename').hidden = !topic?.renamable;
   document.querySelector('#headerRename').hidden = !topic?.renamable;
+  document.querySelector('#headerCron').disabled = !active || !topic || topic.read_only || topic.tid === 'unknown';
   document.querySelector('#headerAutocompact').disabled = !active || !topic || topic.read_only || topic.tid === 'unknown';
   document.querySelector('#topicDelete').hidden = !topic?.deletable;
   document.querySelector('.composer').hidden = !topic || topic.read_only || topic.tid === 'unknown';
@@ -441,7 +467,7 @@ function patchThread(thread, groups, changes) {
     if (!parent) {
       template.innerHTML = groupStart(group) + '</div>';
       parent = template.content.firstElementChild;
-    } else if (changes.dayChanged || changes.zoneChanged) {
+    } else if (!changes || changes.dayChanged || changes.zoneChanged) {
       const divider = parent.firstElementChild;
       if (divider.textContent !== group.divider) divider.textContent = group.divider;
     }
@@ -452,15 +478,17 @@ function patchThread(thread, groups, changes) {
     for (let index = group.rows.length - 1; index >= 0; index--) {
       const item = group.rows[index], { entry, turn } = item;
       let node = existing.get(item.key);
-      const dirty = changes.zoneChanged || (item.kind === 'entry'
+      const dirty = !changes || changes.zoneChanged || (item.kind === 'entry'
         ? changes.entries?.has(entry.id) || changes.turns?.has(entry.turn_id)
         : turn && changes.turns?.has(turn.id));
       if (!node || dirty) {
         if (node) rememberActivity(node);
         template.innerHTML = itemMarkup(item);
         const replacement = template.content.firstElementChild;
-        if (node) node.replaceWith(replacement);
-        node = replacement;
+        if (!node?.isEqualNode(replacement)) {
+          if (node) node.replaceWith(replacement);
+          node = replacement;
+        }
       }
       if (node.parentNode !== parent || node.nextElementSibling !== next) parent.insertBefore(node, next);
       next = node;
@@ -659,7 +687,7 @@ export function renderThread({
   if (!sameTopic || bottom || seq !== null || move === 'top') threadOffset(thread)?.remove();
   const showBusy = !state.range.newer && (busy.get(topic.tid) ?? topic.busy) && !liveTurns.length;
   const mounted = mountedRows(rows, start, end, showBusy), groups = threadGroups(mounted);
-  if (changes) patchThread(thread, groups, changes);
+  if (changes || sameTopic) patchThread(thread, groups, changes);
   else thread.innerHTML = groups.map(group => groupStart(group) + group.rows.map(itemMarkup).join('') + '</div>').join('');
   loadWindowAttachments(topic.tid, mounted);
   const pinned = !move && (bottom || followLatest) && !state.range.newer;
@@ -767,7 +795,7 @@ async function refreshOutbox() {
   outbox = data.items; renderOutboxStatus();
 }
 async function resync({ preserveReading = false } = {}) {
-  attachmentView?.reset?.();
+  attachmentView?.markStale();
   for (const state of histories.values()) state.loaded = false;
   const generation = epoch, versions = new Map(topicVersions), busySnapshot = new Map(busyVersions);
   try {
@@ -961,6 +989,10 @@ async function sendMessage() {
   commandMenu?.close();
   const topic = getTopic(), input = document.querySelector('#msgIn');
   if (!active || !topic || topic.read_only) return;
+  if (/^\/cron(?:@[a-z0-9_]+)?\s*$/i.test(input.value.trim())) {
+    drafts.delete(topic.tid); input.value = ''; resizeComposer(); renderHeader();
+    void cronDialog.show(topic); return;
+  }
   if (/^\/autocompact(?:@[a-z0-9_]+)?\s*$/i.test(input.value.trim())) {
     drafts.delete(topic.tid); input.value = ''; resizeComposer(); renderHeader();
     void autocompactDialog.show(topic); return;
@@ -1004,6 +1036,7 @@ async function sendMessage() {
   }
 }
 export function initChat() {
+  cronDialog = initCron(getTopic);
   secretDialog = initSecret();
   attachmentView = initAttachmentView({ changed: (tid, entryId) => updateEntries(tid, [entryId]) });
   autocompactDialog = initAutocompact(getTopic, () => {
@@ -1066,6 +1099,8 @@ export function initChat() {
   document.querySelector('#sendBtn').addEventListener('click', sendMessage);
   document.querySelector('#stopBtn').addEventListener('click', stopAnswer);
   thread.addEventListener('click', event => {
+    const copy = event.target.closest('[data-copy-message]');
+    if (copy) { void copyMessage(copy); return; }
     const cancel = event.target.closest('[data-cancel-turn]');
     if (cancel && !cancel.disabled) void cancelQueued(cancel.dataset.cancelTurn);
     const button = event.target.closest('[data-response-entry]');

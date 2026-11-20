@@ -5,15 +5,19 @@ from __future__ import annotations
 import json
 import os
 import sys
-from collections.abc import Sequence
-from datetime import datetime
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from cronsim import CronSim, CronSimError
-
-from ductor_bot.cron.jobs_file import save_definitions
-from ductor_bot.infra.file_lock import LockTimeoutError
+from ductor_bot.cron import definitions
+from ductor_bot.cron.definitions import (
+    describe_job,
+    sanitize_name,
+    schedule_problem,
+)
+from ductor_bot.cron.jobs_file import read_jobs_data, save_definitions
+from ductor_bot.infra.file_lock import LockTimeoutError, exclusive_file_lock
 
 from ductor_bot._home_defaults.workspace.tools._tool_shared import (
     parse_autocompact_option,  # noqa: F401 -- shared CLI option parser
@@ -23,7 +27,6 @@ from ductor_bot._home_defaults.workspace.tools._tool_shared import (
     find_by_id,
     load_collection_or_default,
     load_collection_strict,
-    sanitize_name,
 )
 
 DUCTOR_HOME = Path(os.environ.get("DUCTOR_HOME", "~/.ductor")).expanduser()
@@ -31,87 +34,8 @@ CONFIG_PATH = DUCTOR_HOME / "config" / "config.json"
 JOBS_PATH = DUCTOR_HOME / "cron_jobs.json"
 CRON_TASKS_DIR = DUCTOR_HOME / "workspace" / "cron_tasks"
 
-# Where a job's result goes (CronJob.delivery_mode); the first one is the default.
-DELIVERY_MODES = ("separate", "inject", "in_session")
-
-# Provider rule files — only create for authenticated providers.
-_RULE_FILENAMES = ("CLAUDE.md", "AGENTS.md", "GEMINI.md")
-
-
-_MODE_MEANING = {
-    "separate": "a separate run; the result arrives as a plain message (the topic's session "
-    "does not see it)",
-    "inject": "a separate run; its result is injected into the topic's session, which replies "
-    "(one extra model turn of that session per run)",
-    "in_session": "no separate run: the instruction runs as a turn of the topic's session, with "
-    "that session's own model (one model turn of that session per run)",
-}
-
-
-def describe_job(job: dict[str, Any], timezone: str) -> list[dict[str, str]]:
-    """Per-setting value and one-line meaning, for the agent to tell the user."""
-    mode = str(job.get("delivery_mode", "separate"))
-    chat = job.get("chat_id", 0)
-    topic = job.get("topic_id")
-    if chat:
-        target = f"chat {chat}" + (f", topic {topic}" if topic is not None else ", main thread")
-        target += f" ({job.get('transport', 'tg')})"
-    else:
-        target = "broadcast to all users"
-    model_parts = [
-        f"{label}={job[key]}"
-        for key, label in (("provider", "provider"), ("model", "model"), ("reasoning_effort", "effort"))
-        if job.get(key)
-    ]
-    quiet = (
-        f"{job['quiet_start']}:00-{job['quiet_end']}:00"
-        if job.get("quiet_start") is not None and job.get("quiet_end") is not None
-        else "none (this job has no quiet hours; the heartbeat quiet hours do not apply to cron)"
-    )
-    return [
-        {
-            "setting": "schedule",
-            "value": f"{job.get('schedule')} ({timezone or 'UTC, no user_timezone set'})",
-            "meaning": "when the job runs; the hours are read in this timezone",
-        },
-        {
-            "setting": "target",
-            "value": target,
-            "meaning": "where the result goes (the chat/topic the job was created in)",
-        },
-        {
-            "setting": "delivery_mode",
-            "value": mode,
-            "meaning": _MODE_MEANING.get(mode, "unknown mode (runs as separate)"),
-        },
-        {
-            "setting": "model",
-            "value": ", ".join(model_parts) or "global config defaults",
-            "meaning": (
-                "ignored in in_session mode: the topic session's own model is used"
-                if mode == "in_session"
-                else "which CLI/model runs the job"
-            ),
-        },
-        {
-            "setting": "quiet_hours",
-            "value": quiet,
-            "meaning": "the job does not run during these hours",
-        },
-        {
-            "setting": "silent_on_success",
-            "value": str(bool(job.get("silent_on_success", False))).lower(),
-            "meaning": (
-                "no result message when a run succeeds (errors still arrive); has no effect in "
-                "inject and in_session mode"
-            ),
-        },
-        {
-            "setting": "dependency",
-            "value": str(job.get("dependency") or "none"),
-            "meaning": "jobs with the same dependency run one at a time",
-        },
-    ]
+DELIVERY_MODES = definitions.DELIVERY_MODES
+_RULE_FILENAMES = definitions.RULE_FILENAMES
 
 
 def read_user_timezone() -> str:
@@ -126,59 +50,11 @@ def read_user_timezone() -> str:
 
 
 def detect_rule_filenames() -> list[str]:
-    """Determine which rule files to create based on parent cron_tasks/ contents.
-
-    Checks which provider rule files (CLAUDE.md, AGENTS.md, GEMINI.md) exist
-    in the ``cron_tasks/`` root.  These are deployed by the RulesSelector during
-    workspace init based on CLI authentication status.
-
-    Falls back to ``["CLAUDE.md"]`` when no rule files are found.
-    """
-    found = [name for name in _RULE_FILENAMES if (CRON_TASKS_DIR / name).is_file()]
-    return found or ["CLAUDE.md"]
+    return definitions.detect_rule_filenames(CRON_TASKS_DIR)
 
 
 def render_cron_task_claude_md(name: str) -> str:
-    """Render fixed CLAUDE.md/AGENTS.md content for a cron task folder."""
-    return f"""\
-# Your Mission
-
-You are an **automated agent**. You run on a schedule with NO human interaction.
-Complete your task autonomously and update memory when done.
-
-## Workflow
-
-1. **Read** `{name}_MEMORY.md` first -- it contains context from previous runs.
-2. **Read** the whole `TASK_DESCRIPTION.md`!
-3. **Follow the assignment** in `TASK_DESCRIPTION.md`!
-4. Perform the task conscientiously!
-5. **Update** `{name}_MEMORY.md` with the current date/time and what you did.
-
-## Rules
-
-- Stay focused on this task only. Do not deviate.
-- Do not modify files outside this task folder unless explicitly instructed by the user or the assigned TASK_DESCRIPTION.md.
-- Check whether all scripts are already present in the script folder! (IF they are needed!)
-- Use `.venv` for Python dependencies: `source .venv/bin/activate`
-
-## Secrets and master keys
-
-- Tool credentials in `secrets.env` may be encrypted with a master key. Provider startup keys in `.env` are separate and are not encrypted by this feature.
-- Use `load_secrets("KEY")` from `{DUCTOR_HOME / "workspace" / "tools"}/_secrets.py` for only the needed names; an existing environment value takes precedence. Never read/source `secrets.env`, its `.enc` file, or plaintext copies directly.
-- Check `python3 {DUCTOR_HOME / "workspace" / "tools"}/secret_tools/secret_status.py` before a task that needs secrets. It reports `unconfigured`, `locked`, or `unlocked`, TTL and remaining time without values. Restart always locks a configured store; TTL expiry locks it too; TTL 0 means unlimited until restart or manual lock.
-- `SECRETS_LOCKED` means stop the secret-dependent work and report the code. Ask the owner to use `/masterkey unlock` in the main Telegram bot's private chat or unlock in the webchat modal. Do not bypass the lock, search for plaintext/backups, inspect process memory, or retrieve authentication tokens from files or other processes.
-- `SECRETS_RATE_LIMITED` means wait for `retry_after`; do not loop, retry aggressively, or bypass the shared limit. `SECRET_NOT_SET` means the requested name is missing; never invent a value.
-- Never ask for, accept, or process a master key in ordinary conversation, prompts, task files, or tool arguments. Master-key input belongs only in the `/masterkey` private input flow or the webchat modal. If locked, request the unlock action, not the key itself.
-- Never cat, print, log or bulk-source credential files, including `.env`; inspect names without values.
-- Never print, log, mirror, or persist secret values or master/derived keys in chat, memory, task descriptions, scripts, results, or temporary files. Use only needed values inside the consuming process. Key-name inventories and status tools must never fetch values.
-
-- When creating or editing a secret-dependent schedule, run the cron checker last and include the locked-run failure warning in the completion report.
-
-## Important
-
-You provide the final answer after the task is completed in a pleasant, concise,
-and well-formatted manner.
-"""
+    return definitions.render_cron_task_claude_md(name, DUCTOR_HOME)
 
 
 def load_jobs_or_default(jobs_path: Path) -> dict[str, Any]:
@@ -205,12 +81,23 @@ def available_job_ids(jobs: list[dict[str, Any]]) -> list[str]:
 
 
 def safe_task_dir(task_folder: str) -> Path:
-    """Resolve and validate a cron task folder path under CRON_TASKS_DIR."""
-    folder_path = (CRON_TASKS_DIR / task_folder).resolve()
-    if not folder_path.is_relative_to(CRON_TASKS_DIR.resolve()):
-        msg = f"Path traversal blocked: {task_folder!r} resolves outside cron_tasks"
-        raise ValueError(msg)
-    return folder_path
+    return definitions.safe_task_dir(task_folder, CRON_TASKS_DIR)
+
+
+@contextmanager
+def locked_jobs_file(jobs_path: Path) -> Iterator[dict[str, Any]]:
+    """Read the registry under the lock and retain it through the caller's writes."""
+    try:
+        with exclusive_file_lock(jobs_path):
+            try:
+                data = read_jobs_data(jobs_path)
+            except (ValueError, TypeError):
+                print(json.dumps({"error": "Corrupt cron_jobs.json -- cannot parse"}))
+                sys.exit(1)
+            yield data
+    except LockTimeoutError:
+        print(json.dumps({"error": "cron_jobs.json is locked by another writer; try again"}))
+        sys.exit(1)
 
 
 def save_jobs(
@@ -234,14 +121,3 @@ def save_jobs(
     except (ValueError, TypeError):
         print(json.dumps({"error": "Corrupt cron_jobs.json -- cannot parse"}))
         sys.exit(1)
-
-
-def schedule_problem(schedule: str) -> str:
-    """Why *schedule* is not a cron expression the scheduler accepts ("" when it is)."""
-    try:
-        next(CronSim(schedule, datetime(2000, 1, 1)))
-    except CronSimError as exc:
-        return f"Invalid cron expression {schedule!r}: {exc}"
-    except StopIteration:
-        return f"Cron expression {schedule!r} never matches"
-    return ""

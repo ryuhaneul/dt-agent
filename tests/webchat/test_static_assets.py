@@ -614,17 +614,20 @@ try {
   assert.equal(await page.locator('#sendBtn').evaluate(el=>el===document.activeElement&&el.matches(':focus-visible')),true);
   assert.equal(await page.locator('#sendBtn').evaluate(el=>getComputedStyle(el).outlineStyle),'solid');
   // CLI stages focus the fixed input, preserve drafts/cursors on polling, and respect raw controls.
+  await context.route('https://login.example.test/**',route=>route.fulfill({contentType:'text/html',body:'Login page'}));
+  const automaticTab=context.waitForEvent('page');
   await page.locator('#accountButton').click();await page.locator('#openCliLogin').click();
   await page.locator('.cli-slot button').first().click();await page.locator('#cliConfirmYes').click();
   await page.locator('#cliWaiting').waitFor({state:'visible'});
-  cliNeedsInput=true;await page.waitForFunction(()=>document.activeElement?.id==='cliCodeInput');
+  cliNeedsInput=true;
+  const opened=await automaticTab;await opened.waitForURL('https://login.example.test/auth');await opened.close();await page.bringToFront();
+  await page.waitForFunction(()=>document.activeElement?.id==='cliCodeInput');
   await page.locator('#cliCodeInput').fill('draft-code');
   await page.locator('#cliCodeInput').evaluate(input=>input.setSelectionRange(2,6));
   const fixed=await page.locator('#cliCodeInput').elementHandle();
   await page.waitForResponse(response=>response.url().includes('/cli-login/jobs/browser-login?'));
   assert.equal(await fixed.evaluate(input=>input===document.querySelector('#cliCodeInput')),true);
   assert.deepEqual(await fixed.evaluate(input=>[input.value,input.selectionStart,input.selectionEnd]),['draft-code',2,6]);
-  await context.route('https://login.example.test/**',route=>route.fulfill({contentType:'text/html',body:'Login page'}));
   const popupPromise=page.waitForEvent('popup');await page.locator('#cliLinkRows a').click();
   const popup=await popupPromise;await popup.close();await page.bringToFront();
   await page.evaluate(()=>{window.dispatchEvent(new Event('focus'));document.dispatchEvent(new Event('visibilitychange'));});
@@ -808,6 +811,7 @@ class ThreadRow extends Element {
     this.children.splice(next===null?this.children.length:this.children.indexOf(next),0,row);
     row.parentNode=this;
   }
+  isEqualNode(row){return this.html===row?.html;}
   getBoundingClientRect(){
     const thread=this.parentNode.parentNode ?? this.parentNode;
     const rows=thread.children.flatMap(group=>group.children);
@@ -822,6 +826,7 @@ class ThreadRow extends Element {
   }
   replaceWith(row){this.parentNode.insertBefore(row,this);this.remove();}
   querySelector(selector){
+    if(selector==='[data-copy-message]'&&this.html.includes('data-copy-message='))return {};
     const name=selector.slice(1,-1);
     const pattern=new RegExp(`(<div ${name}[^>]*>)([\\s\\S]*?)(</div>)`);
     if(!pattern.test(this.html))return null;
@@ -2496,12 +2501,15 @@ import vm from 'node:vm';
 const {source,ids}=JSON.parse(fs.readFileSync(0,'utf8'));
 let focus=null,language='ko',timerId=0,resumeJob=false;const fakeSlots=[{name:'claude',priority:1,authenticated:true},{name:'claude-empty',priority:2,authenticated:false},{name:'claude-expired',priority:3,authenticated:true,auth_expired:true},{name:'claude-unused',priority:null,authenticated:true,auth_expired:true},{name:'claude-api',kind:'api_key',priority:4,authenticated:true}];const timers=new Map(),calls=[],events={},statusReplies=[];const providerStates={claude:'authenticated',codex:'installed',grok:'installed'};
 class Element {
+ get textContent(){return this.children.length?this.children.map(child=>child.textContent??child.data).join(''):this.text}
+ set textContent(value){this.text=value;this.children=[]}
  constructor(id=''){this.id=id;this.value='';this.hidden=false;this.disabled=false;this.open=false;this.children=[];this.listeners={};this.dataset={};this.textContent='';this.classList={toggle(){}}}
  addEventListener(name,fn){(this.listeners[name]??=[]).push(fn)}
  emit(name,event={}){return Promise.all((this.listeners[name]||[]).map(fn=>fn({preventDefault(){},...event})))}
  append(...children){this.children.push(...children)}
  replaceChildren(...children){this.children=children}
  get childElementCount(){return this.children.length}
+ querySelector(selector){return selector==='a[href]'?this.children[0]?.children.find(child=>child.href):null}
  setAttribute(){} removeAttribute(){} getClientRects(){return this.hidden?[]:[{}]}
  focus(){focus=this.id;fakeDocument.activeElement=this} contains(element){return this===element||this.children.some(child=>child.contains(element))} querySelectorAll(selector){return this.id==='cliLoginDlg'&&selector==='[data-cli-list]'?[listControl]:[]}
  showModal(){this.open=true} close(){this.open=false;this.emit('close')}
@@ -2510,8 +2518,12 @@ class Element {
 const elements=new Map(ids.map(id=>[id,new Element(id)]));const get=id=>elements.get(id);const listControl=new Element('back-to-list');
 const current={job_id:'demo',provider:'grok',slot:null,state:'running',reason:null,seq:1,output:[{seq:1,text:'terminal output'}],urls:['javascript:alert(1)','http://unsafe.invalid','https://safe.invalid/auth'],code:null,needs_input:false,restart_required:false};
 const clone=value=>JSON.parse(JSON.stringify(value));
-const windowEvents={};const fakeDocument={getElementById:get,createElement:()=>new Element(),addEventListener:(name,fn)=>events[name]=fn};
-const context=vm.createContext({URL,document:fakeDocument,window:{addEventListener:(name,fn)=>windowEvents[name]=fn},
+const windowEvents={}, openedTabs=[];
+const fakeDocument={getElementById:get,createElement:()=>new Element(),
+ createTextNode:data=>({data,get length(){return this.data.length},appendData(value){this.data+=value},deleteData(start,count){this.data=this.data.slice(0,start)+this.data.slice(start+count)}}),
+ addEventListener:(name,fn)=>events[name]=fn};
+const context=vm.createContext({URL,document:fakeDocument,window:{addEventListener:(name,fn)=>windowEvents[name]=fn,getSelection:()=>null,
+ open:(url,target)=>{const tab={url,target,opener:'webchat',closed:false,close(){this.closed=true},location:{replace(value){tab.url=value}}};openedTabs.push(tab);return tab}},
  navigator:{clipboard:{writeText:async()=>{}}},setTimeout:(fn,delay)=>{assert.equal(delay,1000);timers.set(++timerId,fn);return timerId},clearTimeout:id=>timers.delete(id)});
 const api=new vm.SyntheticModule(['api'],function(){this.setExport('api',async(path,options={})=>{
  calls.push({path,options:clone(options)});
@@ -2557,12 +2569,16 @@ const grok=get('cliProviders').children[2].children[0];await grok.children.at(-1
 assert.equal(get('cliConfirmWarning').textContent,'ko:cli_login.confirm_warning');
 await get('cliConfirmYes').emit('click');await flush();
 assert.equal(get('cliProgress').hidden,false);assert.equal(get('cliLinkRows').childElementCount,1);
-const stableLink=get('cliLinkRows').children[0];
+const stableLink=get('cliLinkRows').children[0], rawText=get('cliRawOutput').children[0];
+assert.equal(openedTabs.at(-1).url,'about:blank');
+assert.equal(openedTabs.at(-1).opener,null);
 const repeat=timers.values().next().value;timers.clear();repeat();await flush();
 assert.equal(get('cliLinkRows').children[0],stableLink,'unchanged polling must preserve focused link nodes');
+assert.equal(get('cliRawOutput').children[0],rawText,'unchanged polling must preserve raw output text nodes');
 assert.equal(get('cliLinkRows').children[0].children[1].rel,'noopener noreferrer');
 const tickJob=async()=>{const next=timers.values().next().value;timers.clear();next();await flush()};
 fakeDocument.activeElement=null;current.needs_input=true;await tickJob();assert.equal(focus,'cliCodeInput');
+assert.equal(openedTabs.at(-1).url,'https://safe.invalid/auth');
 const stableInput=get('cliCodeInput');stableInput.value='partially entered';stableInput.selectionStart=3;stableInput.selectionEnd=7;
 await tickJob();assert.equal(get('cliCodeInput'),stableInput);assert.equal(stableInput.value,'partially entered');assert.equal(stableInput.selectionStart,3);assert.equal(stableInput.selectionEnd,7);assert.equal(focus,'cliCodeInput');
 const link=stableLink.children[1];link.focus();await link.emit('click');assert.equal(focus,'cliCodeInput');
@@ -2786,3 +2802,71 @@ def test_message_dates_browser(tmp_path):
         timeout=180,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_cron_modal_and_header_contract(markup):
+    nodes = {attrs.get("id"): (tag, attrs) for tag, attrs in markup.tags if attrs.get("id")}
+    assert nodes["cronDlg"][0] == "dialog"
+    assert nodes["cronDlg"][1]["aria-labelledby"] == "cronTitle"
+    assert nodes["headerCron"][1]["type"] == "button"
+    assert nodes["cronError"][1]["role"] == "alert"
+    assert nodes["cronClose"][1]["data-i18n-attr"] == "aria-label:common.close"
+    css = (STATIC / "css/app.css").read_text()
+    assert ".cron-dialog .field::placeholder{color:var(--muted);opacity:1}" in css
+    assert "@media(max-width:768px)" in css
+    assert ".cron-split.has-detail>.cron-list{display:none}" in css
+    assert '[data-theme="dark"] .cron-dialog{color-scheme:dark}' in css
+
+
+def test_cron_locale_keys_and_placeholders_match():
+    reference = {key: value for key, value in load_web_strings("en").items() if key.startswith("cron.")}
+    assert reference
+    for language in ("de", "es", "fr", "id", "ko", "nl", "pt", "ru"):
+        actual = {key: value for key, value in load_web_strings(language).items() if key.startswith("cron.")}
+        assert actual.keys() == reference.keys()
+        for key, value in actual.items():
+            assert set(re.findall(r"\{\w+\}", value)) == set(re.findall(r"\{\w+\}", reference[key]))
+
+
+def test_cron_presets_roundtrip_and_direct_expression_fallback():
+    script = r"""
+import assert from 'node:assert/strict';import fs from 'node:fs';import vm from 'node:vm';
+const context=vm.createContext({console});
+const module=new vm.SourceTextModule(fs.readFileSync(process.argv[1],'utf8'),{context});
+await module.link(async name=>{
+ const exports=name==='./api.js'?{api:()=>{}}:name==='./i18n.js'?{t:()=>''}:name==='./md.js'?{esc:String}:{parseAutocompactTokens:()=>null};
+ const stub=new vm.SyntheticModule(Object.keys(exports),function(){for(const [key,value]of Object.entries(exports))this.setExport(key,value)},{context});await stub.link(()=>{});return stub;
+});await module.evaluate();
+const {presetCron,cronPreset}=module.namespace;
+for(const [preset,expression]of [
+ [{type:'daily',time:'09:15'},'15 9 * * *'],
+ [{type:'weekdays',time:'08:30'},'30 8 * * 1-5'],
+ [{type:'weekly',time:'18:30',days:[5,1,0,5]},'30 18 * * 0,1,5'],
+ [{type:'hours',interval:1},'0 */1 * * *'],
+ [{type:'hours',interval:23},'0 */23 * * *'],
+]){assert.equal(presetCron(preset),expression);assert.equal(presetCron(cronPreset(expression)),expression)}
+assert.equal(presetCron({type:'hours',interval:24}),null);
+assert.equal(presetCron({type:'hours',interval:0}),null);
+assert.equal(presetCron({type:'weekly',time:'09:00',days:[]}),null);
+assert.equal(presetCron({type:'daily',time:'24:00'}),null);
+assert.equal(cronPreset('0 9 1 1 *'),null);
+assert.equal(cronPreset('*/15 * * * *'),null);
+assert.equal(cronPreset('5 25 * * *'),null);
+assert.equal(presetCron(cronPreset('0 9 * * 7,1')),'0 9 * * 0,1');
+"""
+    result = subprocess.run(
+        ["node", "--experimental-vm-modules", "--input-type=module", "-e", script, str(STATIC / "js/cron.js")],
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+async def test_web_cron_command_returns_no_telegram_selector():
+    from types import SimpleNamespace
+    from ductor_bot.session.key import SessionKey
+    from ductor_bot.webchat.commands import WebCommandDispatcher
+
+    dispatcher = object.__new__(WebCommandDispatcher)
+    dispatcher.bot = SimpleNamespace(config=SimpleNamespace(language="en"))
+    result = await dispatcher._registry_response("cron", SessionKey.telegram(1, 7), "/cron")
+    assert result == {"text": load_web_strings("en")["cron.title"], "buttons": None}

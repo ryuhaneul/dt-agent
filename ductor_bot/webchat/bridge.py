@@ -62,6 +62,7 @@ from ductor_bot.webchat.commands import (
     command_list,
     parse_command,
 )
+from ductor_bot.webchat.cron_api import register_cron_routes
 from ductor_bot.webchat.downloads import AttachmentDownloads, stream_attachment
 from ductor_bot.webchat.files import WebFileError, WebFiles
 from ductor_bot.webchat.read_state import ReadState
@@ -251,6 +252,7 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
 ) -> None:
     turns = WebTurns(bot, runtime)
     topics = WebTopics(bot, runtime, turns)
+    register_cron_routes(app, bot, topics, turns)
     register_upload_routes(
         app,
         bot._orch.paths.workspace / "webchat_files",
