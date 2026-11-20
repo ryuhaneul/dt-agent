@@ -16,7 +16,7 @@ export function initCliLogin() {
   let noticeKey = null, copied = false, cancelRequested = false, refreshingProvider = null;
   let accountsKey = null, linksKey = null, deleteError = null;
   let codeFocusPending = false, returnToCode = false;
-  let loginTab = null;
+  let loginTab = null, previousLoginHref = null;
   // Probes can take 10s (Claude) + 15s (Grok), plus a queued completion probe.
   // Bound unknown-status polling; two snapshots skip the first cached response.
   let statusChecksLeft = 60, refreshChecksLeft = 0;
@@ -26,7 +26,7 @@ export function initCliLogin() {
   const targetName = () => target?.provider === 'claude' && target.slot
     ? `claude · ${target.slot === 'claude' ? t('cli_login.default_slot') : target.slot}` : target?.provider || '';
   function stopPolling() { clearTimeout(timer); timer = null; }
-  function closeLoginTab() { loginTab?.close(); loginTab = null; }
+  function closeLoginTab() { loginTab?.close(); loginTab = null; previousLoginHref = null; }
   function showNotice(key) { noticeKey = key; $('cliNotice').textContent = key ? t(key) : ''; $('cliNotice').hidden = !key; $('cliNotice').classList.toggle('cli-notice-ok', key === 'cli_login.sent'); }
   function node(tag, className, text) {
     const element = document.createElement(tag); element.className = className;
@@ -158,10 +158,15 @@ export function initCliLogin() {
         const text = node('span', 'cli-url mono', url.href);
         const copy = node('button', 'btn', t('cli_login.copy_link'));
         copy.type = 'button'; copy.dataset.i18n = 'cli_login.copy_link';
+        let copyTimer;
         copy.addEventListener('click', async () => {
           try {
             await navigator.clipboard.writeText(url.href);
             copy.dataset.i18n = 'common.copied'; copy.textContent = t('common.copied');
+            clearTimeout(copyTimer);
+            copyTimer = setTimeout(() => {
+              copy.dataset.i18n = 'cli_login.copy_link'; copy.textContent = t('cli_login.copy_link');
+            }, 2000);
           } catch {
             if (!copy.isConnected || !dialog.open || view !== 'progress') return;
             const selection = window.getSelection(), range = document.createRange();
@@ -252,17 +257,20 @@ export function initCliLogin() {
         loadStatus();
       }
       render();
-      // A PTY read can end mid-URL. Wait for the CLI's code or input prompt.
-      const link = loginTab && (job.code || job.needs_input) && $('cliLinkRows').querySelector('a[href]');
-      if (link) {
+      // A PTY read can end mid-URL. Wait for the CLI's prompt or two matching polls.
+      const href = loginTab ? $('cliLinkRows').querySelector('a[href]')?.href : null;
+      const ready = href && (job.code || job.needs_input || href === previousLoginHref);
+      previousLoginHref = href;
+      if (ready) {
         const tab = loginTab; loginTab = null;
         if (!tab.closed) {
-          tab.location.replace(link.href);
+          tab.location.replace(href);
           returnToCode = true;
         }
       }
     } catch (error) {
       if (version !== generation || !dialog.open) return;
+      previousLoginHref = null;
       if (error.status === 404) { job = { ...job, state: 'failed' }; view = 'result'; stopPolling(); closeLoginTab(); }
       showNotice(error.code === 'bot_unreachable' ? 'error.bot_unreachable' : 'error.generic'); render();
     } finally { polling = false; if (dialog.open) schedule(); }
@@ -415,6 +423,7 @@ export function initCliLogin() {
     else if (confirmMode === 'cancel') cancelJob();
     else {
       // Reserve the tab before the asynchronous job request consumes the gesture.
+      previousLoginHref = null;
       loginTab = window.open('about:blank', '_blank');
       if (loginTab) loginTab.opener = null;
       startJob();

@@ -273,6 +273,18 @@ try{
     assert(!await page.locator('#thread').innerText().then(value=>value.includes('[INCOMING FILE]')));assert(!await page.locator('#thread').innerText().then(value=>value.includes('Web attachments are in a temporary folder')));assert(await page.locator('#thread').innerText().then(value=>value.includes('Please check the photo.')));
     assert.equal(await page.locator('.message-attachment').filter({hasText:'secret.txt'}).count(),0);assert(await page.locator('#thread').innerText().then(value=>value.includes('Web attachment caption')));
     assert(!await page.locator('#thread').innerText().then(value=>value.includes('<file:/safe/background.txt>')));
+    const selectedEntry=await page.locator('[data-entry-seq="1"]').elementHandle();
+    await selectedEntry.evaluate(entry=>{
+      const text=entry.querySelector('.md p').firstChild;
+      window.getSelection().setBaseAndExtent(text,0,text,6);
+    });
+    const photoRefresh=page.waitForResponse(response=>new URL(response.url()).pathname.endsWith('/messages/aaaaaaaaaaaa/attachments'));
+    await page.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));
+    await (await photoRefresh).finished();
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    assert(await selectedEntry.evaluate(entry=>entry.isConnected&&window.getSelection().toString()==='Please'));
+    await page.evaluate(()=>window.getSelection().removeAllRanges());
+    results.checks.push('visibility refresh preserves unchanged attachment messages and their selection');
     for(const [width,height] of [[375,667],[768,960],[1280,720]]){
       await page.setViewportSize({width,height});
       for(const theme of ['light','dark']){

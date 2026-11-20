@@ -679,7 +679,7 @@ async function refreshOutbox() {
   outbox = data.items; renderOutboxStatus();
 }
 async function resync() {
-  attachmentView?.reset?.();
+  attachmentView?.markStale();
   for (const state of histories.values()) state.loaded = false;
   const generation = epoch, versions = new Map(topicVersions), busySnapshot = new Map(busyVersions);
   try {
