@@ -80,6 +80,7 @@ current = "{name} · Topik #{id}"
 last_active = "Terakhir aktif: {time}"
 
 [chat]
+copy_message = "Salin pesan"
 activity = "Detail aktivitas"
 queued = "Dalam antrean"
 cancelled = "Dibatalkan"
@@ -128,6 +129,8 @@ item_history = "Entri riwayat web: {n}"
 confirm = "Masukkan {name} untuk mengonfirmasi"
 
 [common]
+copied = "Disalin"
+copy_failed = "Gagal menyalin"
 cancel = "Batal"
 delete = "Hapus"
 close = "Tutup"
@@ -251,6 +254,7 @@ title = "Bahasa antarmuka web"
 empty = "Masukkan nama topik."
 
 [cli_login]
+copy_link = "Salin tautan"
 api_key = "Kunci API"
 api_key_slot = "Kelola slot kunci API di server dengan ./scripts/login.sh claude-api."
 title = "Login CLI"
