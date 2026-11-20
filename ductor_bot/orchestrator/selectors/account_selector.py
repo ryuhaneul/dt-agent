@@ -165,9 +165,7 @@ def _handle_slot_change(
         if action:
             name = value
             if value.startswith("@"):
-                name = _take_slot_reference(
-                    home, value[1:], confirmation=False, action=action
-                ).slot
+                name = _take_slot_reference(home, value[1:], confirmation=False, action=action).slot
             identity = (
                 claude_slots.slot_identity(home, name)
                 if action == "delete"
@@ -231,7 +229,9 @@ def _slot_change_buttons(
         return []
     buttons = []
     if kind == "api_key":
-        buttons.append(_slot_change_button(home, t("accounts.btn_disconnect", name=name), "k", name))
+        buttons.append(
+            _slot_change_button(home, t("accounts.btn_disconnect", name=name), "k", name)
+        )
     elif has_oauth_credentials:
         buttons.append(_slot_change_button(home, t("accounts.btn_logout", name=name), "l", name))
     if name != DEFAULT_SLOT:

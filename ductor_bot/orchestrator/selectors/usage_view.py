@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 from ductor_bot.cli.claude_accounts import (
     host_slot_config_dir,
     resolve_ductor_home,
-    slot_is_api_key,
+    slot_kind,
 )
 from ductor_bot.config import AgentConfig, resolve_user_timezone
 from ductor_bot.i18n import t
@@ -116,8 +116,9 @@ def render_usage(
     lines = [t("usage.title", time=_clock(current, current, timezone))]
     for name in config.claude_accounts or ["claude"]:
         title = f"Claude · {name}"
-        if slot_is_api_key(host_slot_config_dir(resolve_ductor_home(config.ductor_home), name)):
-            lines.extend([title, t("accounts.api_key")])
+        kind = slot_kind(host_slot_config_dir(resolve_ductor_home(config.ductor_home), name))
+        if kind in {"api_key", "api_key_detached"}:
+            lines.extend([title, t(f"accounts.{kind}")])
             continue
         usage = slots.get(name)
         if usage is not None:

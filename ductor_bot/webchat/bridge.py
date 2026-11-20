@@ -1176,7 +1176,9 @@ def _register_cli_login_routes(app: web.Application, bot: TelegramBot) -> None: 
         return web.json_response({"ok": True})
 
     app.router.add_delete(f"{_PREFIX}/cli-login/slots/{{slot}}", mutate_slot)
-    app.router.add_post(f"{_PREFIX}/cli-login/slots/{{slot}}/{{action:logout|disconnect}}", mutate_slot)
+    app.router.add_post(
+        f"{_PREFIX}/cli-login/slots/{{slot}}/{{action:logout|disconnect}}", mutate_slot
+    )
     app.router.add_post(f"{_PREFIX}/cli-login/cancel-owner", handle)
     app.router.add_get(f"{_PREFIX}/cli-login/status", handle)
     app.router.add_post(f"{_PREFIX}/cli-login/jobs", handle)

@@ -160,9 +160,7 @@ def _validate_auth_slot_path(directory: Path, expected_path: Path) -> None:
 
 
 @contextmanager
-def _reserve_auth_change(
-    home: Path, slot: str, expected: SlotIdentity | None
-) -> Iterator[Path]:
+def _reserve_auth_change(home: Path, slot: str, expected: SlotIdentity | None) -> Iterator[Path]:
     if not is_slot_name(slot):
         raise SlotDeleteError("invalid_slot")
     root = host_cli_auth_dir(home)
