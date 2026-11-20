@@ -7,7 +7,7 @@ import os
 import threading
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -90,7 +90,7 @@ async def test_all_locales_and_empty_list_have_refresh_and_notice(page, language
     path.write_text('{"claude_accounts": []}')
     response = await selector.account_selector_start(home, config)
     assert t("accounts.unused") in response.text
-    assert _data(response) == ["acs:x:claude-a", "acs:r"]
+    assert _data(response) == ["acs:l:claude-a", "acs:x:claude-a", "acs:r"]
     (home / ".cli-auth" / "claude-a" / ".credentials.json").unlink()
     (home / ".cli-auth" / "claude-a").rmdir()
     response = await selector.account_selector_start(home, config)
@@ -523,3 +523,256 @@ async def test_delete_confirmation_reports_cooldown_state_error(page, monkeypatc
     result = await selector.handle_account_callback(home, config, _data(confirmation)[1])
     assert t("accounts.deleted", name="claude-a") in result.text
     assert "claude-a" not in _names(home)
+
+
+def _prepare_slot(home, slot, kind):
+    folder = home / ".cli-auth" / slot
+    folder.mkdir(exist_ok=True)
+    if kind == "oauth":
+        (folder / ".credentials.json").write_text("{}")
+    elif kind == "api_key":
+        (folder / "settings.json").write_text('{"apiKeyHelper": "helper.sh"}')
+    elif kind == "api_key_detached":
+        (folder / "api-key-helper.detached").write_text("helper.sh\n")
+    return folder
+
+
+@pytest.mark.parametrize(
+    ("default_kind", "default_controls"), [("oauth", {"l"}), ("signed_out", set())]
+)
+async def test_slot_buttons_follow_credential_state(page, default_kind, default_controls):
+    selector, home, config = page
+    accounts = {
+        "claude": (default_kind, default_controls),
+        "claude-a": ("oauth", {"l", "x"}),
+        "claude-b": ("signed_out", {"x"}),
+        "claude-credit": ("api_key", {"k", "x"}),
+        "claude-detached": ("api_key_detached", {"x"}),
+    }
+    (home / "config" / "config.json").write_text(json.dumps({"claude_accounts": list(accounts)}))
+    for name, (kind, _) in accounts.items():
+        _prepare_slot(home, name, kind)
+
+    response = await selector.account_selector_start(home, config)
+    actions = set(_data(response))
+    for name, (_, expected) in accounts.items():
+        assert {code for code in ("l", "k", "x") if f"acs:{code}:{name}" in actions} == expected
+    assert t("accounts.api_key_detached") in response.text
+
+
+@pytest.mark.parametrize(
+    ("action", "code", "slot", "kind", "method"),
+    [
+        ("logout", "l", "claude", "oauth", "logout"),
+        ("logout", "l", "claude-a", "oauth", "logout"),
+        ("disconnect", "k", "claude-credit", "api_key", "disconnect_api_key"),
+    ],
+)
+async def test_slot_auth_confirmation_cancel_and_success(
+    page, monkeypatch, *, action, code, slot, kind, method
+):
+    selector, home, config = page
+    folder = _prepare_slot(home, slot, kind)
+    real_operation = getattr(claude_slots, method)
+    calls = []
+
+    def operation(ductor_home, name, *, expected):
+        assert threading.current_thread() is not threading.main_thread()
+        calls.append((ductor_home, name))
+        real_operation(ductor_home, name, expected=expected)
+
+    def fake_logout(argv, **_kwargs):
+        assert argv == ("claude", "auth", "logout")
+        (folder / ".credentials.json").unlink()
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(claude_slots, method, operation)
+    monkeypatch.setattr(claude_slots.subprocess, "run", fake_logout)
+    opening = f"acs:{code}:{slot}"
+    confirmation = await selector.handle_account_callback(home, config, opening)
+    assert confirmation.text == t(f"accounts.{action}_confirm", name=slot)
+    buttons = confirmation.buttons.rows[0]
+    assert [button.text for button in buttons] == [
+        t("accounts.btn_cancel_delete"), t(f"accounts.btn_confirm_{action}")
+    ]
+    assert calls == []
+    cancel, confirm = _data(confirmation)
+    await selector.handle_account_callback(home, config, cancel)
+    replay = await selector.handle_account_callback(home, config, confirm)
+    assert t("accounts.stale") in replay.text
+    assert calls == []
+
+    confirmation = await selector.handle_account_callback(home, config, opening)
+    before = _names(home)
+    result = await selector.handle_account_callback(home, config, _data(confirmation)[1])
+    assert calls == [(home, slot)]
+    assert t(f"accounts.{action}_done", name=slot) in result.text
+    assert opening not in _data(result)
+    if action == "logout" and slot in before:
+        assert f"{slot}  {t('accounts.unauthenticated')}" in result.text
+    assert folder.is_dir()
+    assert _names(home) == before
+    await selector.handle_account_callback(home, config, _data(confirmation)[1])
+    assert calls == [(home, slot)]
+
+
+@pytest.mark.parametrize(
+    ("action", "code", "slot", "kind"),
+    [("logout", "l", "claude-a", "oauth"), ("disconnect", "k", "claude-credit", "api_key")],
+)
+async def test_slot_auth_confirmation_reports_busy(page, action, code, slot, kind):
+    from ductor_bot.cli.slot_rotation import slot_use_lock
+
+    selector, home, config = page
+    folder = _prepare_slot(home, slot, kind)
+    opening = f"acs:{code}:{slot}"
+    confirmation = await selector.handle_account_callback(home, config, opening)
+    before = _fingerprint(home)
+    with slot_use_lock(folder.parent, slot) as held:
+        assert held
+        response = await selector.handle_account_callback(home, config, _data(confirmation)[1])
+    assert t(f"accounts.{action}_busy") in response.text
+    assert opening in _data(response)
+    assert _fingerprint(home) == before
+
+
+@pytest.mark.parametrize(
+    ("method", "code", "slot", "kind"),
+    [
+        ("logout", "l", "claude", "oauth"),
+        ("disconnect_api_key", "k", "claude-credit", "api_key"),
+    ],
+)
+async def test_telegram_slot_auth_callbacks_reject_unauthorized_user(
+    telegram, page, monkeypatch, *, method, code, slot, kind
+):
+    create, _fake, _sent, edited = telegram
+    selector, home, config = page
+    _prepare_slot(home, slot, kind)
+    opening = f"acs:{code}:{slot}"
+    confirmation = await selector.handle_account_callback(home, config, opening)
+    operation = MagicMock()
+    monkeypatch.setattr(claude_slots, method, operation)
+    bot = create("main")
+    message = _message(user=2)
+    for data in (opening, _data(confirmation)[1]):
+        event = CallbackQuery.model_validate(
+            {
+                "id": "fixture",
+                "from": {"id": 2, "is_bot": False, "first_name": "Fixture"},
+                "chat_instance": "fixture",
+                "message": message.model_dump(by_alias=True),
+                "data": data,
+            }
+        )
+        callback = AsyncMock()
+        await bot._auth(callback, event, {})
+        callback.assert_not_awaited()
+    operation.assert_not_called()
+    edited.assert_not_awaited()
+
+
+@pytest.mark.parametrize(("code", "kind"), [("l", "oauth"), ("k", "api_key")])
+async def test_long_slot_auth_callback_is_short_and_bound_to_action(page, code, kind):
+    selector, home, config = page
+    name = "claude-" + "x" * 70
+    _prepare_slot(home, name, kind)
+    response = await selector.account_selector_start(home, config)
+    opening = next(callback for callback in _data(response) if callback.startswith(f"acs:{code}:@"))
+    other = "k" if code == "l" else "l"
+    forged = opening.replace(f"acs:{code}:", f"acs:{other}:", 1)
+    rejected = await selector.handle_account_callback(home, config, forged)
+    assert t("accounts.stale") in rejected.text
+    confirmation = await selector.handle_account_callback(home, config, opening)
+    assert name in confirmation.text
+    assert all(len(callback.encode("utf-8")) <= 64 for callback in [opening, *_data(confirmation)])
+
+
+@pytest.mark.parametrize(
+    ("code", "kind", "error"),
+    [
+        ("l", "api_key", "logout_api_key_slot"),
+        ("k", "oauth", "disconnect_not_api_key_slot"),
+        ("k", "api_key_detached", "disconnect_not_api_key_slot"),
+    ],
+)
+async def test_slot_auth_rejects_an_ineligible_slot(page, code, kind, error):
+    selector, home, config = page
+    name = "claude-other"
+    _prepare_slot(home, name, kind)
+
+    response = await selector.handle_account_callback(home, config, f"acs:{code}:{name}")
+
+    assert t(f"accounts.{error}") in response.text
+    assert not any(value.startswith("acs:y:") for value in _data(response))
+
+
+@pytest.mark.parametrize(
+    ("action", "code", "kind", "method"),
+    [
+        ("logout", "l", "oauth", "logout"),
+        ("disconnect", "k", "api_key", "disconnect_api_key"),
+    ],
+)
+async def test_slot_auth_reports_backend_failure(page, monkeypatch, *, action, code, kind, method):
+    selector, home, config = page
+    name = "claude-other"
+    _prepare_slot(home, name, kind)
+    opening = f"acs:{code}:{name}"
+    confirmation = await selector.handle_account_callback(home, config, opening)
+    operation = MagicMock(side_effect=claude_slots.SlotDeleteError(f"{action}_failed"))
+    monkeypatch.setattr(claude_slots, method, operation)
+
+    response = await selector.handle_account_callback(home, config, _data(confirmation)[1])
+
+    operation.assert_called_once_with(home, name, expected=ANY)
+    assert t(f"accounts.{action}_failed") in response.text
+    assert opening in _data(response)
+
+
+async def test_logout_confirmation_rejects_recreated_default_slot(page, monkeypatch):
+    selector, home, config = page
+    folder = _prepare_slot(home, "claude", "oauth")
+    confirmation = await selector.handle_account_callback(home, config, "acs:l:claude")
+    folder.rename(folder.with_name("old-claude"))
+    _prepare_slot(home, "claude", "oauth")
+    operation = MagicMock()
+    monkeypatch.setattr(claude_slots.subprocess, "run", operation)
+
+    response = await selector.handle_account_callback(home, config, _data(confirmation)[1])
+
+    assert t("accounts.stale") in response.text
+    operation.assert_not_called()
+
+
+@pytest.mark.parametrize(("code", "kind"), [("l", "oauth"), ("k", "api_key")])
+async def test_slot_auth_confirmation_rechecks_identity_under_lock(page, monkeypatch, code, kind):
+    from contextlib import contextmanager
+
+    selector, home, config = page
+    name = "claude-a" if kind == "oauth" else "claude-key"
+    folder = _prepare_slot(home, name, kind)
+    confirm = await selector.handle_account_callback(home, config, f"acs:{code}:{name}")
+    preserved = folder.with_name("old-slot")
+    real_lock = claude_slots.slot_use_lock
+
+    @contextmanager
+    def replace_on_lock(root, slot, *, deleting):
+        with real_lock(root, slot, deleting=deleting) as reserved:
+            assert reserved
+            folder.rename(preserved)
+            _prepare_slot(home, name, kind)
+            yield reserved
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("A replacement slot must not be mutated")
+
+    monkeypatch.setattr(claude_slots, "slot_use_lock", replace_on_lock)
+    monkeypatch.setattr(claude_slots.subprocess, "run", unexpected)
+    monkeypatch.setattr(claude_slots, "atomic_text_save", unexpected)
+    result = await selector.handle_account_callback(home, config, _data(confirm)[1])
+
+    assert t("accounts.stale") in result.text
+    assert preserved.is_dir()
+    assert folder.is_dir()
+    assert not (folder / "api-key-helper.detached").exists()

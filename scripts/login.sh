@@ -1153,10 +1153,12 @@ share_slot_from_default() {
     local default_dir="${AUTH_DIR_HOST}/claude"
     local alt_dir="${AUTH_DIR_HOST}/${slot}"
     [ -d "$alt_dir" ] || return 0
-    local api_key=0
+    local keep_settings=0
     if slot_is_api_key "$alt_dir"; then
-        api_key=1
+        keep_settings=1
         write_api_slot_settings "$slot" || return 1
+    elif [ -f "$alt_dir/api-key-helper.detached" ] && [ ! -L "$alt_dir/api-key-helper.detached" ]; then
+        keep_settings=1
     fi
     [ -d "$default_dir" ] || return 0
 
@@ -1164,10 +1166,10 @@ share_slot_from_default() {
     local entry name
     for entry in "$default_dir"/*; do
         name="$(basename "$entry")"
-        if [ "$api_key" -eq 1 ] && [ "$name" = "settings.json" ]; then
+        if [ "$keep_settings" -eq 1 ] && [ "$name" = "settings.json" ]; then
             continue
         fi
-        if _is_slot_credential "$name"; then
+        if _is_slot_credential "$name" || [ "$name" = "api-key-helper.detached" ]; then
             continue
         fi
         if [ "$name" = "projects" ]; then

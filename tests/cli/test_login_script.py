@@ -8,6 +8,7 @@ invoking docker. The bottom-of-file dispatch is guarded by
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -110,3 +111,110 @@ class TestEnsureSlotDirMigration:
         projects = tmp_path / ".cli-auth" / "claude-alt" / "projects"
         assert projects.is_symlink()
         assert str(projects.readlink()) == "../_shared-projects"
+
+
+def test_repair_preserves_detached_settings_for_host_recovery(tmp_path: Path) -> None:
+    from ductor_bot.cli.claude_accounts import slot_kind
+    from ductor_bot.cli.claude_slots import disconnect_api_key
+
+    root = tmp_path / ".cli-auth"
+    default = root / "claude"
+    alternate = root / "claude-api"
+    default.mkdir(parents=True)
+    alternate.mkdir()
+    default_settings = default / "settings.json"
+    default_bytes = b'{ "theme": "dark", "defaultOnly": true }\n'
+    default_settings.write_bytes(default_bytes)
+    (default / "shared.txt").write_text("shared", encoding="utf-8")
+    alt_settings = alternate / "settings.json"
+    alt_settings.write_text(
+        '{"apiKeyHelper":"helper.sh","extraSlotOnly":true}', encoding="utf-8"
+    )
+
+    disconnect_api_key(tmp_path, alternate.name)
+    detached_bytes = alt_settings.read_bytes()
+    assert slot_kind(alternate) == "api_key_detached"
+
+    repair = subprocess.run(
+        ["bash", "-c", 'source "$1" && login_claude_dispatch --repair', "bash", str(_LOGIN_SH)],
+        env={**os.environ, "DUCTOR_HOME": str(tmp_path)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert repair.returncode == 0, repair.stderr
+    assert alt_settings.is_file()
+    assert not alt_settings.is_symlink()
+    assert alt_settings.read_bytes() == detached_bytes
+    assert (alternate / "shared.txt").resolve() == default / "shared.txt"
+    assert slot_kind(alternate) == "api_key_detached"
+    marker = alternate / "api-key-helper.detached"
+    restored = json.loads(alt_settings.read_text(encoding="utf-8"))
+    restored["apiKeyHelper"] = marker.read_text(encoding="utf-8").removesuffix("\n")
+    alt_settings.write_text(json.dumps(restored), encoding="utf-8")
+
+    assert slot_kind(alternate) == "api_key"
+    assert default_settings.read_bytes() == default_bytes
+    assert slot_kind(default) == "oauth"
+
+
+def test_repair_keeps_detached_helpers_private_to_each_slot(tmp_path: Path) -> None:
+    from ductor_bot.cli.claude_accounts import slot_kind
+    from ductor_bot.cli.claude_slots import disconnect_api_key
+
+    root = tmp_path / ".cli-auth"
+    default = root / "claude"
+    alternate = root / "claude-api"
+    oauth = root / "claude-oauth"
+    oauth.mkdir(parents=True)
+    for slot, helper in ((default, "default-helper.sh"), (alternate, "extra-helper.sh")):
+        slot.mkdir()
+        settings = {"apiKeyHelper": helper, "slot": slot.name}
+        (slot / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+        disconnect_api_key(tmp_path, slot.name)
+        assert slot_kind(slot) == "api_key_detached"
+
+    default_settings = default / "settings.json"
+    alt_settings = alternate / "settings.json"
+    alt_marker = alternate / "api-key-helper.detached"
+    default_bytes = default_settings.read_bytes()
+    alt_bytes = alt_settings.read_bytes()
+    alt_helper = b"extra-helper.sh\n"
+    assert alt_marker.read_bytes() == alt_helper
+
+    repair = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1" && login_claude_dispatch --repair && login_claude_dispatch --repair',
+            "bash",
+            str(_LOGIN_SH),
+        ],
+        env={**os.environ, "DUCTOR_HOME": str(tmp_path)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert repair.returncode == 0, repair.stderr
+    assert alt_marker.is_file()
+    assert not alt_marker.is_symlink()
+    assert alt_marker.read_bytes() == alt_helper
+    assert alt_settings.is_file()
+    assert not alt_settings.is_symlink()
+    assert alt_settings.read_bytes() == alt_bytes
+    assert slot_kind(alternate) == "api_key_detached"
+    oauth_marker = oauth / alt_marker.name
+    assert not oauth_marker.exists()
+    assert not oauth_marker.is_symlink()
+    assert (oauth / "settings.json").resolve() == default_settings
+
+    restored = json.loads(alt_settings.read_text(encoding="utf-8"))
+    restored["apiKeyHelper"] = alt_marker.read_text(encoding="utf-8").removesuffix("\n")
+    alt_settings.write_text(json.dumps(restored), encoding="utf-8")
+
+    assert slot_kind(alternate) == "api_key"
+    assert restored["apiKeyHelper"] == "extra-helper.sh"
+    assert default_settings.read_bytes() == default_bytes
+    assert slot_kind(default) == "api_key_detached"

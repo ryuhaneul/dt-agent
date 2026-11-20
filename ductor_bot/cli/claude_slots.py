@@ -6,24 +6,35 @@ import json
 import os
 import re
 import shutil
+import stat
+import subprocess
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TypedDict
 
 from ductor_bot.cli.claude_accounts import (
     CONTAINER_DUCTOR_MOUNT,
     DEFAULT_SLOT,
+    DETACHED_API_KEY_HELPER,
+    AuthFailureDetails,
     SlotRegistry,
     SlotSnapshot,
+    claude_slot_env,
+    container_slot_config_dir,
     host_cli_auth_dir,
     host_slot_config_dir,
     slot_is_authenticated,
+    slot_kind,
     state_file_path,
 )
+from ductor_bot.cli.claude_usage import UsageStore, usage_file_path
 from ductor_bot.cli.slot_rotation import slot_use_lock
 from ductor_bot.config import AgentConfig, transform_config_file
+from ductor_bot.infra.atomic_io import atomic_text_save
+from ductor_bot.infra.json_store import atomic_json_save
 
 
 class SlotOverview(TypedDict):
@@ -78,7 +89,7 @@ SlotIdentity = tuple[int, int, int]
 
 
 class SlotDeleteError(ValueError):
-    """A deletion was refused or failed after updating the slot list."""
+    """A slot removal, logout, or key disconnection was refused or failed."""
 
 
 class SlotDirectoryError(SlotDeleteError):
@@ -139,6 +150,109 @@ def remove(home: Path, slot: str, *, expected: SlotIdentity | None = None) -> No
         _remove_directory(directory)
 
 
+def _validate_auth_slot_path(directory: Path, expected_path: Path) -> None:
+    try:
+        if not directory.is_symlink() and directory.resolve() == expected_path:
+            return
+    except (OSError, RuntimeError) as exc:
+        raise SlotDeleteError("invalid_slot") from exc
+    raise SlotDeleteError("invalid_slot")
+
+
+@contextmanager
+def _reserve_auth_change(home: Path, slot: str, expected: SlotIdentity | None) -> Iterator[Path]:
+    if not is_slot_name(slot):
+        raise SlotDeleteError("invalid_slot")
+    root = host_cli_auth_dir(home)
+    directory = root / slot
+    expected_path = root.resolve() / slot
+    _validate_auth_slot_path(directory, expected_path)
+    with slot_use_lock(root, slot, deleting=True) as reserved:
+        if not reserved:
+            raise SlotDeleteError("slot_busy")
+        _validate_auth_slot_path(directory, expected_path)
+        missing = "slot_not_found" if expected is None else "slot_stale"
+        try:
+            status = directory.lstat()
+        except FileNotFoundError as exc:
+            raise SlotDeleteError(missing) from exc
+        if stat.S_ISLNK(status.st_mode):
+            raise SlotDeleteError("invalid_slot")
+        if not stat.S_ISDIR(status.st_mode):
+            raise SlotDeleteError(missing)
+        if expected is not None and (status.st_dev, status.st_ino, status.st_ctime_ns) != expected:
+            raise SlotDeleteError("slot_stale")
+        yield directory
+
+
+def logout(home: Path, slot: str, *, expected: SlotIdentity | None = None) -> None:
+    """Log out an OAuth slot in the bot container, preserving its configuration."""
+    with _reserve_auth_change(home, slot, expected) as directory:
+        if slot_kind(directory) != "oauth":
+            raise SlotDeleteError("api_key_slot")
+        try:
+            result = subprocess.run(
+                ("claude", "auth", "logout"),
+                env=claude_slot_env(os.environ, container_slot_config_dir(slot)),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+                check=False,
+            )
+            if result.returncode != 0 or slot_is_authenticated(directory):
+                raise SlotDeleteError("logout_failed")
+            _mark_slot_signed_out(home, slot)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise SlotDeleteError("logout_failed") from exc
+
+
+def disconnect_api_key(home: Path, slot: str, *, expected: SlotIdentity | None = None) -> None:
+    """Remove an API key helper from settings and keep its command for recovery."""
+    with _reserve_auth_change(home, slot, expected) as directory:
+        if slot_kind(directory) != "api_key":
+            raise SlotDeleteError("not_api_key_slot")
+
+        settings = directory / "settings.json"
+        try:
+            original = settings.read_text(encoding="utf-8")
+            data = json.loads(original)
+        except (OSError, ValueError, RecursionError) as exc:
+            raise SlotDeleteError("disconnect_failed") from exc
+
+        helper = data.get("apiKeyHelper") if isinstance(data, dict) else None
+        if not isinstance(helper, str) or not helper:
+            raise SlotDeleteError("not_api_key_slot")
+        try:
+            atomic_text_save(directory / DETACHED_API_KEY_HELPER, helper + "\n")
+            del data["apiKeyHelper"]
+            atomic_json_save(settings, data)
+        except (OSError, ValueError, RecursionError) as exc:
+            raise SlotDeleteError("disconnect_failed") from exc
+
+        try:
+            _mark_slot_signed_out(home, slot)
+        except OSError as exc:
+            try:
+                atomic_text_save(settings, original)
+            except OSError as rollback_error:
+                raise SlotDeleteError("disconnect_failed") from rollback_error
+            raise SlotDeleteError("disconnect_failed") from exc
+
+
+def _mark_slot_signed_out(home: Path, slot: str) -> None:
+    registry = SlotRegistry(state_file_path(home))
+    fingerprint = registry.credential_mtimes(slot)
+
+    def mark(snapshot: SlotSnapshot) -> None:
+        snapshot.cooldowns.pop(slot, None)
+        snapshot.auth_failures[slot] = fingerprint
+        snapshot.auth_failure_details[slot] = AuthFailureDetails()
+
+    registry.update(mark, strict=True)
+    UsageStore(usage_file_path(home)).remove(slot)
+
+
 def _clear_slot_state(home: Path, slot: str) -> None:
     def clear(snapshot: SlotSnapshot) -> None:
         snapshot.cooldowns.pop(slot, None)
@@ -149,6 +263,7 @@ def _clear_slot_state(home: Path, slot: str) -> None:
 
     try:
         SlotRegistry(state_file_path(home)).update(clear, strict=True)
+        UsageStore(usage_file_path(home)).remove(slot)
     except (ValueError, RecursionError) as exc:
         msg = "Could not update cooldown records"
         raise OSError(msg) from exc

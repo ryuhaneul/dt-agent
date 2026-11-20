@@ -203,3 +203,16 @@ def test_api_key_usage_has_label_instead_of_usage_cache(tmp_path, locale, cached
     assert t("usage.empty") not in text
     assert "⛔" not in text
     assert "5h" not in text
+
+
+def test_detached_api_key_usage_shows_disconnected_label(tmp_path):
+    slot = tmp_path / ".cli-auth" / "claude-api"
+    slot.mkdir(parents=True)
+    (slot / "settings.json").write_text("{}")
+    (slot / "api-key-helper.detached").write_text("helper.sh\n")
+    config = AgentConfig(ductor_home=str(tmp_path), claude_accounts=[slot.name])
+
+    text = render_usage(config, {}, None, now=stamp(21, 13, 30))
+
+    assert f"Claude · {slot.name}\n{t('accounts.api_key_detached')}\nCodex" in text
+    assert t("usage.empty") not in text

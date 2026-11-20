@@ -102,6 +102,9 @@ class FakeBridge:
                         "job_id": active[0] if active and active[1] == owner else None,
                     }
                 )
+            if request.method == "POST" and path.startswith("/cli-login/slots/"):
+                if path.endswith(("/logout", "/disconnect")):
+                    return web.json_response({"ok": True})
             if path == "/cli-login/jobs":
                 if body.get("provider") not in ("claude", "codex", "grok"):
                     return web.json_response({"error": "invalid_login"}, status=400)
@@ -1352,3 +1355,17 @@ async def test_attachment_message_owner_is_derived_from_cookie(site):
     fetched = await client.get("/api/topics/123/messages/entry/attachments", headers=authorized)
     assert fetched.status == 200
     assert (await fetched.json())["path"] == "/topics/123/messages/entry/attachments"
+
+
+async def test_slot_logout_returns_the_result_after_five_seconds(site):
+    client, fake = site
+    authorized, _ = await login(client)
+    route = "/cli-login/slots/claude-work/logout"
+    fake.delay_path = route
+    fake.delay = 6
+
+    response = await client.post(f"/api{route}", headers=authorized)
+
+    assert response.status == 200
+    assert await response.json() == {"ok": True}
+    assert client.app[STATE].bridge._client.timeout.total == 5

@@ -141,15 +141,25 @@ class UsageStore:
     def __init__(self, path: Path) -> None:
         self._path = path
 
-    def load(self) -> dict[str, SlotUsage]:
+    def load(self, *, strict: bool = False) -> dict[str, SlotUsage]:
         """Read without creating files or modifying snapshot timestamps."""
         try:
             return UsageSnapshot.model_validate_json(self._path.read_text(encoding="utf-8")).slots
         except FileNotFoundError:
             return {}
         except (OSError, ValueError) as exc:
+            if strict and isinstance(exc, OSError):
+                raise
             logger.warning("Claude usage snapshot unavailable: %s", type(exc).__name__)
             return {}
+
+    def remove(self, slot: str) -> None:
+        """Remove a slot's usage without overwriting concurrent records."""
+        with exclusive_file_lock(self._path):
+            slots = self.load(strict=True)
+            if slot in slots:
+                del slots[slot]
+                atomic_json_save(self._path, UsageSnapshot(slots=slots).model_dump(mode="json"))
 
     def record(self, slot: str, event: object, *, captured_at: int | None = None) -> None:
         """Merge only the supplied windows; never touch the cooldown state file."""

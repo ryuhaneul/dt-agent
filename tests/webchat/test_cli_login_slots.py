@@ -667,9 +667,10 @@ def test_api_shared_settings_recreated_when_default_directory_is_missing(tmp_pat
 def test_web_slot_paths_reject_escape_before_api_probe(paths, operation, name):
     before = tree(paths.ductor_home)
     # Exercise the path boundary independently of the slot-name regex.
+    classifier = "slot_is_api_key" if operation == "share" else "slot_kind"
     with (
         patch("ductor_bot.webchat.cli_login_slots.resolve_slot_name", return_value=name),
-        patch("ductor_bot.webchat.cli_login_slots.slot_is_api_key") as probe,
+        patch(f"ductor_bot.webchat.cli_login_slots.{classifier}") as probe,
         pytest.raises(ValueError, match="invalid_slot"),
     ):
         if operation == "share":
@@ -1012,3 +1013,133 @@ if trigger.exists():
             reader.cancel()
             await asyncio.gather(reader, return_exceptions=True)
         await stream.aclose()
+
+
+@pytest.mark.parametrize("new_slot", [False, True])
+async def test_manager_rejects_detached_api_key_oauth(paths, manager_factory, new_slot):
+    from ductor_bot.cli.claude_slots import disconnect_api_key
+
+    home = paths.ductor_home
+    directory = home / ".cli-auth" / "claude-manual"
+    directory.mkdir()
+    (directory / "settings.json").write_text('{"apiKeyHelper": "helper.sh"}')
+    disconnect_api_key(home, directory.name)
+    manager, record = manager_factory()
+    before = tree(home)
+    with pytest.raises(CliLoginError, match=r"^api_key_slot$") as exc:
+        manager.start("claude", OWNER, slot=directory.name, new_slot=new_slot)
+    assert exc.value.status == 400
+    assert not record.exists()
+    assert tree(home) == before
+
+
+@pytest.mark.parametrize("slot", ["claude", "claude-existing"])
+async def test_logout_refuses_slots_reserved_by_web_login(paths, manager_factory, slot):
+    from ductor_bot.cli import claude_slots
+
+    directory = paths.ductor_home / ".cli-auth" / slot
+    directory.mkdir(exist_ok=True)
+    manager, record = manager_factory("wait")
+    job = manager.start("claude", OWNER, slot=slot)
+    with (
+        patch.object(claude_slots.subprocess, "run") as logout_cli,
+        pytest.raises(claude_slots.SlotDeleteError, match=r"^slot_busy$"),
+    ):
+        claude_slots.logout(paths.ductor_home, slot)
+    logout_cli.assert_not_called()
+    assert not record.exists()
+    await until(record.exists)
+    manager.cancel(job, OWNER)
+    assert (await settled(manager, job))["state"] == "cancelled"
+
+
+@pytest.mark.parametrize(
+    ("action", "operation", "wrong_kind", "failure"),
+    [
+        ("logout", "logout", "api_key_slot", "logout_failed"),
+        ("disconnect", "disconnect_api_key", "not_api_key_slot", "disconnect_failed"),
+    ],
+)
+async def test_slot_auth_mutations_enforce_bridge_auth_and_map_errors(
+    cli_bridge, monkeypatch, action, operation, wrong_kind, failure
+):
+    from ductor_bot.cli import claude_slots
+
+    client, _, _, paths, _ = cli_bridge
+    route = f"{_PREFIX}/cli-login/slots/claude-work/{action}"
+    count = 0
+    expected_error = None
+    event_loop_thread = threading.get_ident()
+
+    def mutate(home, slot):
+        nonlocal count
+        assert threading.get_ident() != event_loop_thread
+        assert home == paths.ductor_home
+        assert slot == "claude-work"
+        count += 1
+        if expected_error is not None:
+            raise claude_slots.SlotDeleteError(expected_error)
+
+    monkeypatch.setattr(claude_slots, operation, mutate)
+    for headers in ({"X-Dtw-Owner": OWNER}, {
+        key: value for key, value in cli_headers().items() if key != "X-Dtw-Owner"
+    }):
+        response = await client.post(route, headers=headers)
+        assert response.status == 403
+        assert "WWW-Authenticate" not in response.headers
+    assert count == 0
+    for expected_error, status in [
+        ("slot_not_found", 404), ("slot_busy", 409), ("invalid_slot", 400),
+        (wrong_kind, 400), (failure, 500),
+    ]:
+        response = await client.post(route, headers=cli_headers())
+        assert response.status == status
+        assert await response.json() == {"error": expected_error}
+    expected_error = None
+    response = await client.post(route, headers=cli_headers())
+    assert response.status == 200
+    assert await response.json() == {"ok": True}
+    assert count == 6
+
+
+@pytest.mark.parametrize("action", ["logout", "disconnect"])
+async def test_web_slot_auth_mutations_require_session_and_csrf(site, action):
+    client, fake = site
+    route = f"/cli-login/slots/claude-work/{action}"
+    response = await client.post(f"/api{route}", headers=CLIENT)
+    assert response.status == 403
+    assert "WWW-Authenticate" not in response.headers
+    authorized, _ = await login(client)
+    headers = {key: value for key, value in authorized.items() if key != "X-Dtw-Csrf"}
+    response = await client.post(f"/api{route}", headers=headers)
+    assert response.status == 403
+    assert "WWW-Authenticate" not in response.headers
+    assert not any(call[1] == route for call in fake.calls)
+
+    response = await client.post(f"/api{route}", headers={**authorized, "X-Dtw-Owner": "forged"})
+    assert response.status == 200
+    assert fake.calls[-1][:2] == ("POST", route)
+    path, owner = fake.owner_headers[-1]
+    assert path == route
+    assert owner
+    assert owner != "forged"
+
+
+async def test_disconnect_updates_kind_in_slot_status(cli_bridge):
+    client, _, _, paths, _ = cli_bridge
+    target = paths.ductor_home / ".cli-auth" / "claude-manual"
+    target.mkdir()
+    (target / "settings.json").write_text('{"apiKeyHelper":"helper.sh"}')
+    base = f"{_PREFIX}/cli-login"
+    headers = cli_headers()
+
+    async def inventory():
+        response = await client.get(f"{base}/status", headers=headers)
+        return {slot["name"]: slot for slot in (await response.json())["claude_slots"]}
+
+    assert (await inventory())["claude-manual"]["kind"] == "api_key"
+    response = await client.post(f"{base}/slots/claude-manual/disconnect", headers=headers)
+    assert response.status == 200
+    slot = (await inventory())["claude-manual"]
+    assert slot["kind"] == "api_key_detached"
+    assert slot["authenticated"] is False

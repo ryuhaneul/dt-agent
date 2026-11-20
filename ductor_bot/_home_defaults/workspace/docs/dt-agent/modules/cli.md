@@ -14,7 +14,7 @@
 - `gemini_provider.py`: Gemini subprocess wrapper
 - `grok_provider.py`, `grok_events.py`: Grok Build wrapper and stream parser
 - `claude_accounts.py`, `slot_rotation.py`: Claude slot authentication/cooldown rotation
-- `claude_slots.py`: shared slot overview, priority changes and cooldown clearing; JSON CLI used by host scripts
+- `claude_slots.py`: shared slot overview, priority changes, cooldown clearing, deletion, logout and key disconnection. The JSON CLI is used by host scripts
 - `claude_features.py`: one-time `claude --help` detection of `--system-prompt-snapshot`
 - `_log_redact.py`: command/env-assignment redaction helpers
 - `stream_events.py`: normalized stream events + Claude stream parser
@@ -151,6 +151,8 @@ Recovery triggers handled in orchestrator flows:
 - the main Telegram bot exposes `/accounts` for authenticated-slot status, ordering and cooldown clearing. `logout.sh claude --prefer SLOT`, `--priority A,B,...` and `--clear-cooldown SLOT|all` delegate to the same module through the running container; short names resolve to `claude-NAME` (`default` resolves to `claude`). Invalid slots or incomplete/duplicate priority lists leave files unchanged
 - Claude login expiry/revocation also switches immediately to the next hot slot in streaming, non-streaming and one-shot calls. Diagnostics are based on Claude Code 2.1.326 auth error text (the installed CLI's embedded JavaScript); transient network/refresh failures and external API-key errors do not expire slots. Failed logins are stored separately from cooldowns in `_claude-slots.json`, with only the nanosecond mtimes of `credentials.json` and `.credentials.json` captured before each attempt, never credentials or error bodies. A change to either file makes the slot eligible again; clearing a cooldown does not clear login expiry. `/accounts` shows expired logins separately from missing credentials.
 - If every slot is marked expired, the top-priority slot is still attempted once. Success clears that slot's expired status even when mtimes are unchanged; failure preserves the actual error and adds a re-login instruction. If only cooldowns remain, the first non-expired slot is probed once, retaining the existing all-cooling policy.
+- From the main Telegram bot's `/accounts` or the slot menu in WebChat **CLI login**, choose **Log out** for an OAuth slot, including the default slot, and confirm. The slot keeps its priority and is skipped during normal rotation until you log in again.
+- Running turns on the default `claude` slot do not hold the slot-use lock and may end with an authentication error if you log out at the same time. Usage for the in-flight turn may be recorded again when it finishes.
 - `/accounts` also shows a saved Claude usage line per OAuth slot, with capture and reset times
 - `login.sh` without a provider logs into the Claude default slot, like `login.sh claude`. Provider-specific login retains its authentication-based exit status.
 - `logout.sh claude --list` reads authentication, configured priority and remaining cooldowns on the host without requiring a container. Priority changes reach main within seconds and sub-agents at their next start; cooldown clearing applies to all on the next call
@@ -166,13 +168,20 @@ Use `/secret set ANTHROPIC_CREDIT_API_KEY` in the bot's private chat, then `./sc
 
 API slots stay eligible across OAuth expiry diagnostics: recording expiry is a no-op and stored expiry records are ignored, including streaming, all-cooling probes and one-shot tasks. `Credit balance is too low` on a failed subprocess follows rate-limit rotation with a one-hour estimated cooldown. If all slots are cooling down, the next request still attempts the first non-expired slot once.
 
-`/accounts` labels API slots **API key** with priority and cooldown; `/usage` shows the same label in place of subscription windows. Host lists and web CLI login use localized labels. Web OAuth creation and re-login requests for API slots return `api_key_slot`; manage them through `login.sh claude-api`. Host `--repair` preserves the helper, and logout `--disable`/`--remove` retains renamed settings plus the folder, helper and stored key for recovery.
+`/accounts` labels connected API slots **API key** with priority and cooldown. `/usage` shows the same label in place of subscription windows. Host lists and web CLI login use localized labels. In Telegram `/accounts` or WebChat **CLI login**, choose **Disconnect key** for a connected API slot and confirm. This removes `apiKeyHelper` from its settings and saves the original command in `api-key-helper.detached`. The slot, helper script and stored key are retained. Web OAuth creation and re-login requests for both connected and disconnected API key slots return `api_key_slot`.
+
+Use either of these methods to reconnect the key from the host.
+
+- Put the value from `api-key-helper.detached` in the slot folder back into `apiKeyHelper` in that slot's `settings.json`. This also works for manually configured slots.
+- If the slot is named `claude-api`, you can instead run `./scripts/login.sh claude-api` from the host checkout. Add the optional key-name argument if the slot uses a different stored key.
+
+Host `--repair` preserves the helper, and logout `--disable`/`--remove` retains renamed settings plus the folder, helper and stored key for recovery.
 
 Plaintext registration verifies names with `secret_keys`, reading no values. Encrypted registration detects the existing encrypted file and warns before skipping name verification; calls fail if the key is missing or the store is locked. An inherited `ANTHROPIC_API_KEY` in the bot's `.env` makes every slot use API billing. Credits apply only to the Console organization connected to that API key.
 
 ### Account usage
 
-Telegram `/usage` is read-only and available on main and sub-agent bots under their existing allowlists. Claude usage is the last `rate_limit_event` received during normal CLI runs, including streaming, non-streaming and cron, webhook and background one-shot calls; it is not actively queried by this command. `cli/claude_usage.py` merges slot snapshots in `_claude-usage.json` beside the shared cooldown file, with a companion lock and atomic private writes. Buffered non-streaming and one-shot events use the process start time; streaming events use their line arrival time. Window values and slot status retain the newest capture time when runs finish out of order. Missing values are shown as unavailable, with capture times on stored values.
+Telegram `/usage` is read-only and available on main and sub-agent bots under their existing allowlists. Claude usage is the last `rate_limit_event` received during normal CLI runs, including streaming, non-streaming and cron, webhook and background one-shot calls; it is not actively queried by this command. `cli/claude_usage.py` merges slot snapshots in `_claude-usage.json` beside the shared cooldown file, with a companion lock and atomic private writes. Buffered non-streaming and one-shot events use the process start time; streaming events use their line arrival time. Window values and slot status retain the newest capture time when runs finish out of order. Missing values are shown as unavailable, with capture times on stored values. Deleting a slot, logging out of it or disconnecting its API key clears that slot’s saved usage record.
 
 Codex uses `cli/codex_usage.py` to query `codex app-server` through the current `CODEX_HOME` login. Each command or refresh reads account limits with a 15-second deadline, sharing an in-flight query, reusing completed results for ten seconds, and terminating its launcher and descendant server processes afterward. The response uses the non-null primary and secondary windows; results and account identifiers are not stored. Missing login, timeouts and malformed responses are displayed separately.
 

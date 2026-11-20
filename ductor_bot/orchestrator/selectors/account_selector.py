@@ -6,13 +6,20 @@ import asyncio
 import logging
 import math
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
 from uuid import uuid4
 
 from ductor_bot.cli import claude_slots
-from ductor_bot.cli.claude_accounts import DEFAULT_SLOT, host_slot_config_dir, slot_is_api_key
+from ductor_bot.cli.claude_accounts import (
+    DEFAULT_SLOT,
+    SlotKind,
+    host_slot_config_dir,
+    slot_is_authenticated,
+    slot_kind,
+)
 from ductor_bot.cli.claude_usage import UsageStore, usage_file_path
 from ductor_bot.config import AgentConfig, resolve_user_timezone
 from ductor_bot.i18n import t
@@ -24,31 +31,47 @@ logger = logging.getLogger(__name__)
 ACS_PREFIX = "acs:"
 _CALLBACK_MAX_BYTES = 64
 
-_DELETE_REFERENCES_MAX = 1024
-_delete_references: dict[str, tuple[Path, str, claude_slots.SlotIdentity | None]] = {}
-_delete_reference_lock = Lock()
+_SLOT_ACTIONS = {"x": "delete", "l": "logout", "k": "disconnect"}
+_SLOT_REFERENCES_MAX = 1024
 
 
-def _remember_delete_reference(
-    home: Path, slot: str, identity: claude_slots.SlotIdentity | None = None
+@dataclass(frozen=True, slots=True)
+class _SlotReference:
+    home: Path
+    slot: str
+    action: str
+    identity: claude_slots.SlotIdentity | None
+
+
+_slot_references: dict[str, _SlotReference] = {}
+_slot_reference_lock = Lock()
+
+
+def _remember_slot_reference(
+    home: Path, slot: str, action: str, identity: claude_slots.SlotIdentity | None = None
 ) -> str:
     reference = uuid4().hex
-    with _delete_reference_lock:
-        if len(_delete_references) >= _DELETE_REFERENCES_MAX:
-            del _delete_references[next(iter(_delete_references))]
-        _delete_references[reference] = (home, slot, identity)
+    with _slot_reference_lock:
+        if len(_slot_references) >= _SLOT_REFERENCES_MAX:
+            del _slot_references[next(iter(_slot_references))]
+        _slot_references[reference] = _SlotReference(home, slot, action, identity)
     return reference
 
 
-def _take_delete_reference(
-    home: Path, reference: str, *, confirmation: bool
-) -> tuple[str, claude_slots.SlotIdentity | None]:
-    with _delete_reference_lock:
-        recorded = _delete_references.get(reference)
-        if recorded is None or recorded[0] != home or (recorded[2] is not None) != confirmation:
+def _take_slot_reference(
+    home: Path, reference: str, *, confirmation: bool, action: str | None = None
+) -> _SlotReference:
+    with _slot_reference_lock:
+        recorded = _slot_references.get(reference)
+        if (
+            recorded is None
+            or recorded.home != home
+            or (recorded.identity is not None) != confirmation
+            or (action is not None and recorded.action != action)
+        ):
             raise claude_slots.SlotDeleteError("slot_stale")
-        del _delete_references[reference]
-    return recorded[1], recorded[2]
+        del _slot_references[reference]
+    return recorded
 
 
 def is_account_selector_callback(data: str) -> bool:
@@ -68,14 +91,14 @@ async def account_selector_start(home: Path, config: AgentConfig) -> SelectorRes
 async def handle_account_callback(home: Path, config: AgentConfig, data: str) -> SelectorResponse:
     """Apply a named-slot action using the shared module, then reload the page."""
     try:
-        if len(data.encode("utf-8")) <= _CALLBACK_MAX_BYTES and data.startswith(
-            ("acs:x:", "acs:y:", "acs:n:")
+        parts = data.split(":", 2)
+        action = parts[1] if len(parts) == 3 and parts[0] == "acs" else ""
+        if len(data.encode("utf-8")) <= _CALLBACK_MAX_BYTES and (
+            action in _SLOT_ACTIONS or action in {"y", "n"}
         ):
-            return await asyncio.to_thread(_handle_delete, home, config, data)
+            return await asyncio.to_thread(_handle_slot_change, home, config, action, parts[2])
         note = ""
         if data != "acs:r":
-            parts = data.split(":", 2)
-            action = parts[1] if len(parts) == 3 else ""
             slot = parts[2] if len(parts) == 3 else ""
             if len(data.encode("utf-8")) > _CALLBACK_MAX_BYTES or action not in {
                 "u",
@@ -102,39 +125,83 @@ async def handle_account_callback(home: Path, config: AgentConfig, data: str) ->
         return SelectorResponse(text=t("accounts.error"))
 
 
-def _handle_delete(home: Path, config: AgentConfig, data: str) -> SelectorResponse:
-    action, value = data.split(":", 2)[1:]
+def _auth_change_identity(home: Path, name: str, action: str) -> claude_slots.SlotIdentity:
+    if not claude_slots.is_slot_name(name):
+        raise claude_slots.SlotDeleteError("invalid_slot")
+    directory = host_slot_config_dir(home, name)
+    if not directory.is_dir():
+        raise claude_slots.SlotDeleteError("slot_not_found")
+    kind = slot_kind(directory)
+    if action == "disconnect":
+        if kind != "api_key":
+            raise claude_slots.SlotDeleteError("not_api_key_slot")
+    elif kind != "oauth":
+        raise claude_slots.SlotDeleteError("api_key_slot")
+    elif not slot_is_authenticated(directory):
+        raise claude_slots.SlotDeleteError("slot_stale")
     try:
-        if action == "x":
+        status = directory.lstat()
+    except FileNotFoundError as exc:
+        raise claude_slots.SlotDeleteError("slot_not_found") from exc
+    return status.st_dev, status.st_ino, status.st_ctime_ns
+
+
+def _apply_slot_change(
+    home: Path, name: str, action: str, identity: claude_slots.SlotIdentity
+) -> None:
+    if action == "delete":
+        claude_slots.remove(home, name, expected=identity)
+    elif action == "logout":
+        claude_slots.logout(home, name, expected=identity)
+    else:
+        claude_slots.disconnect_api_key(home, name, expected=identity)
+
+
+def _handle_slot_change(
+    home: Path, config: AgentConfig, callback: str, value: str
+) -> SelectorResponse:
+    action = _SLOT_ACTIONS.get(callback, "")
+    try:
+        if action:
             name = value
             if value.startswith("@"):
-                name, _ = _take_delete_reference(home, value[1:], confirmation=False)
-            identity = claude_slots.slot_identity(home, name)
-            reference = _remember_delete_reference(home, name, identity)
+                name = _take_slot_reference(home, value[1:], confirmation=False, action=action).slot
+            identity = (
+                claude_slots.slot_identity(home, name)
+                if action == "delete"
+                else _auth_change_identity(home, name, action)
+            )
+            reference = _remember_slot_reference(home, name, action, identity)
             return SelectorResponse(
-                text=t("accounts.delete_confirm", name=name),
+                text=t(f"accounts.{action}_confirm", name=name),
                 buttons=ButtonGrid(
                     [
                         [
                             Button(t("accounts.btn_cancel_delete"), f"acs:n:{reference}"),
-                            Button(t("accounts.btn_confirm_delete"), f"acs:y:{reference}"),
+                            Button(t(f"accounts.btn_confirm_{action}"), f"acs:y:{reference}"),
                         ]
                     ]
                 ),
             )
-        name, confirmed_identity = _take_delete_reference(home, value, confirmation=True)
-        if action == "n":
+        recorded = _take_slot_reference(home, value, confirmation=True)
+        if callback == "n":
             return _build_page(home, config)
-        assert confirmed_identity is not None
-        claude_slots.remove(home, name, expected=confirmed_identity)
-        note = t("accounts.deleted", name=name)
+        action = recorded.action
+        assert recorded.identity is not None
+        _apply_slot_change(home, recorded.slot, action, recorded.identity)
+        key = "deleted" if action == "delete" else f"{action}_done"
+        note = t(f"accounts.{key}", name=recorded.slot)
     except claude_slots.SlotDirectoryError as exc:
         note = t("accounts.delete_failed", path=str(exc.path.relative_to(home)), reason=exc.reason)
     except claude_slots.SlotDeleteError as exc:
         note = t(
             {
-                "slot_busy": "accounts.delete_busy",
+                "slot_busy": f"accounts.{action}_busy",
                 "slot_default": "accounts.delete_default",
+                "api_key_slot": "accounts.logout_api_key_slot",
+                "not_api_key_slot": "accounts.disconnect_not_api_key_slot",
+                "logout_failed": "accounts.logout_failed",
+                "disconnect_failed": "accounts.disconnect_failed",
             }.get(str(exc), "accounts.stale")
         )
     return _build_page(home, config, note)
@@ -145,6 +212,31 @@ def _slot_button(text: str, action: str, name: str) -> Button | None:
     if len(data.encode("utf-8")) > _CALLBACK_MAX_BYTES:
         return None
     return Button(text=text, callback_data=data)
+
+
+def _slot_change_button(home: Path, text: str, callback: str, name: str) -> Button | None:
+    direct = _slot_button(text, callback, name)
+    if direct is not None:
+        return direct
+    reference = _remember_slot_reference(home, name, _SLOT_ACTIONS[callback])
+    return _slot_button(text, callback, "@" + reference)
+
+
+def _slot_change_buttons(
+    home: Path, name: str, kind: SlotKind, has_oauth_credentials: bool
+) -> list[Button | None]:
+    if not claude_slots.is_slot_name(name):
+        return []
+    buttons = []
+    if kind == "api_key":
+        buttons.append(
+            _slot_change_button(home, t("accounts.btn_disconnect", name=name), "k", name)
+        )
+    elif has_oauth_credentials:
+        buttons.append(_slot_change_button(home, t("accounts.btn_logout", name=name), "l", name))
+    if name != DEFAULT_SLOT:
+        buttons.append(_slot_change_button(home, t("accounts.btn_delete", name=name), "x", name))
+    return buttons
 
 
 # API key slots skip the OAuth usage line, which adds one branch.
@@ -167,12 +259,16 @@ def _build_page(  # noqa: C901
         lines.extend(["", t("accounts.empty")])
     for index, slot in enumerate(slots):
         name = slot["name"]
-        api_key = slot_is_api_key(host_slot_config_dir(home, name))
+        directory = host_slot_config_dir(home, name)
+        kind = slot_kind(directory)
+        has_oauth_credentials = kind == "oauth" and slot_is_authenticated(directory)
         auth = t(
             "accounts.api_key"
-            if api_key
+            if kind == "api_key"
+            else "accounts.api_key_detached"
+            if kind == "api_key_detached"
             else "accounts.auth_expired"
-            if slot["auth_expired"]
+            if slot["auth_expired"] and has_oauth_credentials
             else "accounts.authenticated"
             if slot["authenticated"]
             else "accounts.unauthenticated"
@@ -190,7 +286,7 @@ def _build_page(  # noqa: C901
         priority = index < len(accounts)
         unused = "" if priority else " · " + t("accounts.unused")
         lines.append(f"{index + 1}. {name}  {auth} · {cooldown}{unused}")
-        if not api_key:
+        if kind == "oauth":
             try:
                 usage_line = render_account_usage(usage.get(name), config, now=now)
             except Exception as exc:
@@ -209,13 +305,7 @@ def _build_page(  # noqa: C901
             candidates.append(_slot_button(f"{name} ▼", "d", name))
         if priority and reset is not None and reset > now:
             candidates.append(_slot_button(t("accounts.btn_clear", name=name), "c", name))
-        if name != DEFAULT_SLOT and claude_slots.is_slot_name(name):
-            text = t("accounts.btn_delete", name=name)
-            delete_button = _slot_button(text, "x", name)
-            if delete_button is None:
-                reference = _remember_delete_reference(home, name)
-                delete_button = _slot_button(text, "x", "@" + reference)
-            candidates.append(delete_button)
+        candidates.extend(_slot_change_buttons(home, name, kind, has_oauth_credentials))
         buttons = [button for button in candidates if button is not None]
         if buttons:
             rows.append(buttons)

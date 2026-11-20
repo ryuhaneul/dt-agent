@@ -45,13 +45,17 @@ class BridgeClient:
         history_read = method == "GET" and (
             resource == "/topics" or re.fullmatch(r"/topics/[^/]+/messages", resource) is not None
         )
+        slot_auth_change = (
+            method == "POST"
+            and re.fullmatch(r"/cli-login/slots/[^/]+/(?:logout|disconnect)", resource) is not None
+        )
         upload = re.fullmatch(r"/topics/[^/]+/uploads(?:/[^/]+(?:/complete)?)?", resource)
         timeout = (
             aiohttp.ClientTimeout(total=120, sock_connect=5, sock_read=30)
             if upload
             else (
                 aiohttp.ClientTimeout(total=45)
-                if topic_mutation or abort or history_read
+                if topic_mutation or abort or history_read or slot_auth_change
                 else self._client.timeout
             )
         )

@@ -584,6 +584,7 @@ def create_app(
         ("/secrets/{action:set|delete|reveal}", ("POST",)),
         ("/cli-login/status", ("GET",)),
         ("/cli-login/slots/{slot}", ("DELETE",)),
+        ("/cli-login/slots/{slot}/{action:logout|disconnect}", ("POST",)),
         ("/cli-login/jobs", ("POST",)),
         ("/cli-login/jobs/{id}", ("GET",)),
         ("/cli-login/jobs/{id}/input", ("POST",)),
