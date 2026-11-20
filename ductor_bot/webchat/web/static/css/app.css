@@ -168,6 +168,7 @@ dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(2px)}
 .msg{display:flex;flex-direction:column;min-width:0;max-width:100%;margin:10px 0}
 .msg.me{margin-left:auto;align-items:flex-end}
 .meta{display:flex;min-width:0;flex-wrap:wrap;overflow-wrap:anywhere;align-items:center;gap:7px;font-family:var(--mono);font-size:.7rem;color:var(--muted);margin-bottom:4px}
+.thread .md,.cli-url,#cliRawOutput{-webkit-user-select:text;user-select:text}
 .bubble{min-width:0;max-width:100%;padding:10px 14px;border-radius:12px;border:1px solid var(--rule);background:var(--surface);overflow-wrap:anywhere}
 .msg.bot .bubble{border-bottom-left-radius:4px}
 .msg.me .bubble{border-bottom-right-radius:4px;background:color-mix(in srgb,var(--accent) 9%,var(--surface));border-color:color-mix(in srgb,var(--accent) 26%,var(--rule))}

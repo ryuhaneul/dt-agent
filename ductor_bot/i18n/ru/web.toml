@@ -80,6 +80,7 @@ current = "{name} · Тема №{id}"
 last_active = "Последняя активность: {time}"
 
 [chat]
+copy_message = "Копировать сообщение"
 activity = "Подробности действий"
 queued = "В очереди"
 cancelled = "Отменено"
@@ -128,6 +129,8 @@ item_history = "Записи истории веб-чата: {n}"
 confirm = "Введи {name} для подтверждения"
 
 [common]
+copied = "Скопировано"
+copy_failed = "Не удалось скопировать"
 cancel = "Отмена"
 delete = "Удалить"
 close = "Закрыть"
@@ -251,6 +254,7 @@ title = "Язык веб-интерфейса"
 empty = "Введите название темы."
 
 [cli_login]
+copy_link = "Копировать ссылку"
 api_key = "Ключ API"
 api_key_slot = "Управляй слотами API-ключей на сервере через ./scripts/login.sh claude-api."
 title = "Вход через CLI"

@@ -9,11 +9,14 @@ export function openCliLogin() { openModal(); }
 export function initCliLogin() {
   const $ = id => document.getElementById(id);
   const dialog = $('cliLoginDlg'), confirmation = $('cliConfirmDlg');
+  const rawOutput = document.createTextNode('');
+  $('cliRawOutput').append(rawOutput);
   let view = 'list', status = null, target = null, job = null, seq = 0;
   let timer = null, generation = 0, busy = false, loading = false, polling = false, confirmMode = 'start';
   let noticeKey = null, copied = false, cancelRequested = false, refreshingProvider = null;
   let accountsKey = null, linksKey = null, deleteError = null;
   let codeFocusPending = false, returnToCode = false;
+  let loginTab = null, previousLoginHref = null;
   // Probes can take 10s (Claude) + 15s (Grok), plus a queued completion probe.
   // Bound unknown-status polling; two snapshots skip the first cached response.
   let statusChecksLeft = 60, refreshChecksLeft = 0;
@@ -23,6 +26,7 @@ export function initCliLogin() {
   const targetName = () => target?.provider === 'claude' && target.slot
     ? `claude · ${target.slot === 'claude' ? t('cli_login.default_slot') : target.slot}` : target?.provider || '';
   function stopPolling() { clearTimeout(timer); timer = null; }
+  function closeLoginTab() { loginTab?.close(); loginTab = null; previousLoginHref = null; }
   function showNotice(key) { noticeKey = key; $('cliNotice').textContent = key ? t(key) : ''; $('cliNotice').hidden = !key; $('cliNotice').classList.toggle('cli-notice-ok', key === 'cli_login.sent'); }
   function node(tag, className, text) {
     const element = document.createElement(tag); element.className = className;
@@ -124,6 +128,8 @@ export function initCliLogin() {
     const input = $('cliCodeInput'), focused = document.activeElement;
     if (!codeFocusPending || !active() || !job.needs_input || input.disabled
       || confirmation.open || document.hidden) return;
+    const selected = window.getSelection();
+    if (selected && !selected.isCollapsed && dialog.contains(selected.anchorNode)) return;
     if (focused === input) { codeFocusPending = false; return; }
     // Keep explicit interaction with other controls (including raw output) intact.
     if (focused && focused !== document.body && focused !== dialog && focused !== $('cliClose')
@@ -146,9 +152,28 @@ export function initCliLogin() {
         link.dataset.i18n = 'cli_login.open_link'; link.dataset.i18nAttr = 'aria-label:cli_login.open_link';
         link.setAttribute('aria-label', t('cli_login.open_link'));
         link.addEventListener('click', () => {
+          closeLoginTab();
           returnToCode = true; codeFocusPending = true; focusCodeInput();
         });
-        row.append(node('span', 'cli-url mono', url.host + url.pathname), link); links.append(row);
+        const text = node('span', 'cli-url mono', url.href);
+        const copy = node('button', 'btn', t('cli_login.copy_link'));
+        copy.type = 'button'; copy.dataset.i18n = 'cli_login.copy_link';
+        let copyTimer;
+        copy.addEventListener('click', async () => {
+          try {
+            await navigator.clipboard.writeText(url.href);
+            copy.dataset.i18n = 'common.copied'; copy.textContent = t('common.copied');
+            clearTimeout(copyTimer);
+            copyTimer = setTimeout(() => {
+              copy.dataset.i18n = 'cli_login.copy_link'; copy.textContent = t('cli_login.copy_link');
+            }, 2000);
+          } catch {
+            if (!copy.isConnected || !dialog.open || view !== 'progress') return;
+            const selection = window.getSelection(), range = document.createRange();
+            range.selectNodeContents(text); selection.removeAllRanges(); selection.addRange(range);
+          }
+        });
+        row.append(text, link, copy); links.append(row);
       });
     }
     $('cliLinks').hidden = !links.childElementCount;
@@ -202,7 +227,7 @@ export function initCliLogin() {
       if (!refreshChecksLeft) refreshingProvider = null;
       if (view === 'result') return;
       if (result.running && result.job_id) {
-        seq = 0; $('cliRawOutput').textContent = ''; job = { job_id: result.job_id, state: 'running' };
+        seq = 0; rawOutput.data = ''; job = { job_id: result.job_id, state: 'running' };
         target = { provider: result.provider }; view = 'progress'; await pollJob(); return;
       }
       view = result.running ? 'busy' : 'list'; showNotice(null);
@@ -221,19 +246,32 @@ export function initCliLogin() {
     try {
       const result = await api(`/cli-login/jobs/${encodeURIComponent(id)}?after=${seq}`);
       if (version !== generation || !dialog.open || job?.job_id !== id) return;
-      (result.output || []).forEach(chunk => { if (chunk.seq > seq) $('cliRawOutput').textContent += chunk.text; });
-      $('cliRawOutput').textContent = $('cliRawOutput').textContent.slice(-65536);
+      (result.output || []).forEach(chunk => { if (chunk.seq > seq) rawOutput.appendData(chunk.text); });
+      if (rawOutput.length > 65536) rawOutput.deleteData(0, rawOutput.length - 65536);
       seq = result.seq; job = result; target = { ...target, provider: result.provider, slot: result.slot };
       showNotice(null);
       if (terminal.includes(result.state)) {
+        closeLoginTab();
         stopPolling(); view = 'result';
         refreshingProvider = result.provider; refreshChecksLeft = 2; statusChecksLeft = 60;
         loadStatus();
       }
       render();
+      // A PTY read can end mid-URL. Wait for the CLI's prompt or two matching polls.
+      const href = loginTab ? $('cliLinkRows').querySelector('a[href]')?.href : null;
+      const ready = href && (job.code || job.needs_input || href === previousLoginHref);
+      previousLoginHref = href;
+      if (ready) {
+        const tab = loginTab; loginTab = null;
+        if (!tab.closed) {
+          tab.location.replace(href);
+          returnToCode = true;
+        }
+      }
     } catch (error) {
       if (version !== generation || !dialog.open) return;
-      if (error.status === 404) { job = { ...job, state: 'failed' }; view = 'result'; stopPolling(); }
+      previousLoginHref = null;
+      if (error.status === 404) { job = { ...job, state: 'failed' }; view = 'result'; stopPolling(); closeLoginTab(); }
       showNotice(error.code === 'bot_unreachable' ? 'error.bot_unreachable' : 'error.generic'); render();
     } finally { polling = false; if (dialog.open) schedule(); }
   }
@@ -288,11 +326,12 @@ export function initCliLogin() {
       if (version !== generation || !dialog.open) return;
       confirmation.close(); copied = false; cancelRequested = false; seq = 0;
       codeFocusPending = false; returnToCode = false;
-      $('cliRawOutput').textContent = ''; $('cliCodeForm').reset(); $('cliRawForm').reset(); $('cliRaw').open = false;
+      rawOutput.data = ''; linksKey = null; $('cliCodeForm').reset(); $('cliRawForm').reset(); $('cliRaw').open = false;
       job = { job_id: result.job_id, state: 'running' }; view = 'progress'; showNotice(null); render();
       await pollJob();
     } catch (error) {
       if (version !== generation || !dialog.open) return;
+      closeLoginTab();
       confirmation.close();
       if (error.code === 'login_running') { view = 'busy'; job = null; status = { ...status, running: true }; }
       else { job = { state: 'failed' }; view = 'result'; }
@@ -323,6 +362,7 @@ export function initCliLogin() {
   }
   async function cancelJob() {
     const version = generation; busy = true; confirmation.close(); render();
+    closeLoginTab();
     try {
       await api(`/cli-login/jobs/${encodeURIComponent(job.job_id)}/cancel`, { method: 'POST' });
       if (version !== generation || !dialog.open) return;
@@ -355,10 +395,8 @@ export function initCliLogin() {
   };
   window.addEventListener('focus', focusAfterReturn);
   document.addEventListener('visibilitychange', focusAfterReturn);
-  dialog.addEventListener('pointerdown', event => {
-    if (!event.target.closest('#cliLinkRows, #cliCodeForm')) {
-      codeFocusPending = false; returnToCode = false;
-    }
+  dialog.addEventListener('pointerdown', () => {
+    codeFocusPending = false; returnToCode = false;
   });
   $('cliSlotName').addEventListener('input', () => { $('cliSlotPreview').textContent = t('cli_login.slot_preview', { name: slotName($('cliSlotName').value) }); });
   $('cliSlotForm').addEventListener('submit', event => {
@@ -383,7 +421,13 @@ export function initCliLogin() {
     if (busy) return;
     if (confirmMode === 'delete') deleteSlot();
     else if (confirmMode === 'cancel') cancelJob();
-    else startJob();
+    else {
+      // Reserve the tab before the asynchronous job request consumes the gesture.
+      previousLoginHref = null;
+      loginTab = window.open('about:blank', '_blank');
+      if (loginTab) loginTab.opener = null;
+      startJob();
+    }
   });
   $('cliRetry').addEventListener('click', retryJob);
   dialog.querySelectorAll('[data-cli-list]').forEach(control => control.addEventListener('click', () => { stopPolling(); view = 'list'; job = null; showNotice(null); render(); loadStatus(); }));
@@ -399,9 +443,9 @@ export function initCliLogin() {
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
   }));
   dialog.addEventListener('close', () => {
-    ++generation; stopPolling(); confirmation.close(); accountsKey = null; linksKey = null;
+    ++generation; stopPolling(); closeLoginTab(); confirmation.close(); accountsKey = null; linksKey = null;
     codeFocusPending = false; returnToCode = false; $('cliSlotForm').reset(); $('cliCodeForm').reset(); $('cliRawForm').reset();
-    $('cliRawOutput').textContent = ''; job = null; target = null; status = null; $('accountButton').focus();
+    rawOutput.data = ''; job = null; target = null; status = null; $('accountButton').focus();
   });
   document.addEventListener('language-changed', () => { if (dialog.open) render(); });
   document.addEventListener('auth-change', event => { if (!event.detail.authenticated) { refreshingProvider = null; confirmation.close(); dialog.close(); stopPolling(); } });

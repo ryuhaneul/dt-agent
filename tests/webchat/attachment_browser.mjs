@@ -142,11 +142,19 @@ try{
     const thread=document.querySelector('#thread');
     return thread.scrollHeight-thread.clientHeight-thread.scrollTop<2;
   }));
-  await page.evaluate(()=>{window.legacyAnchor=document.querySelector('[data-entry-seq="102"]');});
-  event({type:'outbox',pending:0,item:queueItem});
-  await page.waitForFunction(()=>!window.legacyAnchor.isConnected);
+  await page.evaluate(async item=>{
+    const entry=document.querySelector('[data-entry-seq="102"]');
+    const text=entry.querySelector('.md p').firstChild;
+    window.getSelection().setBaseAndExtent(text,0,text,4);
+    const {handleEvent}=await import('/static/js/chat.js');
+    await handleEvent({type:'outbox',pending:0,item});
+    if (!entry.isConnected || window.getSelection().toString()!=='Live') {
+      throw new Error('Legacy receipt reload replaced the unchanged message or cleared its selection');
+    }
+    window.getSelection().removeAllRanges();
+  },queueItem);
   assert.equal(historyRequests(),readCount+1);
-  results.checks.push('targeted mirror and entry events preserve message nodes and scroll; legacy receipt reloads');
+  results.checks.push('mirror, entry and legacy receipt events preserve unchanged message nodes');
   emptyHistoryEnabled=false;
   // Keep the requested resize format; unsupported raster formats use PNG.
   await reset();
@@ -265,6 +273,18 @@ try{
     assert(!await page.locator('#thread').innerText().then(value=>value.includes('[INCOMING FILE]')));assert(!await page.locator('#thread').innerText().then(value=>value.includes('Web attachments are in a temporary folder')));assert(await page.locator('#thread').innerText().then(value=>value.includes('Please check the photo.')));
     assert.equal(await page.locator('.message-attachment').filter({hasText:'secret.txt'}).count(),0);assert(await page.locator('#thread').innerText().then(value=>value.includes('Web attachment caption')));
     assert(!await page.locator('#thread').innerText().then(value=>value.includes('<file:/safe/background.txt>')));
+    const selectedEntry=await page.locator('[data-entry-seq="1"]').elementHandle();
+    await selectedEntry.evaluate(entry=>{
+      const text=entry.querySelector('.md p').firstChild;
+      window.getSelection().setBaseAndExtent(text,0,text,6);
+    });
+    const photoRefresh=page.waitForResponse(response=>new URL(response.url()).pathname.endsWith('/messages/aaaaaaaaaaaa/attachments'));
+    await page.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));
+    await (await photoRefresh).finished();
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    assert(await selectedEntry.evaluate(entry=>entry.isConnected&&window.getSelection().toString()==='Please'));
+    await page.evaluate(()=>window.getSelection().removeAllRanges());
+    results.checks.push('visibility refresh preserves unchanged attachment messages and their selection');
     for(const [width,height] of [[375,667],[768,960],[1280,720]]){
       await page.setViewportSize({width,height});
       for(const theme of ['light','dark']){

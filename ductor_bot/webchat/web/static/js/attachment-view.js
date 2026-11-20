@@ -22,7 +22,7 @@ export function initAttachmentView({changed}) {
   if(!dialog||dialog.tagName!=='DIALOG')return null;
   const thread=document.querySelector('#thread'),image=document.querySelector('#attachmentOriginal');
   const cache=new Map(),references=new Map();
-  let generation=0,live=false,opener=null,openKey=null,zoom=false;
+  let generation=0,revision=0,live=false,opener=null,openKey=null,zoom=false;
   const key=(tid,id)=>JSON.stringify([tid,id]);
   function validate(tid,entry,list){
     if(!Array.isArray(list))return [];
@@ -64,14 +64,18 @@ export function initAttachmentView({changed}) {
   document.addEventListener('topic-selected',()=>dialog.close());
   return {
     invalidate(tid,id){cache.delete(key(tid,id));},
-    reset(){cache.clear();},
+    markStale(){++revision;},
     load(tid,entries){
       const epoch=generation;
       for(const entry of entries){
-        const identity=key(tid,entry.id);if(!entry.has_attachments){cache.delete(identity);continue;}if(cache.has(identity))continue;
-        const pending={files:[]};cache.set(identity,pending);
+        const identity=key(tid,entry.id);if(!entry.has_attachments){cache.delete(identity);continue;}
+        const cached=cache.get(identity);if(cached?.revision===revision)continue;
+        const pending={files:cached?.files||[],revision};cache.set(identity,pending);
         void api(`/topics/${encodeURIComponent(tid)}/messages/${encodeURIComponent(entry.id)}/attachments`).then(result=>{
-          if(epoch!==generation||cache.get(identity)!==pending)return;cache.set(identity,{files:validate(tid,entry,result.attachments)});changed(tid,entry.id);
+          if(epoch!==generation||cache.get(identity)!==pending)return;
+          const files=validate(tid,entry,result.attachments);
+          if(JSON.stringify(files)===JSON.stringify(pending.files))return;
+          pending.files=files;changed(tid,entry.id);
         }).catch(()=>{});
       }
     },
