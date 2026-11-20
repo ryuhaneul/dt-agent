@@ -245,6 +245,7 @@ class AsyncInterAgentResult:
     delivery_retry: bool = False
     recipient_headless: bool = False  # Derived from the registry at delivery time.
     received_at: float = field(default_factory=_receipt_time)  # First receipt, not replay.
+    failed_transports: list[str] = field(default_factory=list, kw_only=True)
     telegram_broadcast_outcomes: TelegramBroadcastOutcomes = field(
         default_factory=dict, kw_only=True
     )
@@ -1193,6 +1194,7 @@ class InterAgentBus:
         delivered_text_sha256: str | None = None,
         chunk_scheme: str | None = None,
         reset_progress: bool = False,
+        failed_transports: list[str] | None = None,
         telegram_broadcast_outcomes: TelegramBroadcastOutcomes | None = None,
     ) -> bool:
         if self._record_store is None:
@@ -1214,6 +1216,7 @@ class InterAgentBus:
                 chunk_scheme=chunk_scheme,
                 reset_progress=reset_progress,
                 redelivery_state=pending,
+                failed_transports=failed_transports,
                 telegram_broadcast_outcomes=telegram_broadcast_outcomes,
             )
         except Exception as exc:
@@ -1284,6 +1287,7 @@ class InterAgentBus:
                 result.task_id,
             )
             return replace(result, main_response=response, delivered_chunks=0)
+        failed_transports = result.failed_transports or record.get("failed_transports", [])
         telegram_broadcast_outcomes = record.get("telegram_broadcast_outcomes", {})
         transport = record["transport"]
         if not transport:
@@ -1310,12 +1314,14 @@ class InterAgentBus:
                 result,
                 main_response=record["main_response"] if record["stage"] == "injected" else "",
                 delivered_chunks=0,
+                failed_transports=failed_transports,
                 telegram_broadcast_outcomes=telegram_broadcast_outcomes,
             )
         return replace(
             result,
             main_response=record["main_response"],
             delivered_chunks=record["delivered_chunks"],
+            failed_transports=failed_transports,
             telegram_broadcast_outcomes=telegram_broadcast_outcomes,
         )
 
@@ -1382,7 +1388,13 @@ class InterAgentBus:
             if (
                 record["result"] != async_result_payload(result)
                 or result.task_id in self._unpersisted_redelivery
-            ) and not self._update_record(target, result.task_id, result=result):
+                or (
+                    result.failed_transports
+                    and result.failed_transports != record.get("failed_transports")
+                )
+            ) and not self._update_record(
+                target, result.task_id, result=result, failed_transports=result.failed_transports
+            ):
                 self._unpersisted_results[result.task_id] = result
                 logger.error("Async result cannot be persisted before parking path=%s", path)
                 return
@@ -1496,12 +1508,15 @@ class InterAgentBus:
                     message_bus.forget_interagent_notices(result.task_id)
             return "abandoned"
         if isinstance(outcome, DeliveryOutcome) and not outcome.ok:
+            if outcome.failed_transports:
+                result.failed_transports = outcome.failed_transports
             self._update_record(
                 target,
                 result.task_id,
                 delivered_chunks=outcome.delivered_chunks,
                 delivered_text_sha256=outcome.delivered_text_sha256,
                 chunk_scheme=outcome.chunk_scheme,
+                failed_transports=result.failed_transports,
                 telegram_broadcast_outcomes=outcome.telegram_broadcast_outcomes,
             )
         if not isinstance(outcome, DeliveryOutcome) or not outcome.ok:

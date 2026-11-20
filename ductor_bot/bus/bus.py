@@ -213,6 +213,7 @@ class MessageBus:
             delivered_chunks=envelope.delivered_chunks,
             delivered_text_sha256=delivery_hash,
             chunk_scheme=envelope.chunk_scheme,
+            failed_transports=envelope.failed_transports.copy(),
             telegram_broadcast_outcomes=envelope.telegram_broadcast_outcomes,
         )
 

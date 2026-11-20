@@ -58,6 +58,7 @@ class DeliveryOutcome:
     delivered_chunks: int = 0
     delivered_text_sha256: str = ""
     chunk_scheme: str = ""
+    failed_transports: list[str] = field(default_factory=list, kw_only=True)
     telegram_broadcast_outcomes: TelegramBroadcastOutcomes = field(
         default_factory=dict, kw_only=True
     )

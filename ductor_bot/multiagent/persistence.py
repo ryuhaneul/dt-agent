@@ -126,8 +126,9 @@ class CorruptAsyncRecordError(ValueError):
 
 
 def async_result_payload(result: AsyncInterAgentResult) -> dict[str, Any]:
-    """Keep recipient delivery outcomes at the record level."""
+    """Keep delivery outcomes at the record level."""
     payload = asdict(result)
+    del payload["failed_transports"]
     del payload["telegram_broadcast_outcomes"]
     return payload
 
@@ -164,6 +165,10 @@ def _valid_telegram_broadcast_outcomes(outcomes: object) -> bool:
         and status in ("delivered", "permanent")
         for chat_id, status in outcomes.items()
     )
+
+
+def _valid_failed_transports(targets: object) -> bool:
+    return isinstance(targets, list) and all(isinstance(name, str) and name for name in targets)
 
 
 def merge_redelivery_state(
@@ -327,6 +332,8 @@ class AsyncRecordStore:
         )
         record["status"] = "completed" if normalized.success else "failed"
         record["result"] = async_result_payload(normalized)
+        if normalized.failed_transports:
+            record["failed_transports"] = normalized.failed_transports
         if telegram_broadcast_outcomes:
             record["telegram_broadcast_outcomes"] = telegram_broadcast_outcomes
         if stage in {"delivered", "abandoned"}:
@@ -406,6 +413,7 @@ class AsyncRecordStore:
             or record["delivered_chunks"] < 0
             or type(record["delivered_text_sha256"]) is not str
             or type(record["chunk_scheme"]) is not str
+            or not _valid_failed_transports(record.get("failed_transports", []))
             or not _valid_telegram_broadcast_outcomes(record.get("telegram_broadcast_outcomes", {}))
             or not _valid_lane_fields(record)
             or (record["chunk_scheme"] and _CHUNK_SCHEME.fullmatch(record["chunk_scheme"]) is None)
@@ -448,7 +456,7 @@ class AsyncRecordStore:
             record["next_redelivery_at"] = None
         return record
 
-    def update(  # noqa: C901, PLR0913
+    def update(  # noqa: C901, PLR0912, PLR0913
         self,
         target: str,
         task_id: str,
@@ -461,6 +469,7 @@ class AsyncRecordStore:
         chunk_scheme: str | None = None,
         reset_progress: bool = False,
         redelivery_state: tuple[int, float | None] | None = None,
+        failed_transports: list[str] | None = None,
         telegram_broadcast_outcomes: TelegramBroadcastOutcomes | None = None,
     ) -> None:
         path = self.path_for(target, task_id)
@@ -499,6 +508,8 @@ class AsyncRecordStore:
             attempts, next_at = merge_redelivery_state(current, redelivery_state)
             record["redelivery_attempts"] = attempts
             record["next_redelivery_at"] = next_at
+        if failed_transports:
+            record["failed_transports"] = failed_transports
         if telegram_broadcast_outcomes:
             record["telegram_broadcast_outcomes"] = telegram_broadcast_outcomes
         record["updated_at"] = time.time()
@@ -561,6 +572,7 @@ class AsyncRecordStore:
             )
         result["delivered_chunks"] = 0 if reason else record["delivered_chunks"]
         result["main_response"] = record["main_response"] if record["stage"] == "injected" else ""
+        result["failed_transports"] = record.get("failed_transports", [])
         for key in _ROUTING_FIELDS:
             result[key] = record[key]
         return AsyncInterAgentResult(**result)

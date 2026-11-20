@@ -369,6 +369,7 @@ def from_interagent_result(
         injected=bool(main_response),
         delivered_chunks=getattr(result, "delivered_chunks", 0),
         start_chunk=getattr(result, "delivered_chunks", 0),
+        broadcast_targets=result.failed_transports if broadcast else None,
         telegram_broadcast_outcomes=getattr(result, "telegram_broadcast_outcomes", {}),
         elapsed_seconds=result.elapsed_seconds,
         session_name=result.session_name,
