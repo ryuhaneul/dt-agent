@@ -2838,6 +2838,37 @@ def test_cron_locale_keys_and_placeholders_match():
             assert set(re.findall(r"\{\w+\}", value)) == set(re.findall(r"\{\w+\}", reference[key]))
 
 
+@pytest.mark.skipif(
+    not os.environ.get("DTW_PLAYWRIGHT_MODULE"),
+    reason="Set DTW_PLAYWRIGHT_MODULE for web chat follow-up browser checks",
+)
+def test_webchat_login_status_and_markdown_in_browser(tmp_path):
+    from ductor_bot.webchat.cli_login import parse_output
+
+    config = tmp_path / "web-followups.json"
+    login = "https://claude.com/cai/oauth/authorize?state=fixture"
+    config.write_text(
+        json.dumps(
+            {
+                "static": str(STATIC),
+                "csp": CSP,
+                "starflowCsp": STARFLOW_CSP,
+                "shots": os.environ.get("DTW_FOLLOWUP_SHOTS", str(tmp_path / "shots")),
+                "strings": load_web_strings("en"),
+                "claudeUrls": parse_output("claude", login)["urls"],
+            }
+        )
+    )
+    result = subprocess.run(
+        ["node", str(Path(__file__).with_name("web_followups_browser.mjs")), str(config)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=180,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_cron_presets_roundtrip_and_direct_expression_fallback():
     script = r"""
 import assert from 'node:assert/strict';import fs from 'node:fs';import vm from 'node:vm';

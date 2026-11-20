@@ -366,15 +366,22 @@ export function initCliLogin() {
       render();
       // A PTY read can end mid-URL. Wait for the CLI's prompt or two matching polls.
       const href = loginTab ? $('cliLinkRows').querySelector('a[href]')?.href : null;
-      const ready = href && (job.code || job.needs_input || href === previousLoginHref);
+      const prompted = job.code || job.needs_input;
+      const ready = href && (prompted || href === previousLoginHref);
       previousLoginHref = href;
       if (ready) {
-        const tab = loginTab; loginTab = null;
-        if (!tab.closed) {
-          tab.location.replace(href);
-          returnToCode = true;
+        const tab = loginTab;
+        try {
+          if (!tab.closed) {
+            tab.location.replace(href);
+            returnToCode = true;
+          }
+          loginTab = null;
+        } catch {
+          // The visible link remains usable when the browser denies navigation.
+          closeLoginTab();
         }
-      }
+      } else if (prompted && !href) closeLoginTab();
     } catch (error) {
       if (version !== generation || !dialog.open) return;
       previousLoginHref = null;

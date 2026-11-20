@@ -1,0 +1,263 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import http from 'node:http';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+const config = JSON.parse(await fs.readFile(process.argv[2], 'utf8'));
+const playwright = await import(pathToFileURL(process.env.DTW_PLAYWRIGHT_MODULE));
+const engine = playwright[config.browser || 'chromium'];
+const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.woff2': 'font/woff2' };
+const server = http.createServer(async (request, response) => {
+  const url = new URL(request.url, 'http://localhost');
+  const file = path.resolve(config.static, url.pathname === '/' ? 'index.html' : url.pathname.slice(8));
+  if (!file.startsWith(path.resolve(config.static) + path.sep)) return response.writeHead(404).end();
+  try {
+    const body = await fs.readFile(file);
+    const csp = url.pathname.startsWith('/static/starflow/') ? config.starflowCsp : config.csp;
+    response.writeHead(200, { 'Content-Type': mime[path.extname(file)] || 'application/octet-stream',
+      'Content-Security-Policy': csp }).end(body);
+  } catch {
+    response.writeHead(404).end();
+  }
+});
+const cases = [
+  { provider: 'claude', slot: 'claude', new_slot: false },
+  { provider: 'claude', slot: 'claude-work', new_slot: false },
+  { provider: 'claude', slot: 'claude-unused', new_slot: false },
+  { provider: 'claude', slot: 'claude-new', new_slot: true },
+  { provider: 'codex' },
+  { provider: 'grok' },
+];
+const targets = {
+  claude: 'https://claude.com/cai/oauth/authorize?state=fixture',
+  codex: 'https://auth.openai.com/device',
+  grok: 'https://accounts.x.ai/device',
+};
+const slots = [
+  { name: 'claude', kind: 'oauth', authenticated: true, priority: 1 },
+  { name: 'claude-work', kind: 'oauth', authenticated: true, priority: 2 },
+  { name: 'claude-unused', kind: 'oauth', authenticated: false, priority: null },
+];
+
+async function run(browser, origin, width, theme) {
+  const touch = width !== 1280;
+  const act = locator => touch ? locator.tap() : locator.click();
+  const context = await browser.newContext({
+    viewport: { width, height: width === 375 ? 812 : 900 },
+    hasTouch: touch, isMobile: touch, colorScheme: theme, reducedMotion: 'reduce',
+  });
+  context.setDefaultTimeout(3500);
+  const failures = [];
+  let current;
+  try {
+    // Simulate browser popup restrictions while retaining real user gestures for normal and fallback links.
+    await context.addInitScript(() => {
+      const open = window.open;
+      window.open = (...args) => {
+        if (window.testPopupMode === 'blocked') return null;
+        const tab = open.apply(window, args);
+        if (window.testPopupMode !== 'denied' || !tab) return tab;
+        return {
+          close: () => tab.close(),
+          get closed() { return tab.closed; },
+          set opener(value) { tab.opener = value; },
+          location: { replace() { throw new DOMException('Navigation denied', 'SecurityError'); } },
+        };
+      };
+    });
+    await context.route('https://*/**', route => route.fulfill({
+      contentType: 'text/html', body: '<body>Login fixture</body>',
+    }));
+    const page = await context.newPage();
+    const pageErrors = [];
+    page.on('pageerror', error => pageErrors.push(error.message));
+    await page.routeWebSocket('**/api/ws', () => {});
+    await page.route('**/api/**', route => {
+      const request = route.request();
+      const endpoint = new URL(request.url()).pathname;
+      const reply = json => route.fulfill({ json });
+      if (endpoint === '/api/i18n') return reply({ lang: 'en', strings: config.strings });
+      if (endpoint === '/api/auth/state') return reply({ authenticated: true, csrf: 'fixture-csrf', bridge_up: true });
+      if (endpoint === '/api/topics') return reply({ topics: [{
+        tid: '1.2', chat_id: 1, topic_id: 2, name: 'Markdown fixture', group: 'telegram',
+        count: 1, seen: 1, renamable: true, deletable: true, read_only: false, busy: false,
+        preview: '~~literal~~ and bold', created_at: null, last_ts: null, imported_count: 0,
+      }] });
+      if (endpoint === '/api/masterkey/status') return reply({ state: 'unconfigured' });
+      if (endpoint.endsWith('/messages')) return reply({ entries: [{
+        id: 'fixture-entry', seq: 1, role: 'bot', source: 'telegram', ts: null,
+        text: '~~literal~~ and **bold**',
+      }] });
+      if (endpoint === '/api/state') return reply({
+        telegram: { state: 'up' }, outbox: { pending: 0 }, bot: { up: true }, web_sessions: 1,
+      });
+      if (endpoint === '/api/cli-login/status') return reply({
+        providers: { claude: 'authenticated', codex: 'installed', grok: 'installed' },
+        claude_slots: slots, running: false,
+      });
+      if (endpoint === '/api/cli-login/jobs') {
+        current = request.postDataJSON();
+        return reply({ job_id: 'fixture-login' });
+      }
+      if (endpoint === '/api/cli-login/jobs/fixture-login') return reply({
+        ...current, job_id: 'fixture-login', state: 'running', seq: 1, output: [],
+        urls: current.provider === 'claude' ? config.claudeUrls : [targets[current.provider]],
+        needs_input: current.provider === 'claude',
+        code: current.provider === 'claude' ? null : 'TEST-CODE',
+      });
+      return reply({ commands: [], keys: [], files: [], items: [] });
+    });
+
+    async function shot(name) {
+      await page.evaluate(() => document.fonts.ready);
+      assert.equal(await page.locator('html').getAttribute('data-theme'), theme);
+      await page.screenshot({
+        path: path.join(config.shots, `${name}-${width}-${theme}.png`), animations: 'disabled',
+      });
+    }
+    async function login(selection, mode = 'normal', save = false) {
+      try {
+        current = null;
+        await page.goto(origin);
+        await page.evaluate(mode => { window.testPopupMode = mode; }, mode);
+        await act(page.locator('#accountButton'));
+        await act(page.locator('#openCliLogin'));
+        const dialog = page.locator('#cliLoginDlg');
+        const confirm = page.locator('#cliConfirmDlg');
+        if (selection.new_slot) {
+          await act(dialog.locator('.cli-provider-head [data-i18n="cli_login.add_slot"]'));
+          await dialog.locator('#cliSlotName').fill(selection.slot.slice(7));
+          await act(dialog.locator('#cliSlotForm button[type=submit]'));
+        } else if (selection.slot) {
+          const row = dialog.locator(`[data-slot="${selection.slot}"]`);
+          const more = row.locator('.cli-slot-more');
+          await row.waitFor();
+          if (await more.count()) await act(more);
+          const key = selection.slot === 'claude-unused' ? 'login' : 'relogin';
+          await act(row.locator(`button[data-i18n="cli_login.${key}"]`));
+        } else {
+          const provider = dialog.locator('.cli-provider').filter({ hasText: selection.provider });
+          await act(provider.locator('[data-i18n="cli_login.login"]'));
+        }
+        await confirm.waitFor();
+        const popup = mode === 'normal' ? context.waitForEvent('page', { timeout: 3500 }) : null;
+        if (popup) popup.catch(() => {});
+        await act(confirm.locator('#cliConfirmYes'));
+        await page.locator('#cliProgress').waitFor();
+        assert.deepEqual(current, selection);
+        const planned = targets[selection.provider];
+        if (mode === 'normal') {
+          const tab = await popup;
+          try {
+            await tab.waitForURL(planned, { timeout: 3500 });
+          } catch (error) {
+            throw Error(`Popup remained at ${tab.url()}, rendered links: ${await page.locator('#cliLinkRows a').count()}`,
+              { cause: error });
+          }
+          assert.equal(await tab.evaluate(() => window.opener), null);
+          if (save) await shot('login-opened');
+        }
+        const link = page.locator('#cliLinkRows a');
+        await link.waitFor();
+        assert.equal(await link.getAttribute('href'), planned);
+        assert.equal(await page.locator('.cli-url').textContent(), planned);
+        assert.equal(await page.locator('.cli-url').evaluate(el => {
+          const style = getComputedStyle(el);
+          return style.userSelect ?? style.webkitUserSelect;
+        }), 'text');
+        const copy = page.locator('[data-i18n="cli_login.copy_link"]');
+        assert.equal(await copy.isVisible(), true);
+        if (mode !== 'normal') {
+          assert.deepEqual(context.pages().map(tab => tab.url()), [page.url()]);
+          if (save) await shot('login-fallback');
+          await page.evaluate(() => {
+            Object.defineProperty(navigator, 'clipboard', { value: { writeText: async () => { throw Error(); } } });
+          });
+          await act(copy);
+          assert.equal(await page.evaluate(() => getSelection().toString()), planned);
+          const fallback = context.waitForEvent('page');
+          await act(link);
+          await (await fallback).waitForURL(planned);
+        }
+      } catch (error) {
+        failures.push(`${selection.slot || selection.provider} ${mode}: ${error.message}`);
+      } finally {
+        for (const tab of context.pages()) if (tab !== page) await tab.close();
+      }
+    }
+
+    for (const selection of cases) await login(selection, 'normal', selection === cases[0]);
+    await login(cases[0], 'denied', true);
+    await login(cases[0], 'blocked');
+
+    try {
+      for (const badge of ['#telegramBadge', '#botBadge']) {
+        await page.goto(origin);
+        await act(page.locator(badge));
+        const panel = page.locator('#connPanel');
+        await page.locator('body.info-open').waitFor();
+        const heading = panel.locator('h2');
+        await heading.waitFor();
+        assert.equal(new URL(page.url()).hash, '#status');
+        assert.equal(await page.locator('#info').evaluate(el => el.scrollTop), 0);
+        assert.equal(await panel.evaluate(el => getComputedStyle(el).boxShadow), 'none');
+        assert.equal(await heading.evaluate(el => getComputedStyle(el).outlineStyle), 'none');
+        await act(panel.locator('dt').first());
+        assert.equal(await panel.evaluate(el => getComputedStyle(el).boxShadow), 'none');
+      }
+      await shot('status');
+      await page.goto(origin);
+      const badge = page.locator('#telegramBadge');
+      await badge.waitFor();
+      for (let step = 0; step < 25; step++) {
+        if (await badge.evaluate(el => el === document.activeElement)) break;
+        await page.keyboard.press('Tab');
+      }
+      assert.equal(await badge.evaluate(el => el === document.activeElement), true);
+      await page.keyboard.press('Enter');
+      const heading = page.locator('#connPanel h2');
+      await page.waitForFunction(el => document.activeElement === el, await heading.elementHandle());
+      assert.equal(await heading.evaluate(el => getComputedStyle(el).outlineStyle), 'solid');
+      await shot('status-keyboard');
+    } catch (error) {
+      failures.push(`status: ${error.message}`);
+    }
+    try {
+      await page.goto(origin + '/#chat');
+      const message = page.locator('#thread [data-entry-seq="1"] .md');
+      await message.waitFor();
+      assert.equal(await message.textContent(), '~~literal~~ and bold');
+      assert.equal(await message.locator('strong').textContent(), 'bold');
+      assert.equal(await message.locator('del').count(), 0);
+      await shot('markdown');
+    } catch (error) {
+      failures.push(`markdown: ${error.message}`);
+    }
+    assert.deepEqual(pageErrors, []);
+    return failures;
+  } finally {
+    await context.close();
+  }
+}
+
+await fs.mkdir(config.shots, { recursive: true });
+await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+const origin = 'http://127.0.0.1:' + server.address().port;
+const browser = await engine.launch({
+  headless: config.headless ?? true, executablePath: config.executablePath,
+});
+let failures = 0;
+try {
+  for (const width of config.widths || [375, 768, 1280]) {
+    for (const theme of config.themes || ['light', 'dark']) {
+      const errors = await run(browser, origin, width, theme);
+      failures += errors.length;
+      console.log(width, theme, errors.length ? JSON.stringify(errors) : 'passed');
+    }
+  }
+  assert.equal(failures, 0);
+} finally {
+  await browser.close();
+  await new Promise(resolve => server.close(resolve));
+}

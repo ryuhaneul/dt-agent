@@ -586,6 +586,17 @@ def test_login_urls_require_exact_provider_host(provider, host):
     ] == [allowed.replace("/device", "/oauth/longcontinuation")]
 
 
+def test_claude_login_accepts_current_oauth_host_only_for_claude():
+    url = "https://claude.com/cai/oauth/authorize?state=test"
+    output = f"If the browser didn't open, visit: {url}\nPaste code here if prompted > "
+    assert parse_output("claude", output)["urls"] == [url]
+    assert parse_output("claude", output, inputs=[url])["urls"] == []
+    assert parse_output("codex", output)["urls"] == []
+    assert parse_output("grok", output)["urls"] == []
+    for lookalike in ("sub.claude.com", "claude.com.example.com", "user@claude.com"):
+        assert parse_output("claude", output.replace("claude.com", lookalike))["urls"] == []
+
+
 async def test_orphaned_job_is_claimed_only_after_owner_session_disappears(rig):
     make, _, _ = rig
     manager, _ = make()

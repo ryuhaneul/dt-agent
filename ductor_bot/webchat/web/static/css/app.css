@@ -221,7 +221,8 @@ dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(2px)}
 .flink{display:flex;align-items:center;gap:9px;min-height:40px;padding:0 10px;margin:0 -10px;border-radius:7px;color:var(--fg);text-decoration:none;font-family:var(--mono);font-size:.84rem}
 .flink:hover{background:var(--hover);color:var(--accent)}
 .flink svg{width:14px;height:14px;margin-left:auto;color:var(--muted)}
-.panel.focus{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 18%,transparent)}
+#connPanel h2:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+#connPanel h2:focus:not(:focus-visible){outline:none}
 .info-close{display:none}
 
 /* manage */
@@ -274,6 +275,7 @@ dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(2px)}
   .main{grid-template-columns:280px minmax(0,1fr)}
   .info{position:fixed;top:0;right:0;bottom:0;width:min(360px,92vw);z-index:45;background:var(--bg);transform:translateX(105%);visibility:hidden;transition:transform .25s,visibility 0s .25s}
   body.info-open .info{transform:none;visibility:visible;transition:transform .25s;box-shadow:-18px 0 40px -20px rgba(0,0,0,.35)}
+  body.info-open #connPanel h2{visibility:visible;transition-property:none}
   .info-close{display:flex}
   .only-t{display:inline-flex!important}
 }

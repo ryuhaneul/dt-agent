@@ -143,7 +143,7 @@ function displayHtml(prefix, scoped, orderedStart = null) {
       this.lineEndingIfNeeded(); this.tag('</ol>'); this.lineEndingIfNeeded(); this.tag('</section>');
     }
   };
-  for (const [token, tag] of Object.entries({ emphasis: 'em', strong: 'strong', strikethrough: 'del' })) {
+  for (const [token, tag] of Object.entries({ emphasis: 'em', strong: 'strong' })) {
     enter[token] = function () { if (!inImage()) this.tag(`<${tag}>`); };
     exit[token] = function () { if (!inImage()) this.tag(`</${tag}>`); };
   }
@@ -152,7 +152,10 @@ function displayHtml(prefix, scoped, orderedStart = null) {
 
 export function md(text, { scope = null, orderedStart = null } = {}) {
   const prefix = scope === null ? 'user-content-' : `dtw-${encodeURIComponent(scope)}-`;
-  return micromark(String(text), { extensions: [gfm()], htmlExtensions: displayHtml(prefix, scope !== null, orderedStart) });
+  return micromark(String(text), {
+    extensions: [gfm(), { disable: { null: ['strikethrough'] } }],
+    htmlExtensions: displayHtml(prefix, scope !== null, orderedStart),
+  });
 }
 
 // One current rendering per sequence; verify text as well as its hash so hash
