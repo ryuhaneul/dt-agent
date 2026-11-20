@@ -14,6 +14,7 @@ from ductor_bot.messenger.matrix.transport import MatrixTransport
 from ductor_bot.messenger.slack.bot import SlackBot
 from ductor_bot.messenger.slack.transport import SlackTransport
 from ductor_bot.messenger.telegram.app import TelegramBot
+from ductor_bot.messenger.telegram.sender import SendProgress
 from ductor_bot.messenger.telegram.transport import TelegramTransport
 from ductor_bot.multiagent.bus import AsyncInterAgentResult
 
@@ -22,8 +23,8 @@ _CASES = [
         "tg",
         TelegramBot,
         TelegramTransport,
-        "ductor_bot.messenger.telegram.transport.send_rich_checked_progress",
-        (True, 1),
+        "ductor_bot.messenger.telegram.transport.send_rich_progress_detailed",
+        SendProgress(True, 1, None, "", None),
         123,
     ),
     (
@@ -193,9 +194,9 @@ async def test_telegram_missing_topic_fails_without_dm_fallback() -> None:
         result_text="report",
     )
     with patch(
-        "ductor_bot.messenger.telegram.transport.send_rich_checked_progress",
+        "ductor_bot.messenger.telegram.transport.send_rich_progress_detailed",
         new_callable=AsyncMock,
-        return_value=(False, 0),
+        return_value=SendProgress(False, 0, "transient", "timeout", None),
     ) as send:
         await TelegramTransport(bot).deliver(env)
     send.assert_awaited_once()
@@ -263,7 +264,11 @@ async def test_cron_broadcast_checks_every_configured_recipient(
         bot.config.matrix.allowed_rooms = []
         bot._broadcast_channels.return_value = []
         targets = []
-    failed = {"tg": (False, 0), "mx": (False, None, 0), "sl": (False, None, 0)}[transport]
+    failed = {
+        "tg": SendProgress(False, 0, "transient", "timeout", None),
+        "mx": (False, None, 0),
+        "sl": (False, None, 0),
+    }[transport]
     values = [success, failed, success] if scenario == "partial" else [success] * len(targets)
     result = _result(transport, chat_id=0)
     result.result_origin = "cron-broadcast"

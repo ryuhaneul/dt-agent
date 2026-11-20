@@ -74,7 +74,7 @@ top-level key.
 | `memory_reflection` | `MemoryReflectionConfig` | `(nested keys below)` | restart | Optional periodic memory reflection hook |
 | `memory_reflection.enabled` | `bool` | `false` | restart | Registers the reflection hook only when enabled |
 | `memory_reflection.every_n_messages` | `int` | `10` | restart | Hook cadence; fires on the N-th outbound prompt for a session |
-| `memory_reflection.prompt` | `str` | `"## MEMORY REFLECTION\nReview the last several messages i...` | restart | Silent reflection prompt appended through `MessageHookRegistry` |
+| `memory_reflection.prompt` | `str` | `"## MEMORY REFLECTION\nReview the last several messages i...` | restart | Memory reflection prompt appended through `MessageHookRegistry` |
 | `memory_lint` | `MemoryLintConfig` | `(nested keys below)` | hot | Periodic framework lint of `memory_system/` (`mode` structure/full/off); hot-reloadable |
 | `memory_lint.mode` | `"structure" or "full" or "off"` | `"structure"` | hot | `structure`: script check; an agent turn only on problems, which also makes the safe fixes. `full`: check, then always one agent turn per period (semantic check, monthly stale check, fixes, report). `off`: nothing |
 | `memory_lint.every_hours` | `int` | `168` | hot | Period between checks; the first check happens one period after the home is first seen (state in `memory_lint_state.json`). Ignored while `schedule` is set |
@@ -155,7 +155,7 @@ top-level key.
 | `cron_delivery_retry.interval_seconds` | `int` | `300` | restart | Seconds between delivery retry attempts for one job |
 | `cron_delivery_retry.max_attempts` | `int` | `12` | restart | Maximum retry attempts per preserved result; after that retrying stops and the result stays preserved with its failed delivery status |
 | `cron_preflight` | `CronPreflightConfig` | `(nested keys below)` | restart | Task-local deterministic preflight gate |
-| `cron_preflight.enabled` | `bool` | `false` | restart | Run the task folder's `scripts/preflight.py` before the cron agent; missing/failed/timed-out preflight fails open (the agent runs) |
+| `cron_preflight.enabled` | `bool` | `true` | restart | Run the task folder's `scripts/preflight.py` before the cron agent when present. The agent runs if the script is missing, fails, or times out. An explicit `false` disables preflight. |
 | `cron_preflight.timeout_seconds` | `float` | `15.0` | restart | Time limit for the preflight script |
 | `cron_preflight.skip_marker` | `str` | `"HEARTBEAT_OK"` | restart | Exit 0 with this as the last stdout line skips the agent run (recorded as `success:preflight`) |
 | `scene` | `SceneConfig` | `(nested keys below)` | hot | Scene indicators and technical footer |

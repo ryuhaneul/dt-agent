@@ -23,6 +23,7 @@ from ductor_bot.chat_log.outbox import Outbox
 from ductor_bot.chat_log.recorder import HistoryRecorder, chat_log_source, chat_log_turn
 from ductor_bot.config import AgentConfig
 from ductor_bot.heartbeat.models import HeartbeatOutcome, HeartbeatStatus
+from ductor_bot.i18n import t
 from ductor_bot.messenger.telegram.transport import TelegramTransport
 from ductor_bot.orchestrator.core import Orchestrator
 from ductor_bot.orchestrator.registry import OrchestratorResult
@@ -385,6 +386,65 @@ async def test_bus_observer_does_not_record_generated_transport_fallback(
     )
     transport.deliver_broadcast.assert_awaited_once()
     assert not store.directory.exists()
+
+
+async def test_bus_history_records_only_successful_interagent_delivery(
+    orch: Orchestrator,
+) -> None:
+    store, _, recorder = storage(orch)
+    bus = MessageBus()
+    transport = MagicMock(transport_name="tg")
+    transport.deliver = AsyncMock(side_effect=[OSError("synthetic failure")] * 2 + [None])
+    bus.register_transport(transport)
+    bus.set_delivery_observer(recorder.on_delivered)
+
+    for delivered in (False, False, True):
+        result = await bus.submit(
+            Envelope(
+                origin=Origin.INTERAGENT,
+                chat_id=1,
+                topic_id=7,
+                injected=True,
+                result_text="Completed report",
+            )
+        )
+        assert result.delivered is delivered
+        assert [row.text for row in await store.read("1.7")] == (
+            ["Completed report"] if delivered else []
+        )
+
+
+async def test_interagent_body_is_recorded_when_attachment_permanently_fails(
+    orch: Orchestrator,
+) -> None:
+    store, _, recorder = storage(orch)
+    bot = MagicMock()
+    bot.file_roots.return_value = [orch.paths.ductor_home]
+    bot.bot_instance.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+    bot.bot_instance.send_document = AsyncMock()
+    bus = MessageBus()
+    bus.register_transport(TelegramTransport(bot))
+    bus.set_delivery_observer(recorder.on_delivered)
+    report = f"Completed report\n<file:{orch.paths.ductor_home / 'missing.txt'}>"
+    task_id = "abc000000095"
+
+    outcome = await bus.submit(
+        Envelope(
+            Origin.INTERAGENT, 123, injected=True, result_text=report,
+            metadata={"ia_task_id": task_id},
+        )
+    )
+
+    assert not outcome.delivered
+    assert outcome.delivery_failure == "permanent"
+    assert outcome.delivered_chunks == 1
+    bot.bot_instance.send_message.assert_awaited_once()
+    bot.bot_instance.send_document.assert_not_awaited()
+    await bus.notify_interagent_delivery_failed(task_id)
+    assert [row.text for row in await store.read("123")] == [
+        report,
+        t("notice.ia_delivery_failed"),
+    ]
 
 
 async def test_heartbeat_ack_path_never_calls_bus_or_history(orch: Orchestrator) -> None:

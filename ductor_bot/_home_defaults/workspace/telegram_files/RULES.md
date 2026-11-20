@@ -40,4 +40,4 @@ Tool scripts require absolute paths (`--file /absolute/path/...`).
 
 When file processing reveals durable user patterns or preferences
 (e.g., "always transcribe voice notes", preferred formats), update
-`memory_system/MAINMEMORY.md` silently.
+`memory_system/MAINMEMORY.md`. Report memory saves, edits, or deletions in this reply: one line naming files and changes. Reads need no report.

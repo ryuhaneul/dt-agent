@@ -24,7 +24,7 @@ Las sesiones de otros proveedores se han conservado.
 
 age_warning = "[La sesión tiene {age}. Usa /new para empezar de cero.]"
 
-empty_turn = "_(El agente actualizó su memoria en silencio — envía otro mensaje para continuar.)_"
+empty_turn = "_(El agente actualizó su memoria — envía otro mensaje para continuar.)_"
 
 recovered = "_No se pudo restaurar la sesión anterior. Se inició una nueva automáticamente._"
 recovery_failed = "No se pudo recuperar tu sesión después de empezar de nuevo. Inténtalo otra vez o usa /new para empezar desde cero."
@@ -518,6 +518,7 @@ extras_hint = "extras de la imagen: '{extras}'. Añade la función a DUCTOR_EXTR
 only_sub = "solo se excluye el subagente '{sub}'"
 
 [notice]
+ia_delivery_failed = "No se pudo entregar el resultado de la tarea delegada. Se detuvieron los intentos de entrega."
 ia_result_preserved = "El resultado está guardado. Resuelve el error de la CLI y espera la entrega automática, o reinicia el bot para reintentar de inmediato."
 session_cancelled = "**[{name}] Cancelado**"
 session_failed = "**[{name}] Falló** ({elapsed})"
@@ -708,6 +709,15 @@ stale = "Este control está desactualizado. Se muestra el estado más reciente."
 btn_prefer = "{name}: Dar prioridad"
 btn_clear = "{name}: Quitar espera"
 btn_refresh = "Actualizar"
+btn_delete = "Eliminar {name}"
+btn_cancel_delete = "Cancelar"
+btn_confirm_delete = "Eliminar"
+delete_confirm = "¿Eliminar {name}? Se quita la ranura de la lista y se eliminan su carpeta de inicio de sesión y sus registros de espera."
+deleted = "Se eliminó la ranura {name}."
+delete_busy = "La ranura está en uso y no se puede eliminar."
+delete_default = "La ranura predeterminada no se puede eliminar."
+delete_failed = "No se pudo eliminar la carpeta de inicio de sesión restante {path}: {reason}"
+unused = "Sin uso"
 
 [usage]
 title = "📊 Uso de cuentas · {time}"

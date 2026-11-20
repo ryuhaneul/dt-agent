@@ -17,10 +17,10 @@ from aiohttp import ClientError, web
 
 from ductor_bot.chat_log.history import InvalidSelectorButtonError, SelectorConflictError
 from ductor_bot.chat_log.ids import from_tid
+from ductor_bot.cli import claude_slots
 from ductor_bot.cli.autocompact import parse_autocompact_input, resolve_autocompact
 from ductor_bot.cli.claude_accounts import (
     SlotRegistry,
-    host_cli_auth_dir,
     host_slot_config_dir,
     slot_is_api_key,
     slot_is_authenticated,
@@ -54,7 +54,7 @@ from ductor_bot.text.response_format import stop_text
 from ductor_bot.webchat.attachments import MessageAttachments
 from ductor_bot.webchat.auth import AuthError, BridgeAuth
 from ductor_bot.webchat.cli_login import CliLoginError, CliLoginManager
-from ductor_bot.webchat.cli_login_slots import ClaudeLoginSlots, resolve_slot_name
+from ductor_bot.webchat.cli_login_slots import ClaudeLoginSlots
 from ductor_bot.webchat.commands import (
     CommandResponse,
     WebCommandBusyError,
@@ -229,7 +229,7 @@ async def _autocompact_state(orch: Orchestrator, key: SessionKey) -> dict[str, A
 async def _save_autocompact_values(
     orch: Orchestrator, key: SessionKey, data: dict[str, Any]
 ) -> bool:
-    """Caller holds the topic and global locks across both saves and any rollback."""
+    """Caller holds the global settings lock across both saves and any rollback."""
     previous_global = orch._config.autocompact
     for scope in ("global", "topic"):
         if scope not in data:
@@ -413,16 +413,12 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
                         data[scope] = parse_autocompact_input(value)
             except ValueError:
                 return _error("bad_request", 400)
-        async with topics.gate(tid):
-            if tid in turns.blocked or await topics.lookup(tid) is None:
+        async with bot._orch._autocompact_global_lock:
+            if await topics.lookup(tid) is None or tid in turns.blocked:
                 return _error("unknown_topic", 404)
             key = from_tid(tid)
-            async with (
-                input_lock(bot._sequential.get_lock(key.lock_key)),
-                bot._orch._autocompact_global_lock,
-            ):
-                saved = not data or await _save_autocompact_values(bot._orch, key, data)
-                state = await _autocompact_state(bot._orch, key)
+            saved = not data or await _save_autocompact_values(bot._orch, key, data)
+            state = await _autocompact_state(bot._orch, key)
         if not saved:
             return web.json_response({"error": "generic", **state}, status=503)
         return web.json_response(state)
@@ -1058,23 +1054,14 @@ def _register_cli_login_routes(app: web.Application, bot: TelegramBot) -> None: 
 
     app.on_cleanup.append(close)
 
-    def claude_slots() -> list[dict[str, object]]:
-        priority: list[str] = []
-        for name in bot.config.claude_accounts or ["claude"]:
-            with contextlib.suppress(ValueError):
-                if resolve_slot_name(name, allow_api_key=True) == name and name not in priority:
-                    priority.append(name)
-        names = priority.copy()
-        directory = host_cli_auth_dir(paths.ductor_home)
-        if directory.is_dir():
-            for entry in sorted(directory.iterdir()):
-                with contextlib.suppress(ValueError):
-                    if (
-                        entry.is_dir()
-                        and resolve_slot_name(entry.name, allow_api_key=True) == entry.name
-                        and entry.name not in names
-                    ):
-                        names.append(entry.name)
+    def list_slots() -> list[dict[str, object]]:
+        configured = claude_slots.read_accounts(paths.ductor_home)
+        priority = list(
+            dict.fromkeys(name for name in configured if claude_slots.is_slot_name(name))
+        )
+        if not configured:
+            priority = ["claude"]
+        names = [*priority, *claude_slots.unregistered_slots(paths.ductor_home, priority)]
         expired_slots: set[str] = set()
         # Expiration metadata must not prevent listing existing login slots.
         with contextlib.suppress(Exception):
@@ -1118,7 +1105,7 @@ def _register_cli_login_routes(app: web.Application, bot: TelegramBot) -> None: 
                 return web.json_response(
                     {
                         **manager.status(owner, active_owners=active_owners),
-                        "claude_slots": claude_slots(),
+                        "claude_slots": await asyncio.to_thread(list_slots),
                     }
                 )
             if resource == "/jobs":
@@ -1155,6 +1142,30 @@ def _register_cli_login_routes(app: web.Application, bot: TelegramBot) -> None: 
         except CliLoginError as exc:
             return _error(exc.code, exc.status)
 
+    async def delete_slot(request: web.Request) -> web.Response:
+        if not request.headers.get("X-Dtw-Owner", ""):
+            return _error("forbidden", 403)
+        try:
+            await asyncio.to_thread(
+                claude_slots.remove, paths.ductor_home, request.match_info["slot"]
+            )
+        except claude_slots.SlotDirectoryError as exc:
+            return web.json_response(
+                {
+                    "error": str(exc),
+                    "path": str(exc.path.relative_to(paths.ductor_home)),
+                    "reason": exc.reason,
+                },
+                status=500,
+            )
+        except claude_slots.SlotDeleteError as exc:
+            code = str(exc)
+            return _error(code, {"slot_not_found": 404, "slot_busy": 409}.get(code, 400))
+        except (OSError, ValueError):
+            return _error("slot_delete_error", 500)
+        return web.json_response({"ok": True})
+
+    app.router.add_delete(f"{_PREFIX}/cli-login/slots/{{slot}}", delete_slot)
     app.router.add_post(f"{_PREFIX}/cli-login/cancel-owner", handle)
     app.router.add_get(f"{_PREFIX}/cli-login/status", handle)
     app.router.add_post(f"{_PREFIX}/cli-login/jobs", handle)

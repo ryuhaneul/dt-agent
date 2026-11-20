@@ -10,9 +10,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
+import signal
 from asyncio import CancelledError, ensure_future, shield
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar
 
 from ductor_bot.cli.autocompact import autocompact_env
@@ -33,6 +36,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_INTERRUPTED_PIPE_WAIT_SECONDS = 0.25
 
 _CleanupResult = TypeVar("_CleanupResult")
 
@@ -158,6 +162,7 @@ class SubprocessSpec:
     timeout_controller: TimeoutController | None = None
     stdin_text: str | None = None
     extra_env: dict[str, str] | None = None
+    terminate_on_close: bool = False
 
 
 def effective_limit(
@@ -213,6 +218,62 @@ async def _default_post_handler(result: SubprocessResult) -> AsyncGenerator[Stre
         )
 
 
+def _stream_group_is_live(pgid: int) -> bool:
+    """Check for group members that can still execute, including after the leader exits."""
+    group = str(pgid).encode()
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdecimal():
+            continue
+        try:
+            if os.getpgid(int(entry.name)) != pgid:
+                continue
+            fields = (entry / "stat").read_bytes().rpartition(b") ")[2].split()
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        if len(fields) > 2 and fields[2] == group and fields[0] not in {b"Z", b"X", b"x"}:
+            return True
+    return False
+
+
+async def _finish_interrupted_stream_pipes(process: asyncio.subprocess.Process) -> None:
+    # asyncio.subprocess.Process has no public API to close its output pipes.
+    with contextlib.suppress(AttributeError, NotImplementedError):
+        transport = getattr(process, "_transport", None)
+        if transport is not None:
+            for fd in (1, 2):
+                pipe = transport.get_pipe_transport(fd)
+                if pipe is not None:
+                    pipe.close()
+    # Give local pipe callbacks and process reaping a bounded window.
+    with contextlib.suppress(TimeoutError):
+        async with asyncio.timeout(_INTERRUPTED_PIPE_WAIT_SECONDS):
+            await process.wait()
+
+
+async def _terminate_stream_group(process: asyncio.subprocess.Process) -> None:
+    """Stop the dedicated stream group and wait until its members cannot access the slot."""
+    if process.returncode is None:
+        await asyncio.to_thread(force_kill_process_tree, process.pid)
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGKILL)
+    await _finish_interrupted_stream_pipes(process)
+    while await asyncio.to_thread(_stream_group_is_live, process.pid):
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        await asyncio.sleep(0.05)
+
+
+async def _cleanup_interrupted_stream(
+    process: asyncio.subprocess.Process, error: BaseException, *, group_terminated: bool
+) -> None:
+    if isinstance(error, (CancelledError, GeneratorExit)):
+        if not group_terminated:
+            await _terminate_stream_group(process)
+    elif process.returncode is None:
+        force_kill_process_tree(process.pid)
+        await process.communicate()
+
+
 async def run_streaming_subprocess(
     config: CLIConfig,
     spec: SubprocessSpec,
@@ -243,6 +304,7 @@ async def run_streaming_subprocess(
         env=subprocess_env,
         limit=4 * 1024 * 1024,
         creationflags=_CREATION_FLAGS,
+        start_new_session=spec.terminate_on_close,
     )
     if process.stdout is None or process.stderr is None:
         msg = "Subprocess created without stdout/stderr pipes"
@@ -266,32 +328,51 @@ async def run_streaming_subprocess(
         else None
     )
     stderr_drain = asyncio.create_task(process.stderr.read())
+    group_terminated = False
 
     try:
-        async for event in _stream_with_timeout(process, spec, line_handler):
-            yield _flag_stale(event, tracked)
-        stderr_bytes = await stderr_drain
-    except TimeoutError:
-        force_kill_process_tree(process.pid)
-        await process.wait()
-        timeout_s = spec.timeout_seconds or 0
-        logger.warning("%s stream timed out after %.0fs", provider_label, timeout_s)
-        yield ResultEvent(
-            type="result",
-            result=f"__TIMEOUT__{int(timeout_s)}",
-            is_error=True,
-        )
-        return
-    finally:
-        if not stdin_feed.done():
-            stdin_feed.cancel()
-        with contextlib.suppress(BaseException):
-            await stdin_feed
-        await _cancel_drain(stderr_drain)
-        if tracked and reg:
-            reg.unregister(tracked)
+        try:
+            async for event in _stream_with_timeout(
+                process,
+                spec,
+                line_handler,
+                stderr_drain=stderr_drain if spec.terminate_on_close else None,
+            ):
+                yield _flag_stale(event, tracked)
+            stderr_bytes = await stderr_drain
+        except TimeoutError:
+            controller = spec.timeout_controller if spec.terminate_on_close else None
+            timeout_s = controller.timeout_seconds if controller else (spec.timeout_seconds or 0)
+            if spec.terminate_on_close:
+                await _cancel_drain(stderr_drain)
+                await await_process_cleanup(_terminate_stream_group(process))
+                group_terminated = True
+            else:
+                force_kill_process_tree(process.pid)
+                await process.wait()
+            logger.warning("%s stream timed out after %.0fs", provider_label, timeout_s)
+            yield ResultEvent(
+                type="result",
+                result=f"__TIMEOUT__{int(timeout_s)}",
+                is_error=True,
+            )
+            return
+        finally:
+            if not stdin_feed.done():
+                stdin_feed.cancel()
+            with contextlib.suppress(BaseException):
+                await stdin_feed
+            await _cancel_drain(stderr_drain)
+            if tracked and reg:
+                reg.unregister(tracked)
 
-    await process.wait()
+        await process.wait()
+    except BaseException as exc:
+        if spec.terminate_on_close:
+            await await_process_cleanup(
+                _cleanup_interrupted_stream(process, exc, group_terminated=group_terminated)
+            )
+        raise
 
     handler = post_handler or _default_post_handler
     async for event in handler(SubprocessResult(process=process, stderr_bytes=stderr_bytes)):
@@ -307,15 +388,19 @@ async def _stream_with_timeout(
     process: asyncio.subprocess.Process,
     spec: SubprocessSpec,
     line_handler: LineHandler,
+    *,
+    stderr_drain: asyncio.Task[bytes] | None = None,
 ) -> AsyncGenerator[StreamEvent, None]:
-    """Read stdout lines with either a plain timeout or a managed controller.
+    """Read stdout lines and optionally wait for stderr under the same timeout.
 
     When ``spec.timeout_controller`` is set, the controller manages deadline
     extensions triggered by output activity and fires warning callbacks.
     Otherwise a plain ``asyncio.timeout`` is used (backward-compatible).
     """
     if spec.timeout_controller:
-        async for event in _stream_with_controller(process, spec.timeout_controller, line_handler):
+        async for event in _stream_with_controller(
+            process, spec.timeout_controller, line_handler, stderr_drain=stderr_drain
+        ):
             yield event
     else:
         async with asyncio.timeout(spec.timeout_seconds):
@@ -327,12 +412,16 @@ async def _stream_with_timeout(
                 logger.debug("Stream line: %s", line[:120])
                 async for event in line_handler(line):
                     yield event
+            if stderr_drain is not None:
+                await asyncio.shield(stderr_drain)
 
 
 async def _stream_with_controller(
     process: asyncio.subprocess.Process,
     tc: TimeoutController,
     line_handler: LineHandler,
+    *,
+    stderr_drain: asyncio.Task[bytes] | None = None,
 ) -> AsyncGenerator[StreamEvent, None]:
     """Streaming read loop managed by a :class:`TimeoutController`.
 
@@ -345,20 +434,24 @@ async def _stream_with_controller(
 
     try:
         timeout_secs = tc.timeout_seconds
+        stdout_finished = False
         while True:
             try:
                 async with asyncio.timeout(timeout_secs):
                     while True:
                         line_bytes = await process.stdout.readline()  # type: ignore[union-attr]
                         if not line_bytes:
-                            return  # EOF
+                            stdout_finished = True
+                            if stderr_drain is not None:
+                                await asyncio.shield(stderr_drain)
+                            return
                         tc.record_activity()
                         line = line_bytes.decode(errors="replace").rstrip()
                         logger.debug("Stream line: %s", line[:120])
                         async for event in line_handler(line):
                             yield event
             except TimeoutError:
-                if tc.try_extend():
+                if not stdout_finished and tc.try_extend():
                     timeout_secs = tc.activity_extension_seconds
                     continue
                 raise

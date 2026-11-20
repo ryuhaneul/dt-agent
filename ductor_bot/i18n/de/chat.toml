@@ -24,7 +24,7 @@ Schreib einfach los!"""
 
 age_warning = "[Session ist {age} alt. Mit /new gibt's einen frischen Start.]"
 
-empty_turn = "_(Der Agent hat im Hintergrund das Gedächtnis aktualisiert — schick noch eine Nachricht, um weiterzumachen.)_"
+empty_turn = "_(Der Agent hat das Gedächtnis aktualisiert — schick noch eine Nachricht, um weiterzumachen.)_"
 
 recovered = "_Die vorherige Session konnte nicht wiederhergestellt werden. Es wurde automatisch eine neue gestartet._"
 recovery_failed = "Deine Session konnte auch nach einem Neustart nicht wiederhergestellt werden. Versuch es noch einmal oder starte mit /new neu."
@@ -514,6 +514,7 @@ extras_hint = "Image-Build-Extras: '{extras}'. Füge die Funktion in der Root-.e
 only_sub = "nur Sub-Agent '{sub}' wird ausgeschlossen"
 
 [notice]
+ia_delivery_failed = "Die Zustellung des Auftragsergebnisses ist dauerhaft fehlgeschlagen."
 ia_result_preserved = "Das Ergebnis ist gespeichert. Behebe den CLI-Fehler und warte auf die automatische Zustellung oder starte den Bot neu, um es sofort erneut zu versuchen."
 session_cancelled = "**[{name}] Abgebrochen**"
 session_failed = "**[{name}] Fehlgeschlagen** ({elapsed})"
@@ -704,6 +705,15 @@ stale = "Diese Schaltfläche ist veraltet. Der aktuelle Stand wird angezeigt."
 btn_prefer = "{name}: Bevorzugen"
 btn_clear = "{name}: Wartezeit aufheben"
 btn_refresh = "Aktualisieren"
+btn_delete = "{name} löschen"
+btn_cancel_delete = "Abbrechen"
+btn_confirm_delete = "Löschen"
+delete_confirm = "{name} löschen? Der Slot wird aus der Liste entfernt. Sein Anmeldeordner und seine Wartezeitdaten werden gelöscht."
+deleted = "Slot {name} gelöscht."
+delete_busy = "Der Slot wird gerade verwendet und kann nicht gelöscht werden."
+delete_default = "Der Standardslot kann nicht gelöscht werden."
+delete_failed = "Der verbleibende Anmeldeordner {path} konnte nicht gelöscht werden: {reason}"
+unused = "Nicht verwendet"
 
 [usage]
 title = "📊 Kontonutzung · {time}"

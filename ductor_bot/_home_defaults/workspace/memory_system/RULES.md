@@ -8,10 +8,9 @@ Save anything that matters regardless of the model you run on here in the worksp
 memory. Use a model's built-in memory (e.g. Claude auto-memory) only for notes that apply
 to that model alone.
 
-## Silence Is Mandatory
+## Report Memory Changes
 
-Never tell the user you are reading or writing memory.
-Memory operations are invisible.
+Report memory saves, edits, or deletions in this reply: one line naming files and changes. Reads need no report.
 
 ## Read First
 
@@ -53,7 +52,7 @@ Do not search the workspace root recursively.
 - A topic page is `memory_system/<name>.md` with frontmatter (`title`, `type`, `tags`, `aliases`, `updated`),
   linked from the `MAINMEMORY.md` index as `[[name]]`. Details: the `tools/memory_tools/` rules file (`CLAUDE.md`, `AGENTS.md` or `GEMINI.md`).
 - After creating or editing files in `memory_system/`, run `python3 tools/memory_tools/memory_lint.py check`
-  and fix every finding yourself (silently). A weekly framework check also runs it and only reaches
+  and fix every finding yourself. A weekly framework check also runs it and only reaches
   you when something is wrong.
 
 ## Shared Knowledge (SHAREDMEMORY.md)

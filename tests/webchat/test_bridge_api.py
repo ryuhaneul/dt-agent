@@ -298,6 +298,7 @@ async def conversation(tmp_path, monkeypatch):
     orch = SimpleNamespace(
         paths=paths,
         _sessions=sessions,
+        _autocompact_global_lock=asyncio.Lock(),
         _lock_pool=pool,
         _process_registry=registry,
         is_chat_busy=lambda chat, topic: pool.is_locked((chat, topic)),
@@ -3534,6 +3535,7 @@ async def test_cli_status_returns_ordered_slots_and_cache_without_auth_wait(cli_
 
     manager._auth_checker = slow
     bot.config.claude_accounts = ["claude-work", "claude"]
+    paths.config_path.write_text(json.dumps({"claude_accounts": bot.config.claude_accounts}))
     root = paths.ductor_home / ".cli-auth"
     (root / "claude-work").mkdir()
     (root / "claude-work/credentials.json").write_text("fake")
@@ -3583,6 +3585,7 @@ async def test_cli_status_preserves_slots_when_expiration_metadata_cannot_load(c
 
     client, bot, _, paths, _ = cli_bridge
     bot.config.claude_accounts = ["claude", "claude-empty"]
+    paths.config_path.write_text(json.dumps({"claude_accounts": bot.config.claude_accounts}))
     root = paths.ductor_home / ".cli-auth"
     (root / "claude/.credentials.json").write_text("fake")
     (root / "claude-unused").mkdir()
@@ -3612,6 +3615,7 @@ async def test_cli_slot_expiration_tracks_rotation_fingerprint(cli_bridge):
 
     client, bot, _, paths, _ = cli_bridge
     bot.config.claude_accounts = ["claude-work"]
+    paths.config_path.write_text(json.dumps({"claude_accounts": bot.config.claude_accounts}))
     directory = paths.ductor_home / ".cli-auth/claude-work"
     directory.mkdir()
     credentials = directory / ".credentials.json"
@@ -3774,8 +3778,9 @@ async def test_cli_slot_request_reaches_preparation_and_shutdown_cleans_it(cli_b
 
 
 async def test_cli_status_empty_config_still_lists_default_slot(cli_bridge):
-    client, bot, _, _, _ = cli_bridge
+    client, bot, _, paths, _ = cli_bridge
     bot.config.claude_accounts = []
+    paths.config_path.write_text(json.dumps({"claude_accounts": bot.config.claude_accounts}))
     response = await client.get(f"{_PREFIX}/cli-login/status", headers=cli_headers())
     assert (await response.json())["claude_slots"] == [
         {"name": "claude", "priority": 1, "authenticated": False, "kind": "oauth", "auth_expired": False}
@@ -3785,6 +3790,7 @@ async def test_cli_status_empty_config_still_lists_default_slot(cli_bridge):
 async def test_cli_status_default_slot_excluded_from_nonempty_priority(cli_bridge):
     client, bot, _, paths, _ = cli_bridge
     bot.config.claude_accounts = ["claude-work"]
+    paths.config_path.write_text(json.dumps({"claude_accounts": bot.config.claude_accounts}))
     default = paths.ductor_home / ".cli-auth/claude"
     default.mkdir(exist_ok=True)
     (default / ".credentials.json").write_text("fake")
@@ -4991,6 +4997,7 @@ async def test_cli_status_includes_api_kind_and_ignores_stale_expiry(cli_bridge,
     (slot / "settings.json").write_text('{"apiKeyHelper": "helper.sh"}')
     if configured:
         bot.config.claude_accounts = ["claude", "claude-api"]
+        paths.config_path.write_text(json.dumps({"claude_accounts": bot.config.claude_accounts}))
     registry = SlotRegistry(state_file_path(paths.ductor_home))
     registry.state_path.write_text(json.dumps({
         "auth_failures": {"claude-api": registry.credential_mtimes("claude-api")},

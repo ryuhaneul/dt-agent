@@ -23,9 +23,9 @@ Send a message to continue."""
 
 age_warning = "[Session is {age} old. Use /new for a fresh start.]"
 
-# #84: Tool-only turns (e.g. silent memory updates) surface this neutral
+# #84: Tool-only turns (e.g. memory updates) surface this neutral
 # status line instead of a blank message the user would never see.
-empty_turn = "_(Agent updated memory silently — send another message to continue.)_"
+empty_turn = "_(Agent updated memory — send another message to continue.)_"
 
 recovered = "_Previous session could not be restored. A new session was started automatically._"
 recovery_failed = "Could not recover your session after a fresh start. Please try again or use /new to start over."
@@ -515,6 +515,7 @@ extras_hint = "image build extras: '{extras}'. Add the feature to DUCTOR_EXTRAS 
 only_sub = "only sub-agent '{sub}' is excluded"
 
 [notice]
+ia_delivery_failed = "The delegated result could not be delivered. Delivery attempts have stopped."
 ia_result_preserved = "The result is preserved. Fix the CLI error and wait for automatic redelivery, or restart the bot to retry immediately."
 session_cancelled = "**[{name}] Cancelled**"
 session_failed = "**[{name}] Failed** ({elapsed})"
@@ -705,6 +706,15 @@ stale = "This control is out of date. Showing the latest state."
 btn_prefer = "{name}: Prefer"
 btn_clear = "{name}: Clear cooldown"
 btn_refresh = "Refresh"
+btn_delete = "{name}: Delete"
+btn_cancel_delete = "Cancel"
+btn_confirm_delete = "Delete"
+delete_confirm = "Delete {name}? This removes the slot from the list and deletes its login folder and cooldown records."
+deleted = "Deleted slot {name}."
+delete_busy = "The slot is in use and cannot be deleted."
+delete_default = "The default slot cannot be deleted."
+delete_failed = "Could not delete the remaining login folder {path}: {reason}"
+unused = "Not in use"
 
 [usage]
 title = "📊 Account usage · {time}"

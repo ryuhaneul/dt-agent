@@ -364,3 +364,81 @@ def test_overview_ignores_stored_api_key_auth_failure(home):
             "cooldown_until": None,
         }
     ]
+
+
+@pytest.mark.parametrize(
+    ("slot", "code"),
+    [
+        ("claude", "slot_default"),
+        ("claude-missing", "slot_not_found"),
+        ("../claude-a", "invalid_slot"),
+    ],
+)
+def test_remove_refuses_default_missing_and_invalid_slots(home, slot, code):
+    from ductor_bot.cli.claude_slots import remove
+
+    before = _config(home)
+    with pytest.raises(ValueError, match=code):
+        remove(home, slot)
+    assert _config(home) == before
+
+
+@pytest.mark.parametrize("slot", ["claude-a", "claude-unregistered"])
+def test_remove_preserves_other_state_and_shared_targets(home, slot):
+    from ductor_bot.cli.claude_accounts import AuthFailureDetails
+    from ductor_bot.cli.claude_slots import remove
+
+    registry = SlotRegistry(state_file_path(home))
+    root = registry.state_path.parent
+    shared = root / "_shared-projects"
+    shared.mkdir(parents=True)
+    (shared / "history").write_text("keep")
+    folder = root / slot
+    folder.mkdir()
+    (folder / "projects").symlink_to(shared, target_is_directory=True)
+    (folder / ".credentials.json").write_text("fixture")
+    registry.save(SlotSnapshot(
+        cooldowns={slot: 100, "claude-b": 200},
+        last_used=slot,
+        auth_failures={slot: registry.credential_mtimes(slot)},
+        auth_failure_details={slot: AuthFailureDetails()},
+    ))
+    config_path = home / "config/config.json"
+    inode = config_path.stat().st_ino
+
+    remove(home, slot)
+
+    assert not folder.exists()
+    assert (shared / "history").read_text() == "keep"
+    assert registry.load() == SlotSnapshot(cooldowns={"claude-b": 200})
+    assert _config(home)["claude_accounts"] == [
+        name for name in ("claude-a", "claude-b", "claude-c") if name != slot
+    ]
+    if slot == "claude-unregistered":
+        assert config_path.stat().st_ino == inode
+
+
+def test_remove_reports_partial_failure_and_allows_retry(home, monkeypatch):
+    from ductor_bot.cli import claude_slots
+
+    registry = SlotRegistry(state_file_path(home))
+    registry.save(SlotSnapshot(cooldowns={"claude-a": 100, "claude-b": 200}))
+    folder = registry.state_path.parent / "claude-a"
+    folder.mkdir()
+
+    def fail(path):
+        assert path == folder
+        raise PermissionError(13, "Permission denied", path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(claude_slots.shutil, "rmtree", fail)
+        with pytest.raises(claude_slots.SlotDirectoryError) as error:
+            claude_slots.remove(home, "claude-a")
+
+    assert error.value.path == folder
+    assert error.value.reason == "Permission denied"
+    assert folder.is_dir()
+    assert "claude-a" not in _config(home)["claude_accounts"]
+    assert registry.load().cooldowns == {"claude-b": 200}
+    claude_slots.remove(home, "claude-a")
+    assert not folder.exists()

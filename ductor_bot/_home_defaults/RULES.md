@@ -69,5 +69,5 @@ Do not manually edit `cron_jobs.json` or `webhooks.json` for normal operations.
 Then tell the user to run `/restart`.
 - Save user-facing generated files in `workspace/output_to_user/` and send with
 `<file:/absolute/path/to/output_to_user/...>`.
-- Update `workspace/memory_system/MAINMEMORY.md` silently when durable user facts
-or preferences are learned.
+- Update `workspace/memory_system/MAINMEMORY.md` when durable user facts
+or preferences are learned. Report memory saves, edits, or deletions in this reply: one line naming files and changes. Reads need no report.

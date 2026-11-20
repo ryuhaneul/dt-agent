@@ -298,10 +298,20 @@ class CliLoginManager:
             new_slot=new_slot,
             started=self._clock(),
         )
-        self._jobs[job.id] = job
-        self._active = job.id
-        job.task = asyncio.create_task(self._run(job), name="cli-login")
+        self._schedule(job)
         return job.id
+
+    def _schedule(self, job: _Job) -> None:
+        with contextlib.ExitStack() as reservation:
+            if job.provider == "claude" and self._slots is not None:
+                assert job.slot is not None
+                if not reservation.enter_context(self._slots.reserve(job.slot)):
+                    raise CliLoginError(409, "slot_busy")
+            self._jobs[job.id] = job
+            self._active = job.id
+            job.task = asyncio.create_task(self._run(job), name="cli-login")
+            held = reservation.pop_all()
+            job.task.add_done_callback(lambda _task: held.close())
 
     def get(self, job_id: str, owner: str, *, after: int = 0) -> dict[str, object]:
         job = self._owned(job_id, owner)

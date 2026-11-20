@@ -23,7 +23,7 @@ Kirim pesan untuk melanjutkan."""
 
 age_warning = "[Sesi telah berjalan selama {age}. Gunakan /new untuk memulai ulang.]"
 
-empty_turn = "_(Agen memperbarui memori secara diam-diam — kirim pesan lain untuk melanjutkan.)_"
+empty_turn = "_(Agen memperbarui memori — kirim pesan lain untuk melanjutkan.)_"
 
 recovered = "_Sesi sebelumnya tidak dapat dipulihkan. Sesi baru dimulai secara otomatis._"
 recovery_failed = "Sesi Anda tidak dapat dipulihkan setelah memulai ulang. Coba lagi atau gunakan /new untuk memulai dari awal."
@@ -513,6 +513,7 @@ extras_hint = "extras build image: '{extras}'. Tambahkan fitur ke DUCTOR_EXTRAS 
 only_sub = "hanya sub-agen '{sub}' yang dikecualikan"
 
 [notice]
+ia_delivery_failed = "Hasil tugas yang didelegasikan tidak dapat dikirim. Upaya pengiriman dihentikan."
 ia_result_preserved = "Hasil disimpan. Perbaiki error CLI lalu tunggu pengiriman ulang otomatis, atau mulai ulang bot untuk langsung mencoba lagi."
 session_cancelled = "**[{name}] Dibatalkan**"
 session_failed = "**[{name}] Gagal** ({elapsed})"
@@ -703,6 +704,15 @@ stale = "Kontrol ini sudah kedaluwarsa. Menampilkan status terbaru."
 btn_prefer = "{name}: Utamakan"
 btn_clear = "{name}: Hapus waktu tunggu"
 btn_refresh = "Segarkan"
+btn_delete = "Hapus {name}"
+btn_cancel_delete = "Batal"
+btn_confirm_delete = "Hapus"
+delete_confirm = "Hapus {name}? Slot akan dikeluarkan dari daftar, lalu folder login dan catatan jedanya akan dihapus."
+deleted = "Slot {name} dihapus."
+delete_busy = "Slot sedang digunakan dan tidak dapat dihapus."
+delete_default = "Slot bawaan tidak dapat dihapus."
+delete_failed = "Folder login yang tersisa {path} tidak dapat dihapus: {reason}"
+unused = "Tidak digunakan"
 
 [usage]
 title = "📊 Penggunaan akun · {time}"

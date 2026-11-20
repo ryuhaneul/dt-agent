@@ -9,7 +9,7 @@ import re
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, TypedDict, cast
+from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 from aiogram.enums import ParseMode
 from aiogram.exceptions import (
@@ -24,6 +24,7 @@ from aiogram.exceptions import (
 )
 from aiogram.types import FSInputFile, InlineKeyboardMarkup, ReplyParameters
 
+from ductor_bot.bus.envelope import DeliveryFailure as SendFailure
 from ductor_bot.files.tags import FILE_PATH_RE, extract_file_paths, guess_mime, path_from_file_tag
 from ductor_bot.i18n import t
 from ductor_bot.messenger.send_opts import BaseSendOpts
@@ -50,11 +51,10 @@ class SendRichOpts(BaseSendOpts):
     skip_unavailable_files: bool = False
     web_attachment_name: str | None = None
     literal_text: bool = False
+    # Outbox records can already contain offsets from the original token layout.
+    outbox_chunk_layout: bool = False
     on_keyboard: Callable[[int, InlineKeyboardMarkup, str | None], Awaitable[None]] | None = None
     on_file: Callable[[Path], Awaitable[None]] | None = None
-
-
-SendFailure = Literal["transient", "permanent"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,8 +152,18 @@ _WEB_PHOTO_MIMES = frozenset({"image/jpeg", "image/png", "image/webp", "image/gi
 _VIDEO_SUFFIXES = frozenset({".mp4"})
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a"})
 
-# IA reports select the first token at each original position; nested syntax is literal.
-_IA_TOKEN_RE = re.compile(r"<file:(?P<file>[^>]+)>|\[button:(?P<button>[^\]]+)\]")
+# Reports select the first token at each original position; nested syntax is literal.
+_RICH_TOKENS = r"<file:(?P<file>[^>]+)>|\[button:(?P<button>[^\]]+)\]"
+_OUTBOX_TOKEN_RE = re.compile(_RICH_TOKENS)
+_IA_TOKEN_RE = re.compile(
+    r"(?P<code>^[ \t]*(?P<backtick_fence>`{3,})[^`\n]*\n"
+    r"[\s\S]*?(?:^[ \t]*(?P=backtick_fence)`*[ \t]*\r?$|\Z)"
+    r"|^[ \t]*(?P<tilde_fence>~{3,})[^\n]*\n"
+    r"[\s\S]*?(?:^[ \t]*(?P=tilde_fence)~*[ \t]*\r?$|\Z)"
+    r"|(?<![\\`])(?P<ticks>`+)(?!`)(?:(?!\n[ \t]*\n)[\s\S])+?(?<!`)(?P=ticks)(?!`))|"
+    + _RICH_TOKENS,
+    re.MULTILINE,
+)
 
 
 def _select_telegram_upload_mode(path: Path, mime: str) -> str:
@@ -618,9 +628,16 @@ async def _send_ia_file_chunk(
     ).ok
 
 
-def _parse_ia_report(text: str) -> tuple[str, list[str], InlineKeyboardMarkup | None]:
+def _parse_ia_report(
+    text: str, *, outbox_chunk_layout: bool = False
+) -> tuple[str, list[str], InlineKeyboardMarkup | None]:
     """Extract IA files and buttons without interpreting tokens inside tokens."""
-    tokens = list(_IA_TOKEN_RE.finditer(text))
+    pattern = _OUTBOX_TOKEN_RE if outbox_chunk_layout else _IA_TOKEN_RE
+    tokens = [
+        token
+        for token in pattern.finditer(text)
+        if token.group("file") is not None or token.group("button") is not None
+    ]
     files: list[str] = []
     display_parts: list[str] = []
     visible_prefix = ""
@@ -637,9 +654,7 @@ def _parse_ia_report(text: str) -> tuple[str, list[str], InlineKeyboardMarkup | 
         # Removing a token must not join fragments into a new file/button token.
         separator = (
             " "
-            if any(
-                match.start() < boundary < match.end() for match in _IA_TOKEN_RE.finditer(candidate)
-            )
+            if any(match.start() < boundary < match.end() for match in pattern.finditer(candidate))
             else ""
         )
         visible_prefix += separator
@@ -669,7 +684,9 @@ async def send_rich_progress_detailed(  # noqa: PLR0913 -- resumable send and pr
     o = opts or SendRichOpts()
     # The bus hashes the original report; IA-only display parsing is stable.
     clean_text, files, extracted_markup = (
-        (text, [], None) if o.literal_text else _parse_ia_report(text)
+        (text, [], None)
+        if o.literal_text
+        else _parse_ia_report(text, outbox_chunk_layout=o.outbox_chunk_layout)
     )
     markup = o.reply_markup if o.reply_markup is not None else extracted_markup
     if not clean_text and not files and markup is not None:

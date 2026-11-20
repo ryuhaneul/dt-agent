@@ -12,7 +12,7 @@ export function initCliLogin() {
   let view = 'list', status = null, target = null, job = null, seq = 0;
   let timer = null, generation = 0, busy = false, loading = false, polling = false, confirmMode = 'start';
   let noticeKey = null, copied = false, cancelRequested = false, refreshingProvider = null;
-  let accountsKey = null, linksKey = null;
+  let accountsKey = null, linksKey = null, deleteError = null;
   let codeFocusPending = false, returnToCode = false;
   // Probes can take 10s (Claude) + 15s (Grok), plus a queued completion probe.
   // Bound unknown-status polling; two snapshots skip the first cached response.
@@ -37,14 +37,21 @@ export function initCliLogin() {
   }
   function badge(authenticated, state = null) {
     const key = state ? `cli_login.${state}` : authenticated === null ? 'cli_login.checking' : authenticated ? 'cli_login.authenticated' : 'cli_login.unauthenticated';
-    const element = node('span', `badge ${state === 'expired' ? 'badge-warn' : (!state || state === 'api_key') && authenticated ? 'badge-ok' : 'badge-off'}`, t(key));
+    const element = node('span', `badge ${['expired', 'slot_in_use'].includes(state) ? 'badge-warn' : (!state || state === 'api_key') && authenticated ? 'badge-ok' : 'badge-off'}`, t(key));
     element.dataset.i18n = key; return element;
+  }
+  function labelDelete(control, name) {
+    const label = t('cli_login.delete_label', { name });
+    control.setAttribute('aria-label', label); control.title = label;
   }
   function renderAccounts() {
     const root = $('cliProviders');
-    const key = JSON.stringify([status?.providers, status?.claude_slots]);
+    const key = JSON.stringify([status?.providers, status?.claude_slots, deleteError]);
     if (key === accountsKey) {
-      root.querySelectorAll('button').forEach(element => { element.disabled = busy || loading || Boolean(status?.running); });
+      root.querySelectorAll('button').forEach(element => {
+        element.disabled = busy || loading || (Boolean(status?.running) && !element.dataset.delete);
+        if (element.dataset.delete) labelDelete(element, element.dataset.delete);
+      });
       return;
     }
     accountsKey = key; root.replaceChildren();
@@ -59,17 +66,35 @@ export function initCliLogin() {
         section.append(head);
         const slots = node('div', 'cli-slots');
         (status?.claude_slots || []).forEach(slot => {
-          const row = node('div', 'cli-slot');
+          const row = node('div', 'cli-slot'); row.dataset.slot = slot.name;
+          const error = deleteError?.name === slot.name ? deleteError : null;
           const name = node('span', 'cli-slot-name mono', slot.name === 'claude' ? t('cli_login.default_slot') : slot.name);
           if (slot.name === 'claude') name.dataset.i18n = 'cli_login.default_slot';
-          const state = slot.priority == null ? 'unused' : slot.auth_expired ? 'expired' : null;
+          const state = error?.key === 'cli_login.delete_busy' ? 'slot_in_use'
+            : slot.kind === 'api_key' ? 'api_key'
+            : slot.priority == null ? 'unused' : slot.auth_expired ? 'expired' : null;
           if (slot.kind === 'api_key') {
-            row.append(name, badge(true, 'api_key'));
+            row.append(name, badge(true, state));
           } else {
             row.append(name, badge(slot.authenticated, state),
               button(slot.authenticated ? 'cli_login.relogin' : 'cli_login.login', () => askStart({ provider, slot: slot.name, new_slot: false }), !slot.authenticated));
           }
+          if (slot.name !== 'claude') {
+            const remove = button('cli_login.delete', () => askDelete(slot.name));
+            remove.classList.toggle('btn-danger', true);
+            remove.dataset.delete = slot.name; remove.disabled = busy || loading;
+            labelDelete(remove, slot.name);
+            remove.setAttribute('aria-haspopup', 'dialog');
+            row.append(remove);
+          }
           slots.append(row);
+          if (error) {
+            const message = node('p', 'cli-error slot-error', t(error.key, error.args));
+            message.dataset.i18n = error.key;
+            message.dataset.i18nArgs = JSON.stringify(error.args);
+            message.setAttribute('role', 'alert');
+            slots.append(message);
+          }
         });
         section.append(slots);
       } else {
@@ -82,17 +107,18 @@ export function initCliLogin() {
     });
   }
   function renderConfirmation() {
-    const cancel = confirmMode === 'cancel';
-    $('cliConfirmTitle').textContent = t(cancel ? 'cli_login.cancel_title' : 'cli_login.confirm_title');
-    $('cliConfirmTarget').textContent = targetName();
-    $('cliConfirmWarning').textContent = t(cancel ? 'cli_login.cancel_warning'
+    const cancel = confirmMode === 'cancel', remove = confirmMode === 'delete';
+    $('cliConfirmTitle').textContent = t(remove ? 'cli_login.delete_title' : cancel ? 'cli_login.cancel_title' : 'cli_login.confirm_title');
+    $('cliConfirmTarget').textContent = remove ? target?.slot || '' : targetName();
+    $('cliConfirmWarning').textContent = t(remove ? 'cli_login.delete_warning' : cancel ? 'cli_login.cancel_warning'
       : 'cli_login.confirm_warning')
-      + (!cancel && target?.provider === 'codex' ? ` ${t('cli_login.confirm_codex')}` : '');
+      + (!cancel && !remove && target?.provider === 'codex' ? ` ${t('cli_login.confirm_codex')}` : '');
     $('cliConfirmNo').textContent = t(cancel ? 'cli_login.keep_login' : 'common.cancel');
-    $('cliConfirmYes').textContent = t(cancel ? 'cli_login.confirm_cancel' : 'cli_login.start');
-    $('cliConfirmYes').classList.toggle('btn-danger', cancel);
-    $('cliConfirmYes').classList.toggle('btn-primary', !cancel);
+    $('cliConfirmYes').textContent = t(remove ? 'cli_login.delete' : cancel ? 'cli_login.confirm_cancel' : 'cli_login.start');
+    $('cliConfirmYes').classList.toggle('btn-danger', cancel || remove);
+    $('cliConfirmYes').classList.toggle('btn-primary', !cancel && !remove);
     $('cliConfirmYes').disabled = busy;
+    $('cliConfirmNo').disabled = busy && remove;
   }
   function focusCodeInput() {
     const input = $('cliCodeInput'), focused = document.activeElement;
@@ -165,7 +191,7 @@ export function initCliLogin() {
     else if (dialog.open && ['list', 'result'].includes(view) && !busy && statusChecksLeft > 0 && (refreshChecksLeft || Object.values(status?.providers || {}).some(value => value === null))) timer = setTimeout(loadStatus, 1000);
   }
   async function loadStatus() {
-    if (!dialog.open || !['list', 'result'].includes(view) || busy || statusChecksLeft <= 0) return;
+    if (!dialog.open || confirmation.open || !['list', 'result'].includes(view) || busy || statusChecksLeft <= 0) return;
     const version = generation; statusChecksLeft--; loading = true; renderAccounts();
     try {
       const result = await api('/cli-login/status');
@@ -214,6 +240,42 @@ export function initCliLogin() {
   function askStart(selection) {
     if (busy) return;
     target = selection; confirmMode = 'start'; renderConfirmation(); confirmation.showModal(); $('cliConfirmNo').focus();
+  }
+  function askDelete(name) {
+    if (busy || loading) return;
+    target = { slot: name }; confirmMode = 'delete'; renderConfirmation();
+    confirmation.showModal(); $('cliConfirmNo').focus();
+  }
+  async function deleteSlot() {
+    const version = generation, name = target.slot;
+    const currentSlots = status.claude_slots, index = currentSlots.findIndex(slot => slot.name === name);
+    busy = true; render();
+    let focusSlot = name;
+    try {
+      await api(`/cli-login/slots/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      if (version !== generation || !dialog.open) return;
+      deleteError = null;
+      status = { ...status, claude_slots: currentSlots.filter(slot => slot.name !== name) };
+      focusSlot = currentSlots.slice(index + 1).find(slot => slot.name !== 'claude')?.name;
+    } catch (error) {
+      if (version !== generation || !dialog.open) return;
+      let key = 'cli_login.delete_error', args = { name };
+      if (error.code === 'slot_busy') key = 'cli_login.delete_busy';
+      else if (error.code === 'slot_not_found') key = 'cli_login.delete_missing';
+      else if (error.code === 'slot_delete_failed') {
+        key = 'cli_login.delete_failed';
+        args = { path: error.details?.path || name, reason: error.details?.reason || '' };
+        status = { ...status, claude_slots: currentSlots.map(slot => slot.name === name ? { ...slot, priority: null } : slot) };
+      }
+      deleteError = { name, key, args };
+    } finally {
+      if (version === generation && dialog.open) {
+        busy = false; confirmation.close(); render();
+        const next = [...$('cliProviders').querySelectorAll('[data-slot]')].find(row => row.dataset.slot === focusSlot);
+        (next?.querySelector('[data-delete]') || $('cliProviders').querySelector('.cli-provider-head button'))?.focus();
+        schedule();
+      }
+    }
   }
   function askCancel() {
     if (!active() || busy || cancelRequested) return;
@@ -284,7 +346,7 @@ export function initCliLogin() {
   openModal = () => {
     if (dialog.open) return;
     ++generation; status = null; target = null; job = null; view = 'list'; busy = false; loading = true; noticeKey = null;
-    copied = false; cancelRequested = false; seq = 0; statusChecksLeft = 60; refreshChecksLeft = 0; refreshingProvider = null; $('cliRaw').open = false;
+    deleteError = null; copied = false; cancelRequested = false; seq = 0; statusChecksLeft = 60; refreshChecksLeft = 0; refreshingProvider = null; $('cliRaw').open = false;
     dialog.showModal(); render(); $('cliClose').focus(); loadStatus();
   };
   const focusAfterReturn = () => {
@@ -316,14 +378,19 @@ export function initCliLogin() {
     catch { const range = document.createRange(); range.selectNodeContents($('cliDeviceCode')); getSelection().removeAllRanges(); getSelection().addRange(range); }
   });
   $('cliCancel').addEventListener('click', askCancel);
-  $('cliConfirmNo').addEventListener('click', () => { if (!busy) confirmation.close(); });
-  $('cliConfirmYes').addEventListener('click', () => { if (!busy) { if (confirmMode === 'cancel') cancelJob(); else startJob(); } });
+  $('cliConfirmNo').addEventListener('click', () => { if (!busy) { confirmation.close(); schedule(); } });
+  $('cliConfirmYes').addEventListener('click', () => {
+    if (busy) return;
+    if (confirmMode === 'delete') deleteSlot();
+    else if (confirmMode === 'cancel') cancelJob();
+    else startJob();
+  });
   $('cliRetry').addEventListener('click', retryJob);
   dialog.querySelectorAll('[data-cli-list]').forEach(control => control.addEventListener('click', () => { stopPolling(); view = 'list'; job = null; showNotice(null); render(); loadStatus(); }));
   function closeDialog() { if (active()) askCancel(); else dialog.close(); }
   $('cliClose').addEventListener('click', closeDialog);
   dialog.addEventListener('cancel', event => { event.preventDefault(); closeDialog(); });
-  confirmation.addEventListener('cancel', event => { event.preventDefault(); if (!busy) confirmation.close(); });
+  confirmation.addEventListener('cancel', event => { event.preventDefault(); if (!busy) { confirmation.close(); schedule(); } });
   [dialog, confirmation].forEach(modal => modal.addEventListener('keydown', event => {
     if (event.key !== 'Tab') return;
     const controls = [...modal.querySelectorAll('button:not(:disabled),input:not(:disabled),select:not(:disabled),a[href],summary,[tabindex="0"]')].filter(element => element.getClientRects().length);

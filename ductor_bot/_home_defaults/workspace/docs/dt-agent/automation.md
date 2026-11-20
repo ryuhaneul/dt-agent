@@ -112,9 +112,12 @@ work folders are outside rule deployment, backfill and stale cleanup.
 Runtime behavior:
 
 1. Skip disabled jobs and task-level quiet hours.
-2. When `cron_preflight.enabled`, run task-folder `scripts/preflight.py` if present.
-   Exit 0 with the last stdout line equal to `skip_marker` skips the agent and
-   records `success:preflight`; missing, failed, or timed-out preflight runs fail open.
+2. By default, run the task folder's `scripts/preflight.py` if present. If it
+   exits with code 0 and its last non-empty stdout line matches `skip_marker`
+   (default `HEARTBEAT_OK`), skip the agent and record `success:preflight`. The
+   agent runs as usual if the script is missing, fails, or exceeds
+   `cron_preflight.timeout_seconds` (default 15 seconds). Set
+   `cron_preflight.enabled` to `false` to disable preflight.
 3. Acquire the optional shared dependency lock, validate the task folder, and
    resolve execution overrides.
 4. Build a `claude`, `codex`, `gemini`, or `grok` command and run it with `cli_timeout`.

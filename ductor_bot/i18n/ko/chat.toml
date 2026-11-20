@@ -23,7 +23,7 @@ reset_body = """\
 
 age_warning = "[세션이 {age} 경과했어요. 새로 시작하려면 /new를 사용하세요.]"
 
-empty_turn = "_(에이전트가 메모리를 조용히 업데이트했어요 — 다음 메시지를 보내서 계속하세요.)_"
+empty_turn = "_(에이전트가 메모리를 업데이트했어요 — 다음 메시지를 보내서 계속하세요.)_"
 
 recovered = "_이전 세션을 복원할 수 없었어요. 새 세션이 자동으로 시작됐어요._"
 recovery_failed = "새로 시작한 뒤에도 세션을 복원할 수 없었어요. 다시 시도하거나 /new 를 써서 새로 시작해 주세요."
@@ -513,6 +513,7 @@ extras_hint = "이미지 빌드 extras: '{extras}'. 루트 .env의 DUCTOR_EXTRAS
 only_sub = "서브 '{sub}'만 제외돼요"
 
 [notice]
+ia_delivery_failed = "위임 결과를 전달하지 못했어요. 재시도를 중단했어요."
 ia_result_preserved = "결과는 보관되어 있어요. CLI 오류를 해결한 뒤 자동 재전달을 기다리거나, 봇을 재시작해 바로 재시도할 수 있어요."
 session_cancelled = "**[{name}] 취소됨**"
 session_failed = "**[{name}] 실패** ({elapsed})"
@@ -703,6 +704,15 @@ stale = "이 버튼은 이전 상태예요. 최신 상태를 표시해요."
 btn_prefer = "{name}: 1순위로"
 btn_clear = "{name}: 쿨다운 해제"
 btn_refresh = "새로고침"
+btn_delete = "{name} 삭제"
+btn_cancel_delete = "취소"
+btn_confirm_delete = "삭제"
+delete_confirm = "{name} 슬롯을 삭제할까요? 목록에서 슬롯을 제거하고 로그인 폴더와 쿨다운 기록을 삭제해요."
+deleted = "{name} 슬롯을 삭제했어요."
+delete_busy = "슬롯을 사용 중이어서 삭제할 수 없어요."
+delete_default = "기본 슬롯은 삭제할 수 없어요."
+delete_failed = "남은 로그인 폴더 {path}을(를) 삭제하지 못했어요. 원인: {reason}"
+unused = "사용 안 함"
 
 [usage]
 title = "📊 계정 사용량 · {time}"
