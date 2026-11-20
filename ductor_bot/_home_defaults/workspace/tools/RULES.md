@@ -51,6 +51,14 @@ Two files, by who reads the value:
 
   Before master-key setup the store is plaintext `KEY=VALUE` (`#` comments; no `export`); `KEY=$OTHER_KEY` takes a value from that store. After setup the bot serves requested values from its in-memory vault. `load_secrets` preserves environment precedence and adds only requested, missing values to the consuming script's environment. Never bulk-source either file.
 
+## Secrets and master keys
+
+- `secrets.env` may be master-key encrypted; `.env` is separate. Use `load_secrets("KEY")`; never read/source the store directly.
+- Check `python3 tools/secret_tools/secret_status.py` for state and expiry.
+- On `SECRETS_LOCKED`, stop the affected work and ask the owner for `/masterkey unlock` or webchat unlock. Never bypass the lock or search plaintext, backups, process memory or tokens.
+- Never print or save secret values/keys. Never ask for or accept a master key in conversation; input belongs only in `/masterkey` private replies or webchat modals.
+- Respect `SECRETS_RATE_LIMITED` and `retry_after`. Details: `docs/dt-agent/config.md`, **Tool credentials**.
+
 ## Output and Memory
 
 - Save user deliverables in `../output_to_user/`.

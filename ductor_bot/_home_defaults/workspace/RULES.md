@@ -101,5 +101,12 @@ account or chat and cannot talk directly with the user. Main uses synchronous
 or asynchronous delegation; async results return through main to the original
 chat/topic. Choose headless for workers used only through main, and a bot
 transport when the user needs a separate direct chat.
+During synchronous delegation, sub-agents must put questions in their final
+report instead of messaging main while it waits. The server rejects questions
+to main during synchronous delegation. Continue the work; do not invent missing
+values, and leave them empty or state assumptions. During asynchronous delegation,
+questions to main use synchronous `ask_agent.py` and the delegating session
+context (or a dedicated fallback with source information). Async sends during
+a delegated turn are rejected.
 Only create/interact when the user explicitly asks.
 Full API: the `tools/agent_tools/` rules file (`CLAUDE.md`, `AGENTS.md` or `GEMINI.md`)
