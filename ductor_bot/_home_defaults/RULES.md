@@ -66,7 +66,7 @@ synced into every agent's `MAINMEMORY.md` by the Supervisor.
 - Use tool scripts in `workspace/tools/` for cron/webhook lifecycle changes.
 Do not manually edit `cron_jobs.json` or `webhooks.json` for normal operations.
 - When config changes are requested, edit only requested keys in `config/config.json`.
-If the change needs a restart, follow **Bot Restart** in `workspace/CLAUDE.md`.
+If the change needs a restart, follow **Bot Restart** in the `workspace/` rules file (`CLAUDE.md`, `AGENTS.md` or `GEMINI.md`).
 - Save user-facing generated files in `workspace/output_to_user/` and send with
 `<file:/absolute/path/to/output_to_user/...>`.
 - Update `workspace/memory_system/MAINMEMORY.md` when durable user facts
