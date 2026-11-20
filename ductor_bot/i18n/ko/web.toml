@@ -80,6 +80,7 @@ current = "{name} · 토픽 #{id}"
 last_active = "마지막 활동 {time}"
 
 [chat]
+copy_message = "메시지 복사"
 activity = "활동 상세"
 queued = "대기 중"
 cancelled = "취소됨"
@@ -128,6 +129,8 @@ item_history = "웹 기록 {n}개"
 confirm = "확인하려면 {name} 입력"
 
 [common]
+copied = "복사됨"
+copy_failed = "복사 실패"
 cancel = "취소"
 delete = "삭제"
 close = "닫기"
@@ -251,6 +254,7 @@ title = "웹 화면 언어"
 empty = "토픽 이름을 입력해 주세요."
 
 [cli_login]
+copy_link = "링크 복사"
 api_key = "API 키"
 api_key_slot = "API 키 슬롯은 서버에서 ./scripts/login.sh claude-api 로 관리하세요."
 title = "CLI 로그인"

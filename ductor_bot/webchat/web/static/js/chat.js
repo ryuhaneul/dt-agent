@@ -136,8 +136,11 @@ function queueStatus(turnId, status = null) {
   const cancel = !cancelled ? `<button class="btn queue-cancel" type="button" data-cancel-turn="${esc(turnId)}" aria-label="${esc(t('chat.cancel_queued'))}"${turn.cancelling ? ' disabled' : ''}>${esc(t('common.cancel'))}</button>` : '';
   return `<div class="queue-status${cancelled ? ' stopped' : ''}" role="status"><span>${esc(label)}</span>${cancel}</div>`;
 }
+function copyButton(entryId = '', hidden = false) {
+  return `<button class="btn btn-sm btn-ghost" type="button" data-copy-message="${esc(entryId)}"${hidden ? ' hidden' : ''}>${esc(t('chat.copy_message'))}</button>`;
+}
 function queuedMarkup(turn) {
-  return `<div class="msg me" data-queue-turn="${esc(turn.id)}"><div class="meta"><span class="tag">${esc(t('tag.web'))}</span><span class="tm">${esc(formatTime(turn.received))}</span></div><div class="bubble md">${md(turn.userText)}</div>${queueStatus(turn.id)}</div>`;
+  return `<div class="msg me" data-queue-turn="${esc(turn.id)}"><div class="meta"><span class="tag">${esc(t('tag.web'))}</span><span class="tm">${esc(formatTime(turn.received))}</span>${turn.userText ? copyButton() : ''}</div><div class="bubble md">${md(turn.userText)}</div>${queueStatus(turn.id)}</div>`;
 }
 async function cancelQueued(turnId) {
   const turn = turns.get(turnId), generation = epoch;
@@ -208,22 +211,42 @@ function streamContent(turn, live) {
 function entryMarkup(entry) {
   const displayText=attachmentView?.text(getTopic().tid,entry)??entry.text;
   const attachmentCards=attachmentView?.markup(getTopic().tid,entry)||'';
+  const copy = displayText ? copyButton(entry.id) : '';
   const time = esc(formatTime(entry.ts));
   const delegated = entry.role === 'event' && entry.kind === 'interagent';
   if (entry.role === 'event' && !delegated) {
     const failed = ['failed', 'error', 'cancelled'].includes(entry.status);
     const key = entry.kind === 'task_result' && failed ? 'task_failed' : entry.kind;
     const kind = ['task_result', 'task_failed', 'task_question', 'heartbeat', 'interagent', 'cron', 'webhook', 'background'].includes(key) ? key : 'background';
-    return `<div class="event${entry.imported ? ' old' : ''}" data-entry-seq="${entry.seq}"><span class="badge ${kind === 'task_result' ? 'badge-ok' : kind === 'task_failed' ? 'badge-down' : 'badge-off'}">${esc(t(`event.${kind}`))}</span><div><div class="meta">${sourceTag(entry)}<span class="tm">${time}</span>${entry.title ? `<b>${esc(entry.title)}</b>` : ''}</div><div class="md">${history(getTopic().tid).markdown({ ...entry, text: displayText })}</div>${attachmentCards}${responseButtons(entry)}${mirror(entry)}</div></div>`;
+    return `<div class="event${entry.imported ? ' old' : ''}" data-entry-seq="${entry.seq}"><span class="badge ${kind === 'task_result' ? 'badge-ok' : kind === 'task_failed' ? 'badge-down' : 'badge-off'}">${esc(t(`event.${kind}`))}</span><div><div class="meta">${sourceTag(entry)}<span class="tm">${time}</span>${entry.title ? `<b>${esc(entry.title)}</b>` : ''}${copy}</div><div class="md">${history(getTopic().tid).markdown({ ...entry, text: displayText })}</div>${attachmentCards}${responseButtons(entry)}${mirror(entry)}</div></div>`;
   }
   const turn = turns.get(entry.turn_id);
   const stopped = entry.status === 'aborted' || (entry.role === 'bot' && turn?.phase === 'aborted');
-  return `<div class="msg ${entry.role === 'user' ? 'me' : 'bot'}${entry.imported ? ' old' : ''}${entry.kind === 'command' ? ' command-message' : ''}" data-entry-seq="${entry.seq}"><div class="meta">${sourceTag(entry)}${delegated ? `<span class="tag">${esc(t('chat.delegated_response'))}</span>` : ''}<span class="tm">${time}</span>${delegated && entry.title ? `<span>${esc(entry.title)}</span>` : ''}</div><div class="bubble md">${entry.role === 'bot' ? activitySummary(turn) : ''}${entry.kind === 'command' ? esc(entry.text || '') : history(getTopic().tid).markdown({ ...entry, text: displayText })}${attachmentCards}${responseButtons(entry)}</div>${entry.role === 'user' ? queueStatus(entry.turn_id, entry.status) : ''}${stopped ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : ''}${mirror(entry)}</div>`;
+  return `<div class="msg ${entry.role === 'user' ? 'me' : 'bot'}${entry.imported ? ' old' : ''}${entry.kind === 'command' ? ' command-message' : ''}" data-entry-seq="${entry.seq}"><div class="meta">${sourceTag(entry)}${delegated ? `<span class="tag">${esc(t('chat.delegated_response'))}</span>` : ''}<span class="tm">${time}</span>${delegated && entry.title ? `<span>${esc(entry.title)}</span>` : ''}${copy}</div><div class="bubble md">${entry.role === 'bot' ? activitySummary(turn) : ''}${entry.kind === 'command' ? esc(entry.text || '') : history(getTopic().tid).markdown({ ...entry, text: displayText })}${attachmentCards}${responseButtons(entry)}</div>${entry.role === 'user' ? queueStatus(entry.turn_id, entry.status) : ''}${stopped ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : ''}${mirror(entry)}</div>`;
 }
 function streamMarkup(turn) {
   const live = ['queued', 'started'].includes(turn.phase);
   const dots = live ? '<span class="typing" aria-hidden="true"><i></i><i></i><i></i></span>' : '';
-  return `<div class="msg bot" ${live ? 'id="streamMsg"' : ''} data-turn="${esc(turn.id)}"><div class="meta"><span class="tag">${esc(t('tag.web'))}</span><span>${esc(live ? t('chat.answering') : formatTime(turn.finished))}</span>${dots}</div><div class="bubble md">${streamContent(turn, live)}${live ? '<span class="caret" aria-hidden="true"></span>' : ''}</div>${turn.phase === 'aborted' ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : turn.phase === 'error' ? `<div class="stopped">${esc(t('error.generic'))}</div>` : ''}</div>`;
+  return `<div class="msg bot" ${live ? 'id="streamMsg"' : ''} data-turn="${esc(turn.id)}"><div class="meta"><span class="tag">${esc(t('tag.web'))}</span><span>${esc(live ? t('chat.answering') : formatTime(turn.finished))}</span>${dots}${copyButton('', !turn.text)}</div><div class="bubble md">${streamContent(turn, live)}${live ? '<span class="caret" aria-hidden="true"></span>' : ''}</div>${turn.phase === 'aborted' ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : turn.phase === 'error' ? `<div class="stopped">${esc(t('error.generic'))}</div>` : ''}</div>`;
+}
+async function copyMessage(button) {
+  const row = button.closest('[data-entry-seq], [data-turn], [data-queue-turn]');
+  const { turn, queueTurn } = row.dataset, topic = getTopic();
+  if (!topic) return;
+  const entry = history(topic.tid).entries.get(button.dataset.copyMessage);
+  const text = entry ? attachmentView?.text(topic.tid, entry) ?? entry.text
+    : turns.get(turn)?.text ?? turns.get(queueTurn)?.userText;
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    if (button.isConnected) notify('common.copied', {}, { success: true });
+  } catch {
+    if (!button.isConnected) return;
+    const selection = window.getSelection(), range = document.createRange();
+    range.selectNodeContents(row.querySelector('.md'));
+    selection.removeAllRanges(); selection.addRange(range);
+    notify('common.copy_failed');
+  }
 }
 function cancelStreamRender() {
   if (streamFrame !== null) cancelAnimationFrame(streamFrame);
@@ -248,6 +271,7 @@ function scheduleStreamRender(turnId) {
           updateTurn(turn);
           continue;
         }
+        element.querySelector('[data-copy-message]').hidden = !turn.text;
         turn.markdown.render(turn.text.slice(turn.markdownOffset || 0));
         const complete = element.querySelector('[data-stream-complete]');
         const tail = element.querySelector('[data-stream-tail]');
@@ -363,15 +387,17 @@ function patchThread(thread, items, changes) {
   for (let index = items.length - 1; index >= 0; index--) {
     const item = items[index], { entry, turn } = item;
     let node = existing.get(item.key);
-    const dirty = item.kind === 'entry'
+    const dirty = !changes || (item.kind === 'entry'
       ? changes.entries?.has(entry.id) || changes.turns?.has(entry.turn_id)
-      : turn && changes.turns?.has(turn.id);
+      : turn && changes.turns?.has(turn.id));
     if (!node || dirty) {
       if (node) rememberActivity(node);
       template.innerHTML = itemMarkup(item);
       const replacement = template.content.firstElementChild;
-      if (node) node.replaceWith(replacement);
-      node = replacement;
+      if (!node?.isEqualNode(replacement)) {
+        if (node) node.replaceWith(replacement);
+        node = replacement;
+      }
     }
     if (node.parentNode !== thread || node.nextElementSibling !== next) thread.insertBefore(node, next);
     next = node;
@@ -545,7 +571,7 @@ export function renderThread({ bottom = false, seq = null, changes = null, move 
   if (!state.range.newer && (busy.get(topic.tid) ?? topic.busy) && !liveTurns.length) {
     items.push({ kind: 'busy', key: 'busy' });
   }
-  if (changes) patchThread(thread, items, changes);
+  if (changes || sameTopic) patchThread(thread, items, changes);
   else thread.innerHTML = items.map(itemMarkup).join('');
   loadWindowAttachments(topic.tid, mounted);
   const pinned = !move && (bottom || nearBottom) && !state.range.newer;
@@ -948,6 +974,8 @@ export function initChat() {
   document.querySelector('#sendBtn').addEventListener('click', sendMessage);
   document.querySelector('#stopBtn').addEventListener('click', stopAnswer);
   thread.addEventListener('click', event => {
+    const copy = event.target.closest('[data-copy-message]');
+    if (copy) { void copyMessage(copy); return; }
     const cancel = event.target.closest('[data-cancel-turn]');
     if (cancel && !cancel.disabled) void cancelQueued(cancel.dataset.cancelTurn);
     const button = event.target.closest('[data-response-entry]');

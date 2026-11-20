@@ -80,6 +80,7 @@ current = "{name} · Tópico #{id}"
 last_active = "Última atividade: {time}"
 
 [chat]
+copy_message = "Copiar mensagem"
 activity = "Detalhes da atividade"
 queued = "Na fila"
 cancelled = "Cancelado"
@@ -128,6 +129,8 @@ item_history = "Registros no histórico web: {n}"
 confirm = "Digite {name} para confirmar"
 
 [common]
+copied = "Copiado"
+copy_failed = "Falha ao copiar"
 cancel = "Cancelar"
 delete = "Excluir"
 close = "Fechar"
@@ -251,6 +254,7 @@ title = "Idioma da interface web"
 empty = "Introduza um nome para o tópico."
 
 [cli_login]
+copy_link = "Copiar link"
 api_key = "Chave de API"
 api_key_slot = "Gerencie slots de chave de API no servidor com ./scripts/login.sh claude-api."
 title = "Login na CLI"

@@ -80,6 +80,7 @@ current = "{name} · Onderwerp #{id}"
 last_active = "Laatst actief: {time}"
 
 [chat]
+copy_message = "Bericht kopiëren"
 activity = "Activiteitsdetails"
 queued = "In wachtrij"
 cancelled = "Geannuleerd"
@@ -128,6 +129,8 @@ item_history = "Berichten in de webgeschiedenis: {n}"
 confirm = "Voer {name} in ter bevestiging"
 
 [common]
+copied = "Gekopieerd"
+copy_failed = "Kopiëren mislukt"
 cancel = "Annuleren"
 delete = "Verwijderen"
 close = "Sluiten"
@@ -251,6 +254,7 @@ title = "Taal van de webinterface"
 empty = "Voer een onderwerpnaam in."
 
 [cli_login]
+copy_link = "Link kopiëren"
 api_key = "API-sleutel"
 api_key_slot = "Beheer API-sleutelslots op de server met ./scripts/login.sh claude-api."
 title = "CLI-aanmelding"

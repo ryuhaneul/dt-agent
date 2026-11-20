@@ -614,17 +614,20 @@ try {
   assert.equal(await page.locator('#sendBtn').evaluate(el=>el===document.activeElement&&el.matches(':focus-visible')),true);
   assert.equal(await page.locator('#sendBtn').evaluate(el=>getComputedStyle(el).outlineStyle),'solid');
   // CLI stages focus the fixed input, preserve drafts/cursors on polling, and respect raw controls.
+  await context.route('https://login.example.test/**',route=>route.fulfill({contentType:'text/html',body:'Login page'}));
+  const automaticTab=context.waitForEvent('page');
   await page.locator('#accountButton').click();await page.locator('#openCliLogin').click();
   await page.locator('.cli-slot button').first().click();await page.locator('#cliConfirmYes').click();
   await page.locator('#cliWaiting').waitFor({state:'visible'});
-  cliNeedsInput=true;await page.waitForFunction(()=>document.activeElement?.id==='cliCodeInput');
+  cliNeedsInput=true;
+  const opened=await automaticTab;await opened.waitForURL('https://login.example.test/auth');await opened.close();await page.bringToFront();
+  await page.waitForFunction(()=>document.activeElement?.id==='cliCodeInput');
   await page.locator('#cliCodeInput').fill('draft-code');
   await page.locator('#cliCodeInput').evaluate(input=>input.setSelectionRange(2,6));
   const fixed=await page.locator('#cliCodeInput').elementHandle();
   await page.waitForResponse(response=>response.url().includes('/cli-login/jobs/browser-login?'));
   assert.equal(await fixed.evaluate(input=>input===document.querySelector('#cliCodeInput')),true);
   assert.deepEqual(await fixed.evaluate(input=>[input.value,input.selectionStart,input.selectionEnd]),['draft-code',2,6]);
-  await context.route('https://login.example.test/**',route=>route.fulfill({contentType:'text/html',body:'Login page'}));
   const popupPromise=page.waitForEvent('popup');await page.locator('#cliLinkRows a').click();
   const popup=await popupPromise;await popup.close();await page.bringToFront();
   await page.evaluate(()=>{window.dispatchEvent(new Event('focus'));document.dispatchEvent(new Event('visibilitychange'));});
@@ -796,6 +799,7 @@ class ThreadRow extends Element {
       this.dataset[name.replace(/-([a-z])/g,(_,part)=>part.toUpperCase())]=value;
     }
   }
+  isEqualNode(row){return this.html===row?.html;}
   getBoundingClientRect(){
     const top=this.parentNode.children.indexOf(this)*50-this.parentNode.scrollTop;
     return {top,bottom:top+50};
@@ -808,6 +812,7 @@ class ThreadRow extends Element {
   }
   replaceWith(row){this.parentNode.insertBefore(row,this);this.remove();}
   querySelector(selector){
+    if(selector==='[data-copy-message]'&&this.html.includes('data-copy-message='))return {};
     const name=selector.slice(1,-1);
     const pattern=new RegExp(`(<div ${name}[^>]*>)([\\s\\S]*?)(</div>)`);
     if(!pattern.test(this.html))return null;
@@ -2475,12 +2480,15 @@ import vm from 'node:vm';
 const {source,ids}=JSON.parse(fs.readFileSync(0,'utf8'));
 let focus=null,language='ko',timerId=0,resumeJob=false;const fakeSlots=[{name:'claude',priority:1,authenticated:true},{name:'claude-empty',priority:2,authenticated:false},{name:'claude-expired',priority:3,authenticated:true,auth_expired:true},{name:'claude-unused',priority:null,authenticated:true,auth_expired:true},{name:'claude-api',kind:'api_key',priority:4,authenticated:true}];const timers=new Map(),calls=[],events={},statusReplies=[];const providerStates={claude:'authenticated',codex:'installed',grok:'installed'};
 class Element {
+ get textContent(){return this.children.length?this.children.map(child=>child.textContent??child.data).join(''):this.text}
+ set textContent(value){this.text=value;this.children=[]}
  constructor(id=''){this.id=id;this.value='';this.hidden=false;this.disabled=false;this.open=false;this.children=[];this.listeners={};this.dataset={};this.textContent='';this.classList={toggle(){}}}
  addEventListener(name,fn){(this.listeners[name]??=[]).push(fn)}
  emit(name,event={}){return Promise.all((this.listeners[name]||[]).map(fn=>fn({preventDefault(){},...event})))}
  append(...children){this.children.push(...children)}
  replaceChildren(...children){this.children=children}
  get childElementCount(){return this.children.length}
+ querySelector(selector){return selector==='a[href]'?this.children[0]?.children.find(child=>child.href):null}
  setAttribute(){} removeAttribute(){} getClientRects(){return this.hidden?[]:[{}]}
  focus(){focus=this.id;fakeDocument.activeElement=this} contains(element){return this===element||this.children.some(child=>child.contains(element))} querySelectorAll(selector){return this.id==='cliLoginDlg'&&selector==='[data-cli-list]'?[listControl]:[]}
  showModal(){this.open=true} close(){this.open=false;this.emit('close')}
@@ -2489,8 +2497,12 @@ class Element {
 const elements=new Map(ids.map(id=>[id,new Element(id)]));const get=id=>elements.get(id);const listControl=new Element('back-to-list');
 const current={job_id:'demo',provider:'grok',slot:null,state:'running',reason:null,seq:1,output:[{seq:1,text:'terminal output'}],urls:['javascript:alert(1)','http://unsafe.invalid','https://safe.invalid/auth'],code:null,needs_input:false,restart_required:false};
 const clone=value=>JSON.parse(JSON.stringify(value));
-const windowEvents={};const fakeDocument={getElementById:get,createElement:()=>new Element(),addEventListener:(name,fn)=>events[name]=fn};
-const context=vm.createContext({URL,document:fakeDocument,window:{addEventListener:(name,fn)=>windowEvents[name]=fn},
+const windowEvents={}, openedTabs=[];
+const fakeDocument={getElementById:get,createElement:()=>new Element(),
+ createTextNode:data=>({data,get length(){return this.data.length},appendData(value){this.data+=value},deleteData(start,count){this.data=this.data.slice(0,start)+this.data.slice(start+count)}}),
+ addEventListener:(name,fn)=>events[name]=fn};
+const context=vm.createContext({URL,document:fakeDocument,window:{addEventListener:(name,fn)=>windowEvents[name]=fn,getSelection:()=>null,
+ open:(url,target)=>{const tab={url,target,opener:'webchat',closed:false,close(){this.closed=true},location:{replace(value){tab.url=value}}};openedTabs.push(tab);return tab}},
  navigator:{clipboard:{writeText:async()=>{}}},setTimeout:(fn,delay)=>{assert.equal(delay,1000);timers.set(++timerId,fn);return timerId},clearTimeout:id=>timers.delete(id)});
 const api=new vm.SyntheticModule(['api'],function(){this.setExport('api',async(path,options={})=>{
  calls.push({path,options:clone(options)});
@@ -2536,12 +2548,16 @@ const grok=get('cliProviders').children[2].children[0];await grok.children.at(-1
 assert.equal(get('cliConfirmWarning').textContent,'ko:cli_login.confirm_warning');
 await get('cliConfirmYes').emit('click');await flush();
 assert.equal(get('cliProgress').hidden,false);assert.equal(get('cliLinkRows').childElementCount,1);
-const stableLink=get('cliLinkRows').children[0];
+const stableLink=get('cliLinkRows').children[0], rawText=get('cliRawOutput').children[0];
+assert.equal(openedTabs.at(-1).url,'about:blank');
+assert.equal(openedTabs.at(-1).opener,null);
 const repeat=timers.values().next().value;timers.clear();repeat();await flush();
 assert.equal(get('cliLinkRows').children[0],stableLink,'unchanged polling must preserve focused link nodes');
+assert.equal(get('cliRawOutput').children[0],rawText,'unchanged polling must preserve raw output text nodes');
 assert.equal(get('cliLinkRows').children[0].children[1].rel,'noopener noreferrer');
 const tickJob=async()=>{const next=timers.values().next().value;timers.clear();next();await flush()};
 fakeDocument.activeElement=null;current.needs_input=true;await tickJob();assert.equal(focus,'cliCodeInput');
+assert.equal(openedTabs.at(-1).url,'https://safe.invalid/auth');
 const stableInput=get('cliCodeInput');stableInput.value='partially entered';stableInput.selectionStart=3;stableInput.selectionEnd=7;
 await tickJob();assert.equal(get('cliCodeInput'),stableInput);assert.equal(stableInput.value,'partially entered');assert.equal(stableInput.selectionStart,3);assert.equal(stableInput.selectionEnd,7);assert.equal(focus,'cliCodeInput');
 const link=stableLink.children[1];link.focus();await link.emit('click');assert.equal(focus,'cliCodeInput');

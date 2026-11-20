@@ -142,11 +142,19 @@ try{
     const thread=document.querySelector('#thread');
     return thread.scrollHeight-thread.clientHeight-thread.scrollTop<2;
   }));
-  await page.evaluate(()=>{window.legacyAnchor=document.querySelector('[data-entry-seq="102"]');});
-  event({type:'outbox',pending:0,item:queueItem});
-  await page.waitForFunction(()=>!window.legacyAnchor.isConnected);
+  await page.evaluate(async item=>{
+    const entry=document.querySelector('[data-entry-seq="102"]');
+    const text=entry.querySelector('.md p').firstChild;
+    window.getSelection().setBaseAndExtent(text,0,text,4);
+    const {handleEvent}=await import('/static/js/chat.js');
+    await handleEvent({type:'outbox',pending:0,item});
+    if (!entry.isConnected || window.getSelection().toString()!=='Live') {
+      throw new Error('Legacy receipt reload replaced the unchanged message or cleared its selection');
+    }
+    window.getSelection().removeAllRanges();
+  },queueItem);
   assert.equal(historyRequests(),readCount+1);
-  results.checks.push('targeted mirror and entry events preserve message nodes and scroll; legacy receipt reloads');
+  results.checks.push('mirror, entry and legacy receipt events preserve unchanged message nodes');
   emptyHistoryEnabled=false;
   // Keep the requested resize format; unsupported raster formats use PNG.
   await reset();
