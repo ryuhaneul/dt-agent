@@ -366,7 +366,7 @@ export function initCliLogin() {
         const cancelledHere = result.state === 'cancelled' && cancelRequested;
         closeLoginTab();
         stopPolling(); view = cancelledHere ? 'list' : 'result';
-        if (cancelledHere) job = null;
+        if (cancelledHere) { job = null; cancelRequested = false; }
         refreshingProvider = result.provider; refreshChecksLeft = 2; statusChecksLeft = 60;
         render();
         if (cancelledHere) {

@@ -49,7 +49,7 @@ async function run(browser, origin, width, theme) {
   });
   context.setDefaultTimeout(3500);
   const failures = [];
-  let current;
+  let current, cancelled = false;
   try {
     // Simulate browser popup restrictions while retaining real user gestures for normal and fallback links.
     await context.addInitScript(() => {
@@ -94,14 +94,24 @@ async function run(browser, origin, width, theme) {
       });
       if (endpoint === '/api/cli-login/status') return reply({
         providers: { claude: 'authenticated', codex: 'installed', grok: 'installed' },
-        claude_slots: slots, running: false,
+        claude_slots: slots, running: cancelled,
+        ...(cancelled ? { provider: 'claude', job_id: 'fixture-resumed' } : {}),
       });
       if (endpoint === '/api/cli-login/jobs') {
         current = request.postDataJSON();
+        cancelled = false;
         return reply({ job_id: 'fixture-login' });
       }
+      if (endpoint === '/api/cli-login/jobs/fixture-login/cancel') {
+        cancelled = true;
+        return route.fulfill({ status: 202, json: { ok: true } });
+      }
+      if (endpoint === '/api/cli-login/jobs/fixture-resumed') return reply({
+        provider: 'claude', slot: 'claude-work', job_id: 'fixture-resumed',
+        state: 'running', seq: 1, output: [], needs_input: true,
+      });
       if (endpoint === '/api/cli-login/jobs/fixture-login') return reply({
-        ...current, job_id: 'fixture-login', state: 'running', seq: 1, output: [],
+        ...current, job_id: 'fixture-login', state: cancelled ? 'cancelled' : 'running', seq: 1, output: [],
         urls: current.provider === 'claude' ? config.claudeUrls : [targets[current.provider]],
         needs_input: current.provider === 'claude',
         code: current.provider === 'claude' ? null : 'TEST-CODE',
@@ -190,6 +200,21 @@ async function run(browser, origin, width, theme) {
     for (const selection of cases) await login(selection, 'normal', selection === cases[0]);
     await login(cases[0], 'denied', true);
     await login(cases[0], 'blocked');
+
+    try {
+      await login(cases[0]);
+      await act(page.locator('#cliCancel'));
+      await act(page.locator('#cliConfirmYes'));
+      await page.locator('#cliTarget').getByText('claude · claude-work').waitFor();
+      assert.equal(await page.locator('#cliCancel').isEnabled(), true, 'resumed cancel is enabled');
+      assert.equal(await page.locator('#cliCodeInput').isEnabled(), true, 'resumed code input is enabled');
+      await act(page.locator('#cliClose'));
+      await page.locator('#cliConfirmDlg').waitFor();
+      assert.equal(await page.locator('#cliConfirmTitle').textContent(), config.strings['cli_login.cancel_title']);
+      await shot('login-resumed-after-cancel');
+    } catch (error) {
+      failures.push(`resume after cancel: ${error.message}`);
+    }
 
     try {
       for (const badge of ['#telegramBadge', '#botBadge']) {
