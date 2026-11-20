@@ -184,13 +184,17 @@ try {
       for (const locale of ['ko', 'en', 'de']) {
         await page.evaluate(async lang => (await import('/static/js/i18n.js')).loadI18n(lang), locale);
         for (const [seq, ts] of [[74, beforeMidnight], [75, afterMidnight]]) {
-          const [day, timestamp] = await page.evaluate(([value, lang]) => {
+          const [day, compactDay, clock] = await page.evaluate(([value, lang]) => {
             const date = new Date(value);
             const dateLabel = date.toLocaleDateString(lang, { dateStyle: 'medium' });
-            return [dateLabel, dateLabel + ' · ' + date.toLocaleTimeString(lang, { hour: '2-digit', minute: '2-digit' })];
+            return [
+              dateLabel,
+              date.toLocaleDateString(lang, { month: 'numeric', day: 'numeric' }),
+              date.toLocaleTimeString(lang, { hour: '2-digit', minute: '2-digit' }),
+            ];
           }, [ts, locale]);
           assert.equal(await labelFor(seq).textContent(), day);
-          assert.equal(await stamp(seq).textContent(), timestamp);
+          assert.equal(await stamp(seq).innerText(), `${width <= 760 ? compactDay : day} · ${clock}`);
         }
       }
       await page.evaluate(async () => (await import('/static/js/i18n.js')).loadI18n('ko'));
@@ -208,7 +212,7 @@ try {
         const divider = group.firstElementChild;
         return {
           groupDay: divider.textContent,
-          firstDay: firstVisible.querySelector('time').textContent.split(' · ')[0],
+          firstDay: firstVisible.querySelector('time .tm-full').textContent,
           pinned: divider.hasAttribute('data-pinned') && Math.abs(divider.getBoundingClientRect().top - bounds.top - inset) < 1,
           messageClear: row.getBoundingClientRect().top >= divider.getBoundingClientRect().bottom,
           positions: [thread.scrollTop, bounds.top, divider.getBoundingClientRect().top, divider.getBoundingClientRect().bottom, row.getBoundingClientRect().top],

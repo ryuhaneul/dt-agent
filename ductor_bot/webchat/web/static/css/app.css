@@ -175,6 +175,7 @@ dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(2px)}
 .thread .md,.cli-url,#cliRawOutput{-webkit-user-select:text;user-select:text}
 .bubble{min-width:0;max-width:100%;padding:10px 14px;border-radius:12px;border:1px solid var(--rule);background:var(--surface);overflow-wrap:anywhere}
 .msg.bot .bubble{border-bottom-left-radius:4px}
+[data-copy-message] svg,.tm-compact{display:none}
 .msg.me .bubble{border-bottom-right-radius:4px;background:color-mix(in srgb,var(--accent) 9%,var(--surface));border-color:color-mix(in srgb,var(--accent) 26%,var(--rule))}
 .msg.old .bubble{background:transparent;border-style:dashed;color:var(--muted)}
 [data-theme="dark"] .msg.bot .bubble{background:color-mix(in srgb,var(--surface) 78%,transparent)}
@@ -291,6 +292,10 @@ dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(2px)}
   .thread{--thread-inset:12px;padding-inline:12px}
   /* Leave room for both 44px navigation buttons, their gap, and an 8px clearance. */
   .thread :is(.msg,.event) .meta{margin-inline-end:104px}
+  [data-copy-message]{width:36px;padding:0;flex:none}
+  [data-copy-message] svg{display:block}
+  [data-copy-message] span,.tm-full{display:none}
+  .tm-compact{display:inline}
   .composer{padding:8px 12px 12px}
   .info{width:100vw}
   .pad{padding:14px 12px}

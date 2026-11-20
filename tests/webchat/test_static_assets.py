@@ -1002,7 +1002,7 @@ assert.equal(topics.getTopic().tid,'1.2');assert.ok(thread.innerHTML.includes('E
 const fixtureDate = new Date(historyA.at(-1).ts);
 const dateText = locale => fixtureDate.toLocaleDateString(locale,{dateStyle:'medium'});
 const timeText = locale => fixtureDate.toLocaleTimeString(locale,{hour:'2-digit',minute:'2-digit'});
-assert.ok(thread.innerHTML.includes(`<time class="tm" datetime="${fixtureDate.toISOString()}">${dateText('en')} · ${timeText('en')}</time>`));
+assert.ok(thread.innerHTML.includes(`<time class="tm" datetime="${fixtureDate.toISOString()}"><span class="tm-full">${dateText('en')}</span><span class="tm-compact">${fixtureDate.toLocaleDateString('en',{month:'numeric',day:'numeric'})}</span> · ${timeText('en')}</time>`));
 assert.ok(thread.innerHTML.includes(`<div class="day">${dateText('en')}</div>`));
 
 assert.equal(topicRows[0].seen,203);assert.equal(storage.has('dtw-seen:1.2'),false);assert.ok(list.innerHTML.includes('2 unread'));

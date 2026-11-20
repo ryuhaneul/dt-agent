@@ -138,7 +138,8 @@ function queueStatus(turnId, status = null) {
   return `<div class="queue-status${cancelled ? ' stopped' : ''}" role="status"><span>${esc(label)}</span>${cancel}</div>`;
 }
 function copyButton(entryId = '', hidden = false) {
-  return `<button class="btn btn-sm btn-ghost" type="button" data-copy-message="${esc(entryId)}"${hidden ? ' hidden' : ''}>${esc(t('chat.copy_message'))}</button>`;
+  const label = esc(t('chat.copy_message'));
+  return `<button class="btn btn-sm btn-ghost" type="button" data-copy-message="${esc(entryId)}" aria-label="${label}"${hidden ? ' hidden' : ''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"></rect><path d="M16 4H6a2 2 0 0 0-2 2v10"></path></svg><span>${label}</span></button>`;
 }
 function queuedMarkup(turn) {
   return `<div class="msg me" data-queue-turn="${esc(turn.id)}"><div class="meta"><span class="tag">${esc(t('tag.web'))}</span>${messageTime(turn.received)}${turn.userText ? copyButton() : ''}</div><div class="bubble md">${md(turn.userText)}</div>${queueStatus(turn.id)}</div>`;
@@ -385,6 +386,7 @@ function messageFormats() {
     dateZone = calendarZone;
     messageFormatters = {
       day: new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeZone: dateZone }),
+      compactDay: new Intl.DateTimeFormat(locale, { month: 'numeric', day: 'numeric', timeZone: dateZone }),
       clock: new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit', timeZone: dateZone }),
     };
   }
@@ -393,8 +395,8 @@ function messageFormats() {
 function messageTime(ts) {
   const date = messageDate(ts);
   if (!date) return '<span class="tm">—</span>';
-  const { day, clock } = messageFormats();
-  return `<time class="tm" datetime="${date.toISOString()}">${esc(day.format(date))} · ${esc(clock.format(date))}</time>`;
+  const { day, compactDay, clock } = messageFormats();
+  return `<time class="tm" datetime="${date.toISOString()}"><span class="tm-full">${esc(day.format(date))}</span><span class="tm-compact">${esc(compactDay.format(date))}</span> · ${esc(clock.format(date))}</time>`;
 }
 function streamTimestamp(turn) {
   return turn.finished ?? turn.startedAt ?? turn.received;
