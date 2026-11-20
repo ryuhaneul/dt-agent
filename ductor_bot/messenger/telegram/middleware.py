@@ -56,6 +56,7 @@ QuickCommandHandler = Callable[[int, "Message"], Awaitable[bool]]
 QUICK_COMMANDS: frozenset[str] = frozenset(
     {
         "/status",
+        "/version",
         "/memory",
         "/cron",
         "/diagnose",

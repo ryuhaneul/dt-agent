@@ -20,6 +20,7 @@ Typed in the chat (Telegram `/cmd`; Matrix also `!cmd`). They are chat messages,
 | `/effort` | Select the provider's reasoning effort |
 | `/autocompact` | Telegram: set topic or independent agent-global automatic compaction; default/off or 100000–1000000 tokens, two-minute private input ownership and `/cancel`; unsupported providers are shown |
 | `/status` | Session, model and runtime status |
+| `/version` | Installed release version |
 | `/usage` | Telegram, all bots: read-only usage; Claude shows the last value from normal runs, Codex is queried on request, Grok is unsupported |
 | `/accounts` | Telegram, main only: manage Claude slots and show each slot's last saved usage |
 | `/memory` | Show main memory |

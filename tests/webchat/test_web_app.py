@@ -17,6 +17,7 @@ from aiohttp import web
 
 from ductor_bot.i18n.check import _compare_domain
 from ductor_bot.i18n.loader import _load_toml, load_web_strings
+from ductor_bot.infra.version import get_current_version
 from ductor_bot.webchat.web.app import CSP, STARFLOW_CSP, STATE, create_app
 from ductor_bot.webchat.web.sessions import ABSOLUTE_TTL, IDLE_TTL, SessionStore
 
@@ -341,6 +342,7 @@ async def test_password_totp_cookies_csrf_and_logout(site):
         "outbox": {"pending": 2},
         "bot": {"up": True},
         "web_sessions": 1,
+        "version": get_current_version(),
     }
     response = await client.post("/api/auth/logout", headers=headers)
     assert response.status == 200
@@ -567,6 +569,23 @@ async def test_ws_direct_nonstandard_https_port_requires_exact_origin(site):
         with pytest.raises(aiohttp.WSServerHandshakeError) as exc:
             await client.ws_connect("/api/ws", headers={**headers, "Origin": origin})
         assert exc.value.status == 403
+
+
+async def test_version_is_in_authenticated_state_only(site, monkeypatch):
+    client, _ = site
+    monkeypatch.setattr("ductor_bot.webchat.web.app.get_current_version", lambda: "9.8.7")
+    response = await client.get("/api/state", headers=CLIENT)
+    assert response.status == 403
+    assert "version" not in await response.json()
+    for endpoint in ("/api/auth/state", "/api/i18n"):
+        response = await client.get(endpoint, headers=CLIENT)
+        assert response.status == 200
+        assert "version" not in await response.json()
+
+    headers, _ = await login(client)
+    response = await client.get("/api/state", headers=headers)
+    assert response.status == 200
+    assert (await response.json())["version"] == "9.8.7"
 
 
 async def test_ws_bridge_disconnect_and_reconnect(site):

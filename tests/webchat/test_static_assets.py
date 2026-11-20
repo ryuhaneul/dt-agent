@@ -1905,8 +1905,8 @@ document.emit('auth-change',{detail:{authenticated:true}});await flush();
 assert.deepEqual(calls,['/commands?lang=en']);
 const menu=document.querySelector('#commandMenu'),list=document.querySelector('#commandList');
 input.value='/';input.emit('input');assert.equal(menu.hidden,false);assert.equal(input.attributes['aria-expanded'],'true');
-assert.equal((list.innerHTML.match(/role="option"/g)||[]).length,30);
-assert.equal(document.querySelector('#commandCount').textContent,'30 / 30');
+assert.equal((list.innerHTML.match(/role="option"/g)||[]).length,31);
+assert.equal(document.querySelector('#commandCount').textContent,'31 / 31');
 input.value='/Mo';input.emit('input');assert.equal((list.innerHTML.match(/role="option"/g)||[]).length,1);assert.ok(list.innerHTML.includes('/model'));
 assert.equal(controller.keydown({key:'Tab',preventDefault(){}}),true);assert.equal(input.value,'/model ');assert.equal(selected.at(-1),'/model ');assert.equal(menu.hidden,true);
 input.value='/';input.emit('input');controller.keydown({key:'ArrowDown',preventDefault(){}});controller.keydown({key:'Enter',preventDefault(){}});assert.equal(input.value,'/reset ');
@@ -2880,3 +2880,30 @@ async def test_web_cron_command_returns_no_telegram_selector():
     dispatcher.bot = SimpleNamespace(config=SimpleNamespace(language="en"))
     result = await dispatcher._registry_response("cron", SessionKey.telegram(1, 7), "/cron")
     assert result == {"text": load_web_strings("en")["cron.title"], "buttons": None}
+
+
+@pytest.mark.skipif(
+    not os.environ.get("DTW_PLAYWRIGHT_MODULE"),
+    reason="Set DTW_PLAYWRIGHT_MODULE for the release version browser check",
+)
+def test_release_version_browser(tmp_path):
+    config = tmp_path / "version.json"
+    config.write_text(
+        json.dumps(
+            {
+                "static": str(STATIC),
+                "csp": CSP,
+                "starflowCsp": STARFLOW_CSP,
+                "shots": os.environ.get("DTW_VERSION_SHOTS", str(tmp_path / "shots")),
+                "locales": {locale: load_web_strings(locale) for locale in ("en", "ko")},
+            }
+        )
+    )
+    result = subprocess.run(
+        ["node", "tests/webchat/version_browser.mjs", str(config)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

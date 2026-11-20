@@ -1610,6 +1610,17 @@ async def test_registered_quick_input_still_bypasses_existing_turn(connected_qui
         path.lock.release()
 
 
+async def test_version_replies_on_telegram_during_active_turn(connected_quick_path, monkeypatch):
+    path = connected_quick_path
+    monkeypatch.setattr("ductor_bot.orchestrator.commands.get_current_version", lambda: "9.8.7")
+
+    async with path.lock:
+        await asyncio.wait_for(path.dispatch("/version"), 1)
+        path.queued_handler.assert_not_awaited()
+        path.sent.assert_awaited_once()
+        assert path.sent.await_args.args[2] == "Version: `9.8.7`"
+
+
 @pytest.mark.parametrize("command", ["/leave", "/leave nope", "/leave -100123"])
 @pytest.mark.parametrize("fail", [False, True])
 async def test_leave_response_matches_handler(command, fail):

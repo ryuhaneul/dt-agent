@@ -19,6 +19,7 @@ from aiohttp import web
 
 from ductor_bot.i18n import LANGUAGES
 from ductor_bot.i18n.loader import load_web_strings
+from ductor_bot.infra.version import get_current_version
 from ductor_bot.webchat.web.qr import qr_svg
 from ductor_bot.webchat.web.sessions import (
     PREAUTH_COOKIE,
@@ -385,7 +386,13 @@ async def relay(request: web.Request) -> web.Response:
     else:
         status, data = await state.bridge.request(request.method, path, body=body)
     if request.path == "/api/state" and status == 200:
-        data.update({"bot": {"up": True}, "web_sessions": state.sessions.count()})
+        data.update(
+            {
+                "bot": {"up": True},
+                "web_sessions": state.sessions.count(),
+                "version": get_current_version(),
+            }
+        )
     return web.json_response(data, status=status)
 
 

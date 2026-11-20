@@ -144,7 +144,7 @@ Matrix startup also consumes restart state, classifies/notifies startup, and pla
 Bot-level handlers (`messenger/telegram/app.py`):
 
 - dedicated transport handlers: `/start`, `/help`, `/info`, `/showfiles`, `/stop`, `/stop_all`, `/restart`, `/new`, `/session`, `/sessions`, `/tasks`, `/agent_commands`
-- forwarded through `_on_command`: `/status`, `/memory`, `/model`, `/effort`, `/cron`, `/diagnose`, `/reset`
+- forwarded through `_on_command`: `/status`, `/version`, `/memory`, `/model`, `/effort`, `/cron`, `/diagnose`, `/reset`
 - `/interrupt` uses the middleware/message abort path; `/where` and `/leave` use message utilities
 - main-agent-only handlers: `/agents`, `/agent_start`, `/agent_stop`, `/agent_restart`
 
@@ -156,7 +156,7 @@ Matrix command ownership (`messenger/matrix/bot.py`):
 
 Orchestrator command registry (`orchestrator/commands.py`):
 
-- `/new`, `/reset`, `/status`, `/model`, `/effort`, `/memory`, `/cron`, `/diagnose`, `/sessions`, `/tasks`
+- `/new`, `/reset`, `/status`, `/version`, `/model`, `/effort`, `/memory`, `/cron`, `/diagnose`, `/sessions`, `/tasks`
 - multi-agent commands are registered at runtime by supervisor hook
 
 Abort behavior:
@@ -166,7 +166,7 @@ Abort behavior:
 
 Quick-command bypass (`SequentialMiddleware`):
 
-- `/status`, `/memory`, `/cron`, `/diagnose`, `/model`, `/showfiles`, `/sessions`, `/tasks`, `/where`, `/leave`
+- `/status`, `/version`, `/memory`, `/cron`, `/diagnose`, `/model`, `/showfiles`, `/sessions`, `/tasks`, `/where`, `/leave`
 
 ## Session and Topic Model
 

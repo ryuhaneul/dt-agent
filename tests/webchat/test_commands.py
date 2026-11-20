@@ -128,9 +128,9 @@ def test_exact_commands_match_actual_main_ingress():
         ingress.update(value.removeprefix("/") for value in candidates if detector(value))
     secret_parts = SecretInput._command_parts(" /SeCrEt@TestBot set KEY")
     ingress.add(secret_parts[0].removeprefix("/"))
-    assert len(ingress) == 30
+    assert len(ingress) == 31
     assert set(WEB_COMMANDS) == ingress
-    assert len(WEB_COMMANDS) == 30
+    assert len(WEB_COMMANDS) == 31
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
@@ -359,6 +359,15 @@ async def test_busy_new_current_or_named_target_is_rejected_and_interrupt_is_imm
                 await h.dispatcher.dispatch("1.7", command)
             result = await h.dispatcher.dispatch("1.7", "/interrupt")
             assert result["text"] == t("interrupt.done", count=2)
+
+
+async def test_version_is_listed_and_replies_during_active_web_turn(commands, monkeypatch):
+    monkeypatch.setattr("ductor_bot.orchestrator.commands.get_current_version", lambda: "9.8.7")
+    assert {"name": "version", "description": "Release version"} in command_list("en")
+
+    async with commands.orch._lock_pool.get((1, 7)):
+        result = await asyncio.wait_for(commands.dispatcher.dispatch("1.7", "/version"), 1)
+    assert result == {"text": "Version: `9.8.7`", "buttons": None}
 
 
 async def test_usage_contains_queried_result_and_refresh_button(commands):

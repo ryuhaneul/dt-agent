@@ -47,7 +47,7 @@ Immediate middleware-handled command path (pre-lock, no normal dispatch):
 
 Orchestrator-routed commands:
 
-- `/status`, `/memory`, `/model`, `/effort`, `/autocompact`, `/cron`, `/diagnose`, `/reset` are forwarded by `_on_command`
+- `/status`, `/version`, `/memory`, `/model`, `/effort`, `/autocompact`, `/cron`, `/diagnose`, `/reset` are forwarded by `_on_command`
 - `/sessions` and `/tasks` have dedicated transport handlers that invoke the corresponding orchestrator selectors
 
 ## Middleware behavior
@@ -85,7 +85,7 @@ Flow order:
 
 Quick commands:
 
-- `/status`, `/memory`, `/cron`, `/diagnose`, `/model`, `/showfiles`, `/sessions`, `/tasks`, `/where`, `/leave`
+- `/status`, `/version`, `/memory`, `/cron`, `/diagnose`, `/model`, `/showfiles`, `/sessions`, `/tasks`, `/where`, `/leave`
 
 Queued text and media retain their original display text. Once the lock is acquired, middleware makes send time, elapsed wait and arrival position available only to that receiving task; normal/Named prompt assembly adds the advisory at CLI dispatch. Slash commands, command callbacks and cancelled entries are excluded. See [queued user message context](messenger.md#queued-user-message-context).
 
