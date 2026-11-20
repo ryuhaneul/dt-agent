@@ -119,4 +119,6 @@ about five minutes.
 
 ## Automatic compaction
 
-`create_task.py --autocompact VALUE` and `resume_task.py --autocompact VALUE TASK_ID "prompt"` accept `default`, `off`, or an integer from 100000 to 1000000. Creating without the option copies `DUCTOR_AUTOCOMPACT` (the parent topic's effective value; `default` if absent). Later parent topic/global changes do not change the task. Resuming without the option preserves the saved value; an explicit value changes it for that resumed run and subsequent resumes. `inherit` is only available to webhook tools. Codex cannot apply `off`; Grok and Gemini do not apply autocompact overrides.
+`create_task.py --autocompact VALUE` accepts `inherit`, `default`, `off`, or an integer from 100000 to 1000000 tokens. Shorthand such as `500k`, `0.5m`, and `500,000` is accepted. Creating without the option copies the parent topic's own setting from `DUCTOR_AUTOCOMPACT` and uses `inherit` when `DUCTOR_AUTOCOMPACT` is absent. Later parent topic changes do not change the saved setting. `inherit` uses the global value at run time.
+
+`resume_task.py --autocompact VALUE TASK_ID "prompt"` accepts `default`, `off`, or a token limit in the same range and formats. Resuming without the option preserves the saved value. An explicit value changes it for that resumed run and subsequent resumes. Codex cannot apply `off`; Grok and Gemini do not apply autocompact overrides.
