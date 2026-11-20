@@ -1149,6 +1149,7 @@ export function initChat() {
     cancelTop();
     const { topic, seq } = event.detail, generation = epoch, selected = ++selection;
     const focusAtSelection = document.activeElement;
+    const cellAtSelection = focusAtSelection?.closest?.('#tlist .cell');
     const state = history(topic.tid);
     state.range = null; state.renderStart = null;
     input.value = drafts.get(topic.tid) || ''; renderThread({ bottom: true }); resizeComposer();
@@ -1160,10 +1161,14 @@ export function initChat() {
       if (active && generation === epoch && selected === selection && getTopic()?.tid === topic.tid) {
         renderThread({ bottom: seq === null, seq });
         if (location.hash === '#chat' && !event.detail.focusComposer) {
+          const focus = document.activeElement;
+          const focusedCell = focus?.closest?.('#tlist .cell');
+          const restoredCell = cellAtSelection && focusedCell &&
+            cellAtSelection.dataset.tid === focusedCell.dataset.tid && cellAtSelection.dataset.seq === focusedCell.dataset.seq;
           if (seq === null && !topic.read_only && topic.tid !== 'unknown' && !input.disabled &&
               matchMedia('(pointer: fine)').matches) input.focus();
           else if (seq !== null || (event.detail.navigate &&
-              (document.activeElement === focusAtSelection || document.activeElement === document.body))) {
+              (focus === focusAtSelection || focus === document.body || restoredCell))) {
             document.querySelector('[data-view="chat"] h2').focus();
           }
         }

@@ -216,8 +216,28 @@ async function chatFocus(browser) {
     assert.ok(afterSelection, `${width}px topic selection focuses the expected element`);
     if (readOnly) {
       const delayedTopic = { ...topic, tid: '1.3', topic_id: 3, name: 'Delayed topic', read_only: true };
-      await page.route('**/api/topics', route => route.fulfill({ json: { topics: [{ ...topic, read_only: true }, delayedTopic] } }));
+      const unreadTopic = { ...delayedTopic, tid: '1.4', topic_id: 4, name: 'Unread topic', count: 1 };
+      await page.route('**/api/topics', route => route.fulfill({
+        json: { topics: [{ ...topic, read_only: true }, delayedTopic, unreadTopic] },
+      }));
+      await page.route(/\/api\/topics\/1\.4\/messages\?/, route =>
+        route.fulfill({ json: { entries: [messages[6]], has_more: false } }));
+      await page.route('**/api/topics/1.4/seen', route =>
+        route.fulfill({ json: { seen: route.request().postDataJSON().seq } }));
       await page.evaluate(async () => (await import('/static/js/topics.js')).refreshTopics());
+
+      const unreadCell = page.locator('#tlist [data-tid="1.4"]');
+      await unreadCell.locator('.unread').waitFor();
+      const seen = page.waitForRequest(request => request.url().endsWith('/api/topics/1.4/seen') && request.method() === 'PUT');
+      await unreadCell.click();
+      await seen;
+      await page.locator('[data-entry-seq="7"]').waitFor();
+      assert.equal(await heading.evaluate(node => node === document.activeElement), true, 'unread topic selection focuses the heading');
+
+      assert.equal(await unreadCell.locator('.unread').count(), 0);
+      await unreadCell.click();
+      await page.waitForFunction(() => document.activeElement?.id === 'chatTitle');
+
       let releaseHistory;
       const waitForRelease = new Promise(resolve => { releaseHistory = resolve; });
       const historyUrl = /\/api\/topics\/1\.3\/messages\?/;
