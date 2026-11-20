@@ -56,14 +56,13 @@ Custom skills live in `skills/`. See the `skills/` rules file (`CLAUDE.md`, `AGE
 
 ## Bot Restart
 
-If you need the bot to restart (e.g. after config changes, updates, or recovery):
+When a restart is needed (e.g. after config changes, updates, or recovery), ask the user whether they will run `/restart` or you should restart the bot. If they choose you, say so first, then run:
 
 ```bash
 touch "$DUCTOR_HOME/restart-requested"
 ```
 
-The bot detects this marker within seconds and performs a clean restart.
-Always tell the user you triggered a restart.
+The bot restarts within seconds and cuts off the running turn.
 
 ## Safety Boundaries
 

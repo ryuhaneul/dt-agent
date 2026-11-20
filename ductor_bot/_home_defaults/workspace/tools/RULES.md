@@ -51,17 +51,6 @@ Two files, by who reads the value:
 
   Before master-key setup the store is plaintext `KEY=VALUE` (`#` comments; no `export`); `KEY=$OTHER_KEY` takes a value from that store. After setup the bot serves requested values from its in-memory vault. `load_secrets` preserves environment precedence and adds only requested, missing values to the consuming script's environment. Never bulk-source either file.
 
-## Bot Restart
-
-To restart the bot (e.g. after config changes or recovery):
-
-```bash
-touch "$DUCTOR_HOME/restart-requested"
-```
-
-The bot picks up this marker within seconds and restarts cleanly.
-No tool script needed — just create the file.
-
 ## Output and Memory
 
 - Save user deliverables in `../output_to_user/`.
