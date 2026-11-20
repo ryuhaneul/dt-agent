@@ -7,7 +7,7 @@ import os
 import threading
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -576,10 +576,10 @@ async def test_slot_auth_confirmation_cancel_and_success(
     real_operation = getattr(claude_slots, method)
     calls = []
 
-    def operation(ductor_home, name):
+    def operation(ductor_home, name, *, expected):
         assert threading.current_thread() is not threading.main_thread()
         calls.append((ductor_home, name))
-        real_operation(ductor_home, name)
+        real_operation(ductor_home, name, expected=expected)
 
     def fake_logout(argv, **_kwargs):
         assert argv == ("claude", "auth", "logout")
@@ -725,7 +725,7 @@ async def test_slot_auth_reports_backend_failure(page, monkeypatch, *, action, c
 
     response = await selector.handle_account_callback(home, config, _data(confirmation)[1])
 
-    operation.assert_called_once_with(home, name)
+    operation.assert_called_once_with(home, name, expected=ANY)
     assert t(f"accounts.{action}_failed") in response.text
     assert opening in _data(response)
 
@@ -737,9 +737,42 @@ async def test_logout_confirmation_rejects_recreated_default_slot(page, monkeypa
     folder.rename(folder.with_name("old-claude"))
     _prepare_slot(home, "claude", "oauth")
     operation = MagicMock()
-    monkeypatch.setattr(claude_slots, "logout", operation)
+    monkeypatch.setattr(claude_slots.subprocess, "run", operation)
 
     response = await selector.handle_account_callback(home, config, _data(confirmation)[1])
 
     assert t("accounts.stale") in response.text
     operation.assert_not_called()
+
+
+@pytest.mark.parametrize(("code", "kind"), [("l", "oauth"), ("k", "api_key")])
+async def test_slot_auth_confirmation_rechecks_identity_under_lock(page, monkeypatch, code, kind):
+    from contextlib import contextmanager
+
+    selector, home, config = page
+    name = "claude-a" if kind == "oauth" else "claude-key"
+    folder = _prepare_slot(home, name, kind)
+    confirm = await selector.handle_account_callback(home, config, f"acs:{code}:{name}")
+    preserved = folder.with_name("old-slot")
+    real_lock = claude_slots.slot_use_lock
+
+    @contextmanager
+    def replace_on_lock(root, slot, *, deleting):
+        with real_lock(root, slot, deleting=deleting) as reserved:
+            assert reserved
+            folder.rename(preserved)
+            _prepare_slot(home, name, kind)
+            yield reserved
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("A replacement slot must not be mutated")
+
+    monkeypatch.setattr(claude_slots, "slot_use_lock", replace_on_lock)
+    monkeypatch.setattr(claude_slots.subprocess, "run", unexpected)
+    monkeypatch.setattr(claude_slots, "atomic_text_save", unexpected)
+    result = await selector.handle_account_callback(home, config, _data(confirm)[1])
+
+    assert t("accounts.stale") in result.text
+    assert preserved.is_dir()
+    assert folder.is_dir()
+    assert not (folder / "api-key-helper.detached").exists()

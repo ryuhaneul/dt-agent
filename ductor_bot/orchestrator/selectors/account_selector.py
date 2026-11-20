@@ -151,13 +151,10 @@ def _apply_slot_change(
 ) -> None:
     if action == "delete":
         claude_slots.remove(home, name, expected=identity)
-        return
-    if _auth_change_identity(home, name, action) != identity:
-        raise claude_slots.SlotDeleteError("slot_stale")
-    if action == "logout":
-        claude_slots.logout(home, name)
+    elif action == "logout":
+        claude_slots.logout(home, name, expected=identity)
     else:
-        claude_slots.disconnect_api_key(home, name)
+        claude_slots.disconnect_api_key(home, name, expected=identity)
 
 
 def _handle_slot_change(

@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -149,22 +150,45 @@ def remove(home: Path, slot: str, *, expected: SlotIdentity | None = None) -> No
         _remove_directory(directory)
 
 
+def _validate_auth_slot_path(directory: Path, expected_path: Path) -> None:
+    try:
+        if not directory.is_symlink() and directory.resolve() == expected_path:
+            return
+    except (OSError, RuntimeError) as exc:
+        raise SlotDeleteError("invalid_slot") from exc
+    raise SlotDeleteError("invalid_slot")
+
+
 @contextmanager
-def _reserve_auth_change(home: Path, slot: str) -> Iterator[Path]:
+def _reserve_auth_change(
+    home: Path, slot: str, expected: SlotIdentity | None
+) -> Iterator[Path]:
     if not is_slot_name(slot):
         raise SlotDeleteError("invalid_slot")
+    directory = host_slot_config_dir(home, slot)
+    expected_path = host_slot_config_dir(home.resolve(), slot)
+    _validate_auth_slot_path(directory, expected_path)
     with slot_use_lock(host_cli_auth_dir(home), slot, deleting=True) as reserved:
         if not reserved:
             raise SlotDeleteError("slot_busy")
-        directory = host_slot_config_dir(home, slot)
-        if not directory.is_dir():
-            raise SlotDeleteError("slot_not_found")
+        _validate_auth_slot_path(directory, expected_path)
+        missing = "slot_not_found" if expected is None else "slot_stale"
+        try:
+            status = directory.lstat()
+        except FileNotFoundError as exc:
+            raise SlotDeleteError(missing) from exc
+        if stat.S_ISLNK(status.st_mode):
+            raise SlotDeleteError("invalid_slot")
+        if not stat.S_ISDIR(status.st_mode):
+            raise SlotDeleteError(missing)
+        if expected is not None and (status.st_dev, status.st_ino, status.st_ctime_ns) != expected:
+            raise SlotDeleteError("slot_stale")
         yield directory
 
 
-def logout(home: Path, slot: str) -> None:
+def logout(home: Path, slot: str, *, expected: SlotIdentity | None = None) -> None:
     """Log out an OAuth slot in the bot container, preserving its configuration."""
-    with _reserve_auth_change(home, slot) as directory:
+    with _reserve_auth_change(home, slot, expected) as directory:
         if slot_kind(directory) != "oauth":
             raise SlotDeleteError("api_key_slot")
         try:
@@ -184,9 +208,9 @@ def logout(home: Path, slot: str) -> None:
             raise SlotDeleteError("logout_failed") from exc
 
 
-def disconnect_api_key(home: Path, slot: str) -> None:
+def disconnect_api_key(home: Path, slot: str, *, expected: SlotIdentity | None = None) -> None:
     """Remove an API key helper from settings and keep its command for recovery."""
-    with _reserve_auth_change(home, slot) as directory:
+    with _reserve_auth_change(home, slot, expected) as directory:
         if slot_kind(directory) != "api_key":
             raise SlotDeleteError("not_api_key_slot")
 
@@ -226,8 +250,8 @@ def _mark_slot_signed_out(home: Path, slot: str) -> None:
         snapshot.auth_failures[slot] = fingerprint
         snapshot.auth_failure_details[slot] = AuthFailureDetails()
 
-    UsageStore(usage_file_path(home)).remove(slot)
     registry.update(mark, strict=True)
+    UsageStore(usage_file_path(home)).remove(slot)
 
 
 def _clear_slot_state(home: Path, slot: str) -> None:
