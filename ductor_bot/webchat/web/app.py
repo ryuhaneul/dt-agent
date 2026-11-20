@@ -138,6 +138,9 @@ async def security(
             return _error("unsupported_media_type", 415)
         if request.path.startswith(("/api/masterkey/", "/api/secrets/")):
             request = request.clone(client_max_size=64 * 1024)
+        elif re.fullmatch(r"/api/topics/[^/]+/cron(?:/[^/]+(?:/toggle)?)?", request.path):
+            # Keep the content limit at 256 KiB after decoding JSON escapes.
+            request = request.clone(client_max_size=2 * 1024 * 1024)
         if request.can_read_body and not _upload_path(request.path):
             await request.read()
         return await handler(request)
@@ -589,6 +592,10 @@ def create_app(
         ("/topics", ("GET", "POST")),
         ("/topics/seen-all", ("POST",)),
         ("/topics/{tid}/seen", ("PUT",)),
+        ("/topics/{tid}/cron", ("GET", "POST")),
+        ("/topics/{tid}/cron/preview", ("POST",)),
+        ("/topics/{tid}/cron/{id}", ("GET", "PUT", "DELETE")),
+        ("/topics/{tid}/cron/{id}/toggle", ("POST",)),
         ("/topics/{tid}/autocompact", ("GET", "PUT")),
         ("/topics/{tid}/autocompact/automations", ("GET",)),
         ("/topics/{tid}/autocompact/automations/{kind}/{id}", ("PUT",)),

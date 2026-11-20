@@ -18,11 +18,12 @@ from _shared import (
     JOBS_PATH,
     available_job_ids,
     find_job_by_id_or_task_folder,
-    load_jobs_strict,
+    locked_jobs_file,
     parse_tool_args,
-    safe_task_dir,
-    save_jobs,
 )
+
+from ductor_bot.cron.definitions import safe_task_dir
+from ductor_bot.cron.jobs_file import write_jobs_data
 
 _TUTORIAL = """\
 CRON REMOVE -- Delete a scheduled cron job and its workspace folder.
@@ -71,55 +72,50 @@ def main() -> None:
         )
         sys.exit(1)
 
-    try:
-        data = load_jobs_strict(JOBS_PATH)
-    except (json.JSONDecodeError, TypeError):
-        print(json.dumps({"error": "Corrupt cron_jobs.json -- cannot parse"}))
-        sys.exit(1)
+    with locked_jobs_file(JOBS_PATH) as data:
+        jobs = data.get("jobs", [])
 
-    jobs = data.get("jobs", [])
-
-    # Find job: exact ID match first, then task_folder fallback
-    job = find_job_by_id_or_task_folder(jobs, job_id)
-    if job is None:
-        available = available_job_ids(jobs)
-        print(
-            json.dumps(
-                {
-                    "error": f"Job '{job_id}' not found",
-                    "hint": "Use the EXACT job ID from cron_list.py output.",
-                    "available_jobs": available,
-                }
+        # Find job: exact ID match first, then task_folder fallback
+        job = find_job_by_id_or_task_folder(jobs, job_id)
+        if job is None:
+            available = available_job_ids(jobs)
+            print(
+                json.dumps(
+                    {
+                        "error": f"Job '{job_id}' not found",
+                        "hint": "Use the EXACT job ID from cron_list.py output.",
+                        "available_jobs": available,
+                    }
+                )
             )
-        )
-        sys.exit(1)
+            sys.exit(1)
 
-    actual_id = job["id"]
-    task_folder = job.get("task_folder", actual_id)
+        actual_id = job["id"]
+        task_folder = job.get("task_folder", actual_id)
 
-    # 1) Remove from JSON
-    json_removed = False
-    try:
-        data["jobs"] = [j for j in jobs if j.get("id") != actual_id]
-        save_jobs(JOBS_PATH, data, remove=[str(actual_id)])
-        json_removed = True
-    except OSError as exc:
-        json_error = str(exc)
+        # 1) Remove from JSON
+        json_removed = False
+        try:
+            data["jobs"] = [j for j in jobs if j.get("id") != actual_id]
+            write_jobs_data(JOBS_PATH, data)
+            json_removed = True
+        except OSError as exc:
+            json_error = str(exc)
 
     # 2) Delete the cron_task folder
     folder_deleted = False
     folder_error = None
     try:
-        folder_path = safe_task_dir(task_folder)
+        folder_path = safe_task_dir(task_folder, CRON_TASKS_DIR)
     except ValueError as exc:
         folder_path = (CRON_TASKS_DIR / task_folder).resolve()
         folder_error = str(exc)
-    if folder_error is None and folder_path.is_dir():
+    if json_removed and folder_error is None and folder_path.is_dir():
         try:
             shutil.rmtree(folder_path)
             folder_deleted = True
         except OSError as exc:
-            folder_error = str(exc)
+            folder_error = str(exc) or type(exc).__name__
 
     # Build result
     result: dict = {
@@ -137,8 +133,14 @@ def main() -> None:
             "Manually remove the entry from ~/.ductor/cron_jobs.json."
         )
 
-    if folder_error:
+    if folder_error is not None:
         result["folder_error"] = folder_error
+        if json_removed:
+            print(
+                f"Registry entry removed, but could not delete task folder "
+                f"{str(folder_path)!r}: {folder_error!r}",
+                file=sys.stderr,
+            )
 
     if not folder_path.is_dir() and not folder_deleted:
         result["folder_note"] = "Folder did not exist (already deleted or never created)"
@@ -153,7 +155,7 @@ def main() -> None:
     # The CronObserver detects the mtime change and cancels the job
 
     print(json.dumps(result))
-    sys.exit(0 if json_removed else 1)
+    sys.exit(0 if json_removed and folder_error is None else 1)
 
 
 if __name__ == "__main__":

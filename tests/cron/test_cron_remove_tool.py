@@ -78,6 +78,64 @@ def test_cron_remove_deletes_json_and_folder(tmp_path: Path) -> None:
     assert not task_dir.exists()
 
 
+def test_cron_remove_reports_folder_failure_after_removing_registry_entry(tmp_path: Path) -> None:
+    name = "folder-fault"
+    _add_job(tmp_path, name)
+    task_dir = tmp_path / "workspace" / "cron_tasks" / name
+    body = (task_dir / "TASK_DESCRIPTION.md").read_bytes()
+    probe = """
+import errno, runpy, sys
+from pathlib import Path
+from unittest.mock import patch
+
+script, folder, job = sys.argv[1:]
+sys.path.insert(0, str(Path(script).parent))
+sys.argv = [script, job]
+
+def fail_remove(path):
+    assert Path(path) == Path(folder)
+    raise OSError(errno.EIO, "injected task folder deletion failure", path)
+
+with patch("shutil.rmtree", fail_remove):
+    runpy.run_path(script, run_name="__main__")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", probe, str(TOOL_REMOVE), str(task_dir), name],
+        env={**os.environ, "DUCTOR_HOME": str(tmp_path)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 1
+    output = json.loads(result.stdout)
+    assert output["json_entry_removed"] is True
+    assert output["folder_deleted"] is False
+    assert output["folder_path"] == str(task_dir)
+    assert "injected task folder deletion failure" in output["folder_error"]
+    (warning,) = result.stderr.splitlines()
+    assert str(task_dir) in warning
+    assert "injected task folder deletion failure" in warning
+    jobs_path = tmp_path / "cron_jobs.json"
+    assert json.loads(jobs_path.read_text())["jobs"] == []
+    assert (task_dir / "TASK_DESCRIPTION.md").read_bytes() == body
+
+    retry = _run(
+        tmp_path,
+        TOOL_ADD,
+        ["--name", name, "--title", "Retry", "--description", "Retry", "--schedule", "0 9 * * *"],
+    )
+    assert retry.returncode == 1
+    error = json.loads(retry.stdout)["error"]
+    assert str(task_dir) in error
+    assert "move it out of cron_tasks" in error
+    assert json.loads(jobs_path.read_text())["jobs"] == []
+    assert (task_dir / "TASK_DESCRIPTION.md").read_bytes() == body
+
+    task_dir.rename(tmp_path / "saved-task")
+    _add_job(tmp_path, name)
+    assert task_dir.is_dir()
+
+
 def test_cron_remove_nonexistent_exits_1(tmp_path: Path) -> None:
     # Create an empty jobs file
     (tmp_path / "cron_jobs.json").write_text('{"jobs": []}')
