@@ -667,9 +667,10 @@ def test_api_shared_settings_recreated_when_default_directory_is_missing(tmp_pat
 def test_web_slot_paths_reject_escape_before_api_probe(paths, operation, name):
     before = tree(paths.ductor_home)
     # Exercise the path boundary independently of the slot-name regex.
+    classifier = "slot_is_api_key" if operation == "share" else "slot_kind"
     with (
         patch("ductor_bot.webchat.cli_login_slots.resolve_slot_name", return_value=name),
-        patch("ductor_bot.webchat.cli_login_slots.slot_is_api_key") as probe,
+        patch(f"ductor_bot.webchat.cli_login_slots.{classifier}") as probe,
         pytest.raises(ValueError, match="invalid_slot"),
     ):
         if operation == "share":
@@ -1012,3 +1013,41 @@ if trigger.exists():
             reader.cancel()
             await asyncio.gather(reader, return_exceptions=True)
         await stream.aclose()
+
+
+@pytest.mark.parametrize("new_slot", [False, True])
+async def test_manager_rejects_detached_api_key_oauth(paths, manager_factory, new_slot):
+    from ductor_bot.cli.claude_slots import disconnect_api_key
+
+    home = paths.ductor_home
+    directory = home / ".cli-auth" / "claude-manual"
+    directory.mkdir()
+    (directory / "settings.json").write_text('{"apiKeyHelper": "helper.sh"}')
+    disconnect_api_key(home, directory.name)
+    manager, record = manager_factory()
+    before = tree(home)
+    with pytest.raises(CliLoginError, match=r"^api_key_slot$") as exc:
+        manager.start("claude", OWNER, slot=directory.name, new_slot=new_slot)
+    assert exc.value.status == 400
+    assert not record.exists()
+    assert tree(home) == before
+
+
+@pytest.mark.parametrize("slot", ["claude", "claude-existing"])
+async def test_logout_refuses_slots_reserved_by_web_login(paths, manager_factory, slot):
+    from ductor_bot.cli import claude_slots
+
+    directory = paths.ductor_home / ".cli-auth" / slot
+    directory.mkdir(exist_ok=True)
+    manager, record = manager_factory("wait")
+    job = manager.start("claude", OWNER, slot=slot)
+    with (
+        patch.object(claude_slots.subprocess, "run") as logout_cli,
+        pytest.raises(claude_slots.SlotDeleteError, match=r"^slot_busy$"),
+    ):
+        claude_slots.logout(paths.ductor_home, slot)
+    logout_cli.assert_not_called()
+    assert not record.exists()
+    await until(record.exists)
+    manager.cancel(job, OWNER)
+    assert (await settled(manager, job))["state"] == "cancelled"

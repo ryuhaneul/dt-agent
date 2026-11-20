@@ -25,7 +25,7 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 from ductor_bot.cli.auth import AuthResult, AuthStatus, check_provider_auth
-from ductor_bot.cli.claude_accounts import container_slot_config_dir
+from ductor_bot.cli.claude_accounts import claude_slot_env, container_slot_config_dir
 from ductor_bot.webchat.cli_login_slots import (
     ClaudeLoginSlots,
     PreparedClaudeSlot,
@@ -500,11 +500,10 @@ class CliLoginManager:
         return (Path(env.get(key, str(home / f".{job.provider}"))) / "auth.json",)
 
     def _environment(self, job: _Job) -> dict[str, str]:
-        env = self._env.copy()
         if job.provider == "claude":
             assert job.slot is not None
-            env["CLAUDE_CONFIG_DIR"] = container_slot_config_dir(job.slot)
-        return env
+            return claude_slot_env(self._env, container_slot_config_dir(job.slot))
+        return self._env.copy()
 
     async def _run(self, job: _Job) -> None:  # noqa: C901, PLR0912, PLR0915
         slave: int | None = None

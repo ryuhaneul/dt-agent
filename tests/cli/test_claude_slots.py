@@ -442,3 +442,200 @@ def test_remove_reports_partial_failure_and_allows_retry(home, monkeypatch):
     assert registry.load().cooldowns == {"claude-b": 200}
     claude_slots.remove(home, "claude-a")
     assert not folder.exists()
+
+
+def _seed_auth_change(home, slot):
+    from ductor_bot.cli.claude_accounts import host_slot_config_dir
+    from ductor_bot.cli.claude_usage import UsageStore, usage_file_path
+
+    folder = host_slot_config_dir(home, slot)
+    folder.mkdir(parents=True)
+    registry = SlotRegistry(state_file_path(home))
+    registry.save(SlotSnapshot(cooldowns={slot: time.time() + 100, "claude-c": 200}))
+    usage = UsageStore(usage_file_path(home))
+    event = {"type": "rate_limit_event", "rate_limit_info": {"status": "allowed"}}
+    usage.record(slot, event)
+    usage.record("claude-c", event)
+    return folder, registry, usage
+
+
+@pytest.mark.parametrize("slot", ["claude", "claude-a"])
+async def test_logout_preserves_slot_and_quarantines_until_credentials_change(
+    home, monkeypatch, slot
+):
+    from ductor_bot.cli import claude_slots
+    from ductor_bot.cli.claude_accounts import container_slot_config_dir
+    from ductor_bot.cli.slot_rotation import hot_slots, slot_use_lock
+
+    folder, registry, usage = _seed_auth_change(home, slot)
+    credentials = folder / ".credentials.json"
+    credentials.write_text("fixture")
+    original_config = _config(home)
+
+    def fake_logout(argv, **kwargs):
+        assert argv == ("claude", "auth", "logout")
+        assert kwargs["env"]["CLAUDE_CONFIG_DIR"] == container_slot_config_dir(slot)
+        assert kwargs["timeout"] == 30
+        with slot_use_lock(folder.parent, slot, include_default=True) as reserved:
+            assert not reserved
+        if slot == "claude":
+            with slot_use_lock(folder.parent, slot) as turn_reserved:
+                assert turn_reserved
+        credentials.unlink()
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(claude_slots.subprocess, "run", fake_logout)
+    claude_slots.logout(home, slot)
+
+    assert folder.is_dir()
+    assert _config(home) == original_config
+    snapshot = registry.load()
+    assert snapshot.cooldowns == {"claude-c": 200}
+    assert snapshot.auth_failures == {slot: registry.credential_mtimes(slot)}
+    assert snapshot.auth_failure_details[slot].kind == "login_expired"
+    assert await hot_slots(registry, [slot, "claude-b"]) == ["claude-b"]
+    assert set(usage.load()) == {"claude-c"}
+    credentials.write_text("new fixture")
+    assert await hot_slots(registry, [slot, "claude-b"]) == [slot, "claude-b"]
+
+
+@pytest.mark.parametrize(
+    ("case", "code"),
+    [
+        ("busy", "slot_busy"),
+        ("active_api", "api_key_slot"),
+        ("detached_api", "api_key_slot"),
+        ("nonzero", "logout_failed"),
+        ("still_authenticated", "logout_failed"),
+        ("timeout", "logout_failed"),
+        ("missing_cli", "logout_failed"),
+    ],
+)
+def test_logout_failure_preserves_state(home, monkeypatch, case, code):
+    from ductor_bot.cli import claude_slots
+    from ductor_bot.cli.slot_rotation import slot_use_lock
+
+    slot = "claude-a"
+    folder, registry, usage = _seed_auth_change(home, slot)
+    credentials = folder / ".credentials.json"
+    credentials.write_text("fixture")
+    if case == "active_api":
+        (folder / "settings.json").write_text('{"apiKeyHelper": "helper.sh"}')
+    if case == "detached_api":
+        (folder / "api-key-helper.detached").write_text("helper.sh\n")
+    before = (registry.state_path.read_bytes(), usage.load(), _config(home))
+
+    def fake_logout(argv, **kwargs):
+        if case == "timeout":
+            raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+        if case == "missing_cli":
+            raise FileNotFoundError
+        assert case in {"nonzero", "still_authenticated"}
+        return subprocess.CompletedProcess(argv, int(case == "nonzero"))
+
+    monkeypatch.setattr(claude_slots.subprocess, "run", fake_logout)
+    if case == "busy":
+        with slot_use_lock(folder.parent, slot) as held:
+            assert held
+            with pytest.raises(claude_slots.SlotDeleteError, match=r"^slot_busy$"):
+                claude_slots.logout(home, slot)
+    else:
+        with pytest.raises(claude_slots.SlotDeleteError, match=f"^{code}$"):
+            claude_slots.logout(home, slot)
+    assert (registry.state_path.read_bytes(), usage.load(), _config(home)) == before
+    assert credentials.read_text() == "fixture"
+
+
+@pytest.mark.parametrize("helper", ["./api-key-helper.sh", "helper.sh"])
+def test_disconnect_api_key_preserves_settings_and_can_be_restored(home, helper):
+    from ductor_bot.cli.claude_accounts import slot_kind
+    from ductor_bot.cli.claude_slots import disconnect_api_key
+
+    slot = "claude-a"
+    folder, registry, usage = _seed_auth_change(home, slot)
+    helper_script = folder / "api-key-helper.sh"
+    if helper.startswith("./"):
+        helper_script.write_text("fixture")
+    settings = folder / "settings.json"
+    other = {"permissions": {"allow": ["Read"]}}
+    settings.write_text(json.dumps({**other, "apiKeyHelper": helper}))
+    before = _config(home)
+    assert slot_kind(folder) == "api_key"
+
+    disconnect_api_key(home, slot)
+
+    assert _config(home) == before
+    assert json.loads(settings.read_text()) == other
+    assert slot_kind(folder) == "api_key_detached"
+    marker = folder / "api-key-helper.detached"
+    assert marker.read_text() == f"{helper}\n"
+    assert marker.stat().st_mode & 0o777 == 0o600
+    if helper.startswith("./"):
+        assert helper_script.read_text() == "fixture"
+    else:
+        assert not helper_script.exists()
+    snapshot = registry.load()
+    assert snapshot.cooldowns == {"claude-c": 200}
+    assert snapshot.auth_failures == {slot: registry.credential_mtimes(slot)}
+    assert snapshot.auth_failure_details[slot].kind == "login_expired"
+    assert set(usage.load()) == {"claude-c"}
+
+    settings.write_text(
+        json.dumps({**other, "apiKeyHelper": marker.read_text().removesuffix("\n")})
+    )
+    assert marker.is_file()
+    assert slot_kind(folder) == "api_key"
+    assert slot not in registry.load().auth_failures
+
+
+@pytest.mark.parametrize("failure", ["marker", "settings", "usage"])
+def test_disconnect_write_failure_preserves_settings(home, monkeypatch, failure):
+    from ductor_bot.cli import claude_slots
+    from ductor_bot.cli.claude_accounts import slot_kind
+
+    slot = "claude-a"
+    folder, registry, usage = _seed_auth_change(home, slot)
+    settings = folder / "settings.json"
+    settings.write_text('{"apiKeyHelper": "helper.sh", "keep": true}\n')
+    before = (settings.read_bytes(), registry.state_path.read_bytes(), usage.load())
+
+    def fail(*_args):
+        raise OSError("write failed")
+
+    if failure == "marker":
+        monkeypatch.setattr(claude_slots, "atomic_text_save", fail)
+    elif failure == "settings":
+        monkeypatch.setattr(claude_slots, "atomic_json_save", fail)
+    else:
+        monkeypatch.setattr(claude_slots.UsageStore, "remove", fail)
+    with pytest.raises(claude_slots.SlotDeleteError, match=r"^disconnect_failed$"):
+        claude_slots.disconnect_api_key(home, slot)
+    assert (settings.read_bytes(), registry.state_path.read_bytes(), usage.load()) == before
+    assert slot_kind(folder) == "api_key"
+
+
+def test_disconnect_refuses_oauth_and_busy_slots(home):
+    from ductor_bot.cli import claude_slots
+    from ductor_bot.cli.slot_rotation import slot_use_lock
+
+    slot = "claude-a"
+    folder, _, _ = _seed_auth_change(home, slot)
+    settings = folder / "settings.json"
+    settings.write_text("{}")
+    with pytest.raises(claude_slots.SlotDeleteError, match=r"^not_api_key_slot$"):
+        claude_slots.disconnect_api_key(home, slot)
+    settings.write_text('{"apiKeyHelper": "helper.sh"}')
+    with slot_use_lock(folder.parent, slot) as held:
+        assert held
+        with pytest.raises(claude_slots.SlotDeleteError, match=r"^slot_busy$"):
+            claude_slots.disconnect_api_key(home, slot)
+    assert not (folder / "api-key-helper.detached").exists()
+
+
+def test_remove_clears_only_deleted_slots_usage(home):
+    from ductor_bot.cli.claude_slots import remove
+
+    _, _, usage = _seed_auth_change(home, "claude-a")
+    retained = usage.load()["claude-c"]
+    remove(home, "claude-a")
+    assert usage.load() == {"claude-c": retained}

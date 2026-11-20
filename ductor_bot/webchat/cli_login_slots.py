@@ -16,6 +16,7 @@ from ductor_bot.cli.claude_accounts import (
     host_slot_config_dir,
     slot_is_api_key,
     slot_is_authenticated,
+    slot_kind,
 )
 from ductor_bot.cli.claude_slots import is_slot_name
 from ductor_bot.cli.slot_rotation import slot_use_lock
@@ -125,7 +126,7 @@ class ClaudeLoginSlots:
 
     def reserve(self, slot: str) -> AbstractContextManager[bool]:
         """Share the deletion interlock from job reservation through cleanup."""
-        return slot_use_lock(host_cli_auth_dir(self._paths.ductor_home), slot)
+        return slot_use_lock(host_cli_auth_dir(self._paths.ductor_home), slot, include_default=True)
 
     def resolve_oauth_slot(self, name: str | None) -> str:
         """Reject API key slots before reserving a web OAuth login job."""
@@ -134,7 +135,7 @@ class ClaudeLoginSlots:
         candidate = os.path.normpath(os.path.join(root, slot))  # noqa: PTH118 -- explicit CodeQL path normalization
         if not candidate.startswith(root + os.sep):
             raise ValueError("invalid_slot")
-        if slot_is_api_key(Path(candidate)):
+        if slot_kind(Path(candidate)) != "oauth":
             raise ValueError("api_key_slot")
         return slot
 

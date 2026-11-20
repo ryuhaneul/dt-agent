@@ -15,7 +15,7 @@ import math
 import os
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -31,10 +31,12 @@ DEFAULT_SLOT = "claude"
 SHARED_PROJECTS_DIRNAME = "_shared-projects"
 STATE_FILENAME = "_claude-slots.json"
 CLI_AUTH_DIRNAME = ".cli-auth"
+DETACHED_API_KEY_HELPER = "api-key-helper.detached"
 CONTAINER_DUCTOR_MOUNT = "/ductor"
 SUBSCRIPTION_RETRY_INITIAL_SECONDS = 30 * 60
 SUBSCRIPTION_RETRY_MAX_SECONDS = 6 * 60 * 60
 
+SlotKind = Literal["oauth", "api_key", "api_key_detached"]
 AuthFailureKind = Literal["login_expired", "subscription_unavailable"]
 
 
@@ -109,6 +111,11 @@ def host_slot_config_dir(ductor_home: Path, slot_name: str) -> Path:
 def container_slot_config_dir(slot_name: str) -> str:
     """Return the container path to a slot's config dir."""
     return f"{CONTAINER_DUCTOR_MOUNT}/{CLI_AUTH_DIRNAME}/{slot_name}"
+
+
+def claude_slot_env(env: Mapping[str, str], config_dir: str) -> dict[str, str]:
+    """Select a Claude slot for a CLI auth command."""
+    return {**env, "CLAUDE_CONFIG_DIR": config_dir}
 
 
 def state_file_path(ductor_home: Path) -> Path:
@@ -570,6 +577,14 @@ def slot_is_api_key(config_dir: Path) -> bool:
         return False
     helper = data.get("apiKeyHelper") if isinstance(data, dict) else None
     return isinstance(helper, str) and bool(helper)
+
+
+def slot_kind(config_dir: Path) -> SlotKind:
+    """Classify active API helpers before considering a slot-local detach marker."""
+    if slot_is_api_key(config_dir):
+        return "api_key"
+    marker = config_dir / DETACHED_API_KEY_HELPER
+    return "api_key_detached" if not marker.is_symlink() and marker.is_file() else "oauth"
 
 
 def slot_is_authenticated(config_dir: Path) -> bool:

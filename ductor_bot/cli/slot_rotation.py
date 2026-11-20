@@ -79,13 +79,15 @@ def _get_lock() -> asyncio.Lock:
 
 
 @contextmanager
-def slot_use_lock(root: Path, slot: str, *, deleting: bool = False) -> Iterator[bool]:
+def slot_use_lock(
+    root: Path, slot: str, *, deleting: bool = False, include_default: bool = False
+) -> Iterator[bool]:
     """Reserve a slot across processes; deletion requires exclusive access.
 
     The lock file stays outside the slot so deleting and recreating a slot
     cannot replace the inode that other processes lock.
     """
-    if slot == DEFAULT_SLOT and not deleting:
+    if slot == DEFAULT_SLOT and not (deleting or include_default):
         yield True
         return
     root.mkdir(parents=True, exist_ok=True)
