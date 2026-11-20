@@ -241,9 +241,149 @@ async function run(browser, origin, width, theme) {
   }
 }
 
+async function loginLifecycle(browser, origin, width, theme) {
+  const loginPath = '/api/cli-login/';
+  const shots = config.shots;
+  const failures = [];
+  const contexts = [];
+  async function open(width, token) {
+    const touch = width === 375;
+    const context = await browser.newContext({
+      viewport: { width, height: touch ? 812 : 900 }, isMobile: touch, hasTouch: touch,
+      colorScheme: theme, reducedMotion: 'reduce',
+    });
+    contexts.push(context);
+    await context.addCookies([{ name: 'dtw_session', value: token, url: origin }]);
+    await context.addInitScript(() => { window.open = () => null; });
+    const page = await context.newPage();
+    page.setDefaultTimeout(5000);
+    await page.route('**/api/**', route => {
+      const endpoint = new URL(route.request().url()).pathname;
+      if (endpoint.startsWith(loginPath) || ['/api/auth/state', '/api/i18n', '/api/state'].includes(endpoint)) {
+        return route.continue();
+      }
+      if (endpoint === '/api/masterkey/status') return route.fulfill({ json: { state: 'unconfigured' } });
+      return route.fulfill({ json: { topics: [], commands: [], files: [], items: [] } });
+    });
+    await page.routeWebSocket('**/api/ws', () => {});
+    await page.goto(origin);
+    const act = locator => touch ? locator.tap() : locator.click();
+    return { page, act };
+  }
+  const body = page => page.locator('#cliLoginDlg .cli-body');
+  const outside = locator => locator.evaluate(el => {
+    const bounds = el.getBoundingClientRect();
+    const viewport = el.closest('.cli-body').getBoundingClientRect();
+    return bounds.top < viewport.top || bounds.bottom > viewport.bottom;
+  });
+  async function screenshot(page, label) {
+    await page.evaluate(() => document.fonts.ready);
+    assert.equal(await page.locator('html').getAttribute('data-theme'), theme);
+    await page.screenshot({
+      path: path.join(shots, `${label}-${width}-${theme}.png`), animations: 'disabled',
+    });
+  }
+  async function accounts({page, act}) {
+    const statusResponse = page.waitForResponse(response => new URL(response.url()).pathname === loginPath + 'status');
+    await act(page.locator('#accountButton'));
+    await act(page.locator('#openCliLogin'));
+    const response = await statusResponse;
+    assert.equal(response.status(), 200);
+    await page.locator('#cliProviders .cli-provider').last().waitFor();
+    return response.json();
+  }
+  async function select({page, act}, selection) {
+    if (selection.new_slot) {
+      await act(page.locator('.cli-provider-head [data-i18n="cli_login.add_slot"]'));
+      await page.locator('#cliSlotName').fill(selection.slot.slice(7));
+      await act(page.locator('#cliSlotForm button[type=submit]'));
+    } else if (selection.slot) {
+      const slot = page.locator(`[data-slot="${selection.slot}"]`);
+      await act(slot.locator('.cli-slot-more'));
+      const key = selection.slot === 'claude-unused' ? 'login' : 'relogin';
+      await act(slot.locator(`button[data-i18n="cli_login.${key}"]`));
+    } else {
+      const provider = page.locator('.cli-provider').filter({ hasText: selection.provider });
+      await act(provider.locator('[data-i18n="cli_login.login"]'));
+    }
+    await page.locator('#cliConfirmDlg').waitFor();
+  }
+  async function start({page, act}) {
+    const request = page.waitForResponse(response => new URL(response.url()).pathname === loginPath + 'jobs');
+    await act(page.locator('#cliConfirmYes'));
+    return request;
+  }
+  async function cancel({page, act}) {
+    await page.bringToFront();
+    await page.locator('#cliProgress').waitFor();
+    await act(page.locator('#cliCancel'));
+    const request = page.waitForResponse(response => new URL(response.url()).pathname.endsWith('/cancel'));
+    const refresh = page.waitForResponse(response => new URL(response.url()).pathname === loginPath + 'status');
+    await act(page.locator('#cliConfirmYes'));
+    const response = await request;
+    assert.equal(response.status(), 202);
+    const status = await refresh;
+    assert.equal(status.status(), 200);
+    assert.equal((await status.json()).running, false);
+    return page.locator('#cliResult').isVisible();
+  }
+
+  try {
+    const owner = await open(1280, config.sessions[0]);
+    const guest = await open(width, config.sessions[1]);
+    for (const selection of cases) {
+      const label = selection.slot || selection.provider;
+      assert.equal((await accounts(guest)).running, false);
+      await select(guest, selection);
+      await accounts(owner);
+      await select(owner, { provider: 'codex' });
+      assert.equal((await start(owner)).status(), 202);
+      const response = await start(guest);
+      assert.equal(response.status(), 409);
+      assert.deepEqual(await response.json(), { error: 'login_running' });
+      const message = guest.page.getByText(config.busyMessage, { exact: true });
+      await message.waitFor();
+      await guest.page.evaluate(() => new Promise(requestAnimationFrame));
+      const clipped = await outside(message);
+      console.log(`${width} ${theme} ${label}: 409 login_running, notice ${clipped ? 'outside viewport' : 'in viewport'}, scroll ${await body(guest.page).evaluate(el => el.scrollTop)}`);
+      if (clipped) failures.push(`${label}: busy notice outside viewport`);
+      if (selection.provider === 'grok') await screenshot(guest.page, 'login-conflict');
+      await guest.act(guest.page.locator('#cliClose'));
+
+      const status = await accounts(guest);
+      assert.deepEqual([status.running, status.provider, status.job_id], [true, 'codex', null]);
+      await message.waitFor();
+      if (await outside(message)) failures.push('Initial busy notice outside viewport');
+      const blockedActions = guest.page.locator('#cliProviders button[data-i18n="cli_login.login"], #cliProviders button[data-i18n="cli_login.relogin"], #cliProviders button[data-i18n="cli_login.add_slot"]');
+      assert.ok(await blockedActions.count() >= 5);
+      assert.equal(await blockedActions.evaluateAll(buttons => buttons.every(button => button.disabled)), true);
+      if (selection.provider === 'grok') await screenshot(guest.page, 'login-busy');
+      await guest.act(guest.page.locator('#cliClose'));
+
+      const resultVisible = await cancel(owner);
+      console.log(`${width} ${theme} ${label}: 202 cancel, status refreshed, ${resultVisible ? 'cancelled result' : 'accounts'}`);
+      if (resultVisible || !await owner.page.locator('#cliAccounts').isVisible()) {
+        failures.push(`${label}: cancellation did not return to accounts`);
+      }
+      await owner.act(owner.page.locator('#cliClose'));
+    }
+    await accounts(guest);
+    await select(guest, cases[0]);
+    assert.equal((await start(guest)).status(), 202);
+    const resultVisible = await cancel(guest);
+    if (resultVisible || !await guest.page.locator('#cliAccounts').isVisible()) {
+      failures.push('Cancelling Claude did not return to accounts');
+    }
+    await screenshot(guest.page, 'login-cancel');
+    return failures;
+  } finally {
+    await Promise.all(contexts.map(context => context.close()));
+  }
+}
+
 await fs.mkdir(config.shots, { recursive: true });
-await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-const origin = 'http://127.0.0.1:' + server.address().port;
+if (!config.origin) await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+const origin = config.origin || 'http://127.0.0.1:' + server.address().port;
 const browser = await engine.launch({
   headless: config.headless ?? true, executablePath: config.executablePath,
 });
@@ -251,7 +391,8 @@ let failures = 0;
 try {
   for (const width of config.widths || [375, 768, 1280]) {
     for (const theme of config.themes || ['light', 'dark']) {
-      const errors = await run(browser, origin, width, theme);
+      const scenario = config.origin ? loginLifecycle : run;
+      const errors = await scenario(browser, origin, width, theme);
       failures += errors.length;
       console.log(width, theme, errors.length ? JSON.stringify(errors) : 'passed');
     }
@@ -259,5 +400,5 @@ try {
   assert.equal(failures, 0);
 } finally {
   await browser.close();
-  await new Promise(resolve => server.close(resolve));
+  if (server.listening) await new Promise(resolve => server.close(resolve));
 }

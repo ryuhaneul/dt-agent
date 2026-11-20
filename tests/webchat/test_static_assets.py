@@ -2605,7 +2605,13 @@ get('cliRawInput').value='one line';await get('cliRawForm').emit('submit');await
 assert.equal(sent().at(-1).options.body.kind,'line');assert.equal(sent().at(-1).options.body.value,'one line');assert.equal(get('cliRawInput').value,'');
 get('cliCodeInput').value='';const before=sent().length;await get('cliCodeForm').emit('submit');await flush();assert.equal(sent().length,before);
 assert.equal(timers.size,1);await get('cliLoginDlg').emit('cancel');assert.ok(get('cliConfirmDlg').open);
-await get('cliConfirmYes').emit('click');await flush();assert.equal(get('cliResult').hidden,false);
+const statusBeforeCancel=calls.filter(call=>call.path==='/cli-login/status').length;
+providerStates.grok='authenticated';
+await get('cliConfirmYes').emit('click');await flush();
+assert.equal(get('cliResult').hidden,true);
+assert.equal(get('cliAccounts').hidden,false);
+assert.equal(get('cliProviders').children[2].children[0].children[1].textContent,language+':cli_login.authenticated');
+assert.ok(calls.filter(call=>call.path==='/cli-login/status').length>statusBeforeCancel);
 for(let i=0;i<3&&timers.size;i++){const next=timers.values().next().value;timers.clear();next();await flush()}assert.equal(timers.size,0);
 get('cliLoginDlg').close();assert.equal(timers.size,0);assert.equal(focus,'accountButton');assert.equal(get('cliRawOutput').textContent,'');
 module.namespace.openCliLogin();await flush();

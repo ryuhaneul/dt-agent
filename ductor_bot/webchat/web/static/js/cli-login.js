@@ -9,6 +9,7 @@ export function openCliLogin() { openModal(); }
 export function initCliLogin() {
   const $ = id => document.getElementById(id);
   const dialog = $('cliLoginDlg'), confirmation = $('cliConfirmDlg');
+  const cliBody = dialog.querySelector('.cli-body');
   const rawOutput = document.createTextNode('');
   $('cliRawOutput').append(rawOutput);
   let view = 'list', status = null, target = null, job = null, seq = 0;
@@ -342,7 +343,11 @@ export function initCliLogin() {
       if (version !== generation || !dialog.open) return;
       showNotice(error.code === 'bot_unreachable' ? 'error.bot_unreachable' : 'error.generic');
     } finally {
-      if (version === generation && dialog.open) { loading = false; render(); schedule(); }
+      if (version === generation && dialog.open) {
+        loading = false; render();
+        if (view === 'busy') cliBody.scrollTop = 0;
+        schedule();
+      }
     }
   }
   async function pollJob() {
@@ -358,10 +363,18 @@ export function initCliLogin() {
       seq = result.seq; job = result; target = { ...target, provider: result.provider, slot: result.slot };
       showNotice(null);
       if (terminal.includes(result.state)) {
+        const cancelledHere = result.state === 'cancelled' && cancelRequested;
         closeLoginTab();
-        stopPolling(); view = 'result';
+        stopPolling(); view = cancelledHere ? 'list' : 'result';
+        if (cancelledHere) job = null;
         refreshingProvider = result.provider; refreshChecksLeft = 2; statusChecksLeft = 60;
+        render();
+        if (cancelledHere) {
+          cliBody.scrollTop = 0;
+          $('cliClose').focus();
+        }
         loadStatus();
+        return;
       }
       render();
       // A PTY read can end mid-URL. Wait for the CLI's prompt or two matching polls.
@@ -465,7 +478,13 @@ export function initCliLogin() {
       if (error.code === 'login_running') { view = 'busy'; job = null; status = { ...status, running: true }; }
       else { job = { state: 'failed' }; view = 'result'; }
       showNotice(error.code === 'api_key_slot' ? 'cli_login.api_key_slot' : error.code === 'invalid_slot' ? 'cli_login.invalid_slot' : error.code === 'bot_unreachable' ? 'error.bot_unreachable' : null);
-    } finally { if (version === generation && dialog.open) { busy = false; render(); schedule(); } }
+    } finally {
+      if (version === generation && dialog.open) {
+        busy = false; render();
+        if (view === 'busy') cliBody.scrollTop = 0;
+        schedule();
+      }
+    }
   }
   async function retryJob() {
     if (busy || !target) return;
@@ -490,14 +509,24 @@ export function initCliLogin() {
     }
   }
   async function cancelJob() {
-    const version = generation; busy = true; confirmation.close(); render();
+    const version = generation; busy = true; cancelRequested = true; confirmation.close(); render();
     closeLoginTab();
     try {
       await api(`/cli-login/jobs/${encodeURIComponent(job.job_id)}/cancel`, { method: 'POST' });
       if (version !== generation || !dialog.open) return;
-      cancelRequested = true; await pollJob();
-    } catch (error) { if (version === generation && dialog.open) showNotice(error.code === 'bot_unreachable' ? 'error.bot_unreachable' : 'error.generic'); }
-    finally { if (version === generation && dialog.open) { busy = false; render(); schedule(); } }
+      await pollJob();
+    } catch (error) {
+      if (version === generation && dialog.open) {
+        cancelRequested = false;
+        showNotice(error.code === 'bot_unreachable' ? 'error.bot_unreachable' : 'error.generic');
+      }
+    } finally {
+      if (version === generation && dialog.open) {
+        busy = false; render();
+        if (view === 'list') loadStatus();
+        else schedule();
+      }
+    }
   }
   async function send(body, field = null) {
     if (!active() || busy || cancelRequested) return;
