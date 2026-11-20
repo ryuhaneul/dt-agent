@@ -647,21 +647,15 @@ def test_remove_clears_only_deleted_slots_usage(home):
 
 
 @pytest.mark.parametrize("operation", ["logout", "disconnect_api_key"])
-@pytest.mark.parametrize("linked_component", ["slot", "root"])
-def test_auth_change_rejects_linked_path(home, monkeypatch, operation, linked_component):
+def test_auth_change_rejects_linked_path(home, monkeypatch, operation):
     from ductor_bot.cli import claude_slots
 
     slot = "claude-a"
     folder, registry, usage = _seed_auth_change(home, slot)
     credential = folder / (".credentials.json" if operation == "logout" else "settings.json")
     credential.write_text('{"apiKeyHelper":"helper.sh"}' if operation != "logout" else "{}")
-    if linked_component == "slot":
-        original = folder.rename(folder.with_name("claude-original"))
-        folder.symlink_to(original, target_is_directory=True)
-    else:
-        root = folder.parent
-        original = root.rename(root.with_name("original-auth"))
-        root.symlink_to(original, target_is_directory=True)
+    original = folder.rename(folder.with_name("claude-original"))
+    folder.symlink_to(original, target_is_directory=True)
     before = {path.relative_to(original): path.read_bytes() for path in original.rglob("*")
               if path.is_file()}
     config = _config(home)
@@ -765,3 +759,35 @@ def test_delete_can_retry_after_usage_cleanup_fails(home, monkeypatch):
     assert not folder.exists()
     assert slot not in _config(home)["claude_accounts"]
     assert usage.load() == {"claude-c": before["claude-c"]}
+
+
+def test_auth_changes_allow_a_linked_auth_root(home, monkeypatch):
+    from ductor_bot.cli import claude_slots
+    from ductor_bot.cli.claude_accounts import host_cli_auth_dir, slot_kind
+
+    root = host_cli_auth_dir(home)
+    storage = home / "auth-storage"
+    storage.mkdir()
+    root.symlink_to(storage, target_is_directory=True)
+    oauth = storage / "claude-a"
+    oauth.mkdir()
+    credentials = oauth / ".credentials.json"
+    credentials.write_text("{}")
+    api = storage / "claude-b"
+    api.mkdir()
+    settings = api / "settings.json"
+    settings.write_text('{"apiKeyHelper":"helper.sh","keep":true}')
+
+    def fake_logout(argv, **_kwargs):
+        credentials.unlink()
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(claude_slots.subprocess, "run", fake_logout)
+
+    claude_slots.logout(home, oauth.name)
+    claude_slots.disconnect_api_key(home, api.name)
+
+    assert root.is_symlink()
+    assert not credentials.exists()
+    assert slot_kind(api) == "api_key_detached"
+    assert json.loads(settings.read_text()) == {"keep": True}

@@ -165,10 +165,11 @@ def _reserve_auth_change(
 ) -> Iterator[Path]:
     if not is_slot_name(slot):
         raise SlotDeleteError("invalid_slot")
-    directory = host_slot_config_dir(home, slot)
-    expected_path = host_slot_config_dir(home.resolve(), slot)
+    root = host_cli_auth_dir(home)
+    directory = root / slot
+    expected_path = root.resolve() / slot
     _validate_auth_slot_path(directory, expected_path)
-    with slot_use_lock(host_cli_auth_dir(home), slot, deleting=True) as reserved:
+    with slot_use_lock(root, slot, deleting=True) as reserved:
         if not reserved:
             raise SlotDeleteError("slot_busy")
         _validate_auth_slot_path(directory, expected_path)
