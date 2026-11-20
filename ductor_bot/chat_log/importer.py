@@ -23,6 +23,7 @@ from ductor_bot.heartbeat.models import HeartbeatStatus
 from ductor_bot.infra.atomic_io import atomic_text_save
 from ductor_bot.infra.file_lock import exclusive_file_lock
 from ductor_bot.messenger.queue_context import without_queue_context
+from ductor_bot.orchestrator import hooks
 from ductor_bot.orchestrator.flows import _classify_heartbeat_response
 from ductor_bot.session.key import SessionKey
 from ductor_bot.workspace.paths import DuctorPaths
@@ -48,6 +49,15 @@ _HOOK_HEADINGS = frozenset(
         "## MEMORY REFLECTION",
     }
 )
+_HOOK_SUFFIXES = tuple(
+    "\n\n" + hook.suffix
+    for hook in (
+        hooks.PERSONA_SETUP,
+        hooks.MAINMEMORY_REMINDER,
+        hooks.DELEGATION_BRIEF,
+        hooks.DELEGATION_REMINDER,
+    )
+)
 _CODE_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 
 
@@ -64,6 +74,9 @@ def _without_hook_suffix(text: str) -> str:
                 fence = ""
         elif not fence and index >= 2 and lines[index - 1] == "" and line in _HOOK_HEADINGS:
             return "\n".join(lines[: index - 1])
+    if fence:
+        while suffix := next((suffix for suffix in _HOOK_SUFFIXES if text.endswith(suffix)), ""):
+            text = text.removesuffix(suffix)
     return text
 
 

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from ductor_bot.orchestrator import hooks
 
 
@@ -42,3 +44,22 @@ def test_templates_and_hooks_have_no_combined_rules_filename() -> None:
     )
 
     assert not offenders
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "cron_tools/RULES-all-clis.md",
+        "cron_tools/RULES-claude-only.md",
+        "cron_tools/RULES-codex-only.md",
+        "task_tools/RULES.md",
+    ],
+)
+def test_cron_and_task_rules_describe_autocompact_inheritance(template: str) -> None:
+    defaults = Path(__file__).resolve().parents[2] / "ductor_bot" / "_home_defaults"
+    path = defaults / "workspace" / "tools" / template
+    section = path.read_text(encoding="utf-8").split("## Automatic compaction\n")[1]
+    assert "uses `inherit` when `DUCTOR_AUTOCOMPACT` is absent" in section
+    assert all(f"`{value}`" in section for value in ("500k", "0.5m", "500,000"))
+    assert "topic's own setting" in section
+    assert "global value at run time" in section

@@ -180,7 +180,14 @@ class _CronAPI:
     def timezone(self, job: dict[str, Any]) -> str:
         return str(resolve_user_timezone(job.get("timezone") or self.bot.config.user_timezone))
 
-    async def metadata(self, job: dict[str, Any]) -> dict[str, Any]:
+    async def topic_names(self, jobs: list[dict[str, Any]]) -> dict[str, str]:
+        if not any(job.get("chat_id") and job.get("transport", "tg") == "tg" for job in jobs):
+            return {}
+        return {item["tid"]: item["name"] for item in await self.topics.list()}
+
+    async def metadata(
+        self, job: dict[str, Any], topic_names: dict[str, str] | None = None
+    ) -> dict[str, Any]:
         raw_autocompact = job.get("autocompact", "default")
         value = stored_autocompact(raw_autocompact, str(job["id"]), inherit=raw_autocompact is None)
         schedule = job.get("schedule")
@@ -196,10 +203,9 @@ class _CronAPI:
             target = f"chat {chat}" + (f", topic {topic}" if topic is not None else "")
             if transport == "tg":
                 tid = str(chat) + (f".{topic}" if topic is not None else "")
-                target = next(
-                    (item["name"] for item in await self.topics.list() if item["tid"] == tid),
-                    target,
-                )
+                if topic_names is None:
+                    topic_names = await self.topic_names([job])
+                target = topic_names.get(tid, target)
         return {
             "id": job["id"],
             "title": job.get("title", ""),
@@ -328,9 +334,10 @@ class _CronAPI:
         else:
             jobs = (await asyncio.to_thread(read_jobs_data, paths.cron_jobs_path))["jobs"]
             if request.method == "GET" and not request.match_info.get("id"):
+                topic_names = await self.topic_names(jobs)
                 return _response(
                     {
-                        "jobs": [await self.metadata(job) for job in jobs],
+                        "jobs": [await self.metadata(job, topic_names) for job in jobs],
                         "defaults": await self.defaults(key),
                     }
                 )
