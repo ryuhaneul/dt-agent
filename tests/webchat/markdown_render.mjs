@@ -102,6 +102,6 @@ if (checks) {
 
 const output = inputs.map(text => ({
   html: md(text),
-  ...(raw ? {raw: micromark(String(text), {extensions: [gfm()], htmlExtensions: [gfmHtml()]})} : {})
+  ...(raw ? {raw: micromark(String(text), {extensions: [gfm(), { disable: { null: ['strikethrough'] } }], htmlExtensions: [gfmHtml()]})} : {})
 }));
 process.stdout.write(JSON.stringify({output, escaped: esc('&<>"\'')}));

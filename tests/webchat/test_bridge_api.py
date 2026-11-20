@@ -3486,6 +3486,70 @@ async def cli_bridge(bridge, tmp_path, monkeypatch):
     return client, bot, runtime, paths, manager
 
 
+@pytest.mark.skipif(
+    not os.environ.get("DTW_PLAYWRIGHT_MODULE"),
+    reason="Set DTW_PLAYWRIGHT_MODULE for CLI login lifecycle browser checks",
+)
+async def test_cli_login_cancellation_and_busy_visibility_in_browser(cli_bridge, aiohttp_client):
+    from ductor_bot.i18n.loader import load_web_strings
+    from ductor_bot.webchat.auth import TOTP_KEY
+    from ductor_bot.webchat.web.app import STATE, create_app
+
+    upstream, bot, runtime, paths, manager = cli_bridge
+    runtime.events = EventHub()
+    names = ["claude", *[f"claude-slot-{index}" for index in range(12)], "claude-work"]
+    bot.config.claude_accounts = names
+    paths.config_path.write_text(json.dumps({"claude_accounts": names}))
+    for name in [*names[1:], "claude-unused"]:
+        root = paths.ductor_home / ".cli-auth" / name
+        root.mkdir()
+        if name != "claude-unused":
+            (root / ".credentials.json").write_text("fixture")
+    (paths.ductor_home / ".cli-auth/claude/.credentials.json").write_text("fixture")
+
+    store = paths.ductor_home / "secrets.env"
+    set_secret(store, PASSWORD_KEY, hash_password(_PASSWORD))
+    set_secret(store, TOTP_KEY, "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")
+    bot.config.language = "en"
+    manager.refresh_auth()
+    await manager._refresh_task
+    auth = await upstream.get(f"{_PREFIX}/auth/state", headers=headers())
+    generation = (await auth.json())["credential_generation"]
+    app = create_app(
+        bridge_url=str(upstream.server.make_url("")),
+        bridge_token=_TOKEN,
+        public_origin="https://chat.example.com",
+    )
+    client = await aiohttp_client(app)
+    config = paths.ductor_home / "login-browser.json"
+    config.write_text(
+        json.dumps(
+            {
+                "origin": str(client.make_url("")).rstrip("/"),
+                "sessions": [app[STATE].sessions.create(generation) for _ in range(2)],
+                "busyMessage": load_web_strings("en")["cli_login.busy_message"],
+                "shots": os.environ.get("DTW_C_SHOTS", str(paths.ductor_home / "shots")),
+                "widths": [375, 1280],
+                "themes": ["light", "dark"],
+            }
+        )
+    )
+    runner = await asyncio.create_subprocess_exec(
+        "node",
+        str(Path(__file__).with_name("web_followups_browser.mjs")),
+        str(config),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    try:
+        stdout, _ = await asyncio.wait_for(runner.communicate(), 180)
+    finally:
+        if runner.returncode is None:
+            runner.kill()
+            await runner.wait()
+    assert runner.returncode == 0, stdout.decode()
+
+
 def cli_headers(owner="owner-one"):
     return {**headers(), "X-Dtw-Owner": owner}
 

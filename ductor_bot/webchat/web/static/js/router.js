@@ -71,7 +71,6 @@ export function renderRoute() {
       else document.querySelector(`[data-view="${view}"] h2`)?.focus();
     }
   }
-  document.querySelector('#connPanel').classList.toggle('focus', route === 'status');
   if (route === 'status') document.querySelector('#info').scrollTop = 0;
   if (!isAuth && !['status', 'delete', 'diff'].includes(route)) previousView = view;
   if (route !== current && !dialogId && !closedDialog) {

@@ -2605,7 +2605,13 @@ get('cliRawInput').value='one line';await get('cliRawForm').emit('submit');await
 assert.equal(sent().at(-1).options.body.kind,'line');assert.equal(sent().at(-1).options.body.value,'one line');assert.equal(get('cliRawInput').value,'');
 get('cliCodeInput').value='';const before=sent().length;await get('cliCodeForm').emit('submit');await flush();assert.equal(sent().length,before);
 assert.equal(timers.size,1);await get('cliLoginDlg').emit('cancel');assert.ok(get('cliConfirmDlg').open);
-await get('cliConfirmYes').emit('click');await flush();assert.equal(get('cliResult').hidden,false);
+const statusBeforeCancel=calls.filter(call=>call.path==='/cli-login/status').length;
+providerStates.grok='authenticated';
+await get('cliConfirmYes').emit('click');await flush();
+assert.equal(get('cliResult').hidden,true);
+assert.equal(get('cliAccounts').hidden,false);
+assert.equal(get('cliProviders').children[2].children[0].children[1].textContent,language+':cli_login.authenticated');
+assert.ok(calls.filter(call=>call.path==='/cli-login/status').length>statusBeforeCancel);
 for(let i=0;i<3&&timers.size;i++){const next=timers.values().next().value;timers.clear();next();await flush()}assert.equal(timers.size,0);
 get('cliLoginDlg').close();assert.equal(timers.size,0);assert.equal(focus,'accountButton');assert.equal(get('cliRawOutput').textContent,'');
 module.namespace.openCliLogin();await flush();
@@ -2836,6 +2842,37 @@ def test_cron_locale_keys_and_placeholders_match():
         assert actual.keys() == reference.keys()
         for key, value in actual.items():
             assert set(re.findall(r"\{\w+\}", value)) == set(re.findall(r"\{\w+\}", reference[key]))
+
+
+@pytest.mark.skipif(
+    not os.environ.get("DTW_PLAYWRIGHT_MODULE"),
+    reason="Set DTW_PLAYWRIGHT_MODULE for web chat follow-up browser checks",
+)
+def test_webchat_login_status_and_markdown_in_browser(tmp_path):
+    from ductor_bot.webchat.cli_login import parse_output
+
+    config = tmp_path / "web-followups.json"
+    login = "https://claude.com/cai/oauth/authorize?state=fixture"
+    config.write_text(
+        json.dumps(
+            {
+                "static": str(STATIC),
+                "csp": CSP,
+                "starflowCsp": STARFLOW_CSP,
+                "shots": os.environ.get("DTW_FOLLOWUP_SHOTS", str(tmp_path / "shots")),
+                "strings": load_web_strings("en"),
+                "claudeUrls": parse_output("claude", login)["urls"],
+            }
+        )
+    )
+    result = subprocess.run(
+        ["node", str(Path(__file__).with_name("web_followups_browser.mjs")), str(config)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=180,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_cron_presets_roundtrip_and_direct_expression_fallback():

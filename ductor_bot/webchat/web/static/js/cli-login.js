@@ -9,11 +9,12 @@ export function openCliLogin() { openModal(); }
 export function initCliLogin() {
   const $ = id => document.getElementById(id);
   const dialog = $('cliLoginDlg'), confirmation = $('cliConfirmDlg');
+  const cliBody = dialog.querySelector('.cli-body');
   const rawOutput = document.createTextNode('');
   $('cliRawOutput').append(rawOutput);
   let view = 'list', status = null, target = null, job = null, seq = 0;
   let timer = null, generation = 0, busy = false, loading = false, polling = false, confirmMode = 'start';
-  let noticeKey = null, copied = false, cancelRequested = false, refreshingProvider = null;
+  let noticeKey = null, cancelNoticeKey = null, copied = false, cancelRequested = false, refreshingProvider = null;
   let accountsKey = null, linksKey = null, slotError = null, slotMenu = null, confirmReturn = null;
   let codeFocusPending = false, returnToCode = false;
   let loginTab = null, previousLoginHref = null;
@@ -334,15 +335,20 @@ export function initCliLogin() {
       if (!refreshChecksLeft) refreshingProvider = null;
       if (view === 'result') return;
       if (result.running && result.job_id) {
+        cancelNoticeKey = null;
         seq = 0; rawOutput.data = ''; job = { job_id: result.job_id, state: 'running' };
         target = { provider: result.provider }; view = 'progress'; await pollJob(); return;
       }
-      view = result.running ? 'busy' : 'list'; showNotice(null);
+      view = result.running ? 'busy' : 'list'; showNotice(cancelNoticeKey);
     } catch (error) {
       if (version !== generation || !dialog.open) return;
       showNotice(error.code === 'bot_unreachable' ? 'error.bot_unreachable' : 'error.generic');
     } finally {
-      if (version === generation && dialog.open) { loading = false; render(); schedule(); }
+      if (version === generation && dialog.open) {
+        loading = false; render();
+        if (view === 'busy') cliBody.scrollTop = 0;
+        schedule();
+      }
     }
   }
   async function pollJob() {
@@ -358,23 +364,42 @@ export function initCliLogin() {
       seq = result.seq; job = result; target = { ...target, provider: result.provider, slot: result.slot };
       showNotice(null);
       if (terminal.includes(result.state)) {
+        const cancelledHere = result.state === 'cancelled' && cancelRequested;
         closeLoginTab();
-        stopPolling(); view = 'result';
+        stopPolling(); view = cancelledHere ? 'list' : 'result';
+        if (cancelledHere) {
+          job = null; cancelRequested = false;
+          cancelNoticeKey = result.provider === 'codex' ? 'cli_login.cancelled_codex' : null;
+          showNotice(cancelNoticeKey);
+        }
         refreshingProvider = result.provider; refreshChecksLeft = 2; statusChecksLeft = 60;
+        render();
+        if (cancelledHere) {
+          cliBody.scrollTop = 0;
+          $('cliClose').focus();
+        }
         loadStatus();
+        return;
       }
       render();
       // A PTY read can end mid-URL. Wait for the CLI's prompt or two matching polls.
       const href = loginTab ? $('cliLinkRows').querySelector('a[href]')?.href : null;
-      const ready = href && (job.code || job.needs_input || href === previousLoginHref);
+      const prompted = job.code || job.needs_input;
+      const ready = href && (prompted || href === previousLoginHref);
       previousLoginHref = href;
       if (ready) {
-        const tab = loginTab; loginTab = null;
-        if (!tab.closed) {
-          tab.location.replace(href);
-          returnToCode = true;
+        const tab = loginTab;
+        try {
+          if (!tab.closed) {
+            tab.location.replace(href);
+            returnToCode = true;
+          }
+          loginTab = null;
+        } catch {
+          // The visible link remains usable when the browser denies navigation.
+          closeLoginTab();
         }
-      }
+      } else if (prompted && !href) closeLoginTab();
     } catch (error) {
       if (version !== generation || !dialog.open) return;
       previousLoginHref = null;
@@ -442,6 +467,7 @@ export function initCliLogin() {
     confirmMode = 'cancel'; renderConfirmation(); confirmation.showModal(); $('cliConfirmNo').focus();
   }
   async function startJob() {
+    if (cancelNoticeKey) { cancelNoticeKey = null; showNotice(null); }
     const version = generation; busy = true; confirmReturn = null; renderConfirmation();
     try {
       const result = await api('/cli-login/jobs', { method: 'POST', body: target });
@@ -458,7 +484,13 @@ export function initCliLogin() {
       if (error.code === 'login_running') { view = 'busy'; job = null; status = { ...status, running: true }; }
       else { job = { state: 'failed' }; view = 'result'; }
       showNotice(error.code === 'api_key_slot' ? 'cli_login.api_key_slot' : error.code === 'invalid_slot' ? 'cli_login.invalid_slot' : error.code === 'bot_unreachable' ? 'error.bot_unreachable' : null);
-    } finally { if (version === generation && dialog.open) { busy = false; render(); schedule(); } }
+    } finally {
+      if (version === generation && dialog.open) {
+        busy = false; render();
+        if (view === 'busy') cliBody.scrollTop = 0;
+        schedule();
+      }
+    }
   }
   async function retryJob() {
     if (busy || !target) return;
@@ -483,14 +515,24 @@ export function initCliLogin() {
     }
   }
   async function cancelJob() {
-    const version = generation; busy = true; confirmation.close(); render();
+    const version = generation; busy = true; cancelRequested = true; confirmation.close(); render();
     closeLoginTab();
     try {
       await api(`/cli-login/jobs/${encodeURIComponent(job.job_id)}/cancel`, { method: 'POST' });
       if (version !== generation || !dialog.open) return;
-      cancelRequested = true; await pollJob();
-    } catch (error) { if (version === generation && dialog.open) showNotice(error.code === 'bot_unreachable' ? 'error.bot_unreachable' : 'error.generic'); }
-    finally { if (version === generation && dialog.open) { busy = false; render(); schedule(); } }
+      await pollJob();
+    } catch (error) {
+      if (version === generation && dialog.open) {
+        cancelRequested = false;
+        showNotice(error.code === 'bot_unreachable' ? 'error.bot_unreachable' : 'error.generic');
+      }
+    } finally {
+      if (version === generation && dialog.open) {
+        busy = false; render();
+        if (view === 'list') loadStatus();
+        else schedule();
+      }
+    }
   }
   async function send(body, field = null) {
     if (!active() || busy || cancelRequested) return;
@@ -507,7 +549,7 @@ export function initCliLogin() {
   }
   openModal = () => {
     if (dialog.open) return;
-    ++generation; status = null; target = null; job = null; view = 'list'; busy = false; loading = true; noticeKey = null;
+    ++generation; status = null; target = null; job = null; view = 'list'; busy = false; loading = true; noticeKey = null; cancelNoticeKey = null;
     slotError = null; copied = false; cancelRequested = false; seq = 0; statusChecksLeft = 60; refreshChecksLeft = 0; refreshingProvider = null; $('cliRaw').open = false;
     dialog.showModal(); render(); $('cliClose').focus(); loadStatus();
   };

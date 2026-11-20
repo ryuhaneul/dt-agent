@@ -50,7 +50,7 @@ def reference(text):
     return markdown_to_html_with_extensions(
         text,
         options=Options.CMARK_OPT_FOOTNOTES,
-        extensions=["table", "autolink", "tagfilter", "strikethrough", "tasklist"],
+        extensions=["table", "autolink", "tagfilter", "tasklist"],
     )
 
 
@@ -253,6 +253,12 @@ def generated_cases():
                 ),
             }
             yield seed, kind, source, options
+
+
+def test_strikethrough_delimiters_remain_visible_in_webchat():
+    source = "~~literal~~ ~also literal~ ~~**bold**~~ `~~code~~`"
+    html = render([source])["output"][0]["html"]
+    assert html == "<p>~~literal~~ ~also literal~ ~~<strong>bold</strong>~~ <code>~~code~~</code></p>"
 
 
 def test_seeded_cmark_differential():

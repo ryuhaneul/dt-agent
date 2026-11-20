@@ -44,7 +44,11 @@ _CODE = re.compile(
     r"(?:one-time code[^\n]*|Confirm this code in your browser:)\s*\n\s*([^\s│]+)", re.IGNORECASE
 )
 _URL = re.compile(r"https://[^\s<>\"'│]+")
-_LOGIN_HOSTS = {"claude": "claude.ai", "codex": "auth.openai.com", "grok": "accounts.x.ai"}
+_LOGIN_HOSTS = {
+    "claude": ("claude.ai", "claude.com"),
+    "codex": ("auth.openai.com",),
+    "grok": ("accounts.x.ai",),
+}
 _LIMIT = 64 * 1024
 _PROBE = """import json, sys
 from ductor_bot.cli.auth import check_provider_auth
@@ -103,7 +107,7 @@ def parse_output(provider: str, text: str, *, inputs: Collection[str] = ()) -> d
         with contextlib.suppress(ValueError):
             parsed = urlsplit(url)
             if (
-                parsed.hostname == _LOGIN_HOSTS.get(provider)
+                parsed.hostname in _LOGIN_HOSTS.get(provider, ())
                 and parsed.username is None
                 and "\\" not in url
                 and not any(url in value for value in inputs)
