@@ -1149,3 +1149,18 @@ def test_import_preserves_user_content_near_hook_boundaries(setup_import, body) 
     importer = TranscriptImporter(paths, config)
     assert importer._clean_user(body) == (body, None)
     assert importer._clean_user(body + "\n\n## TASK REMINDER\nFramework text.") == (body, None)
+
+
+@pytest.mark.parametrize("suffix", [
+    hooks.MAINMEMORY_REMINDER.suffix,
+    hooks.MAINMEMORY_REMINDER.suffix + "\n\n" + hooks.DELEGATION_REMINDER.suffix,
+])
+def test_import_strips_hooks_after_unclosed_fence(setup_import, suffix) -> None:
+    paths, config = setup_import
+    importer = TranscriptImporter(paths, config)
+    source = next(file.path for file in importer.plan() if file.provider == "claude")
+    body = "Log tail:\n```md\n\n## MEMORY CHECK\nQuoted user text."
+    add_rows(source, [{"type": "user", "message": {"content": body + "\n\n" + suffix}}])
+
+    entries = next(file.entries for file in importer.plan() if file.provider == "claude")
+    assert entries[-1].text == body
