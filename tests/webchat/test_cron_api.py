@@ -23,7 +23,9 @@ from ductor_bot.cron.manager import CronJob
 from ductor_bot.cron.observer import CronObserver
 from ductor_bot.infra import file_lock
 from ductor_bot.orchestrator.core import Orchestrator
+from ductor_bot.session.key import SessionKey
 from ductor_bot.webchat.web.app import STATE, create_app
+from ductor_bot.webchat.topics import WebTopics
 from tests.webchat.test_bridge_api import conversation as conversation, headers
 from tests.webchat.test_web_app import login, site as site
 
@@ -104,6 +106,36 @@ async def test_list_create_detail_defaults_and_server_routing(api):
         & listed["jobs"][0].keys()
     )
     api.bot._orch._observers.cron.request_reschedule.assert_called_once()
+
+
+async def test_cron_list_resolves_topic_names_once(api, monkeypatch):
+    api.bot._topic_names.set(-123, 7, "Morning reports")
+    await api.bot._orch._sessions.resolve_session(SessionKey.telegram(-123, 8))
+    api.bot._topic_names.set(-123, 8, "Evening reports")
+    await add(api)
+    jobs = read_jobs_data(api.paths.cron_jobs_path)
+    job = jobs["jobs"][0]
+    jobs["jobs"].extend([
+        {**job, "id": "evening", "topic_id": 8},
+        {**job, "id": "unknown", "topic_id": 99},
+        {**job, "id": "matrix", "transport": "mx"},
+        {**job, "id": "broadcast", "chat_id": 0, "topic_id": None},
+    ])
+    write_jobs_data(api.paths.cron_jobs_path, jobs)
+    list_topics = AsyncMock(side_effect=WebTopics.list)
+    monkeypatch.setattr(WebTopics, "list", lambda self: list_topics(self))
+
+    response = await api.client.get(PATH, headers=headers())
+    assert response.status == 200
+    result = await response.json()
+    assert {job["id"]: job["target"]["name"] for job in result["jobs"]} == {
+        "daily": "Morning reports",
+        "evening": "Evening reports",
+        "unknown": "chat -123, topic 99",
+        "matrix": "chat -123, topic 7",
+        "broadcast": "broadcast",
+    }
+    list_topics.assert_awaited_once()
 
 
 @pytest.mark.parametrize("topic", [None, "default", "off", 500000])
