@@ -40,8 +40,8 @@ const messages = Array.from({ length: topic.count }, (_, index) => ({
 }));
 messages[74].role = 'event';
 messages[74].kind = 'background';
-async function mockChat(page, entries = messages) {
-  const fixtureTopic = { ...topic, count: entries.length, last_ts: entries.at(-1).ts };
+async function mockChat(page, entries = messages, fixture = topic) {
+  const fixtureTopic = { ...fixture, count: entries.length, last_ts: entries.at(-1).ts };
   await page.routeWebSocket('**/api/ws', () => {});
   await page.route('**/api/**', async route => {
     const request = route.request(), url = new URL(request.url());
@@ -140,10 +140,128 @@ async function calendarScroll(browser) {
   await context.close();
 }
 
-const browser = await chromium.launch();
-const measurements = [];
-try {
-  await fs.mkdir(config.shots, { recursive: true });
+async function preserveOldestGroup(browser) {
+  for (const split of [false, true]) {
+    const entries = messages.slice(0, 100).map((entry, index) => ({
+      ...entry, role: 'bot', ts: split && index < 30 ? beforeMidnight : afterMidnight,
+    }));
+    const seq = split ? 30 : 100;
+    entries[seq - 1].text = 'Keep this selection.\n\n```text\n' + 'long code '.repeat(100) + '\n```';
+    const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, timezoneId: 'Asia/Seoul' });
+    const page = await context.newPage();
+    await page.clock.setFixedTime(new Date(afterMidnight));
+    await mockChat(page, entries);
+    await page.goto(origin);
+    await page.waitForFunction(() => document.querySelectorAll('[data-entry-seq]').length === 100);
+    const result = await page.evaluate(async ({ seq, latest, split }) => {
+      const { handleEvent } = await import('/static/js/chat.js');
+      const row = document.querySelector(`[data-entry-seq="${seq}"]`);
+      const pre = row.querySelector('pre');
+      const range = document.createRange();
+      range.selectNodeContents(row.querySelector('.md p'));
+      window.getSelection().removeAllRanges();
+      window.getSelection().addRange(range);
+      pre.scrollLeft = 200;
+      const before = { selection: window.getSelection().toString(), scrollLeft: pre.scrollLeft };
+      if (split) {
+        await handleEvent({ type: 'turn', tid: '1.2', turn_id: 'live-turn', phase: 'started' });
+      } else {
+        await handleEvent({ type: 'entry', tid: '1.2', entry: { ...latest, id: 'entry-101', seq: 101 } });
+      }
+      return {
+        before,
+        after: { selection: window.getSelection().toString(), scrollLeft: pre.scrollLeft },
+        first: document.querySelector('[data-entry-seq]').dataset.entrySeq,
+      };
+    }, { seq, latest: entries.at(-1), split });
+    assert.equal(result.first, '2');
+    assert.deepEqual(result.before, { selection: 'Keep this selection.', scrollLeft: 200 });
+    assert.deepEqual(result.after, result.before, split ? 'live turn in two date groups' : 'new entry in one date group');
+    await context.close();
+  }
+}
+
+async function chatFocus(browser) {
+  for (const [width, hasTouch, readOnly] of [[375, true, false], [1280, false, true]]) {
+    const context = await browser.newContext({ viewport: { width, height: 900 }, isMobile: hasTouch, hasTouch });
+    const page = await context.newPage();
+    await mockChat(page, messages.slice(0, 5), { ...topic, read_only: readOnly });
+    await page.goto(origin);
+    await page.locator('[data-entry-seq="5"]').waitFor();
+    const heading = page.locator('#chatTitle');
+    await page.reload();
+    await page.locator('[data-entry-seq="5"]').waitFor();
+    const restored = await heading.evaluate(node => ({
+      focused: node === document.activeElement, outline: getComputedStyle(node).outlineStyle,
+    }));
+    assert.deepEqual(restored, { focused: false, outline: 'none' });
+    if (hasTouch) await page.locator('.chat-head [data-route="list"]').tap();
+    else await page.evaluate(async () => (await import('/static/js/router.js')).go('manage'));
+    const route = hasTouch ? '#list' : '#manage';
+    await page.waitForFunction(hash => location.hash === hash, route);
+    await page.evaluate(async () => (await import('/static/js/router.js')).go('chat'));
+    await page.waitForFunction(() => location.hash === '#chat' && !document.body.classList.contains('m-list'));
+    const afterRoute = await heading.evaluate(node => node === document.activeElement);
+    await page.screenshot({ path: path.join(config.shots, `focus-${width}.png`) });
+
+    if (hasTouch) await page.locator('.chat-head [data-route="list"]').tap();
+    const cell = page.locator('#tlist [data-tid="1.2"]');
+    if (hasTouch) await cell.tap();
+    else await cell.click();
+    await page.waitForFunction(() => location.hash === '#chat' && !document.body.classList.contains('m-list'));
+    const expected = hasTouch ? page.locator('#msgIn') : heading;
+    const afterSelection = await expected.evaluate(node => node === document.activeElement);
+    console.log(JSON.stringify({ width, restored, afterRoute, afterSelection }));
+    assert.ok(afterRoute, `${width}px chat route focuses the heading`);
+    assert.ok(afterSelection, `${width}px topic selection focuses the expected element`);
+    if (readOnly) {
+      const delayedTopic = { ...topic, tid: '1.3', topic_id: 3, name: 'Delayed topic', read_only: true };
+      const unreadTopic = { ...delayedTopic, tid: '1.4', topic_id: 4, name: 'Unread topic', count: 1 };
+      await page.route('**/api/topics', route => route.fulfill({
+        json: { topics: [{ ...topic, read_only: true }, delayedTopic, unreadTopic] },
+      }));
+      await page.route(/\/api\/topics\/1\.4\/messages\?/, route =>
+        route.fulfill({ json: { entries: [messages[6]], has_more: false } }));
+      await page.route('**/api/topics/1.4/seen', route =>
+        route.fulfill({ json: { seen: route.request().postDataJSON().seq } }));
+      await page.evaluate(async () => (await import('/static/js/topics.js')).refreshTopics());
+
+      const unreadCell = page.locator('#tlist [data-tid="1.4"]');
+      await unreadCell.locator('.unread').waitFor();
+      const seen = page.waitForRequest(request => request.url().endsWith('/api/topics/1.4/seen') && request.method() === 'PUT');
+      await unreadCell.click();
+      await seen;
+      await page.locator('[data-entry-seq="7"]').waitFor();
+      assert.equal(await heading.evaluate(node => node === document.activeElement), true, 'unread topic selection focuses the heading');
+
+      assert.equal(await unreadCell.locator('.unread').count(), 0);
+      await unreadCell.click();
+      await page.waitForFunction(() => document.activeElement?.id === 'chatTitle');
+
+      let releaseHistory;
+      const waitForRelease = new Promise(resolve => { releaseHistory = resolve; });
+      const historyUrl = /\/api\/topics\/1\.3\/messages\?/;
+      await page.route(historyUrl, async route => {
+        await waitForRelease;
+        await route.fulfill({ json: { entries: [messages[5]], has_more: false } });
+      });
+      const historyRequest = page.waitForRequest(historyUrl);
+      const search = page.locator('#q');
+      await page.locator('#tlist [data-tid="1.3"]').click();
+      await historyRequest;
+      await search.fill('draft search');
+      releaseHistory();
+      await page.locator('[data-entry-seq="6"]').waitFor();
+      assert.deepEqual(await search.evaluate(node => ({
+        focused: node === document.activeElement, value: node.value,
+      })), { focused: true, value: 'draft search' }, 'history completion preserves the active search');
+    }
+    await context.close();
+  }
+}
+
+async function messageDates(browser) {
+  const measurements = [];
   for (const width of [375, 768, 1280]) {
     for (const theme of ['light', 'dark']) {
       const context = await browser.newContext({ viewport: { width, height: width === 1280 ? 900 : 800 }, timezoneId: 'Asia/Seoul', colorScheme: theme });
@@ -270,6 +388,13 @@ try {
   }
   await calendarScroll(browser);
   console.log(JSON.stringify(measurements));
+}
+
+const browser = await chromium.launch();
+try {
+  await fs.mkdir(config.shots, { recursive: true });
+  const scenarios = { dates: messageDates, window: preserveOldestGroup, focus: chatFocus };
+  await scenarios[process.argv[3] ?? 'dates'](browser);
 } finally {
   await browser.close();
   await new Promise(resolve => server.close(resolve));

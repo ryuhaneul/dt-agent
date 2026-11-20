@@ -30,7 +30,7 @@ export function initCron(getTopic) {
   const notice = document.querySelector('#cronError'), close = document.querySelector('#cronClose');
   let topic = null, jobs = [], defaults = {}, selected = null, draft = null, creating = false;
   let view = 'list', busy = false, authenticated = false, version = 0, detailVersion = 0, previewVersion = 0;
-  let previewTimer = null, preview = null, warning = null, opener = null;
+  let previewTimer = null, preview = null, warning = null, opener = null, errorKey = null;
   const path = () => `/topics/${encodeURIComponent(topic.tid)}/cron`;
   const jobPath = id => `${path()}/${encodeURIComponent(id)}`;
   const alive = generation => generation === version && dialog.open && authenticated;
@@ -39,7 +39,7 @@ export function initCron(getTopic) {
   const delivery = value => t(`cron.delivery_${value}`);
   const acLabel = value => value === null ? t('autocompact.inherit') : typeof value === 'number' ? t('autocompact.tokens', { count: new Intl.NumberFormat(document.documentElement.lang).format(value) }) : t(`autocompact.${value}`);
   const target = job => job.target?.chat_id ? job.target.name : t('cron.broadcast');
-  function error(key = null) { notice.hidden = !key; notice.textContent = key ? t(key) : ''; }
+  function error(key = null) { errorKey = key; notice.hidden = !key; notice.textContent = key ? t(key) : ''; }
   function setBusy(value) {
     busy = value; dialog.setAttribute('aria-busy', String(value));
     dialog.querySelectorAll('button,input,select,textarea').forEach(control => { if (control !== close) control.disabled = value || control.dataset.cronReadonly === 'true'; });
@@ -84,7 +84,9 @@ export function initCron(getTopic) {
     const list = document.createElement('ol');
     for (const date of preview.next_runs) {
       const row = document.createElement('li');
-      row.textContent = new Date(date).toLocaleString(document.documentElement.lang, { timeZone: draft.timezone }); list.append(row);
+      try { row.textContent = new Date(date).toLocaleString(document.documentElement.lang, { timeZone: preview.timezone }); }
+      catch { row.textContent = date; }
+      list.append(row);
     }
     node.append(list);
   }
@@ -104,11 +106,14 @@ export function initCron(getTopic) {
     try {
       const result = await api(`${path()}/preview`, { method: 'POST', body: { schedule, timezone } });
       if (!alive(generation) || request !== previewVersion || view !== 'edit') return false;
-      preview = result; renderPreview(); return true;
+      preview = result; renderPreview();
+      if (errorKey === 'error.bot_unreachable') error();
+      return true;
     } catch (failure) {
       if (alive(generation) && request === previewVersion && view === 'edit') {
         preview = { valid: false }; renderPreview();
         if (failure.status !== 400) error('error.bot_unreachable');
+        else if (errorKey === 'error.bot_unreachable') error();
       }
       return false;
     }

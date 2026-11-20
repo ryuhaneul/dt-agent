@@ -126,6 +126,47 @@ try {
   await page.locator('[data-cron-action=edit]').click();
   await page.click('[data-cron-mode=direct]');await page.fill('#cronExpression','0 9 1 1 *');
   await page.waitForFunction(()=>document.querySelectorAll('#cronPreview li').length===3);
+  if (width === 375 && theme === 'light') {
+   const nextRuns = page.locator('#cronPreview li');
+   const notice = page.locator('#cronError');
+   const timezone = page.locator('#cronTimezone');
+   const loading = await page.evaluate(async () => (await import('/static/js/i18n.js')).t('cron.loading'));
+   async function checkPreview(zone) {
+    const response = page.waitForResponse(response => response.url().endsWith('/cron/preview') &&
+      response.request().postDataJSON().timezone === zone);
+    await timezone.fill(zone);
+    const result = await response;
+    assert.equal(result.status(), 200);
+    const preview = await result.json();
+    assert.equal(preview.next_runs.length, 3);
+    await page.waitForFunction(text => document.querySelector('#cronPreview').textContent !== text, loading);
+    const expected = zone === 'localtime' ? preview.next_runs : await page.evaluate(
+      ({ next_runs, timezone }) => next_runs.map(date => new Date(date).toLocaleString(document.documentElement.lang, { timeZone: timezone })),
+      preview,
+    );
+    assert.deepEqual(
+      { output: await nextRuns.allTextContents(), errorVisible: await notice.isVisible() },
+      { output: expected, errorVisible: false },
+      `timezone ${JSON.stringify(zone)}`,
+    );
+   }
+   for (const zone of ['', 'localtime', 'Asia/Tokyo']) await checkPreview(zone);
+   await page.route('**/cron/preview', route => route.fulfill({ status: 503, json: { error: 'bot_unreachable' } }), { times: 1 });
+   await timezone.fill('Asia/Seoul');
+   await notice.waitFor({ state: 'visible' });
+   const invalidResponse = page.waitForResponse(response => response.url().endsWith('/cron/preview') &&
+     response.request().postDataJSON().timezone === 'Invalid/Timezone');
+   await timezone.fill('Invalid/Timezone');
+   assert.equal((await invalidResponse).status(), 400);
+   await page.waitForFunction(text => {
+    const preview = document.querySelector('#cronPreview');
+    return preview.classList.contains('cron-invalid') && preview.textContent !== text;
+   }, loading);
+   const noticeAfterInvalid = await notice.isVisible();
+   await checkPreview('Asia/Tokyo');
+   assert.equal(noticeAfterInvalid, false, 'a 400 preview response clears the connection error');
+   await timezone.fill('Asia/Seoul');
+  }
   const updatedBody='Updated instruction.\nUse load_secrets("BROWSER_TEST_TOKEN") when needed.';
   await page.fill('#cronInstruction',updatedBody);await page.fill('#cronTokens','600k');
   await page.locator('.cron-detail .cron-body').evaluate(el=>el.scrollTop=0);
