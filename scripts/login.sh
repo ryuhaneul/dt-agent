@@ -1169,7 +1169,7 @@ share_slot_from_default() {
         if [ "$keep_settings" -eq 1 ] && [ "$name" = "settings.json" ]; then
             continue
         fi
-        if _is_slot_credential "$name"; then
+        if _is_slot_credential "$name" || [ "$name" = "api-key-helper.detached" ]; then
             continue
         fi
         if [ "$name" = "projects" ]; then
