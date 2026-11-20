@@ -798,11 +798,25 @@ class ThreadRow extends Element {
     for(const [,name,value] of opening.matchAll(/data-([\w-]+)="([^"]*)"/g)){
       this.dataset[name.replace(/-([a-z])/g,(_,part)=>part.toUpperCase())]=value;
     }
+    if (this.dataset.dateGroup !== undefined) {
+      this.opening = html.slice(0, html.indexOf('>') + 1);
+      this.replaceChildren();
+      for (const row of threadRows(html.slice(this.opening.length, -6))) this.insertBefore(row, null);
+    }
+  }
+  get markup(){return this.opening ? this.opening + this.children.map(row=>row.markup).join('') + '</div>' : this.html;}
+  get firstElementChild(){return this.children[0]??null;}
+  insertBefore(row,next){
+    row.remove();
+    this.children.splice(next===null?this.children.length:this.children.indexOf(next),0,row);
+    row.parentNode=this;
   }
   isEqualNode(row){return this.html===row?.html;}
   getBoundingClientRect(){
-    const top=this.parentNode.children.indexOf(this)*50-this.parentNode.scrollTop;
-    return {top,bottom:top+50};
+    const thread=this.parentNode.parentNode ?? this.parentNode;
+    const rows=thread.children.flatMap(group=>group.children);
+    const top=rows.indexOf(this.firstElementChild ?? this)*50-thread.scrollTop;
+    return {top,bottom:top+Math.max(this.children.length,1)*50};
   }
   get nextElementSibling(){return this.parentNode?.children[this.parentNode.children.indexOf(this)+1]??null;}
   scrollIntoView(){scrolled=Number(this.dataset.entrySeq);}
@@ -836,11 +850,11 @@ class Thread extends Element {
   constructor(){super();this.style.removeProperty=()=>{};}
   getBoundingClientRect(){return {top:0,bottom:500};}
   get firstElementChild(){return this.children[0]??null;}
-  get innerHTML(){return this.children.map(row=>row.html).join('');}
+  get innerHTML(){return this.children.map(row=>row.markup).join('');}
   set innerHTML(html){this.replaceChildren();this.insertAdjacentHTML('beforeend',html);}
   querySelector(selector){
     const [,key,value]=selector.match(/^\[data-(entry-seq|turn)="([^"]+)"\]$/)||[];
-    return key ? this.children.find(row=>row.dataset[key==='turn'?'turn':'entrySeq']===value)??null : null;
+    return key ? this.children.flatMap(group=>group.children).find(row=>row.dataset[key==='turn'?'turn':'entrySeq']===value)??null : null;
   }
   insertBefore(row,next){
     row.remove();
@@ -944,6 +958,7 @@ async function fetch(url,options={}){
   throw Error(`Unexpected API: ${url}`);
 }
 const context=vm.createContext({document,window:document,CustomEvent,WebSocket,fetch,URL,TextEncoder,TextDecoder,localStorage,console,
+ getComputedStyle:()=>({paddingTop:'0px'}),
   requestAnimationFrame:callback=>{frames.set(++frameId,callback);return frameId},
   cancelAnimationFrame:id=>frames.delete(id),
   ResizeObserver:class {observe(){}},
@@ -984,6 +999,12 @@ const list=document.querySelector('#tlist'),thread=document.querySelector('#thre
 assert.ok(list.innerHTML.includes('Alpha &lt;img&gt;'));assert.ok(!list.innerHTML.includes('Alpha <img>'));
 assert.ok(list.innerHTML.includes(strings['topic.group_imported']));assert.ok(list.innerHTML.includes(strings['topic.group_unknown']));
 assert.equal(topics.getTopic().tid,'1.2');assert.ok(thread.innerHTML.includes('Entry 205'));assert.ok(!thread.innerHTML.includes('Entry 1</p>'));
+const fixtureDate = new Date(historyA.at(-1).ts);
+const dateText = locale => fixtureDate.toLocaleDateString(locale,{dateStyle:'medium'});
+const timeText = locale => fixtureDate.toLocaleTimeString(locale,{hour:'2-digit',minute:'2-digit'});
+assert.ok(thread.innerHTML.includes(`<time class="tm" datetime="${fixtureDate.toISOString()}"><span class="tm-full">${dateText('en')}</span><span class="tm-compact">${fixtureDate.toLocaleDateString('en',{month:'numeric',day:'numeric'})}</span> · ${timeText('en')}</time>`));
+assert.ok(thread.innerHTML.includes(`<div class="day">${dateText('en')}</div>`));
+
 assert.equal(topicRows[0].seen,203);assert.equal(storage.has('dtw-seen:1.2'),false);assert.ok(list.innerHTML.includes('2 unread'));
 const composer=document.querySelector('#msgIn'), chatHeading=document.querySelector('[data-view="chat"] h2');
 const topicButton=new Element();topicButton.dataset.tid='1.2';
@@ -1014,7 +1035,7 @@ assert.equal(document.querySelector('#webSessions').textContent,2);
 // Older pages shift the bounded window; searching jumps to an earlier seq.
 thread.scrollTop=0;thread.emit('scroll');await flush();
 assert.ok(calls.some(call=>call.url==='/api/topics/1.2/messages?limit=100&before=106'));
-assert.equal(thread.children.find(node=>node.dataset.entrySeq).dataset.entrySeq,'56');
+assert.equal(thread.children.flatMap(group=>group.children).find(node=>node.dataset.entrySeq).dataset.entrySeq,'56');
 assert.equal((thread.innerHTML.match(/data-entry-seq=/g)||[]).length,100);
 const q=document.querySelector('#q');q.value='entry';q.emit('input');await runTimer(300);
 assert.ok(list.innerHTML.includes('Found &lt;script&gt;'));assert.ok(calls.some(call=>call.url==='/api/search?q=entry'));
@@ -1300,7 +1321,7 @@ topicRows[0].turns=[];topicRows[0].busy=false;
 document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));await flush();topics.selectTopic('1.2');await flush();
 await document.querySelector('#threadTop').emit('click');await flush();
 assert.equal((thread.innerHTML.match(/data-entry-seq=/g)||[]).length,100);
-assert.equal(thread.children.find(node=>node.dataset.entrySeq).dataset.entrySeq,'1');
+assert.equal(thread.children.flatMap(group=>group.children).find(node=>node.dataset.entrySeq).dataset.entrySeq,'1');
 assert.equal(thread.scrollTop,0);
 document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:false}}));
 document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));await flush();topics.selectTopic('1.2');await flush();
@@ -1308,7 +1329,7 @@ let finishOlder;historyHold=new Promise(resolve=>finishOlder=resolve);
 document.querySelector('#threadTop').emit('click');await new Promise(setImmediate);
 thread.scrollTop=123;thread.emit('wheel');finishOlder();historyHold=null;await flush();
 assert.equal((thread.innerHTML.match(/data-entry-seq=/g)||[]).length,100);
-assert.equal(thread.children.find(node=>node.dataset.entrySeq).dataset.entrySeq,'501');
+assert.equal(thread.children.flatMap(group=>group.children).find(node=>node.dataset.entrySeq).dataset.entrySeq,'501');
 assert.equal(thread.scrollTop,123);
 document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:false}}));
 
@@ -2754,6 +2775,33 @@ def test_autocompact_dialog_has_labeled_scopes_and_bounded_token_inputs(markup):
         assert f"ac-{scope}-error" in field["aria-describedby"]
     assert nodes["autocompactError"][1]["role"] == "alert"
     assert nodes["autocompactUnsupported"][1]["role"] == "status"
+
+
+@pytest.mark.skipif(
+    not os.environ.get("DTW_PLAYWRIGHT_MODULE"),
+    reason="Set DTW_PLAYWRIGHT_MODULE for message date browser checks",
+)
+def test_message_dates_browser(tmp_path):
+    config = tmp_path / "dates.json"
+    config.write_text(
+        json.dumps(
+            {
+                "static": str(STATIC),
+                "csp": CSP,
+                "starflowCsp": STARFLOW_CSP,
+                "shots": os.environ.get("DTW_DATES_SHOTS", str(tmp_path / "shots")),
+                "locales": {locale: load_web_strings(locale) for locale in ("en", "de", "ko")},
+            }
+        )
+    )
+    result = subprocess.run(
+        ["node", "tests/webchat/message_dates_browser.mjs", str(config)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=180,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_cron_modal_and_header_contract(markup):
