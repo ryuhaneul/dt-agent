@@ -180,6 +180,11 @@ class _CronAPI:
     def timezone(self, job: dict[str, Any]) -> str:
         return str(resolve_user_timezone(job.get("timezone") or self.bot.config.user_timezone))
 
+    async def topic_names(self, jobs: list[dict[str, Any]]) -> dict[str, str]:
+        if not any(job.get("chat_id") and job.get("transport", "tg") == "tg" for job in jobs):
+            return {}
+        return {item["tid"]: item["name"] for item in await self.topics.list()}
+
     async def metadata(
         self, job: dict[str, Any], topic_names: dict[str, str] | None = None
     ) -> dict[str, Any]:
@@ -199,7 +204,7 @@ class _CronAPI:
             if transport == "tg":
                 tid = str(chat) + (f".{topic}" if topic is not None else "")
                 if topic_names is None:
-                    topic_names = {item["tid"]: item["name"] for item in await self.topics.list()}
+                    topic_names = await self.topic_names([job])
                 target = topic_names.get(tid, target)
         return {
             "id": job["id"],
@@ -329,9 +334,7 @@ class _CronAPI:
         else:
             jobs = (await asyncio.to_thread(read_jobs_data, paths.cron_jobs_path))["jobs"]
             if request.method == "GET" and not request.match_info.get("id"):
-                topic_names = {}
-                if any(job.get("chat_id") and job.get("transport", "tg") == "tg" for job in jobs):
-                    topic_names = {item["tid"]: item["name"] for item in await self.topics.list()}
+                topic_names = await self.topic_names(jobs)
                 return _response(
                     {
                         "jobs": [await self.metadata(job, topic_names) for job in jobs],
