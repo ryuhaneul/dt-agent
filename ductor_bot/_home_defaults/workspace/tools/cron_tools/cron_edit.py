@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from contextlib import ExitStack
 from typing import Any
 
 from _shared import (
@@ -24,18 +25,17 @@ from _shared import (
     JOBS_PATH,
     parse_autocompact_option,
     available_job_ids,
-    describe_job,
     detect_rule_filenames,
     find_job_by_id_or_task_folder,
-    load_jobs_strict,
+    locked_jobs_file,
+    normalize_autocompact_records,
     read_user_timezone,
     render_cron_task_claude_md,
     safe_task_dir,
-    sanitize_name,
-    save_jobs,
-    schedule_problem,
 )
 
+from ductor_bot.cron.definitions import describe_job, sanitize_name, schedule_problem
+from ductor_bot.cron.jobs_file import write_jobs_data
 from ductor_bot.workspace.rules_boundary import rule_write_allowed
 
 _TUTORIAL = """\
@@ -231,7 +231,19 @@ def _rename_task_folder(
     old_task_folder: str,
     old_id: str,
     new_name: str,
+    rollback: ExitStack | None = None,
 ) -> tuple[bool, bool, list[str]]:
+    if rollback is None:
+        with ExitStack() as local_rollback:
+            result = _rename_task_folder(
+                old_task_folder=old_task_folder,
+                old_id=old_id,
+                new_name=new_name,
+                rollback=local_rollback,
+            )
+            local_rollback.pop_all()
+            return result
+
     notes: list[str] = []
     if not all(
         rule_write_allowed(DUCTOR_HOME, CRON_TASKS_DIR / name)
@@ -261,6 +273,7 @@ def _rename_task_folder(
         raise ValueError("Unsafe task rule file: rename through a symbolic link is not allowed")
 
     old_folder.rename(new_folder)
+    rollback.callback(new_folder.rename, old_folder)
 
     memory_renamed = False
     memory_candidates = [f"{old_task_folder}_MEMORY.md", f"{old_id}_MEMORY.md"]
@@ -271,7 +284,11 @@ def _rename_task_folder(
         seen.add(candidate)
         source = new_folder / candidate
         if source.exists():
-            source.rename(new_folder / f"{new_name}_MEMORY.md")
+            destination = new_folder / f"{new_name}_MEMORY.md"
+            if destination != source and (destination.exists() or destination.is_symlink()):
+                raise FileExistsError(f"Target memory file already exists: {destination.name}")
+            source.rename(destination)
+            rollback.callback(destination.rename, source)
             memory_renamed = True
             break
 
@@ -283,6 +300,10 @@ def _rename_task_folder(
         target = new_folder / filename
         if not rule_write_allowed(DUCTOR_HOME, target):
             raise ValueError("Unsafe task rule file: rename through a symbolic link is not allowed")
+        if target.exists():
+            rollback.callback(target.write_bytes, target.read_bytes())
+        else:
+            rollback.callback(target.unlink, missing_ok=True)
         target.write_text(rule_content, encoding="utf-8")
 
     notes.append("Updated provider rule files for renamed memory file reference.")
@@ -498,12 +519,11 @@ def main() -> None:
         )
         sys.exit(1)
 
-    try:
-        data = load_jobs_strict(JOBS_PATH)
-    except (json.JSONDecodeError, TypeError):
-        print(json.dumps({"error": "Corrupt cron_jobs.json -- cannot parse"}))
-        sys.exit(1)
+    with locked_jobs_file(JOBS_PATH) as data, ExitStack() as rollback:
+        _edit(args, data, rollback)
 
+
+def _edit(args: argparse.Namespace, data: dict[str, Any], rollback: ExitStack) -> None:
     jobs = data.get("jobs", [])
     job = find_job_by_id_or_task_folder(jobs, args.job_id)
     if job is None:
@@ -518,6 +538,7 @@ def main() -> None:
         )
         sys.exit(1)
 
+    normalize_autocompact_records({"jobs": [job]}, "jobs")
     mode_after = args.delivery_mode or job.get("delivery_mode", "separate")
     chat_after = args.chat_id if args.chat_id is not None else job.get("chat_id", 0)
     if mode_after != "separate" and not chat_after:
@@ -561,6 +582,7 @@ def main() -> None:
                     old_task_folder=old_task_folder,
                     old_id=old_id,
                     new_name=new_name,
+                    rollback=rollback,
                 )
             except (ValueError, FileExistsError) as exc:
                 print(json.dumps({"error": str(exc)}))
@@ -602,7 +624,8 @@ def main() -> None:
         return
 
     current_id = str(job["id"])
-    save_jobs(JOBS_PATH, data, upsert=[(current_id, old_id)])
+    write_jobs_data(JOBS_PATH, data)
+    rollback.pop_all()
 
     task_folder = str(job.get("task_folder", current_id))
     result: dict[str, Any] = {

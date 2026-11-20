@@ -16,28 +16,32 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from _shared import (
     parse_autocompact_option,
     CRON_TASKS_DIR,
+    DUCTOR_HOME,
     DELIVERY_MODES,
     JOBS_PATH,
     describe_job,
-    detect_rule_filenames,
-    load_jobs_or_default,
+    locked_jobs_file,
     read_user_timezone,
-    render_cron_task_claude_md,
     sanitize_name,
-    save_jobs,
     schedule_problem,
 )
 
-_DEFAULT_INSTRUCTION = (
-    "Read through TASK_DESCRIPTION.md and carry it out. Stay focused and complete the task neatly."
+from ductor_bot.cron.definitions import (
+    DEFAULT_INSTRUCTION as _DEFAULT_INSTRUCTION,
+    create_task_folder,
+    render_task_description_md,
 )
+
+from ductor_bot.cron.jobs_file import write_jobs_data
 
 _TUTORIAL = """\
 CRON ADD -- Create a scheduled cron job with its own workspace.
@@ -177,41 +181,16 @@ WHAT HAPPENS AFTER CREATION:
 """
 
 
-def _render_task_description_md(title: str, description: str) -> str:
-    """Render the TASK_DESCRIPTION.md template for a cron task."""
-    return f"""\
-# {title}
-
-## Goal
-
-{description}
-
-## Assignment
-
-(Detailed instructions for completing this task. Be specific and actionable.)
-
-## Output
-
-(What should the final result look like? Format, content, destination.)
-"""
-
-
-def _create_task_folder(name: str, title: str, description: str) -> Path:
-    """Create the cron_task workspace folder."""
-    task_dir = CRON_TASKS_DIR / name
-    task_dir.mkdir(parents=True, exist_ok=False)
-
-    rule_content = render_cron_task_claude_md(name)
-    for filename in detect_rule_filenames():
-        (task_dir / filename).write_text(rule_content, encoding="utf-8")
-
-    task_desc = _render_task_description_md(title, description)
-    (task_dir / "TASK_DESCRIPTION.md").write_text(task_desc, encoding="utf-8")
-
-    (task_dir / f"{name}_MEMORY.md").write_text(f"# {name} Memory\n", encoding="utf-8")
-    (task_dir / "scripts").mkdir(exist_ok=True)
-
-    return task_dir
+def _create_task_folder(
+    name: str, title: str, description: str, *, folder: Path | None = None
+) -> Path:
+    return create_task_folder(
+        name,
+        render_task_description_md(title, description),
+        tasks_dir=CRON_TASKS_DIR,
+        ductor_home=DUCTOR_HOME,
+        folder=folder,
+    )
 
 
 def main() -> None:
@@ -323,21 +302,6 @@ def main() -> None:
         print(json.dumps({"error": problem}))
         sys.exit(1)
 
-    data = load_jobs_or_default(JOBS_PATH)
-
-    if any(j["id"] == name for j in data["jobs"]):
-        print(json.dumps({"error": f"Job '{name}' already exists"}))
-        sys.exit(1)
-
-    task_dir = CRON_TASKS_DIR / name
-    if task_dir.exists():
-        print(json.dumps({"error": f"Folder '{name}' already exists in cron_tasks/"}))
-        sys.exit(1)
-
-    # 1) Create the cron_task folder
-    _create_task_folder(name, args.title, args.description)
-
-    # 2) Add job to JSON
     job: dict = {
         "id": name,
         "title": args.title,
@@ -391,8 +355,42 @@ def main() -> None:
     if topic_id:
         job["topic_id"] = int(topic_id)
     job["transport"] = transport
-    data["jobs"].append(job)
-    save_jobs(JOBS_PATH, data, upsert=[(name, name)])
+    with locked_jobs_file(JOBS_PATH) as data:
+        if any(entry["id"] == name for entry in data["jobs"]):
+            print(json.dumps({"error": f"Job '{name}' already exists"}))
+            sys.exit(1)
+        task_dir = CRON_TASKS_DIR / name
+        if task_dir.exists() or task_dir.is_symlink():
+            message = (
+                f"Folder {str(task_dir)!r} already exists. After confirming no job uses it, "
+                "move it out of cron_tasks and retry, or choose a different job ID."
+            )
+            print(json.dumps({"error": message}))
+            sys.exit(1)
+
+        CRON_TASKS_DIR.mkdir(parents=True, exist_ok=True)
+        committed = False
+        try:
+            with TemporaryDirectory(prefix=".cli-staging-", dir=CRON_TASKS_DIR) as scratch:
+                staging = _create_task_folder(
+                    name, args.title, args.description, folder=Path(scratch) / name
+                )
+                staging.rename(task_dir)
+                # This invocation published the folder while holding the registry lock.
+                try:
+                    data["jobs"].append(job)
+                    write_jobs_data(JOBS_PATH, data)
+                except BaseException:
+                    shutil.rmtree(task_dir)
+                    raise
+                committed = True
+        except OSError:
+            if not committed:
+                raise
+            print(
+                f"Warning: cron registration succeeded, but staging cleanup failed: {scratch!r}",
+                file=sys.stderr,
+            )
 
     # The CronObserver detects the mtime change and auto-schedules
 

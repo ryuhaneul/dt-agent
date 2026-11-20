@@ -2738,3 +2738,71 @@ def test_autocompact_dialog_has_labeled_scopes_and_bounded_token_inputs(markup):
         assert f"ac-{scope}-error" in field["aria-describedby"]
     assert nodes["autocompactError"][1]["role"] == "alert"
     assert nodes["autocompactUnsupported"][1]["role"] == "status"
+
+
+def test_cron_modal_and_header_contract(markup):
+    nodes = {attrs.get("id"): (tag, attrs) for tag, attrs in markup.tags if attrs.get("id")}
+    assert nodes["cronDlg"][0] == "dialog"
+    assert nodes["cronDlg"][1]["aria-labelledby"] == "cronTitle"
+    assert nodes["headerCron"][1]["type"] == "button"
+    assert nodes["cronError"][1]["role"] == "alert"
+    assert nodes["cronClose"][1]["data-i18n-attr"] == "aria-label:common.close"
+    css = (STATIC / "css/app.css").read_text()
+    assert ".cron-dialog .field::placeholder{color:var(--muted);opacity:1}" in css
+    assert "@media(max-width:768px)" in css
+    assert ".cron-split.has-detail>.cron-list{display:none}" in css
+    assert '[data-theme="dark"] .cron-dialog{color-scheme:dark}' in css
+
+
+def test_cron_locale_keys_and_placeholders_match():
+    reference = {key: value for key, value in load_web_strings("en").items() if key.startswith("cron.")}
+    assert reference
+    for language in ("de", "es", "fr", "id", "ko", "nl", "pt", "ru"):
+        actual = {key: value for key, value in load_web_strings(language).items() if key.startswith("cron.")}
+        assert actual.keys() == reference.keys()
+        for key, value in actual.items():
+            assert set(re.findall(r"\{\w+\}", value)) == set(re.findall(r"\{\w+\}", reference[key]))
+
+
+def test_cron_presets_roundtrip_and_direct_expression_fallback():
+    script = r"""
+import assert from 'node:assert/strict';import fs from 'node:fs';import vm from 'node:vm';
+const context=vm.createContext({console});
+const module=new vm.SourceTextModule(fs.readFileSync(process.argv[1],'utf8'),{context});
+await module.link(async name=>{
+ const exports=name==='./api.js'?{api:()=>{}}:name==='./i18n.js'?{t:()=>''}:name==='./md.js'?{esc:String}:{parseAutocompactTokens:()=>null};
+ const stub=new vm.SyntheticModule(Object.keys(exports),function(){for(const [key,value]of Object.entries(exports))this.setExport(key,value)},{context});await stub.link(()=>{});return stub;
+});await module.evaluate();
+const {presetCron,cronPreset}=module.namespace;
+for(const [preset,expression]of [
+ [{type:'daily',time:'09:15'},'15 9 * * *'],
+ [{type:'weekdays',time:'08:30'},'30 8 * * 1-5'],
+ [{type:'weekly',time:'18:30',days:[5,1,0,5]},'30 18 * * 0,1,5'],
+ [{type:'hours',interval:1},'0 */1 * * *'],
+ [{type:'hours',interval:23},'0 */23 * * *'],
+]){assert.equal(presetCron(preset),expression);assert.equal(presetCron(cronPreset(expression)),expression)}
+assert.equal(presetCron({type:'hours',interval:24}),null);
+assert.equal(presetCron({type:'hours',interval:0}),null);
+assert.equal(presetCron({type:'weekly',time:'09:00',days:[]}),null);
+assert.equal(presetCron({type:'daily',time:'24:00'}),null);
+assert.equal(cronPreset('0 9 1 1 *'),null);
+assert.equal(cronPreset('*/15 * * * *'),null);
+assert.equal(cronPreset('5 25 * * *'),null);
+assert.equal(presetCron(cronPreset('0 9 * * 7,1')),'0 9 * * 0,1');
+"""
+    result = subprocess.run(
+        ["node", "--experimental-vm-modules", "--input-type=module", "-e", script, str(STATIC / "js/cron.js")],
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+async def test_web_cron_command_returns_no_telegram_selector():
+    from types import SimpleNamespace
+    from ductor_bot.session.key import SessionKey
+    from ductor_bot.webchat.commands import WebCommandDispatcher
+
+    dispatcher = object.__new__(WebCommandDispatcher)
+    dispatcher.bot = SimpleNamespace(config=SimpleNamespace(language="en"))
+    result = await dispatcher._registry_response("cron", SessionKey.telegram(1, 7), "/cron")
+    assert result == {"text": load_web_strings("en")["cron.title"], "buttons": None}
