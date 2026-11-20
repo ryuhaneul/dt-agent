@@ -113,6 +113,7 @@ export function initCron(getTopic) {
       if (alive(generation) && request === previewVersion && view === 'edit') {
         preview = { valid: false }; renderPreview();
         if (failure.status !== 400) error('error.bot_unreachable');
+        else if (errorKey === 'error.bot_unreachable') error();
       }
       return false;
     }

@@ -1148,6 +1148,7 @@ export function initChat() {
   document.addEventListener('topic-selected', async event => {
     cancelTop();
     const { topic, seq } = event.detail, generation = epoch, selected = ++selection;
+    const focusAtSelection = document.activeElement;
     const state = history(topic.tid);
     state.range = null; state.renderStart = null;
     input.value = drafts.get(topic.tid) || ''; renderThread({ bottom: true }); resizeComposer();
@@ -1161,7 +1162,10 @@ export function initChat() {
         if (location.hash === '#chat' && !event.detail.focusComposer) {
           if (seq === null && !topic.read_only && topic.tid !== 'unknown' && !input.disabled &&
               matchMedia('(pointer: fine)').matches) input.focus();
-          else if (seq !== null || event.detail.navigate) document.querySelector('[data-view="chat"] h2').focus();
+          else if (seq !== null || (event.detail.navigate &&
+              (document.activeElement === focusAtSelection || document.activeElement === document.body))) {
+            document.querySelector('[data-view="chat"] h2').focus();
+          }
         }
       }
     } catch (error) { if (active && generation === epoch) errorNotice(error); }

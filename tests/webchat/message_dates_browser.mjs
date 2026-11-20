@@ -214,6 +214,28 @@ async function chatFocus(browser) {
     console.log(JSON.stringify({ width, restored, afterRoute, afterSelection }));
     assert.ok(afterRoute, `${width}px chat route focuses the heading`);
     assert.ok(afterSelection, `${width}px topic selection focuses the expected element`);
+    if (readOnly) {
+      const delayedTopic = { ...topic, tid: '1.3', topic_id: 3, name: 'Delayed topic', read_only: true };
+      await page.route('**/api/topics', route => route.fulfill({ json: { topics: [{ ...topic, read_only: true }, delayedTopic] } }));
+      await page.evaluate(async () => (await import('/static/js/topics.js')).refreshTopics());
+      let releaseHistory;
+      const waitForRelease = new Promise(resolve => { releaseHistory = resolve; });
+      const historyUrl = /\/api\/topics\/1\.3\/messages\?/;
+      await page.route(historyUrl, async route => {
+        await waitForRelease;
+        await route.fulfill({ json: { entries: [messages[5]], has_more: false } });
+      });
+      const historyRequest = page.waitForRequest(historyUrl);
+      const search = page.locator('#q');
+      await page.locator('#tlist [data-tid="1.3"]').click();
+      await historyRequest;
+      await search.fill('draft search');
+      releaseHistory();
+      await page.locator('[data-entry-seq="6"]').waitFor();
+      assert.deepEqual(await search.evaluate(node => ({
+        focused: node === document.activeElement, value: node.value,
+      })), { focused: true, value: 'draft search' }, 'history completion preserves the active search');
+    }
     await context.close();
   }
 }

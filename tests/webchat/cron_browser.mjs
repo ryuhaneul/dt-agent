@@ -154,7 +154,17 @@ try {
    await page.route('**/cron/preview', route => route.fulfill({ status: 503, json: { error: 'bot_unreachable' } }), { times: 1 });
    await timezone.fill('Asia/Seoul');
    await notice.waitFor({ state: 'visible' });
+   const invalidResponse = page.waitForResponse(response => response.url().endsWith('/cron/preview') &&
+     response.request().postDataJSON().timezone === 'Invalid/Timezone');
+   await timezone.fill('Invalid/Timezone');
+   assert.equal((await invalidResponse).status(), 400);
+   await page.waitForFunction(text => {
+    const preview = document.querySelector('#cronPreview');
+    return preview.classList.contains('cron-invalid') && preview.textContent !== text;
+   }, loading);
+   const noticeAfterInvalid = await notice.isVisible();
    await checkPreview('Asia/Tokyo');
+   assert.equal(noticeAfterInvalid, false, 'a 400 preview response clears the connection error');
    await timezone.fill('Asia/Seoul');
   }
   const updatedBody='Updated instruction.\nUse load_secrets("BROWSER_TEST_TOKEN") when needed.';
