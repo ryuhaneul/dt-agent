@@ -59,17 +59,6 @@ Two files, by who reads the value:
 - Never print or save secret values/keys. Never ask for or accept a master key in conversation; input belongs only in `/masterkey` private replies or webchat modals.
 - Respect `SECRETS_RATE_LIMITED` and `retry_after`. Details: `docs/dt-agent/config.md`, **Tool credentials**.
 
-## Bot Restart
-
-To restart the bot (e.g. after config changes or recovery):
-
-```bash
-touch "$DUCTOR_HOME/restart-requested"
-```
-
-The bot picks up this marker within seconds and restarts cleanly.
-No tool script needed — just create the file.
-
 ## Output and Memory
 
 - Save user deliverables in `../output_to_user/`.
