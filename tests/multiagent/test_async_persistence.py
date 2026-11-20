@@ -2981,8 +2981,7 @@ async def test_cron_broadcast_partial_retry_keeps_current_scope(
     assert await ia.recover_inflight("main") == 0
     injector.inject_prompt.assert_awaited_once()
     assert store.path_for("main", task.task_id, area="undelivered").exists()
-    # Pending user decision: current retries repeat all transports, including successes.
-    assert [t.deliver_broadcast.await_count for t in transports] == [2, 2, 2]
+    assert [t.deliver_broadcast.await_count for t in transports] == [1, 2, 1]
 
 
 @pytest.mark.parametrize("scenario", ["retry", "restart", "all_permanent"])
@@ -3041,6 +3040,202 @@ async def test_cron_broadcast_permanent_recipient_outcomes(
     )
     assert not store.path_for("main", task.task_id).exists()
     assert not store.path_for("main", task.task_id, area="undelivered").exists()
+
+
+@pytest.mark.parametrize("matrix_retries", [False, True])
+async def test_cron_broadcast_permanent_telegram_failure_is_isolated(
+    tmp_path: Path, matrix_retries: bool,
+) -> None:
+    from aiogram.exceptions import TelegramForbiddenError
+    from aiogram.methods import SendMessage
+
+    from ductor_bot.bus.envelope import Envelope
+    from ductor_bot.messenger.telegram.transport import TelegramTransport
+
+    task = _task(
+        task_id="abc000000095", chat_id=0, topic_id=None,
+        result_origin="cron-broadcast", broadcast_ref="job-95",
+    )
+    store = AsyncRecordStore(tmp_path)
+    store.create(task)
+    store.update("main", task.task_id, result=_result(task))
+    ia, bus, injector, transports, bot = _broadcast_recovery_bus(tmp_path)
+    ia._retry_delays = (0, 0)
+
+    async def send_message(*, chat_id: int, text: str, **kwargs: object) -> object:
+        if text == "Public final report":
+            raise TelegramForbiddenError(SendMessage(chat_id=chat_id, text=text), "blocked")
+        return SimpleNamespace(message_id=1)
+
+    sent = AsyncMock(side_effect=send_message)
+    bot.file_roots.return_value = []
+    bot.bot_instance.send_message = sent
+    bus._transports[0] = TelegramTransport(bot)
+    matrix_messages: list[str] = []
+    slack_messages: list[str] = []
+
+    async def deliver_matrix(envelope: Envelope) -> None:
+        matrix_messages.append(envelope.result_text)
+        if matrix_retries and len(matrix_messages) == 1:
+            envelope.delivered = False
+            envelope.delivery_error = "temporary"
+
+    async def deliver_slack(envelope: Envelope) -> None:
+        slack_messages.append(envelope.result_text)
+
+    transports[1].deliver_broadcast.side_effect = deliver_matrix
+    transports[2].deliver_broadcast.side_effect = deliver_slack
+    await ia.recover_inflight("main")
+
+    assert matrix_messages == ["Public final report"] * (1 + matrix_retries)
+    assert slack_messages == ["Public final report"]
+    telegram_messages = [call.kwargs["text"] for call in sent.await_args_list]
+    assert telegram_messages[0] == "Public final report"
+    assert len(telegram_messages) == 2
+    assert "could not be delivered" in telegram_messages[1]
+    injector.inject_prompt.assert_awaited_once()
+    assert not store.path_for("main", task.task_id).exists()
+    assert not store.path_for("main", task.task_id, area="undelivered").exists()
+
+
+@pytest.mark.parametrize("redelivery_cycles", [0, 3])
+async def test_cron_broadcast_replays_failed_transports_after_restart(
+    tmp_path: Path, redelivery_cycles: int,
+) -> None:
+    from aiogram.exceptions import TelegramForbiddenError
+    from aiogram.methods import SendMessage
+
+    from ductor_bot.bus.envelope import Envelope
+    from ductor_bot.messenger.telegram.transport import TelegramTransport
+
+    task = _task(
+        task_id="abc000000096", chat_id=0, topic_id=None,
+        result_origin="cron-broadcast", broadcast_ref="job-96",
+    )
+    store = AsyncRecordStore(tmp_path)
+    store.create(task)
+    report = "Public final report"
+    telegram_messages: list[str] = []
+    matrix_messages: list[str] = []
+    slack_messages: list[str] = []
+    matrix_ready = False
+
+    async def send_message(*, chat_id: int, text: str, **_kwargs: object) -> object:
+        telegram_messages.append(text)
+        if text == report:
+            raise TelegramForbiddenError(SendMessage(chat_id=chat_id, text=text), "blocked")
+        return SimpleNamespace(message_id=1)
+
+    async def deliver_matrix(envelope: Envelope) -> None:
+        matrix_messages.append(envelope.result_text)
+        if not matrix_ready:
+            envelope.delivered = False
+            envelope.delivery_error = "temporary"
+
+    async def deliver_slack(envelope: Envelope) -> None:
+        slack_messages.append(envelope.result_text)
+
+    def setup() -> tuple[InterAgentBus, AsyncMock]:
+        ia, bus, injector, transports, bot = _broadcast_recovery_bus(tmp_path)
+        ia._retry_delays = (0,) * 5
+        bot.file_roots.return_value = []
+        bot.bot_instance.send_message = AsyncMock(side_effect=send_message)
+        bus._transports[0] = TelegramTransport(bot)
+        transports[1].deliver_broadcast.side_effect = deliver_matrix
+        transports[2].deliver_broadcast.side_effect = deliver_slack
+        return ia, injector
+
+    ia, injector = setup()
+    await ia._deliver_async_result(_result(task))
+    injector.inject_prompt.assert_awaited_once()
+    for _ in range(redelivery_cycles):
+        restarted, restarted_injector = setup()
+        assert await restarted.redeliver_undelivered("main") == 0
+        restarted_injector.inject_prompt.assert_not_awaited()
+
+    assert slack_messages == [report]
+    assert matrix_messages == [report] * (6 * (1 + redelivery_cycles))
+    record = store.load("main", task.task_id, area="undelivered")
+    assert record["failed_transports"] == ["tg", "mx"]
+    assert "failed_transports" not in record["result"]
+    assert telegram_messages == [report]
+
+    matrix_ready = True
+    store.move_to_inflight("main", task.task_id)
+    restarted, restarted_injector = setup()
+    assert await restarted.recover_inflight("main") == 0
+    restarted_injector.inject_prompt.assert_not_awaited()
+    assert slack_messages == [report]
+    assert matrix_messages == [report] * (6 * (1 + redelivery_cycles) + 1)
+    assert len(telegram_messages) == 2
+    assert "could not be delivered" in telegram_messages[1]
+    assert not store.path_for("main", task.task_id).exists()
+    assert not store.path_for("main", task.task_id, area="undelivered").exists()
+
+
+@pytest.mark.parametrize("case", ["permanent_remaining", "all_removed", "no_transports"])
+async def test_cron_broadcast_replay_with_removed_transport(tmp_path: Path, case: str) -> None:
+    from aiogram.exceptions import TelegramForbiddenError
+    from aiogram.methods import SendMessage
+
+    from ductor_bot.bus.envelope import Envelope
+    from ductor_bot.messenger.telegram.transport import TelegramTransport
+
+    task = _task(chat_id=0, topic_id=None, result_origin="cron-broadcast")
+    store = AsyncRecordStore(tmp_path)
+    store.create(task)
+    report = "Public final report"
+    telegram_fails = case == "permanent_remaining"
+
+    async def send_message(*, chat_id: int, text: str, **_kwargs: object) -> object:
+        if telegram_fails and text == report:
+            raise TelegramForbiddenError(SendMessage(chat_id=chat_id, text=text), "blocked")
+        return SimpleNamespace(message_id=1)
+
+    async def fail_matrix(envelope: Envelope) -> None:
+        envelope.delivered = False
+        envelope.delivery_error = "temporary"
+
+    sent = AsyncMock(side_effect=send_message)
+    ia, bus, injector, transports, bot = _broadcast_recovery_bus(tmp_path)
+    ia._retry_delays = (0,)
+    bot.file_roots.return_value = []
+    bot.bot_instance.send_message = sent
+    bus._transports[0] = TelegramTransport(bot)
+    transports[1].deliver_broadcast.side_effect = fail_matrix
+
+    await ia._deliver_async_result(_result(task))
+    injector.inject_prompt.assert_awaited_once()
+    transports[2].deliver_broadcast.assert_awaited_once()
+    assert [call.kwargs["text"] for call in sent.await_args_list] == [report]
+    failed = ["tg", "mx"] if telegram_fails else ["mx"]
+    assert store.load("main", task.task_id, area="undelivered")["failed_transports"] == failed
+    sent.reset_mock()
+
+    restarted, restarted_bus, restarted_injector, restarted_transports, restarted_bot = (
+        _broadcast_recovery_bus(tmp_path)
+    )
+    restarted_bot.file_roots.return_value = []
+    restarted_bot.bot_instance.send_message = sent
+    restarted_bus._transports[:] = (
+        [] if case == "no_transports" else [TelegramTransport(restarted_bot), restarted_transports[2]]
+    )
+
+    delivered = await restarted.redeliver_undelivered("main")
+
+    restarted_injector.inject_prompt.assert_not_awaited()
+    restarted_transports[2].deliver_broadcast.assert_not_awaited()
+    if telegram_fails:
+        sent.assert_awaited_once()
+        assert "could not be delivered" in sent.await_args.kwargs["text"]
+    else:
+        sent.assert_not_awaited()
+    assert delivered == int(case == "all_removed")
+    assert not store.path_for("main", task.task_id).exists()
+    parked = store.path_for("main", task.task_id, area="undelivered")
+    assert parked.exists() is (case == "no_transports")
+    if case == "no_transports":
+        assert store.load("main", task.task_id, area="undelivered")["failed_transports"] == failed
 
 
 def test_redelivery_metadata_is_top_level_and_result_unchanged(tmp_path: Path) -> None:

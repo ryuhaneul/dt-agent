@@ -183,6 +183,11 @@ class MessageBus:
                     prompt="",
                     prompt_preview="",
                     result_text="",
+                    broadcast_targets=(
+                        envelope.failed_transports.copy()
+                        if envelope.delivery == DeliveryMode.BROADCAST
+                        else envelope.broadcast_targets
+                    ),
                     metadata={"ia_task_id": task_id},
                 )
         error = envelope.delivery_error
@@ -208,6 +213,7 @@ class MessageBus:
             delivered_chunks=envelope.delivered_chunks,
             delivered_text_sha256=delivery_hash,
             chunk_scheme=envelope.chunk_scheme,
+            failed_transports=envelope.failed_transports.copy(),
             telegram_broadcast_outcomes=envelope.telegram_broadcast_outcomes,
         )
 
@@ -424,6 +430,8 @@ class MessageBus:
                 envelope.chat_id,
             )
             envelope.delivered = False
+            if envelope.delivery == DeliveryMode.BROADCAST:
+                envelope.delivery_failure = None
             if envelope.delivery == DeliveryMode.BROADCAST and envelope.broadcast_targets:
                 envelope.failed_transports = list(dict.fromkeys(envelope.broadcast_targets))
                 envelope.delivery_error = "broadcast failed: " + ", ".join(
@@ -437,24 +445,30 @@ class MessageBus:
         if envelope.delivery == DeliveryMode.BROADCAST:
             requested = set(envelope.broadcast_targets or [])
             available = {transport.transport_name for transport in self._transports}
+            missing = set() if envelope.origin == Origin.INTERAGENT else requested - available
+            all_permanent = not missing
             envelope.failed_transports.clear()
             for transport in self._transports:
                 if requested and transport.transport_name not in requested:
                     continue
                 envelope.delivered = True
                 envelope.delivery_error = ""
+                envelope.delivery_failure = None
                 try:
                     await transport.deliver_broadcast(envelope)
                 except Exception:
                     logger.exception("Broadcast delivery failed: %s", transport.transport_name)
                     envelope.delivered = False
-                if (
-                    not envelope.delivered
-                    and transport.transport_name not in envelope.failed_transports
-                ):
-                    envelope.failed_transports.append(transport.transport_name)
-            envelope.failed_transports.extend(sorted(requested - available))
+                    envelope.delivery_failure = None
+                if not envelope.delivered:
+                    all_permanent &= envelope.delivery_failure == "permanent"
+                    if transport.transport_name not in envelope.failed_transports:
+                        envelope.failed_transports.append(transport.transport_name)
+            envelope.failed_transports.extend(sorted(missing))
             envelope.delivered = not envelope.failed_transports
+            envelope.delivery_failure = (
+                "permanent" if not envelope.delivered and all_permanent else None
+            )
             envelope.delivery_error = (
                 "broadcast failed: " + ", ".join(envelope.failed_transports)
                 if envelope.failed_transports
