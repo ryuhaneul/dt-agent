@@ -445,7 +445,7 @@ class MessageBus:
         if envelope.delivery == DeliveryMode.BROADCAST:
             requested = set(envelope.broadcast_targets or [])
             available = {transport.transport_name for transport in self._transports}
-            missing = requested - available
+            missing = set() if envelope.origin == Origin.INTERAGENT else requested - available
             all_permanent = not missing
             envelope.failed_transports.clear()
             for transport in self._transports:

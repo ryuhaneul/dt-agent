@@ -3173,6 +3173,71 @@ async def test_cron_broadcast_replays_failed_transports_after_restart(
     assert not store.path_for("main", task.task_id, area="undelivered").exists()
 
 
+@pytest.mark.parametrize("case", ["permanent_remaining", "all_removed", "no_transports"])
+async def test_cron_broadcast_replay_with_removed_transport(tmp_path: Path, case: str) -> None:
+    from aiogram.exceptions import TelegramForbiddenError
+    from aiogram.methods import SendMessage
+
+    from ductor_bot.bus.envelope import Envelope
+    from ductor_bot.messenger.telegram.transport import TelegramTransport
+
+    task = _task(chat_id=0, topic_id=None, result_origin="cron-broadcast")
+    store = AsyncRecordStore(tmp_path)
+    store.create(task)
+    report = "Public final report"
+    telegram_fails = case == "permanent_remaining"
+
+    async def send_message(*, chat_id: int, text: str, **_kwargs: object) -> object:
+        if telegram_fails and text == report:
+            raise TelegramForbiddenError(SendMessage(chat_id=chat_id, text=text), "blocked")
+        return SimpleNamespace(message_id=1)
+
+    async def fail_matrix(envelope: Envelope) -> None:
+        envelope.delivered = False
+        envelope.delivery_error = "temporary"
+
+    sent = AsyncMock(side_effect=send_message)
+    ia, bus, injector, transports, bot = _broadcast_recovery_bus(tmp_path)
+    ia._retry_delays = (0,)
+    bot.file_roots.return_value = []
+    bot.bot_instance.send_message = sent
+    bus._transports[0] = TelegramTransport(bot)
+    transports[1].deliver_broadcast.side_effect = fail_matrix
+
+    await ia._deliver_async_result(_result(task))
+    injector.inject_prompt.assert_awaited_once()
+    transports[2].deliver_broadcast.assert_awaited_once()
+    assert [call.kwargs["text"] for call in sent.await_args_list] == [report]
+    failed = ["tg", "mx"] if telegram_fails else ["mx"]
+    assert store.load("main", task.task_id, area="undelivered")["failed_transports"] == failed
+    sent.reset_mock()
+
+    restarted, restarted_bus, restarted_injector, restarted_transports, restarted_bot = (
+        _broadcast_recovery_bus(tmp_path)
+    )
+    restarted_bot.file_roots.return_value = []
+    restarted_bot.bot_instance.send_message = sent
+    restarted_bus._transports[:] = (
+        [] if case == "no_transports" else [TelegramTransport(restarted_bot), restarted_transports[2]]
+    )
+
+    delivered = await restarted.redeliver_undelivered("main")
+
+    restarted_injector.inject_prompt.assert_not_awaited()
+    restarted_transports[2].deliver_broadcast.assert_not_awaited()
+    if telegram_fails:
+        sent.assert_awaited_once()
+        assert "could not be delivered" in sent.await_args.kwargs["text"]
+    else:
+        sent.assert_not_awaited()
+    assert delivered == int(case == "all_removed")
+    assert not store.path_for("main", task.task_id).exists()
+    parked = store.path_for("main", task.task_id, area="undelivered")
+    assert parked.exists() is (case == "no_transports")
+    if case == "no_transports":
+        assert store.load("main", task.task_id, area="undelivered")["failed_transports"] == failed
+
+
 def test_redelivery_metadata_is_top_level_and_result_unchanged(tmp_path: Path) -> None:
     store = AsyncRecordStore(tmp_path)
     task = _task()
