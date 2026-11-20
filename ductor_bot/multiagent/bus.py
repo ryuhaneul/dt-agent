@@ -1479,7 +1479,11 @@ class InterAgentBus:
                 type(exc).__name__,
             )
             return "pending"
-        if isinstance(outcome, DeliveryOutcome) and outcome.delivery_failure == "permanent":
+        if (
+            isinstance(outcome, DeliveryOutcome)
+            and not outcome.ok
+            and outcome.delivery_failure == "permanent"
+        ):
             terminal = self._finish_delivery(target, result.task_id, "abandoned")
             message_bus = getattr(stack.bot, "_bus", None) if stack is not None else None
             from ductor_bot.bus.bus import MessageBus
