@@ -62,6 +62,7 @@ WEB_COMMANDS: dict[str, str] = {
     "agent_commands": "bot.agent_commands",
     "showfiles": "bot.showfiles",
     "info": "bot.info",
+    "version": "bot.version",
     "help": "bot.help",
     "diagnose": "bot.diagnose",
     "restart": "bot.restart",

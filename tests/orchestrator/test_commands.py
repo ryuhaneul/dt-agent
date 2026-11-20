@@ -92,6 +92,15 @@ async def test_model_same_provider_does_not_show_reset(orch: Orchestrator) -> No
 # -- cmd_status --
 
 
+async def test_status_shows_version_directly_below_heading(orch: Orchestrator) -> None:
+    with (
+        patch("ductor_bot.orchestrator.commands.check_all_auth", return_value={}),
+        patch("ductor_bot.orchestrator.commands.get_current_version", return_value="9.8.7"),
+    ):
+        result = await cmd_status(orch, SessionKey(chat_id=1), "/status")
+    assert result.text.splitlines()[1] == "Version: `9.8.7`"
+
+
 async def test_status_no_session(orch: Orchestrator) -> None:
     with patch("ductor_bot.orchestrator.commands.check_all_auth", return_value={}):
         result = await cmd_status(orch, SessionKey(chat_id=1), "/status")

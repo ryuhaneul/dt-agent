@@ -29,6 +29,7 @@ DIRECT_COMMANDS: frozenset[str] = frozenset(
 ORCHESTRATOR_COMMANDS: frozenset[str] = frozenset(
     {
         "status",
+        "version",
         "model",
         "effort",
         "autocompact",

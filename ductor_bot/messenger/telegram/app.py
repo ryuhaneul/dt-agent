@@ -194,7 +194,7 @@ def _build_help_text(*, main_only: bool = False) -> str:
         f"{t('help.cat_multiagent')}\n{_help_line('agent_commands')}",
         f"{t('help.cat_browse')}\n{_help_line('where')}\n{_help_line('leave')}\n"
         f"{_help_line('showfiles')}\n{_help_line('info')}\n{_help_line('help')}",
-        f"{t('help.cat_maintenance')}\n{_help_line('diagnose')}\n{_help_line('restart')}"
+        f"{t('help.cat_maintenance')}\n{_help_line('version')}\n{_help_line('diagnose')}\n{_help_line('restart')}"
         + (f"\n{_help_line('masterkey')}" if main_only else ""),
         SEP,
         t("help.footer"),
@@ -600,6 +600,7 @@ class TelegramBot:
         r.message(Command("agent_commands", ignore_case=True))(self._on_agent_commands)
         base_cmds = [
             "status",
+            "version",
             "memory",
             "model",
             "effort",

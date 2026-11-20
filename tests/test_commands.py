@@ -18,6 +18,10 @@ def test_expected_commands_present() -> None:
     assert expected.issubset(names)
 
 
+def test_version_is_in_bot_menu() -> None:
+    assert "version" in dict(BOT_COMMANDS)
+
+
 def test_no_duplicate_commands() -> None:
     names = [cmd for cmd, _ in BOT_COMMANDS]
     assert len(names) == len(set(names))

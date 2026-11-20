@@ -186,7 +186,7 @@ Sub-agent home: `<main_home>/agents/<name>/` with its own config/workspace/sessi
 
 Chat commands (Telegram and Matrix):
 
-- `/new`, `/reset`, `/stop`, `/stop_all`, `/interrupt`, `/model`, `/effort`, `/status`, `/memory`, `/session`, `/sessions`, `/tasks`, `/cron`, `/showfiles`, `/info`, `/help`, `/diagnose`
+- `/new`, `/reset`, `/stop`, `/stop_all`, `/interrupt`, `/model`, `/effort`, `/status`, `/version`, `/memory`, `/session`, `/sessions`, `/tasks`, `/cron`, `/showfiles`, `/info`, `/help`, `/diagnose`
 - `/start` and `/restart` are also supported. Telegram-only utility commands: `/where`, `/leave` (work but are not in command popup)
 - Matrix uses `!` prefix by default (e.g. `!help`, `!status`); `/` also works but may conflict with Element's built-in commands
 

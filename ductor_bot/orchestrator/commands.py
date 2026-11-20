@@ -64,6 +64,11 @@ async def cmd_status(orch: Orchestrator, key: SessionKey, _text: str) -> Orchest
     return OrchestratorResult(text=await _build_status(orch, key))
 
 
+async def cmd_version(_orch: Orchestrator, _key: SessionKey, _text: str) -> OrchestratorResult:
+    """Handle /version."""
+    return OrchestratorResult(text=t("info.version", version=get_current_version()))
+
+
 async def cmd_model(orch: Orchestrator, key: SessionKey, text: str) -> OrchestratorResult:
     """Handle /model [name]."""
     logger.info("Model requested")
@@ -326,7 +331,9 @@ async def _build_status(orch: Orchestrator, key: SessionKey) -> str:
 
     agent_block = _build_agent_health_block(orch)
 
-    blocks = [t("status.header"), SEP, session_block]
+    version_line = t("info.version", version=get_current_version())
+    header = f"{t('status.header')}\n{version_line}"
+    blocks = [header, SEP, session_block]
     if bg_block:
         blocks += [SEP, bg_block]
     blocks += [SEP, auth_block, SEP, streaming_block]

@@ -78,7 +78,7 @@ See [recording](chat_log.md) and [web chat](webchat.md).
 
 Registered command handlers:
 
-- `/new`, `/reset`, `/status`, `/model`, `/effort`, `/memory`, `/cron`, `/diagnose`, `/sessions`, `/tasks`
+- `/new`, `/reset`, `/status`, `/version`, `/model`, `/effort`, `/memory`, `/cron`, `/diagnose`, `/sessions`, `/tasks`
 
 `/new` resets only the currently configured provider bucket for the active `SessionKey`.
 Other provider buckets for the same chat/topic remain intact.

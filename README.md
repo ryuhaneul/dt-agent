@@ -269,6 +269,7 @@ These are chat messages, **not shell commands**. Matrix accepts !command as well
 | `/usage` | All Telegram agent bots: read-only usage. Claude shows the last values received during normal runs; Codex is queried on command or refresh. API slots show **API key** instead of subscription usage. |
 | `/effort` | Select provider reasoning effort. |
 | `/status` | Current session/model/runtime status. |
+| `/version` | Installed release version. |
 | `/masterkey` | Main Telegram bot, allowed-user DM only: status, setup, unlock, lock, change and TTL; never put a key in the command. Also available in webchat modals. |
 | `/secret` | Main Telegram bot only, in an allowed user’s private chat: set, list, delete or cancel tool secrets; send values as replies to the input request. |
 | `/memory` | Read main memory. |

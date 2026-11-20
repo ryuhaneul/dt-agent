@@ -34,6 +34,7 @@ def get_bot_commands() -> list[tuple[str, str]]:
         # Browse & info
         ("showfiles", t_cmd("bot.showfiles")),
         ("info", t_cmd("bot.info")),
+        ("version", t_cmd("bot.version")),
         ("help", t_cmd("bot.help")),
         # Maintenance (rare)
         ("diagnose", t_cmd("bot.diagnose")),

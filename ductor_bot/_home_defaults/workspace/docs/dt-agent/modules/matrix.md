@@ -74,7 +74,7 @@ Commands use `!` or `/` prefixes. Shared orchestrator commands are available,
 while Telegram-only group utilities such as `/where` and `/leave` are absent:
 
 - Transport-level: `!stop`, `!stop_all`, `!interrupt`, `!restart`, `!new`, `!help`, `!start`, `!info`, `!session`, `!showfiles`, `!agent_commands`
-- Orchestrator-routed: `!status`, `!model`, `!effort`, `!memory`, `!cron`, `!diagnose`, `!sessions`, `!tasks`, `!reset`
+- Orchestrator-routed: `!status`, `!version`, `!model`, `!effort`, `!memory`, `!cron`, `!diagnose`, `!sessions`, `!tasks`, `!reset`
 - Main-agent only: `!agents`, `!agent_start`, `!agent_stop`, `!agent_restart`
 
 ## Setup

@@ -13,7 +13,7 @@ import { getTopic, getTopics, selectTopic, refreshTopics, noteEntry, markSeen, f
 
 const histories = new Map(), turns = new Map(), busy = new Map(), drafts = new Map(), topicVersions = new Map(), busyVersions = new Map();
 let active = false, epoch = 0, stopEvents = null, telegram = { state: 'unknown' };
-let botUp = false, webSessions = null, pending = 0, outbox = [], sending = false;
+let botUp = false, webSessions = null, releaseVersion = '', pending = 0, outbox = [], sending = false;
 let view = 'chat', selection = 0, commandMenu = null, secretDialog = null, autocompactDialog = null, cronDialog = null;
 let streamFrame = null, historyRender = null, composerFiles = null, attachmentView = null;
 const streamUpdates = new Set();
@@ -762,6 +762,9 @@ function badge(selector, key, className, values = {}) {
   element.querySelector('span').textContent = t(key, values);
   element.querySelector('span').removeAttribute('data-i18n');
 }
+function renderVersion() {
+  document.querySelector('#appSubtitle').textContent = releaseVersion ? `v${releaseVersion}` : t('app.title');
+}
 function renderStatus() {
   const key = telegram.state === 'up' ? 'status.telegram_up' : telegram.state === 'down'
     ? telegram.down_since ? 'status.telegram_down_for' : 'status.telegram_down' : 'status.telegram_unknown';
@@ -799,6 +802,8 @@ async function refreshState() {
     const state = await api('/state');
     if (!active || epoch !== generation) return;
     telegram = state.telegram; pending = state.outbox.pending;
+    releaseVersion = typeof state.version === 'string' ? state.version : '';
+    renderVersion();
     botUp = state.bot.up; webSessions = state.web_sessions; renderStatus();
   } catch (error) { if (active && generation === epoch && error.code !== 'auth_required') { botUp = false; renderStatus(); } }
 }
@@ -1058,7 +1063,7 @@ export function initChat() {
     const toast = document.querySelector('#toasts').lastElementChild;
     toast?.classList.replace('toast-error', 'toast-ok'); toast?.setAttribute('role', 'status');
   });
-  document.addEventListener('language-changed', () => { renderThread(); renderStatus(); resizeComposer(); });
+  document.addEventListener('language-changed', () => { renderThread(); renderStatus(); renderVersion(); resizeComposer(); });
   const thread = document.querySelector('#thread'), input = document.querySelector('#msgIn');
   let pagination = null, topRequest = null;
   function cancelTop() { topRequest = null; }
@@ -1193,7 +1198,8 @@ export function initChat() {
     clearTimeout(midnightTimer); midnightTimer = null;
     stopEvents?.(); stopEvents = null; renderedTopic = null; pagination = null;
     histories.clear(); turns.clear(); busy.clear(); drafts.clear(); topicVersions.clear(); busyVersions.clear(); input.value = '';
-    telegram = { state: 'unknown' }; botUp = false; webSessions = null;
+    telegram = { state: 'unknown' }; botUp = false; webSessions = null; releaseVersion = '';
+    renderVersion();
     pending = 0; outbox = []; renderStatus(); renderHeader(); resizeComposer();
     if (!active) { thread.replaceChildren(); updateThreadNavigation(); return; }
     stopEvents = connectEvents(event => { void handleEvent(event).catch(errorNotice); }, up => {

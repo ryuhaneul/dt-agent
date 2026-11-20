@@ -269,6 +269,7 @@ docker compose exec ductor-bot ductor agents list
 | `/usage` | Telegram main·하위 봇 모두: 읽기 전용 사용량. Claude는 평소 실행에서 받은 마지막 값, Codex는 명령·새로고침 때 조회. API 슬롯은 구독 사용량 대신 **API 키**로 표시합니다. |
 | `/effort` | provider 추론 수준 선택. |
 | `/status` | 현재 세션·모델·실행 상태. |
+| `/version` | 설치된 릴리스 버전. |
 | `/secret` | main Telegram 봇 전용, 허용 사용자의 1:1 채팅: 도구 시크릿 입력·키 목록·삭제·취소. 값은 입력 요청에 답장으로 보냅니다. |
 | `/memory` | 주요 메모리 표시. |
 | `/session [prompt]` | 이름 있는 백그라운드 세션 제출. @provider·model·session 선택 지시 가능. 인자 없으면 도움말. |
