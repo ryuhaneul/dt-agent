@@ -472,7 +472,12 @@ context.matchMedia=()=>({matches:true});
 realRouter.namespace.setAuthenticated(true);context.location.hash='#chat';realRouter.namespace.renderRoute();assert.ok(!ids.app.classList.contains('hidden'));
 assert.equal(document.activeElement,document.querySelector('#msgIn'));
 context.matchMedia=()=>({matches:false});context.location.hash='#manage';realRouter.namespace.renderRoute();
-const beforeTouch=document.activeElement;context.location.hash='#chat';realRouter.namespace.renderRoute();assert.equal(document.activeElement,beforeTouch);
+context.location.hash='#chat';realRouter.namespace.renderRoute();
+assert.equal(document.activeElement,document.querySelector('[data-view="chat"] h2'),'touch route focuses the chat heading');
+context.matchMedia=()=>({matches:true});context.location.hash='#manage';realRouter.namespace.renderRoute();
+ids.msgIn.disabled=true;context.location.hash='#chat';realRouter.namespace.renderRoute();
+assert.equal(document.activeElement,document.querySelector('[data-view="chat"] h2'),'disabled composer falls back to the chat heading');
+ids.msgIn.disabled=false;
 const opener=new Element();document.activeElement=opener;context.location.hash='#delete';realRouter.namespace.renderRoute();assert.equal(dialogs[0].open,true);
 context.location.hash='#manage';realRouter.namespace.renderRoute();assert.equal(dialogs[0].open,false);assert.equal(document.activeElement,opener);
 console.log('Client contracts passed: authentication, setup, OTP, CSRF, i18n, theme changes and route guards');
@@ -599,11 +604,11 @@ try {
   await page.locator('#app').waitFor({state:'visible'});
   await page.locator('[data-entry-seq="205"]').waitFor();
   await page.screenshot({path:path.join(artifactDir,`shell-${width}.png`),fullPage:true});
-  // First entry and reload must never focus or outline the topic title.
   for (const phase of ['entry','reload']) {
     if (phase === 'reload') {await page.reload();await page.locator('[data-entry-seq="205"]').waitFor();}
-    assert.equal(await page.locator('#chatTitle').evaluate(el=>el===document.activeElement),false);
-    assert.equal(await page.locator('#chatTitle').evaluate(el=>getComputedStyle(el).outlineStyle),'none');
+    const headingFocused = phase === 'entry' && width <= 760;
+    assert.equal(await page.locator('#chatTitle').evaluate(el=>el===document.activeElement),headingFocused);
+    if (!headingFocused) assert.equal(await page.locator('#chatTitle').evaluate(el=>getComputedStyle(el).outlineStyle),'none');
     assert.equal(await page.locator('#msgIn').evaluate(el=>el===document.activeElement),width>760);
     await page.screenshot({path:path.join(artifactDir,`focus-${phase}-${width}.png`),fullPage:true});
   }
@@ -1017,12 +1022,14 @@ composer.focus();topics.selectTopic('1.2',null,false);await flush();
 assert.equal(document.activeElement,composer,'restoration focuses the desktop composer');
 coarse=true;document.activeElement=null;topics.selectTopic('1.2',null,false);await flush();
 assert.equal(document.activeElement,null,'touch restoration does not request a virtual keyboard');
+topics.selectTopic('1.2');await flush();
+assert.equal(document.activeElement,chatHeading,'opening a chat on touch focuses the heading');
 coarse=false;
 topicButton.dataset.seq='2';composer.focus();list.emit('click',{target:topicButton,isTrusted:true});await flush();
 assert.equal(document.activeElement,chatHeading,'search results retain heading announcement');
 delete topicButton.dataset.seq;topicButton.dataset.tid='unknown';composer.focus();
 list.emit('click',{target:topicButton,isTrusted:true});await flush();
-assert.notEqual(document.activeElement,chatHeading,'read-only selection does not force title focus');
+assert.equal(document.activeElement,chatHeading,'read-only selection focuses the heading after history loads');
 topicButton.dataset.tid='1.2';composer.focus();list.emit('click',{target:topicButton,isTrusted:false});await flush();
 assert.equal(document.activeElement,composer,'desktop selection focuses the composer after loading');
 topics.selectTopic('1.2');await flush();assert.equal(topicRows[0].seen,205);
@@ -2781,7 +2788,8 @@ def test_autocompact_dialog_has_labeled_scopes_and_bounded_token_inputs(markup):
     not os.environ.get("DTW_PLAYWRIGHT_MODULE"),
     reason="Set DTW_PLAYWRIGHT_MODULE for message date browser checks",
 )
-def test_message_dates_browser(tmp_path):
+@pytest.mark.parametrize("scenario", ["dates", "window", "focus"])
+def test_message_dates_browser(tmp_path, scenario):
     config = tmp_path / "dates.json"
     config.write_text(
         json.dumps(
@@ -2795,7 +2803,7 @@ def test_message_dates_browser(tmp_path):
         )
     )
     result = subprocess.run(
-        ["node", "tests/webchat/message_dates_browser.mjs", str(config)],
+        ["node", "tests/webchat/message_dates_browser.mjs", str(config), scenario],
         capture_output=True,
         text=True,
         check=False,

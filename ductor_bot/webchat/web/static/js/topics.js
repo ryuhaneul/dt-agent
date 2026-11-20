@@ -72,7 +72,7 @@ export function selectTopic(tid, seq = null, navigate = true, focusComposer = fa
   selected = tid;
   renderTopics();
   if (navigate) go('chat');
-  document.dispatchEvent(new CustomEvent('topic-selected', { detail: { topic: getTopic(), seq, focusComposer } }));
+  document.dispatchEvent(new CustomEvent('topic-selected', { detail: { topic: getTopic(), seq, focusComposer, navigate } }));
 }
 export function renderTopics() {
   let html = '';

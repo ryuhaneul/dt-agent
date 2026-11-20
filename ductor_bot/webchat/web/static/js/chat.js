@@ -458,6 +458,7 @@ function patchThread(thread, groups, changes) {
   for (const node of thread.children) {
     if (node.dataset.dateGroup !== undefined) oldGroups.set(node.dataset.dateGroup, node);
   }
+  const groupKeys = new Set(groups.map(group => group.key));
   const wanted = new Set(groups.flatMap(group => group.rows.map(row => row.key)));
   for (const [key, node] of existing) {
     if (!wanted.has(key)) { rememberActivity(node); node.remove(); }
@@ -466,6 +467,16 @@ function patchThread(thread, groups, changes) {
   let nextGroup = null;
   for (const group of [...groups].reverse()) {
     let parent = oldGroups.get(group.key);
+    if (!parent) {
+      for (const row of group.rows) {
+        const candidate = existing.get(row.key)?.parentNode;
+        const key = candidate?.dataset.dateGroup;
+        if (key?.startsWith(`${group.dayKey}:`) && !groupKeys.has(key) && oldGroups.get(key) === candidate) {
+          parent = candidate;
+          break;
+        }
+      }
+    }
     if (!parent) {
       template.innerHTML = groupStart(group) + '</div>';
       parent = template.content.firstElementChild;
@@ -495,7 +506,8 @@ function patchThread(thread, groups, changes) {
       if (node.parentNode !== parent || node.nextElementSibling !== next) parent.insertBefore(node, next);
       next = node;
     }
-    oldGroups.delete(group.key);
+    oldGroups.delete(parent.dataset.dateGroup);
+    parent.dataset.dateGroup = group.key;
     nextGroup = parent;
   }
   for (const node of oldGroups.values()) node.remove();
@@ -1147,9 +1159,9 @@ export function initChat() {
       if (active && generation === epoch && selected === selection && getTopic()?.tid === topic.tid) {
         renderThread({ bottom: seq === null, seq });
         if (location.hash === '#chat' && !event.detail.focusComposer) {
-          if (seq === null && !topic.read_only && topic.tid !== 'unknown') {
-            if (matchMedia('(pointer: fine)').matches) input.focus();
-          } else if (seq !== null) document.querySelector('[data-view="chat"] h2').focus();
+          if (seq === null && !topic.read_only && topic.tid !== 'unknown' && !input.disabled &&
+              matchMedia('(pointer: fine)').matches) input.focus();
+          else if (seq !== null || event.detail.navigate) document.querySelector('[data-view="chat"] h2').focus();
         }
       }
     } catch (error) { if (active && generation === epoch) errorNotice(error); }

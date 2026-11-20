@@ -80,7 +80,10 @@ export function renderRoute() {
       : document.querySelector(`[data-view="${view}"] h2`);
     if (route === 'chat') {
       // Touch devices need a user gesture before opening the composer keyboard.
-      if (matchMedia('(pointer: fine)').matches) document.querySelector('#msgIn')?.focus();
+      const input = document.querySelector('#msgIn');
+      if (matchMedia('(pointer: fine)').matches && input && !input.disabled &&
+          !document.querySelector('.composer')?.hidden) input.focus();
+      else if (!document.body.hasAttribute('data-auth-pending')) heading?.focus();
     } else heading?.focus();
   }
   current = route;
