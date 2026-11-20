@@ -14,7 +14,7 @@ export function initCliLogin() {
   $('cliRawOutput').append(rawOutput);
   let view = 'list', status = null, target = null, job = null, seq = 0;
   let timer = null, generation = 0, busy = false, loading = false, polling = false, confirmMode = 'start';
-  let noticeKey = null, copied = false, cancelRequested = false, refreshingProvider = null;
+  let noticeKey = null, cancelNoticeKey = null, copied = false, cancelRequested = false, refreshingProvider = null;
   let accountsKey = null, linksKey = null, slotError = null, slotMenu = null, confirmReturn = null;
   let codeFocusPending = false, returnToCode = false;
   let loginTab = null, previousLoginHref = null;
@@ -335,10 +335,11 @@ export function initCliLogin() {
       if (!refreshChecksLeft) refreshingProvider = null;
       if (view === 'result') return;
       if (result.running && result.job_id) {
+        cancelNoticeKey = null;
         seq = 0; rawOutput.data = ''; job = { job_id: result.job_id, state: 'running' };
         target = { provider: result.provider }; view = 'progress'; await pollJob(); return;
       }
-      view = result.running ? 'busy' : 'list'; showNotice(null);
+      view = result.running ? 'busy' : 'list'; showNotice(cancelNoticeKey);
     } catch (error) {
       if (version !== generation || !dialog.open) return;
       showNotice(error.code === 'bot_unreachable' ? 'error.bot_unreachable' : 'error.generic');
@@ -366,7 +367,11 @@ export function initCliLogin() {
         const cancelledHere = result.state === 'cancelled' && cancelRequested;
         closeLoginTab();
         stopPolling(); view = cancelledHere ? 'list' : 'result';
-        if (cancelledHere) { job = null; cancelRequested = false; }
+        if (cancelledHere) {
+          job = null; cancelRequested = false;
+          cancelNoticeKey = result.provider === 'codex' ? 'cli_login.cancelled_codex' : null;
+          showNotice(cancelNoticeKey);
+        }
         refreshingProvider = result.provider; refreshChecksLeft = 2; statusChecksLeft = 60;
         render();
         if (cancelledHere) {
@@ -462,6 +467,7 @@ export function initCliLogin() {
     confirmMode = 'cancel'; renderConfirmation(); confirmation.showModal(); $('cliConfirmNo').focus();
   }
   async function startJob() {
+    if (cancelNoticeKey) { cancelNoticeKey = null; showNotice(null); }
     const version = generation; busy = true; confirmReturn = null; renderConfirmation();
     try {
       const result = await api('/cli-login/jobs', { method: 'POST', body: target });
@@ -543,7 +549,7 @@ export function initCliLogin() {
   }
   openModal = () => {
     if (dialog.open) return;
-    ++generation; status = null; target = null; job = null; view = 'list'; busy = false; loading = true; noticeKey = null;
+    ++generation; status = null; target = null; job = null; view = 'list'; busy = false; loading = true; noticeKey = null; cancelNoticeKey = null;
     slotError = null; copied = false; cancelRequested = false; seq = 0; statusChecksLeft = 60; refreshChecksLeft = 0; refreshingProvider = null; $('cliRaw').open = false;
     dialog.showModal(); render(); $('cliClose').focus(); loadStatus();
   };

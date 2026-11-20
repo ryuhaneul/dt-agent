@@ -49,7 +49,7 @@ async function run(browser, origin, width, theme) {
   });
   context.setDefaultTimeout(3500);
   const failures = [];
-  let current, cancelled = false;
+  let current, cancelled = false, resumeAfterCancel = false;
   try {
     // Simulate browser popup restrictions while retaining real user gestures for normal and fallback links.
     await context.addInitScript(() => {
@@ -94,8 +94,8 @@ async function run(browser, origin, width, theme) {
       });
       if (endpoint === '/api/cli-login/status') return reply({
         providers: { claude: 'authenticated', codex: 'installed', grok: 'installed' },
-        claude_slots: slots, running: cancelled,
-        ...(cancelled ? { provider: 'claude', job_id: 'fixture-resumed' } : {}),
+        claude_slots: slots, running: cancelled && resumeAfterCancel,
+        ...(cancelled && resumeAfterCancel ? { provider: 'claude', job_id: 'fixture-resumed' } : {}),
       });
       if (endpoint === '/api/cli-login/jobs') {
         current = request.postDataJSON();
@@ -128,7 +128,7 @@ async function run(browser, origin, width, theme) {
     }
     async function login(selection, mode = 'normal', save = false) {
       try {
-        current = null;
+        current = null; cancelled = false;
         await page.goto(origin);
         await page.evaluate(mode => { window.testPopupMode = mode; }, mode);
         await act(page.locator('#accountButton'));
@@ -200,6 +200,27 @@ async function run(browser, origin, width, theme) {
     for (const selection of cases) await login(selection, 'normal', selection === cases[0]);
     await login(cases[0], 'denied', true);
     await login(cases[0], 'blocked');
+
+    for (const selection of [{ provider: 'codex' }, cases[0]]) {
+      try {
+        await login(selection);
+        await act(page.locator('#cliCancel'));
+        const refresh = page.waitForResponse(response =>
+          new URL(response.url()).pathname === '/api/cli-login/status');
+        await act(page.locator('#cliConfirmYes'));
+        assert.equal((await refresh).status(), 200);
+        await page.locator('#cliAccounts .cli-provider-head button[data-i18n="cli_login.login"]:enabled').first().waitFor();
+        assert.equal(await page.locator('#cliResult').isVisible(), false);
+        const notice = page.locator('#cliNotice');
+        const codexNotice = selection.provider === 'codex';
+        assert.equal(await notice.isVisible(), codexNotice, `${selection.provider} cancellation notice after refresh`);
+        assert.equal(await notice.textContent(), codexNotice ? config.strings['cli_login.cancelled_codex'] : '');
+        if (codexNotice && width === 375 && theme === 'light') await shot('login-codex-cancel-notice');
+      } catch (error) {
+        failures.push(`${selection.provider} cancellation notice: ${error.message}`);
+      }
+    }
+    resumeAfterCancel = true;
 
     try {
       await login(cases[0]);
