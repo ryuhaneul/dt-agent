@@ -17,13 +17,12 @@ function formatTime(seconds, withDay = false) {
 }
 
 function slotStatus(slot) {
-  if (slot.kind === 'api_key_detached' || slot.kind === 'api_key') {
-    return { kind: 'key', label: t(`slots.${slot.kind}`), badge: 'off' };
-  }
-  if (slot.state === 'expired') return { kind: 'expired', label: t('slots.expired'), badge: 'down' };
+  const keyLabel = ['api_key', 'api_key_detached'].includes(slot.kind) ? t(`slots.${slot.kind}`) : '';
   if (slot.state === 'cooldown') {
-    return { kind: 'cooldown', label: t('slots.resume_at', { time: formatTime(slot.cooldown_until) }), badge: 'warn' };
+    return { kind: 'cooldown', label: t('slots.resume_at', { time: formatTime(slot.cooldown_until) }), badge: 'warn', keyLabel };
   }
+  if (keyLabel) return { kind: 'key', label: keyLabel, badge: 'off' };
+  if (slot.state === 'expired') return { kind: 'expired', label: t('slots.expired'), badge: 'down' };
   if (slot.state === 'ok' && WINDOWS.some(name => slot.usage?.windows?.[name])) {
     return { kind: 'ok', label: t('slots.ok'), badge: 'ok' };
   }
@@ -64,10 +63,11 @@ function slotRow(slot, status, next) {
     </div>`;
   }).join('');
   const captured = usage ? t('slots.captured_at', { time: formatTime(usage.captured_at, true) }) : '';
+  const label = status.keyLabel ? `${status.keyLabel} · ${status.label}` : status.label;
   return `<div class="slot-row" ${next ? 'data-next' : ''}>
     <div class="slot-row-top"><span class="slot-name">${esc(slot.name)}</span>
       ${next ? `<span class="slot-next-tag">${esc(t('slots.next'))}</span>` : ''}
-      <span class="badge badge-${status.badge}">${esc(status.label)}</span>
+      <span class="badge badge-${status.badge}">${esc(label)}</span>
     </div>${rows ? `<div class="slot-windows">${rows}</div>` : ''}
     ${captured ? `<div class="slot-time slot-captured">${esc(captured)}</div>` : ''}
   </div>`;

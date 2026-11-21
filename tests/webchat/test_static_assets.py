@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from ductor_bot.i18n import LANGUAGES
 from ductor_bot.i18n.loader import _load_toml, load_web_strings
 from ductor_bot.webchat.web.app import CSP, STARFLOW_CSP, STATE
 from tests.webchat import test_web_app as fake_contract
@@ -2960,7 +2961,7 @@ def test_claude_slots_browser(tmp_path):
                 "csp": CSP,
                 "starflowCsp": STARFLOW_CSP,
                 "shots": os.environ.get("DTW_SLOTS_SHOTS", str(tmp_path / "shots")),
-                "strings": load_web_strings("ko"),
+                "locales": {locale: load_web_strings(locale) for locale in LANGUAGES},
             }
         )
     )
