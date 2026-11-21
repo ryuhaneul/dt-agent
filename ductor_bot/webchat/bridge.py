@@ -29,7 +29,7 @@ from ductor_bot.cli.claude_accounts import (
 )
 from ductor_bot.cli.claude_usage import UsageStore, usage_file_path
 from ductor_bot.cli.slot_rotation import fallback_slot, hot_slots
-from ductor_bot.config import resolve_user_timezone
+from ductor_bot.config import AgentConfig, resolve_user_timezone
 from ductor_bot.i18n import LANGUAGES
 from ductor_bot.i18n.loader import TranslationStore
 from ductor_bot.infra.atomic_io import atomic_text_save
@@ -85,7 +85,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from ductor_bot.chat_log.runtime import ChatLogRuntime
-    from ductor_bot.config import AgentConfig
     from ductor_bot.messenger.telegram.app import TelegramBot
     from ductor_bot.orchestrator.core import Orchestrator
     from ductor_bot.session.key import SessionKey
@@ -96,9 +95,8 @@ _PREFIX = "/webchat/v1"
 CLI_LOGIN = web.AppKey("cli_login_manager", CliLoginManager)
 
 
-def _claude_slot_rows(home: Path, config: AgentConfig) -> list[dict[str, object]]:
-    if not config.claude_accounts:
-        config = config.model_copy(update={"claude_accounts": [DEFAULT_SLOT]})
+def _claude_slot_rows(home: Path, accounts: list[str]) -> list[dict[str, object]]:
+    config = AgentConfig(claude_accounts=accounts or [DEFAULT_SLOT])
     overview = claude_slots.overview(home, config)
     usage_by_slot = UsageStore(usage_file_path(home / "workspace")).load()
     slots: list[dict[str, object]] = []
@@ -137,10 +135,10 @@ def _claude_slot_rows(home: Path, config: AgentConfig) -> list[dict[str, object]
     return slots
 
 
-async def _claude_state(home: Path, config: AgentConfig) -> dict[str, object] | None:
+async def _claude_state(home: Path) -> dict[str, object] | None:
     try:
-        slots = await asyncio.to_thread(_claude_slot_rows, home, config)
-        accounts = config.claude_accounts
+        accounts = await asyncio.to_thread(claude_slots.read_accounts, home)
+        slots = await asyncio.to_thread(_claude_slot_rows, home, accounts)
         next_slot = DEFAULT_SLOT
         if accounts:
             registry = SlotRegistry(state_file_path(home))
@@ -230,7 +228,7 @@ def create_bridge_app(  # noqa: C901
             {
                 "telegram": runtime.link.state(),
                 "outbox": {"pending": len(await runtime.outbox.pending(skip_unreadable=True))},
-                "claude": await _claude_state(bot._orch.paths.ductor_home, bot.config),
+                "claude": await _claude_state(bot._orch.paths.ductor_home),
             }
         )
 

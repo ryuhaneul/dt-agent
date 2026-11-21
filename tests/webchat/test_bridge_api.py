@@ -119,6 +119,7 @@ async def test_every_path_requires_bridge_token(bridge, path, token):
 
 async def test_health_meta_state_and_auth_state(bridge):
     client, _, _, paths = bridge
+    write_state_accounts(paths, [])
     expected = {
         "health": {"ok": True, "agent": "main"},
         "meta": {
@@ -158,11 +159,30 @@ async def test_health_meta_state_and_auth_state(bridge):
     assert (paths.webchat_dir / "auth_state.json").stat().st_mode & 0o777 == 0o600
 
 
-async def test_state_reports_slots_in_priority_order_with_stored_usage(bridge):
+def write_state_accounts(paths, accounts):
+    paths.config_path.parent.mkdir(exist_ok=True)
+    paths.config_path.write_text(json.dumps({"claude_accounts": accounts}))
+
+
+async def test_state_uses_current_disk_priority_for_rows_and_next(bridge):
     client, bot, _, paths = bridge
+    bot.config.claude_accounts = ["claude", "claude-alt"]
+    accounts = ["claude-alt", "claude"]
+    write_state_accounts(paths, accounts)
+
+    response = await client.get(f"{_PREFIX}/state", headers=headers())
+    assert response.status == 200
+    claude = (await response.json())["claude"]
+    assert [slot["name"] for slot in claude["slots"]] == accounts
+    assert claude["next"] == "claude-alt"
+
+
+async def test_state_reports_slots_in_priority_order_with_stored_usage(bridge):
+    client, _, _, paths = bridge
     home = paths.ductor_home
-    bot.config.claude_accounts = ["claude", "claude-alt", "claude-api"]
-    for name in bot.config.claude_accounts:
+    accounts = ["claude", "claude-alt", "claude-api"]
+    write_state_accounts(paths, accounts)
+    for name in accounts:
         directory = host_slot_config_dir(home, name)
         directory.mkdir(parents=True)
         if name == "claude-api":
@@ -224,8 +244,9 @@ async def test_state_reports_slots_in_priority_order_with_stored_usage(bridge):
 
 
 async def test_state_omits_missing_usage_windows_and_detached_key_usage(bridge):
-    client, bot, _, paths = bridge
-    bot.config.claude_accounts = ["claude", "claude-detached"]
+    client, _, _, paths = bridge
+    accounts = ["claude", "claude-detached"]
+    write_state_accounts(paths, accounts)
     directory = host_slot_config_dir(paths.ductor_home, "claude-detached")
     directory.mkdir(parents=True)
     (directory / DETACHED_API_KEY_HELPER).touch()
@@ -239,7 +260,7 @@ async def test_state_omits_missing_usage_windows_and_detached_key_usage(bridge):
             "resetsAt": 300,
         },
     }
-    for name in bot.config.claude_accounts:
+    for name in accounts:
         store.record(name, event, captured_at=100)
 
     response = await client.get(f"{_PREFIX}/state", headers=headers())
@@ -255,8 +276,9 @@ async def test_state_omits_missing_usage_windows_and_detached_key_usage(bridge):
 
 @pytest.mark.parametrize("alt_cooling", [False, True])
 async def test_state_next_skips_expired_slot_and_uses_rotation_fallback(bridge, alt_cooling):
-    client, bot, _, paths = bridge
-    bot.config.claude_accounts = ["claude", "claude-alt"]
+    client, _, _, paths = bridge
+    accounts = ["claude", "claude-alt"]
+    write_state_accounts(paths, accounts)
     registry = SlotRegistry(state_file_path(paths.ductor_home))
     cooldowns = {"claude": time.time() + 1200}
     if alt_cooling:
@@ -273,12 +295,13 @@ async def test_state_next_skips_expired_slot_and_uses_rotation_fallback(bridge, 
     claude = (await response.json())["claude"]
     assert claude["slots"][0]["state"] == "expired"
     assert claude["next"] == (
-        await fallback_slot(registry, bot.config.claude_accounts) if alt_cooling else "claude-alt"
+        await fallback_slot(registry, accounts) if alt_cooling else "claude-alt"
     )
 
 
 async def test_state_preserves_other_fields_when_claude_overview_fails(bridge, monkeypatch, caplog):
-    client, *_ = bridge
+    client, _, _, paths = bridge
+    write_state_accounts(paths, [])
 
     def fail_overview(home, config):
         raise ValueError("private detail")

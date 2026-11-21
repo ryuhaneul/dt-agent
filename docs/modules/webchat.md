@@ -131,6 +131,19 @@ and is discarded 10 minutes after the job ends. Input echoed by the CLI remains 
 in the owner-only raw output; one-time codes are not masked. This guarantee does not cover
 log files written by the native provider CLI itself; this feature does not manage those files.
 
+## Claude slots
+
+The header shows Claude slots in their configured priority order and highlights
+the slot that rotation will try first. On narrower screens, the header shows
+the next slot and a button to see the remaining slots. Open a chip to see the
+stored five-hour and seven-day usage windows, reset times and slot status.
+API-key slots have no OAuth usage data.
+
+The popover shows when the browser last fetched state and when each usage
+snapshot was captured. State refreshes on login, reconnect, when the page
+becomes visible again, and when a web turn ends. Use the refresh button to
+read the latest stored usage after activity from another session.
+
 ## Topics, turns and queue
 
 Web turns share the target Telegram `tg:` session key and `LockPool` lock.
@@ -413,6 +426,7 @@ The browser app relays bridge JSON statuses and error codes. Bridge routes use
 
 | Operation | Status and response |
 |---|---|
+| Read state (`GET /state`) | 200 with `telegram`, `outbox`, and `claude` (`{next, slots}` or `null` if unavailable). The browser relay adds `bot`, `web_sessions`, and `version`. |
 | Delete topic while its session lock remains held beyond 30 seconds | 409 `topic_busy`; retry after the topic finishes stopping |
 | Send to or abort Unknown topic | 409 `read_only`; select a real topic |
 | List commands (`GET /commands`, optional allowed `lang`) | 200 `{ "commands": [...] }`; invalid language: 400 `bad_request` |

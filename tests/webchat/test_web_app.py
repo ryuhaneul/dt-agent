@@ -38,6 +38,7 @@ class FakeBridge:
     connections: int = 0
     delay: float = 0
     delay_path: str | None = None
+    claude_state: dict | None = None
 
     owner_headers: list = field(default_factory=list)
     owner_by_browser: dict = field(default_factory=dict)
@@ -184,7 +185,10 @@ class FakeBridge:
                 self.configured = True
             return web.json_response({"ok": True, "credential_generation": self.generation})
         if path == "/state":
-            return web.json_response({"telegram": {"state": "down"}, "outbox": {"pending": 2}})
+            data = {"telegram": {"state": "down"}, "outbox": {"pending": 2}}
+            if self.claude_state is not None:
+                data["claude"] = self.claude_state
+            return web.json_response(data)
         if path.startswith("/files/") and request.method == "PUT":
             return web.json_response({"error": "conflict"}, status=409)
         return web.json_response(
@@ -572,11 +576,12 @@ async def test_ws_direct_nonstandard_https_port_requires_exact_origin(site):
 
 
 async def test_version_is_in_authenticated_state_only(site, monkeypatch):
-    client, _ = site
+    client, bridge = site
+    bridge.claude_state = {"next": "claude", "slots": [{"name": "claude", "kind": "oauth"}]}
     monkeypatch.setattr("ductor_bot.webchat.web.app.get_current_version", lambda: "9.8.7")
     response = await client.get("/api/state", headers=CLIENT)
     assert response.status == 403
-    assert "version" not in await response.json()
+    assert (await response.json()).keys().isdisjoint({"version", "claude"})
     for endpoint in ("/api/auth/state", "/api/i18n"):
         response = await client.get(endpoint, headers=CLIENT)
         assert response.status == 200
@@ -585,7 +590,9 @@ async def test_version_is_in_authenticated_state_only(site, monkeypatch):
     headers, _ = await login(client)
     response = await client.get("/api/state", headers=headers)
     assert response.status == 200
-    assert (await response.json())["version"] == "9.8.7"
+    state = await response.json()
+    assert state["version"] == "9.8.7"
+    assert state["claude"] == bridge.claude_state
 
 
 async def test_ws_bridge_disconnect_and_reconnect(site):

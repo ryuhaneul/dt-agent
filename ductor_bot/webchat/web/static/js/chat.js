@@ -5,6 +5,7 @@ import { initAttachmentView } from './attachment-view.js';
 import { initSecret } from './secret.js';
 import { initCron } from './cron.js';
 import { initAutocompact } from './autocompact.js';
+import { initSlots } from './slots.js';
 import { t } from './i18n.js';
 import { notify } from './auth.js';
 import { connectEvents } from './ws.js';
@@ -14,6 +15,7 @@ import { getTopic, getTopics, selectTopic, refreshTopics, noteEntry, markSeen, f
 const histories = new Map(), turns = new Map(), busy = new Map(), drafts = new Map(), topicVersions = new Map(), busyVersions = new Map();
 let active = false, epoch = 0, stopEvents = null, telegram = { state: 'unknown' };
 let botUp = false, webSessions = null, releaseVersion = '', pending = 0, outbox = [], sending = false;
+let slots = null, stateRequest = null;
 let view = 'chat', selection = 0, commandMenu = null, secretDialog = null, autocompactDialog = null, cronDialog = null;
 let streamFrame = null, historyRender = null, composerFiles = null, attachmentView = null;
 const streamUpdates = new Set();
@@ -796,16 +798,31 @@ function renderOutboxStatus() {
     return `<div class="qrow"><span class="tag">${esc(t(`outbox.tag_${key}`))}</span><span class="q">${esc(item.kind === 'bus' ? item.title || item.preview : item.preview)} · ${esc(t('chat.pending_mirror'))}</span><span class="t">${esc(formatTime(item.created))}</span></div>`;
   }).join('');
 }
-async function refreshState() {
+function refreshState() {
+  if (stateRequest) return stateRequest.promise;
   const generation = epoch;
-  try {
-    const state = await api('/state');
+  const controller = new AbortController();
+  let failed = false;
+  slots.setRefreshing(true);
+  const promise = api('/state', { signal: controller.signal }).then(state => {
     if (!active || epoch !== generation) return;
     telegram = state.telegram; pending = state.outbox.pending;
     releaseVersion = typeof state.version === 'string' ? state.version : '';
     renderVersion();
     botUp = state.bot.up; webSessions = state.web_sessions; renderStatus();
-  } catch (error) { if (active && generation === epoch && error.code !== 'auth_required') { botUp = false; renderStatus(); } }
+    slots.update(state.claude);
+  }).catch(error => {
+    if (!active || epoch !== generation || error.code === 'auth_required') return;
+    failed = true;
+    botUp = false;
+    renderStatus();
+  }).finally(() => {
+    if (epoch !== generation) return;
+    stateRequest = null;
+    slots.setRefreshing(false, failed);
+  });
+  stateRequest = { controller, promise };
+  return promise;
 }
 async function refreshOutbox() {
   const generation = epoch;
@@ -924,6 +941,8 @@ export async function handleEvent(event) {
       return;
     case 'turn': {
       const turn = turns.get(event.turn_id) || { id: event.turn_id, tid, text: '' };
+      const phaseChanged = turn.lastEventPhase !== event.phase;
+      turn.lastEventPhase = event.phase;
       turn.phase = event.phase;
       turn.startedAt = event.started_at ?? turn.startedAt;
       if (event.phase === 'started') turn.startedAt ??= new Date().toISOString();
@@ -939,7 +958,10 @@ export async function handleEvent(event) {
         }
       }
       const terminal = !['queued', 'started'].includes(event.phase);
-      if (terminal) turn.finished = new Date().toISOString();
+      if (terminal) {
+        turn.finished = new Date().toISOString();
+        if (phaseChanged) void refreshState();
+      }
       updateTurn(turn);
       if (terminal && tid === getTopic()?.tid && !hasTurnEntry(turn, event.phase === 'cancelled' ? 'user' : 'bot')) {
         const recovered = await loadHistory(tid, { turnId: turn.id });
@@ -1055,6 +1077,7 @@ async function sendMessage() {
   }
 }
 export function initChat() {
+  slots = initSlots(refreshState);
   cronDialog = initCron(getTopic);
   secretDialog = initSecret();
   attachmentView = initAttachmentView({ changed: (tid, entryId) => updateEntries(tid, [entryId]) });
@@ -1194,6 +1217,10 @@ export function initChat() {
   document.addEventListener('auth-change', event => {
     cancelTop();
     active = event.detail.authenticated; ++epoch;
+    stateRequest?.controller.abort();
+    stateRequest = null;
+    slots.update(null);
+    slots.setRefreshing(false);
     cancelStreamRender(); cancelHistoryRender();
     clearTimeout(midnightTimer); midnightTimer = null;
     stopEvents?.(); stopEvents = null; renderedTopic = null; pagination = null;
