@@ -78,6 +78,16 @@ async def test_page_reads_files_and_formats_timezone_and_controls(page):
     assert t("accounts.subagent_note") in response.text
 
 
+def _slot_block(text, *, note=""):
+    above, slots, below = text.split("\n```")
+    assert above.strip().splitlines() == [
+        t("accounts.title"),
+        *(["", note] if note else []),
+    ]
+    assert below.strip() == t("accounts.subagent_note")
+    return slots.strip("\n").splitlines()
+
+
 @pytest.mark.parametrize("language", ["en", "de", "nl", "es", "fr", "id", "pt", "ru", "ko"])
 async def test_all_locales_and_empty_list_have_refresh_and_notice(page, language):
     selector, home, config = page
@@ -94,7 +104,7 @@ async def test_all_locales_and_empty_list_have_refresh_and_notice(page, language
     (home / ".cli-auth" / "claude-a" / ".credentials.json").unlink()
     (home / ".cli-auth" / "claude-a").rmdir()
     response = await selector.account_selector_start(home, config)
-    assert t("accounts.empty") in response.text
+    assert _slot_block(response.text) == [t("accounts.empty")]
     assert _data(response) == ["acs:r"]
 
 
@@ -124,8 +134,9 @@ async def test_actions_delegate_to_shared_rules_off_event_loop(
     name = action.split(":", 2)[2]
     assert calls == [(home, name, *extra)]
     current = AgentConfig(claude_accounts=_names(home))
+    slots = _slot_block(response.text)
     for index, slot in enumerate(claude_slots.overview(home, current)["slots"], 1):
-        assert f"{index}. {slot['name']}" in response.text
+        assert any(line.startswith(f"{index}. {slot['name']}  ") for line in slots)
     if method == "prefer" or extra == (-1,):
         assert _names(home)[0] == "claude-b"
     if extra == (1,):
@@ -167,8 +178,11 @@ async def test_callback_length_uses_bytes_and_never_uses_positions(page, name):
 async def test_refresh_and_invalid_data_do_not_write(page):
     selector, home, config = page
     before = _fingerprint(home)
+    initial = await selector.account_selector_start(home, config)
     for data in ["acs:r", "acs:unknown:claude-a", "acs:p:" + "x" * 59]:
-        await selector.handle_account_callback(home, config, data)
+        response = await selector.handle_account_callback(home, config, data)
+        note = "" if data == "acs:r" else t("accounts.stale")
+        assert _slot_block(response.text, note=note) == _slot_block(initial.text)
         assert _fingerprint(home) == before
 
 
@@ -371,23 +385,54 @@ async def test_direct_accounts_requires_exact_command_token(telegram, monkeypatc
 
 
 
-async def test_usage_line_below_each_slot_with_missing_and_expired_values(page):
+async def test_slot_block_with_saved_partial_missing_and_api_key_usage(page):
     from ductor_bot.cli.claude_usage import UsageStore, usage_file_path
-    from ductor_bot.orchestrator.selectors.usage_view import render_account_usage
 
     selector, home, config = page
+    config.user_timezone = "UTC"
+    names = ["claude-a", "claude-b", "claude-c", "claude-key", "claude-detached"]
+    (home / "config" / "config.json").write_text(json.dumps({"claude_accounts": names}))
+    _prepare_slot(home, "claude-b", "oauth")
+    _prepare_slot(home, "claude-c", "oauth")
+    _prepare_slot(home, "claude-key", "api_key")
+    _prepare_slot(home, "claude-detached", "api_key_detached")
     store = UsageStore(usage_file_path(home / "workspace"))
-    for name, reset in [("claude-a", int(NOW + 3600)), ("claude-c", int(NOW - 1))]:
-        store.record(name, {"type":"rate_limit_event", "rate_limit_info":{
-            "status":"allowed", "rateLimitType":"five_hour", "utilization":0.11,
-            "resetsAt":reset}}, captured_at=int(NOW - 60))
-    response = await selector.account_selector_start(home, config)
-    lines = response.text.splitlines()
-    usages = store.load()
-    for index, name in enumerate(["claude-a", "claude-b", "claude-c"], 1):
-        row = next(i for i,line in enumerate(lines) if line.startswith(f"{index}. {name}"))
-        assert lines[row + 1] == "   " + render_account_usage(usages.get(name), config, now=NOW)
+    for name, windows in [
+        (
+            "claude-a",
+            {
+                "seven_day": {"utilization": 0.62, "resetsAt": int(NOW + 86400)},
+                "five_hour": {"utilization": 0.24, "resetsAt": int(NOW + 3600)},
+            },
+        ),
+        ("claude-b", {"seven_day": {"utilization": 0.41, "resetsAt": int(NOW + 7200)}}),
+        ("claude-key", {"five_hour": {"utilization": 0.9, "resetsAt": int(NOW + 3600)}}),
+        ("claude-detached", {"five_hour": {"utilization": 0.9, "resetsAt": int(NOW + 3600)}}),
+    ]:
+        store.record(
+            name,
+            {
+                "type": "rate_limit_event",
+                "rate_limit_info": {"status": "allowed", "unifiedWindows": windows},
+            },
+            captured_at=int(NOW - 60),
+        )
 
+    response = await selector.account_selector_start(home, config)
+
+    assert _slot_block(response.text) == [
+        f"1. claude-a  Authenticated · {t('accounts.cooldown', hours=1, minutes=2, time='09:02')}",
+        "    5h ██░░░░░░░░  24%  09:00",
+        "    7d ██████░░░░  62%  01/16 08:00",
+        "   " + t("usage.captured", time="07:59"),
+        "2. claude-b  Authenticated · No cooldown",
+        "    7d ████░░░░░░  41%  10:00",
+        "   " + t("usage.captured", time="07:59"),
+        "3. claude-c  Authenticated · No cooldown",
+        "   " + t("usage.account_empty"),
+        f"4. claude-key  {t('accounts.api_key')} · No cooldown",
+        f"5. claude-detached  {t('accounts.api_key_detached')} · No cooldown",
+    ]
 
 
 @pytest.mark.parametrize("unexpected", [False, True])
@@ -398,20 +443,24 @@ async def test_bad_usage_does_not_remove_account_controls(page, monkeypatch, une
     selector, home, config = page
     event = json.loads(json.dumps(ALLOWED))
     event["rate_limit_info"]["unifiedWindows"]["five_hour"]["resetsAt"] = 10**13
-    UsageStore(selector.usage_file_path(home / "workspace")).record("claude-a", event, captured_at=int(NOW))
+    UsageStore(selector.usage_file_path(home / "workspace")).record(
+        "claude-a", event, captured_at=int(NOW)
+    )
     if unexpected:
-        original = selector.render_account_usage
+        original = selector.render_account_usage_lines
+
         def render(usage, *args, **kwargs):
             if usage is not None:
                 raise RuntimeError("synthetic")
             return original(usage, *args, **kwargs)
-        monkeypatch.setattr(selector, "render_account_usage", render)
+
+        monkeypatch.setattr(selector, "render_account_usage_lines", render)
     response = await selector.account_selector_start(home, config)
     assert "1. claude-a" in response.text
     assert t("accounts.error") not in response.text
     assert "acs:c:claude-a" in _data(response)
     assert "acs:r" in _data(response)
-    assert (t("usage.account_empty") if unexpected else "5h 11% · ?") in response.text
+    assert (t("usage.account_empty") if unexpected else "5h █░░░░░░░░░  11%  ?") in response.text
 
 
 @pytest.mark.parametrize("language", ["en", "de", "nl", "es", "fr", "id", "pt", "ru", "ko"])
@@ -444,7 +493,7 @@ async def test_api_key_account_has_label_without_usage_or_login_warning(page, la
         )
     )
     response = await selector.account_selector_start(home, config)
-    api_row, next_row = response.text.splitlines()[1:3]
+    api_row, next_row, *_ = _slot_block(response.text)
     assert api_row == f"1. claude-api  {t('accounts.api_key')} · {t('accounts.no_cooldown')}"
     assert next_row.startswith("2. claude-a  ")
     for key in ("accounts.unauthenticated", "accounts.auth_expired", "usage.account_empty"):

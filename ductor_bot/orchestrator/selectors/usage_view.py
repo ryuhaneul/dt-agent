@@ -56,51 +56,46 @@ def _clock(epoch: float, now: float, timezone: ZoneInfo) -> str:
         return "?"
 
 
-def _window_text(  # noqa: PLR0913
+def _window_text(
     label: str,
     utilization: float,
     reset: int | None,
     *,
     now: float,
     timezone: ZoneInfo,
-    compact: bool = False,
 ) -> str:
-    prefix = label if compact else f"{label:>3}"
+    prefix = f"{label:>3}"
     if reset is not None and now >= reset:
         return f"{prefix} " + t("usage.reset", time=_clock(reset, now, timezone))
     percent = _half_up(Decimal(str(utilization)) * 100)
-    if compact:
-        suffix = f" · {_clock(reset, now, timezone)}" if reset is not None else ""
-        return f"{prefix} {percent}%{suffix}"
     suffix = f"  {_clock(reset, now, timezone)}" if reset is not None else ""
     return f"{prefix} {usage_bar(utilization)} {percent:>3}%{suffix}"
 
 
-def render_account_usage(
+def render_account_usage_lines(
     usage: SlotUsage | None,
     config: AgentConfig,
     *,
     now: float | None = None,
-) -> str:
-    """Build the one-line Claude slot summary, without a bar or indentation."""
+) -> list[str]:
+    """Render saved Claude slot windows followed by the capture time."""
     if usage is None or not usage.windows:
-        return t("usage.account_empty")
+        return [t("usage.account_empty")]
     current = time.time() if now is None else now
     timezone = resolve_user_timezone(config.user_timezone)
-    parts = [
+    lines = [
         _window_text(
             label,
             window.utilization,
             window.resets_at,
             now=current,
             timezone=timezone,
-            compact=True,
         )
         for name, label in _WINDOW_LABELS.items()
         if (window := usage.windows.get(name)) is not None
     ]
-    captured = t("usage.captured", time=_clock(usage.captured_at, current, timezone))
-    return f"{' / '.join(parts)} ({captured})"
+    lines.append(t("usage.captured", time=_clock(usage.captured_at, current, timezone)))
+    return lines
 
 
 def render_usage(

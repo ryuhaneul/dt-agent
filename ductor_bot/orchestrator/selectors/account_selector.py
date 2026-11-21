@@ -24,7 +24,7 @@ from ductor_bot.cli.claude_usage import UsageStore, usage_file_path
 from ductor_bot.config import AgentConfig, resolve_user_timezone
 from ductor_bot.i18n import t
 from ductor_bot.orchestrator.selectors.models import Button, ButtonGrid, SelectorResponse
-from ductor_bot.orchestrator.selectors.usage_view import render_account_usage
+from ductor_bot.orchestrator.selectors.usage_view import render_account_usage_lines
 
 logger = logging.getLogger(__name__)
 
@@ -252,11 +252,12 @@ def _build_page(  # noqa: C901
     lines = [t("accounts.title")]
     if note:
         lines.extend(["", note])
+    lines.extend(["", "```"])
     rows: list[list[Button]] = []
     now = time.time()
     timezone = resolve_user_timezone(config.user_timezone)
     if not slots:
-        lines.extend(["", t("accounts.empty")])
+        lines.append(t("accounts.empty"))
     for index, slot in enumerate(slots):
         name = slot["name"]
         directory = host_slot_config_dir(home, name)
@@ -288,11 +289,11 @@ def _build_page(  # noqa: C901
         lines.append(f"{index + 1}. {name}  {auth} · {cooldown}{unused}")
         if kind == "oauth":
             try:
-                usage_line = render_account_usage(usage.get(name), config, now=now)
+                usage_lines = render_account_usage_lines(usage.get(name), config, now=now)
             except Exception as exc:
                 logger.warning("Account usage display failed: %s", type(exc).__name__)
-                usage_line = t("usage.account_empty")
-            lines.append("   " + usage_line)
+                usage_lines = [t("usage.account_empty")]
+            lines.extend(f"   {line}" for line in usage_lines)
         candidates: list[Button | None] = []
         if priority and index > 0:
             candidates.extend(
@@ -309,6 +310,6 @@ def _build_page(  # noqa: C901
         buttons = [button for button in candidates if button is not None]
         if buttons:
             rows.append(buttons)
-    lines.extend(["", t("accounts.subagent_note")])
+    lines.extend(["```", "", t("accounts.subagent_note")])
     rows.append([Button(text=t("accounts.btn_refresh"), callback_data="acs:r")])
     return SelectorResponse(text="\n".join(lines), buttons=ButtonGrid(rows=rows))
