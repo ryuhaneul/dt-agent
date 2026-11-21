@@ -11,6 +11,7 @@ import socket
 import stat
 import sys
 import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,7 +31,16 @@ from ductor_bot.chat_log.ids import history_filename
 from ductor_bot.chat_log.outbox import Outbox
 from ductor_bot.chat_log.recorder import HistoryRecorder, chat_log_source, chat_log_turn
 from ductor_bot.cli.base import CLIConfig
+from ductor_bot.cli.claude_accounts import (
+    DETACHED_API_KEY_HELPER,
+    SlotRegistry,
+    SlotSnapshot,
+    host_slot_config_dir,
+    state_file_path,
+)
 from ductor_bot.cli.claude_provider import ClaudeCodeCLI
+from ductor_bot.cli.claude_usage import UsageStore, usage_file_path
+from ductor_bot.cli.slot_rotation import fallback_slot
 from ductor_bot.cli.stream_events import AssistantTextDelta, ResultEvent, ToolUseEvent
 from ductor_bot.config import AgentConfig, ChatLogConfig, WebchatConfig
 from ductor_bot.infra.input_context import current_input_timestamp
@@ -117,7 +127,22 @@ async def test_health_meta_state_and_auth_state(bridge):
             "default_chat_id": 123,
             "domain": "chat.example.com",
         },
-        "state": {"telegram": {"state": "unknown"}, "outbox": {"pending": 2}},
+        "state": {
+            "telegram": {"state": "unknown"},
+            "outbox": {"pending": 2},
+            "claude": {
+                "next": "claude",
+                "slots": [
+                    {
+                        "name": "claude",
+                        "kind": "oauth",
+                        "state": "unauthenticated",
+                        "cooldown_until": None,
+                        "usage": None,
+                    }
+                ],
+            },
+        },
         "auth/state": {
             "password_configured": False,
             "totp_configured": False,
@@ -131,6 +156,143 @@ async def test_health_meta_state_and_auth_state(bridge):
         assert response.status == 200
         assert await response.json() == body
     assert (paths.webchat_dir / "auth_state.json").stat().st_mode & 0o777 == 0o600
+
+
+async def test_state_reports_slots_in_priority_order_with_stored_usage(bridge):
+    client, bot, _, paths = bridge
+    home = paths.ductor_home
+    bot.config.claude_accounts = ["claude", "claude-alt", "claude-api"]
+    for name in bot.config.claude_accounts:
+        directory = host_slot_config_dir(home, name)
+        directory.mkdir(parents=True)
+        if name == "claude-api":
+            (directory / "settings.json").write_text('{"apiKeyHelper":"test-helper"}')
+        elif name == "claude":
+            (directory / ".credentials.json").write_text("{}")
+    now = int(time.time())
+    captured = now - 600
+    cooldown = now + 1200
+    SlotRegistry(state_file_path(home)).save(SlotSnapshot(cooldowns={"claude-alt": cooldown}))
+    store = UsageStore(usage_file_path(paths.workspace))
+    event = {
+        "type": "rate_limit_event",
+        "rate_limit_info": {
+            "status": "allowed",
+            "unifiedWindows": {
+                "five_hour": {"utilization": 0.32, "resetsAt": now + 3600},
+                "seven_day": {"utilization": 0.41, "resetsAt": now + 86400},
+            },
+        },
+    }
+    for name in ("claude", "claude-api"):
+        store.record(name, event, captured_at=captured)
+
+    response = await client.get(f"{_PREFIX}/state", headers=headers())
+    assert response.status == 200
+    assert (await response.json())["claude"] == {
+        "next": "claude",
+        "slots": [
+            {
+                "name": "claude",
+                "kind": "oauth",
+                "state": "ok",
+                "cooldown_until": None,
+                "usage": {
+                    "captured_at": captured,
+                    "windows": {
+                        "five_hour": {"utilization": 0.32, "resets_at": now + 3600},
+                        "seven_day": {"utilization": 0.41, "resets_at": now + 86400},
+                    },
+                },
+            },
+            {
+                "name": "claude-alt",
+                "kind": "oauth",
+                "state": "cooldown",
+                "cooldown_until": cooldown,
+                "usage": None,
+            },
+            {
+                "name": "claude-api",
+                "kind": "api_key",
+                "state": "ok",
+                "cooldown_until": None,
+                "usage": None,
+            },
+        ],
+    }
+
+
+async def test_state_omits_missing_usage_windows_and_detached_key_usage(bridge):
+    client, bot, _, paths = bridge
+    bot.config.claude_accounts = ["claude", "claude-detached"]
+    directory = host_slot_config_dir(paths.ductor_home, "claude-detached")
+    directory.mkdir(parents=True)
+    (directory / DETACHED_API_KEY_HELPER).touch()
+    store = UsageStore(usage_file_path(paths.workspace))
+    event = {
+        "type": "rate_limit_event",
+        "rate_limit_info": {
+            "status": "allowed",
+            "rateLimitType": "seven_day",
+            "utilization": 0.41,
+            "resetsAt": 300,
+        },
+    }
+    for name in bot.config.claude_accounts:
+        store.record(name, event, captured_at=100)
+
+    response = await client.get(f"{_PREFIX}/state", headers=headers())
+    assert response.status == 200
+    oauth, detached = (await response.json())["claude"]["slots"]
+    assert oauth["usage"] == {
+        "captured_at": 100,
+        "windows": {"seven_day": {"utilization": 0.41, "resets_at": 300}},
+    }
+    assert detached["kind"] == "api_key_detached"
+    assert detached["usage"] is None
+
+
+@pytest.mark.parametrize("alt_cooling", [False, True])
+async def test_state_next_skips_expired_slot_and_uses_rotation_fallback(bridge, alt_cooling):
+    client, bot, _, paths = bridge
+    bot.config.claude_accounts = ["claude", "claude-alt"]
+    registry = SlotRegistry(state_file_path(paths.ductor_home))
+    cooldowns = {"claude": time.time() + 1200}
+    if alt_cooling:
+        cooldowns["claude-alt"] = cooldowns["claude"]
+    registry.save(
+        SlotSnapshot(
+            cooldowns=cooldowns,
+            auth_failures={"claude": registry.credential_mtimes("claude")},
+        )
+    )
+
+    response = await client.get(f"{_PREFIX}/state", headers=headers())
+    assert response.status == 200
+    claude = (await response.json())["claude"]
+    assert claude["slots"][0]["state"] == "expired"
+    assert claude["next"] == (
+        await fallback_slot(registry, bot.config.claude_accounts) if alt_cooling else "claude-alt"
+    )
+
+
+async def test_state_preserves_other_fields_when_claude_overview_fails(bridge, monkeypatch, caplog):
+    client, *_ = bridge
+
+    def fail_overview(home, config):
+        raise ValueError("private detail")
+
+    monkeypatch.setattr("ductor_bot.webchat.bridge.claude_slots.overview", fail_overview)
+    response = await client.get(f"{_PREFIX}/state", headers=headers())
+    assert response.status == 200
+    assert await response.json() == {
+        "telegram": {"state": "unknown"},
+        "outbox": {"pending": 2},
+        "claude": None,
+    }
+    assert "ValueError" in caplog.text
+    assert "private detail" not in caplog.text
 
 
 async def test_password_setup_totp_end_to_end(bridge, caplog):
