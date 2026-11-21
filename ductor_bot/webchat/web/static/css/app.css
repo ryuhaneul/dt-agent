@@ -545,13 +545,15 @@ dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(2px)}
 .bar:has(.claude-slots:not([hidden])) .vault-header-badge{padding-inline:8px}
 .claude-slots,.slot-chips{display:flex;align-items:center;gap:5px;min-width:0}
 .claude-slots{position:relative;max-width:100%;flex:0 1 auto}
-.slot-chips{flex-wrap:wrap}
 .slot-chip,.slot-refresh{display:inline-flex;align-items:center;height:30px;border:1px solid var(--rule);background:var(--surface);cursor:pointer}
 .slot-chip{min-width:0;gap:6px;padding:0 9px;border-radius:999px;color:var(--fg);font-size:.76rem;font-weight:600;white-space:nowrap}
+.slot-chip:not([data-primary]),.slot-chips[data-measuring] .slot-chip{flex:none}
 .slot-chip:hover,.slot-refresh:hover{border-color:var(--muted)}
 .slot-chip:focus-visible,.slot-refresh:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .slot-name,.slot-percent,.slot-reset,.slot-time{font-family:var(--mono);font-variant-numeric:tabular-nums}
 .slot-chip .slot-name,.slot-chip .slot-label{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.slot-chip .slot-name{min-width:3ch}
+.slot-chip .slot-percent,.slot-chip[data-status="cooldown"] .slot-label{flex:none}
 .slot-chip[data-status="cooldown"]{color:var(--warn);background:var(--warn-soft);border-color:color-mix(in srgb,var(--warn) 34%,transparent)}
 .slot-chip[data-status="expired"]{color:var(--danger);background:var(--danger-soft);border-color:color-mix(in srgb,var(--danger) 34%,transparent)}
 .slot-chip[data-status="key"],.slot-chip.slot-more{color:var(--muted);background:var(--bg)}
@@ -560,7 +562,7 @@ dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(2px)}
 .slot-chip[data-next][data-status="ok"],.slot-chip[data-next][data-status="empty"]{background:color-mix(in srgb,var(--accent) 7%,var(--surface))}
 .slot-chip[data-next] .slot-name,.slot-row[data-next] .slot-name{color:var(--accent)}
 .slot-pip{width:6px;height:6px;border-radius:50%;background:var(--accent);flex:none}
-.slot-chip.slot-more{display:none;flex:none;gap:3px;padding:0 8px 0 10px}
+.slot-chip.slot-more{flex:none;gap:3px;padding:0 8px 0 10px}
 .slot-more svg{width:14px;height:14px}
 .slot-refresh{justify-content:center;width:30px;flex:none;padding:0;border-radius:50%;color:var(--muted)}
 .slot-refresh:hover{color:var(--fg)}
@@ -570,7 +572,7 @@ dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(2px)}
 .slot-refresh[aria-busy="true"] svg{animation:slot-spin .8s linear infinite}
 @keyframes slot-spin{to{transform:rotate(360deg)}}
 .slot-time{color:var(--muted);font-size:.7rem;white-space:nowrap}
-.claude-slots>.slot-time{margin-left:-1px}
+.claude-slots>.slot-time{flex:none;margin-left:-1px}
 .slot-mini,.slot-meter{appearance:none;display:block;width:100%;height:6px;overflow:hidden;border:0;border-radius:3px;background:color-mix(in srgb,var(--muted) 20%,transparent);--slot-fill:var(--accent)}
 .slot-mini{width:34px;height:5px;flex:none}
 .slot-mini::-webkit-progress-bar,.slot-meter::-webkit-progress-bar{background:transparent}
@@ -600,11 +602,7 @@ dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(2px)}
 @media(max-width:1180px){
   .bar:has(.claude-slots:not([hidden])){flex-wrap:wrap}
   .bar:has(.claude-slots:not([hidden])) .bar-acts{margin-left:auto}
-  .slot-chips{flex-wrap:nowrap}
-  .slot-chip .slot-name{min-width:3ch}
-  .slot-chip .slot-percent,.slot-chip[data-status="cooldown"] .slot-label{flex:none}
   .claude-slots>.slot-refresh,.claude-slots>.slot-time,.slot-chip[data-slot-toggle]:not([data-primary]){display:none}
-  .slot-chip.slot-more{display:inline-flex}
 }
 @media(max-width:960px){
   .bar:has(.claude-slots:not([hidden])) .bar-acts .theme-btn{width:38px;min-width:38px}

@@ -27,6 +27,7 @@ const origin = `http://127.0.0.1:${server.address().port}`;
 const epoch = date => Date.parse(date) / 1000;
 const now = epoch('2026-11-17T16:11:00+09:00');
 const cooldown = epoch('2026-11-17T18:00:00+09:00');
+const futureCooldown = epoch('2026-11-20T18:00:00+09:00');
 const usage = (fiveHour, fiveHourReset, sevenDay, sevenDayReset) => ({
   captured_at: now - 120,
   windows: {
@@ -81,9 +82,16 @@ async function checkHeaderMatrix(browser) {
       await page.evaluate(() => document.fonts.ready);
     };
     const screenshot = name =>
-      page.screenshot({ path: path.join(config.shots, `fix-${name}.png`), animations: 'disabled' });
+      page.screenshot({ path: path.join(config.shots, `fix2-${name}.png`), animations: 'disabled' });
     for (locale of Object.keys(config.locales)) {
-      for (unsent of [0, 3]) {
+      for (const [pending, delayed] of [[0, false], [3, false], [0, true], [3, true]]) {
+        unsent = pending;
+        state = initialState();
+        if (delayed) {
+          state.slots[0].state = 'cooldown';
+          state.slots[0].cooldown_until = futureCooldown;
+          state.slots[0].usage.windows.five_hour.resets_at = futureCooldown;
+        }
         await page.goto(origin);
         await waitForHeader();
         assert.equal(await page.locator('#pendingBadge').isVisible(), unsent !== 0);
@@ -93,7 +101,9 @@ async function checkHeaderMatrix(browser) {
             const box = selector => document.querySelector(selector).getBoundingClientRect();
             const stat = document.querySelector('.stat');
             const chip = '.slot-chip[data-next]';
-            const parts = ['.slot-name', '.slot-mini', '.slot-percent'].map(part => box(`${chip} ${part}`));
+            const parts = ['.slot-name', '.slot-mini', ':is(.slot-percent, .slot-label)']
+              .map(part => box(`${chip} ${part}`));
+            const detail = document.querySelector(`${chip} .slot-label`);
             const controls = [...document.querySelectorAll('.bar-acts button, .slot-more')]
               .filter(button => button.getClientRects().length)
               .map(button => button.getBoundingClientRect());
@@ -114,6 +124,7 @@ async function checkHeaderMatrix(browser) {
               name: parts[0].width,
               overlaps,
               vault: textOverflow(document.querySelector('#vaultBadge span'), box('#vaultBadge')),
+              labelClipped: detail ? detail.scrollWidth - detail.clientWidth : 0,
               clipped: clipped + parts.filter(part => part.width <= 0 || part.right > box(chip).right + 0.5).length,
             };
           });
@@ -123,44 +134,124 @@ async function checkHeaderMatrix(browser) {
           summary.overlaps += measure.overlaps;
           summary.clipped += measure.clipped;
           if (measure.document || measure.stat || measure.name <= 0 || measure.overlaps
-              || measure.vault > 0.5 || measure.clipped) {
+              || measure.vault > 0.5 || measure.clipped || measure.labelClipped) {
             failures.push({ width, locale, unsent, ...measure });
           }
-          if ((width === 768 && locale === 'en' && !unsent)
-              || (width === 844 && locale === 'de' && unsent)
-              || (width === 375 && ['de', 'en'].includes(locale) && !unsent)) {
-            await screenshot(`${width}-${locale}-${unsent}`);
-          }
+
         }
       }
     }
     console.log(`Header layout: ${JSON.stringify(summaries)}`);
 
+    const wideWidths = [1181, 1280, 1366, 1440, 1920];
+    const wide = Object.fromEntries(wideWidths.map(width => [width, {
+      height: 0, heightChange: 0, document: 0, overlaps: 0, cases: 0,
+    }]));
+    const layout = () => page.evaluate(() => {
+      const visible = selector => [...document.querySelectorAll(selector)]
+        .filter(element => element.getClientRects().length);
+      const buttons = visible('.bar-acts button, .stat .badge, .claude-slots button, .claude-slots>time');
+      const rectangles = buttons.map(button => button.getBoundingClientRect());
+      return {
+        height: document.querySelector('.bar').getBoundingClientRect().height,
+        document: document.documentElement.scrollWidth - innerWidth,
+        overlaps: rectangles.reduce((count, a, i) => count + rectangles.slice(i + 1)
+          .filter(b => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom).length, 0),
+        shown: visible('[data-slot-toggle]').length,
+        primary: visible('[data-slot-toggle][data-primary]').length,
+        more: visible('[data-slot-more]')[0]?.textContent.trim(),
+        refresh: visible('.claude-slots>.slot-refresh, .claude-slots>time').length,
+      };
+    });
+    const resize = async width => {
+      await page.setViewportSize({ width, height: 900 });
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    };
+    for (locale of Object.keys(config.locales)) {
+      for (unsent of [0, 3]) {
+        state = null;
+        await page.goto(origin);
+        await page.locator('#vaultBadge').getByText(config.locales[locale]['vault.unconfigured'], { exact: true }).waitFor();
+        await page.waitForFunction(() => document.querySelector('#appSubtitle').textContent === 'v9.8.7');
+        await page.evaluate(() => document.fonts.ready);
+        const baseline = {};
+        for (const width of wideWidths) {
+          await resize(width);
+          baseline[width] = (await layout()).height;
+        }
+        for (const count of [2, 5, 12]) {
+          state = initialState();
+          state.slots = state.slots.slice(0, count);
+          while (state.slots.length < count) {
+            state.slots.push(slot(`claude-slot-${state.slots.length + 1}`, 'oauth', 'unauthenticated'));
+          }
+          await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+          await page.waitForFunction(count => document.querySelectorAll('.slot-row').length === count, count);
+          for (const width of wideWidths) {
+            await resize(width);
+            const measure = await layout();
+            const change = Math.abs(measure.height - baseline[width]);
+            const summary = wide[width];
+            summary.cases++;
+            summary.height = Math.max(summary.height, measure.height);
+            summary.heightChange = Math.max(summary.heightChange, change);
+            summary.document = Math.max(summary.document, measure.document);
+            summary.overlaps += measure.overlaps;
+            if (change > 1 || measure.document || measure.overlaps || measure.primary !== 1 || measure.refresh !== 2
+                || measure.more !== (measure.shown < count ? `+${count - 1}` : undefined)) {
+              failures.push({ width, locale, unsent, count, baseline: baseline[width], ...measure });
+            }
+            if (count === 5 && unsent === 3 && ((width === 1280 && locale === 'ko')
+                || (width === 1366 && locale === 'de'))) {
+              await screenshot(`${width}-${locale}-5`);
+            }
+            if (count === 5 && unsent === 0 && width === 1440 && locale === 'ko') {
+              console.log(`1440px Korean, five slots: ${measure.shown} chips visible`);
+              await screenshot('1440-ko-5-closed');
+              await page.locator('[data-primary]').click();
+              await screenshot('1440-ko-5-open');
+              await page.keyboard.press('Escape');
+            }
+          }
+        }
+      }
+    }
+    console.log(`Wide header layout: ${JSON.stringify(wide)}`);
+
     unsent = 0;
-    for (const [kind, language, width] of [
-      ['api_key', 'en', 1440], ['api_key_detached', 'en', 1440], ['api_key', 'es', 375],
+    for (const [kind, language, width, reset] of [
+      ['api_key', 'en', 1440, cooldown], ['api_key_detached', 'en', 1440, cooldown],
+      ['api_key', 'es', 375, cooldown], ['api_key', 'en', 375, futureCooldown],
+      ['oauth', 'en', 375, futureCooldown],
     ]) {
       locale = language;
       await page.setViewportSize({ width, height: 900 });
       state = initialState();
-      state.slots[2] = slot('claude-api', kind, 'cooldown', cooldown);
-      if (width === 375) state.next = 'claude-api';
+      state.slots[2] = slot('claude-api', kind, 'cooldown', reset,
+        kind === 'oauth' ? usage(1, reset, 0.4, reset + 3600) : null);
+      state.next = 'claude-api';
       await page.goto(origin);
       await waitForHeader();
       const keyChip = page.locator('[data-slot-toggle="claude-api"]');
       await keyChip.click();
       const row = page.locator('.slot-row').filter({ hasText: 'claude-api' });
-      const resume = config.locales[locale]['slots.resume_at'].replace('{time}', '18:00');
+      const time = new Date(reset * 1000).toLocaleString(locale, {
+        hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: 'Asia/Seoul',
+        ...(reset === futureCooldown ? { month: 'numeric', day: 'numeric' } : {}),
+      });
+      const resume = config.locales[locale]['slots.resume_at'].replace('{time}', time);
       const type = config.locales[locale][`slots.${kind}`];
       const labelFits = await keyChip.locator('.slot-label')
         .evaluate(label => label.scrollWidth <= label.clientWidth);
       if (!labelFits || !(await keyChip.innerText()).includes(resume)
-          || !(await row.innerText()).includes(resume) || !(await row.innerText()).includes(type)) {
-        failures.push({ kind, locale, width, labelFits, chip: await keyChip.innerText(), row: await row.innerText() });
+          || !(await row.locator('.badge').innerText()).includes(resume)
+          || (type && !(await row.innerText()).includes(type))
+          || (kind === 'oauth' && await row.locator('.slot-reset').first().innerText() !== resume)) {
+        failures.push({ kind, locale, width, labelFits, resume, chip: await keyChip.innerText(), row: await row.innerText() });
       }
-      if (width === 1440 && kind === 'api_key') await screenshot('api-key-cooldown');
+      if (reset === futureCooldown && kind === 'oauth') await screenshot('future-cooldown');
     }
-    const examples = [...failures.slice(0, 6), ...failures.filter(failure => failure.kind)];
+    const examples = [...failures.slice(0, 6), ...failures.filter(failure => failure.kind).slice(0, 5)];
     assert.equal(failures.length, 0, JSON.stringify(examples, null, 2));
   } finally {
     await page.close();
@@ -175,10 +266,12 @@ async function check(browser, width, height, theme) {
   try {
     const page = await context.newPage();
     page.setDefaultTimeout(8000);
+    if (width === 1440 && theme === 'light') await page.clock.install({ time: new Date(now * 1000) });
     await page.clock.setFixedTime(new Date(now * 1000));
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     let socket, state = initialState(), requests = 0, pending = 0, maxPending = 0, hold = null, fail = false;
+    let onHeld;
     await page.routeWebSocket('**/api/ws', ws => { socket = ws; });
     await page.route('**/api/**', async route => {
       const endpoint = new URL(route.request().url()).pathname;
@@ -192,7 +285,10 @@ async function check(browser, width, height, theme) {
         pending++;
         maxPending = Math.max(maxPending, pending);
         try {
-          if (hold) await hold;
+          if (hold) {
+            onHeld?.();
+            await hold;
+          }
           if (fail) return await route.fulfill({ status: 503, json: { error: 'bot_unreachable' } });
           return await reply({
             telegram: { state: 'up' }, bot: { up: true }, outbox: { pending: 0 },
@@ -246,8 +342,9 @@ async function check(browser, width, height, theme) {
       assert.ok(Math.abs(badge.y + badge.height / 2 - current.y - current.height / 2) <= 1,
         `${width}x${height}: ${JSON.stringify({ badge, current })}`);
     }
-    assert.equal(await widget.locator('[data-slot-toggle]:visible').count(), width <= 1180 ? 1 : 5);
-    assert.equal(await more.isVisible(), width <= 1180);
+    const shown = await widget.locator('[data-slot-toggle]:visible').count();
+    assert.equal(await more.isVisible(), shown < 5);
+    assert.ok(width <= 1180 ? shown === 1 : shown >= 1 && shown <= 5);
     assert.equal(await widget.locator(':scope > .slot-refresh').isVisible(), width > 1180);
     if ([1440, 768, 375].includes(width)) {
       assert.equal(await widget.locator('.slot-chip:visible .slot-name, .slot-chip:visible .slot-label')
@@ -293,8 +390,10 @@ async function check(browser, width, height, theme) {
       assert.equal(await widget.locator('[data-slot-toggle]:visible').count(), 1);
       assert.equal(await more.isVisible(), true);
       await page.setViewportSize({ width: 1181, height });
-      assert.equal(await widget.locator('[data-slot-toggle]:visible').count(), 5);
-      assert.equal(await more.isVisible(), false);
+      await widget.locator(':scope > .slot-refresh').waitFor();
+      assert.ok(await chip.isVisible());
+      const widescreenShown = await widget.locator('[data-slot-toggle]:visible').count();
+      assert.equal(await more.isVisible(), widescreenShown < 5);
       await page.setViewportSize({ width, height });
 
       await page.waitForFunction(() => !document.querySelector('#claudeSlots button[data-slot-refresh]').disabled);
@@ -336,6 +435,29 @@ async function check(browser, width, height, theme) {
 
       fail = false;
       hold = null;
+      // Time out a shared visibility refresh, then recover on the next one.
+      hold = new Promise(resolve => { release = resolve; });
+      const hung = new Promise(resolve => { onHeld = resolve; });
+      await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+      await hung;
+      const heldRequests = requests;
+      await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+      assert.equal(requests, heldRequests);
+      await page.clock.fastForward(15_001);
+      await popover.locator('[data-slot-refresh][data-failed]').waitFor();
+      assert.equal(await refresh.isDisabled(), false);
+      assert.equal(await chip.locator('.slot-percent').innerText(), '35%');
+      assert.equal(await updated.getAttribute('datetime'), new Date((now + 60) * 1000).toISOString());
+      assert.equal(await page.locator('#botBadge').innerText(), strings['status.bot_down']);
+      hold = null;
+      state.slots[0].usage.windows.five_hour.utilization = 0.95;
+      await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+      await chip.locator('.slot-percent').filter({ hasText: '95%' }).waitFor();
+      assert.equal(requests, heldRequests + 1);
+      assert.equal(await page.locator('#botBadge').innerText(), strings['status.bot_up']);
+      release();
+      console.log('Shared state request: recovered on the next visibility refresh after 15 seconds.');
+
       state.slots[2].kind = 'api_key_detached';
       state.slots[0].usage.windows.five_hour.resets_at = now - 60;
       delete state.slots[0].usage.windows.seven_day;
@@ -345,6 +467,9 @@ async function check(browser, width, height, theme) {
       assert.equal(await widget.locator('[data-slot-toggle="claude-api"]').getByText(strings['slots.api_key_detached']).count(), 1);
       assert.equal(await list.locator('.slot-row').first().locator('.slot-window').count(), 1);
       assert.equal(await list.locator('.slot-row').first().locator('.slot-percent').innerText(), '0%');
+      assert.equal(await chip.locator('.slot-percent').innerText(), '0%');
+      assert.equal(await chip.locator('.slot-mini').getAttribute('value'), '0');
+      await page.screenshot({ path: path.join(config.shots, 'fix2-reset-window.png'), animations: 'disabled' });
 
       state = null;
       await refresh.click();

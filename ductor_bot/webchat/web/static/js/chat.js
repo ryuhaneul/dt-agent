@@ -802,6 +802,7 @@ function refreshState() {
   if (stateRequest) return stateRequest.promise;
   const generation = epoch;
   const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
   let failed = false;
   slots.setRefreshing(true);
   const promise = api('/state', { signal: controller.signal }).then(state => {
@@ -817,11 +818,12 @@ function refreshState() {
     botUp = false;
     renderStatus();
   }).finally(() => {
+    clearTimeout(timeout);
     if (epoch !== generation) return;
     stateRequest = null;
     slots.setRefreshing(false, failed);
   });
-  stateRequest = { controller, promise };
+  stateRequest = { controller, promise, timeout };
   return promise;
 }
 async function refreshOutbox() {
@@ -1217,6 +1219,7 @@ export function initChat() {
   document.addEventListener('auth-change', event => {
     cancelTop();
     active = event.detail.authenticated; ++epoch;
+    clearTimeout(stateRequest?.timeout);
     stateRequest?.controller.abort();
     stateRequest = null;
     slots.update(null);

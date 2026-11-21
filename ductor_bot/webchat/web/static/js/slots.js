@@ -19,7 +19,7 @@ function formatTime(seconds, withDay = false) {
 function slotStatus(slot) {
   const keyLabel = ['api_key', 'api_key_detached'].includes(slot.kind) ? t(`slots.${slot.kind}`) : '';
   if (slot.state === 'cooldown') {
-    return { kind: 'cooldown', label: t('slots.resume_at', { time: formatTime(slot.cooldown_until) }), badge: 'warn', keyLabel };
+    return { kind: 'cooldown', label: t('slots.resume_at', { time: formatTime(slot.cooldown_until, true) }), badge: 'warn', keyLabel };
   }
   if (keyLabel) return { kind: 'key', label: keyLabel, badge: 'off' };
   if (slot.state === 'expired') return { kind: 'expired', label: t('slots.expired'), badge: 'down' };
@@ -36,10 +36,14 @@ function meter(value, className, showPercent = true) {
     (showPercent ? `<b class="slot-percent">${esc(percent)}</b>` : '');
 }
 
-function chip(slot, status, next, primary) {
+function windowHasReset(window, now) {
+  return window.resets_at <= now;
+}
+
+function chip(slot, status, next, primary, now) {
   const window = slot.usage?.windows?.five_hour;
   const usage = window && (status.kind === 'ok' || status.kind === 'cooldown')
-    ? meter(window.utilization, 'slot-mini', status.kind !== 'cooldown') : '';
+    ? meter(windowHasReset(window, now) ? 0 : window.utilization, 'slot-mini', status.kind !== 'cooldown') : '';
   const label = status.kind === 'ok' ? (usage ? '' : t('slots.no_data')) : status.label;
   return `<button class="slot-chip" type="button" data-slot-toggle="${esc(slot.name)}" data-status="${status.kind}" ${next ? 'data-next' : ''} ${primary ? 'data-primary' : ''} ${TOGGLE}>
     ${next ? `<span class="slot-pip" aria-hidden="true"></span><span class="sr-only">${esc(t('slots.next'))}</span>` : ''}
@@ -47,13 +51,12 @@ function chip(slot, status, next, primary) {
   </button>`;
 }
 
-function slotRow(slot, status, next) {
+function slotRow(slot, status, next, now) {
   const usage = slot.usage;
-  const now = Date.now() / 1000;
   const rows = WINDOWS.map(name => {
     const window = usage?.windows?.[name];
     if (!window) return '';
-    const reset = window.resets_at <= now;
+    const reset = windowHasReset(window, now);
     const resetText = reset ? t('slots.reset_done')
       : window.resets_at === slot.cooldown_until && status.kind === 'cooldown' ? status.label
       : t('slots.reset_at', { time: formatTime(window.resets_at, true) });
@@ -86,8 +89,50 @@ export function initSlots(refresh) {
   const list = root.querySelector('.slot-list');
   const times = root.querySelectorAll('time');
   const refreshButtons = root.querySelectorAll('[data-slot-refresh]');
+  const bar = root.closest('.bar');
+  const narrow = matchMedia('(max-width: 1180px)');
   let data = null, updatedAt = null, trigger = null;
   let refreshing = false, failed = false;
+
+  function chipCapacity() {
+    const header = getComputedStyle(bar);
+    const neighbors = [...bar.children].filter(child => child !== root);
+    const controls = [refreshButtons[0], times[0]];
+    const reserved = [...neighbors, ...controls].reduce((width, element) =>
+      width + element.getBoundingClientRect().width, 0);
+    return bar.clientWidth - parseFloat(header.paddingLeft) - parseFloat(header.paddingRight)
+      - neighbors.length * parseFloat(header.columnGap) - reserved
+      - controls.length * parseFloat(getComputedStyle(root).columnGap)
+      - parseFloat(getComputedStyle(times[0]).marginLeft);
+  }
+
+  function fitChips() {
+    const more = chips.querySelector('[data-slot-more]');
+    if (!more) return;
+    const buttons = [...chips.querySelectorAll('[data-slot-toggle]')];
+    for (const button of [...buttons, more]) button.hidden = false;
+    if (narrow.matches) return;
+
+    // Measure intrinsic chip widths before selecting the buttons that fit.
+    chips.setAttribute('data-measuring', '');
+    const capacity = chipCapacity();
+    const gap = parseFloat(getComputedStyle(chips).columnGap);
+    const widths = buttons.map(button => button.getBoundingClientRect().width);
+    const moreWidth = more.getBoundingClientRect().width;
+    chips.removeAttribute('data-measuring');
+
+    const fullWidth = widths.reduce((total, width) => total + width, 0) + gap * (buttons.length - 1);
+    more.hidden = fullWidth <= capacity;
+    if (more.hidden) return;
+    const primary = buttons.findIndex(button => button.hasAttribute('data-primary'));
+    let available = capacity - widths[primary] - moreWidth - gap;
+    buttons.forEach((button, index) => {
+      if (index === primary) return;
+      const required = widths[index] + gap;
+      button.hidden = required > available;
+      if (!button.hidden) available -= required;
+    });
+  }
 
   function positionPopover() {
     if (popover.hidden) return;
@@ -128,14 +173,15 @@ export function initSlots(refresh) {
     const scroll = list.scrollTop;
     const focused = document.activeElement;
     const more = data.slots.length - 1;
+    const now = Date.now() / 1000;
     const slots = data.slots.map(slot => ({
       slot, status: slotStatus(slot), next: slot.name === data.next,
     }));
     const primary = slots.find(({ next }) => next) ?? slots[0];
-    chips.innerHTML = slots.map(item => chip(item.slot, item.status, item.next, item === primary)).join('') +
+    chips.innerHTML = slots.map(item => chip(item.slot, item.status, item.next, item === primary, now)).join('') +
       (more > 0 ? `<button class="slot-chip slot-more" type="button" data-slot-more ${TOGGLE}
         aria-label="${esc(t('slots.show_all', { n: data.slots.length }))}">+${more}${MORE_ICON}</button>` : '');
-    list.innerHTML = slots.map(({ slot, status, next }) => slotRow(slot, status, next)).join('');
+    list.innerHTML = slots.map(({ slot, status, next }) => slotRow(slot, status, next, now)).join('');
     list.scrollTop = scroll;
     const clock = formatTime(updatedAt.getTime() / 1000);
     const label = t('slots.refreshed_at', { time: clock });
@@ -144,6 +190,7 @@ export function initSlots(refresh) {
       time.textContent = time.parentElement === root ? clock : label;
       time.setAttribute('aria-label', label);
     });
+    fitChips();
     function replacement(button) {
       if (button?.hasAttribute('data-slot-more')) return chips.querySelector('[data-slot-more]');
       return [...chips.querySelectorAll('[data-slot-toggle]')].find(item => item.dataset.slotToggle === button?.dataset.slotToggle);
@@ -173,10 +220,21 @@ export function initSlots(refresh) {
     focus?.focus();
   });
   document.addEventListener('language-changed', render);
-  window.addEventListener('resize', positionPopover);
-  const layout = new ResizeObserver(positionPopover);
-  layout.observe(root.closest('.bar'));
-  layout.observe(root);
+  function updateLayout() {
+    fitChips();
+    positionPopover();
+  }
+  window.addEventListener('resize', updateLayout);
+  let layoutFrame = null;
+  const layout = new ResizeObserver(() => {
+    if (layoutFrame !== null) return;
+    layoutFrame = requestAnimationFrame(() => {
+      layoutFrame = null;
+      updateLayout();
+    });
+  });
+  layout.observe(bar);
+  for (const child of bar.children) layout.observe(child);
 
   return {
     update(value) {
