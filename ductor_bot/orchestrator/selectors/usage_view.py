@@ -80,7 +80,7 @@ def render_account_usage_lines(
 ) -> list[str]:
     """Render saved Claude slot windows followed by the capture time."""
     if usage is None or not usage.windows:
-        return [t("usage.account_empty")]
+        return []
     current = time.time() if now is None else now
     timezone = resolve_user_timezone(config.user_timezone)
     lines = [

@@ -107,9 +107,7 @@ def test_account_usage_without_saved_windows(has_usage):
     usage = slots["claude-main"] if has_usage else None
     if usage is not None:
         usage.windows.clear()
-    assert render_account_usage_lines(usage, config, now=stamp(21, 13, 30)) == [
-        t("usage.account_empty")
-    ]
+    assert render_account_usage_lines(usage, config, now=stamp(21, 13, 30)) == []
 
 
 @pytest.mark.parametrize(

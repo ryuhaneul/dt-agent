@@ -78,14 +78,43 @@ async def test_page_reads_files_and_formats_timezone_and_controls(page):
     assert t("accounts.subagent_note") in response.text
 
 
-def _slot_block(text, *, note=""):
-    above, slots, below = text.split("\n```")
-    assert above.strip().splitlines() == [
-        t("accounts.title"),
-        *(["", note] if note else []),
+def _slot_lines(text, *, note=""):
+    lines = text.splitlines()
+    heading = [t("accounts.title"), *(["", note] if note else [])]
+    assert lines[: len(heading)] == heading
+    assert lines[-2:] == ["", t("accounts.subagent_note")]
+    return lines[len(heading) : -2]
+
+
+def _save_usage(home, name, windows):
+    from ductor_bot.cli.claude_usage import UsageStore, usage_file_path
+
+    UsageStore(usage_file_path(home / "workspace")).record(
+        name,
+        {
+            "type": "rate_limit_event",
+            "rate_limit_info": {"status": "allowed", "unifiedWindows": windows},
+        },
+        captured_at=int(NOW - 60),
+    )
+
+
+@pytest.fixture
+def saved_usage(page):
+    selector, home, config = page
+    _save_usage(home, "claude-a", {"five_hour": {"utilization": 0.24, "resetsAt": int(NOW + 3600)}})
+    return selector, home, config
+
+
+def _assert_saved_usage_block(lines):
+    row = next(index for index, line in enumerate(lines) if ". claude-a  " in line)
+    assert lines[row + 1 : row + 5] == [
+        "```",
+        " 5h ██░░░░░░░░  24%  18:00",
+        t("usage.captured", time="16:59"),
+        "```",
     ]
-    assert below.strip() == t("accounts.subagent_note")
-    return slots.strip("\n").splitlines()
+    assert lines.count("```") == 2
 
 
 @pytest.mark.parametrize("language", ["en", "de", "nl", "es", "fr", "id", "pt", "ru", "ko"])
@@ -104,7 +133,7 @@ async def test_all_locales_and_empty_list_have_refresh_and_notice(page, language
     (home / ".cli-auth" / "claude-a" / ".credentials.json").unlink()
     (home / ".cli-auth" / "claude-a").rmdir()
     response = await selector.account_selector_start(home, config)
-    assert _slot_block(response.text) == [t("accounts.empty")]
+    assert _slot_lines(response.text) == ["", t("accounts.empty")]
     assert _data(response) == ["acs:r"]
 
 
@@ -118,9 +147,9 @@ async def test_all_locales_and_empty_list_have_refresh_and_notice(page, language
     ],
 )
 async def test_actions_delegate_to_shared_rules_off_event_loop(
-    page, monkeypatch, action, method, extra
+    saved_usage, monkeypatch, action, method, extra
 ):
-    selector, home, config = page
+    selector, home, config = saved_usage
     real = getattr(claude_slots, method)
     calls = []
 
@@ -134,7 +163,8 @@ async def test_actions_delegate_to_shared_rules_off_event_loop(
     name = action.split(":", 2)[2]
     assert calls == [(home, name, *extra)]
     current = AgentConfig(claude_accounts=_names(home))
-    slots = _slot_block(response.text)
+    slots = _slot_lines(response.text)
+    _assert_saved_usage_block(slots)
     for index, slot in enumerate(claude_slots.overview(home, current)["slots"], 1):
         assert any(line.startswith(f"{index}. {slot['name']}  ") for line in slots)
     if method == "prefer" or extra == (-1,):
@@ -175,14 +205,15 @@ async def test_callback_length_uses_bytes_and_never_uses_positions(page, name):
     assert not selector.is_account_selector_callback("tsc:r")
 
 
-async def test_refresh_and_invalid_data_do_not_write(page):
-    selector, home, config = page
+async def test_refresh_and_invalid_data_do_not_write(saved_usage):
+    selector, home, config = saved_usage
     before = _fingerprint(home)
     initial = await selector.account_selector_start(home, config)
+    _assert_saved_usage_block(_slot_lines(initial.text))
     for data in ["acs:r", "acs:unknown:claude-a", "acs:p:" + "x" * 59]:
         response = await selector.handle_account_callback(home, config, data)
         note = "" if data == "acs:r" else t("accounts.stale")
-        assert _slot_block(response.text, note=note) == _slot_block(initial.text)
+        assert _slot_lines(response.text, note=note) == _slot_lines(initial.text)
         assert _fingerprint(home) == before
 
 
@@ -385,9 +416,7 @@ async def test_direct_accounts_requires_exact_command_token(telegram, monkeypatc
 
 
 
-async def test_slot_block_with_saved_partial_missing_and_api_key_usage(page):
-    from ductor_bot.cli.claude_usage import UsageStore, usage_file_path
-
+async def test_slot_blocks_with_saved_partial_missing_and_api_key_usage(page):
     selector, home, config = page
     config.user_timezone = "UTC"
     names = ["claude-a", "claude-b", "claude-c", "claude-key", "claude-detached"]
@@ -396,7 +425,6 @@ async def test_slot_block_with_saved_partial_missing_and_api_key_usage(page):
     _prepare_slot(home, "claude-c", "oauth")
     _prepare_slot(home, "claude-key", "api_key")
     _prepare_slot(home, "claude-detached", "api_key_detached")
-    store = UsageStore(usage_file_path(home / "workspace"))
     for name, windows in [
         (
             "claude-a",
@@ -409,25 +437,22 @@ async def test_slot_block_with_saved_partial_missing_and_api_key_usage(page):
         ("claude-key", {"five_hour": {"utilization": 0.9, "resetsAt": int(NOW + 3600)}}),
         ("claude-detached", {"five_hour": {"utilization": 0.9, "resetsAt": int(NOW + 3600)}}),
     ]:
-        store.record(
-            name,
-            {
-                "type": "rate_limit_event",
-                "rate_limit_info": {"status": "allowed", "unifiedWindows": windows},
-            },
-            captured_at=int(NOW - 60),
-        )
+        _save_usage(home, name, windows)
 
     response = await selector.account_selector_start(home, config)
 
-    assert _slot_block(response.text) == [
+    assert _slot_lines(response.text) == [
         f"1. claude-a  Authenticated · {t('accounts.cooldown', hours=1, minutes=2, time='09:02')}",
-        "    5h ██░░░░░░░░  24%  09:00",
-        "    7d ██████░░░░  62%  01/16 08:00",
-        "   " + t("usage.captured", time="07:59"),
+        "```",
+        " 5h ██░░░░░░░░  24%  09:00",
+        " 7d ██████░░░░  62%  01/16 08:00",
+        t("usage.captured", time="07:59"),
+        "```",
         "2. claude-b  Authenticated · No cooldown",
-        "    7d ████░░░░░░  41%  10:00",
-        "   " + t("usage.captured", time="07:59"),
+        "```",
+        " 7d ████░░░░░░  41%  10:00",
+        t("usage.captured", time="07:59"),
+        "```",
         "3. claude-c  Authenticated · No cooldown",
         "   " + t("usage.account_empty"),
         f"4. claude-key  {t('accounts.api_key')} · No cooldown",
@@ -460,7 +485,12 @@ async def test_bad_usage_does_not_remove_account_controls(page, monkeypatch, une
     assert t("accounts.error") not in response.text
     assert "acs:c:claude-a" in _data(response)
     assert "acs:r" in _data(response)
-    assert (t("usage.account_empty") if unexpected else "5h █░░░░░░░░░  11%  ?") in response.text
+    lines = _slot_lines(response.text)
+    if unexpected:
+        assert lines[1] == "   " + t("usage.account_empty")
+        assert "```" not in lines
+    else:
+        assert lines[1:3] == ["```", " 5h █░░░░░░░░░  11%  ?"]
 
 
 @pytest.mark.parametrize("language", ["en", "de", "nl", "es", "fr", "id", "pt", "ru", "ko"])
@@ -493,7 +523,7 @@ async def test_api_key_account_has_label_without_usage_or_login_warning(page, la
         )
     )
     response = await selector.account_selector_start(home, config)
-    api_row, next_row, *_ = _slot_block(response.text)
+    api_row, next_row, *_ = _slot_lines(response.text)
     assert api_row == f"1. claude-api  {t('accounts.api_key')} · {t('accounts.no_cooldown')}"
     assert next_row.startswith("2. claude-a  ")
     for key in ("accounts.unauthenticated", "accounts.auth_expired", "usage.account_empty"):

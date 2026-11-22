@@ -252,12 +252,11 @@ def _build_page(  # noqa: C901
     lines = [t("accounts.title")]
     if note:
         lines.extend(["", note])
-    lines.extend(["", "```"])
     rows: list[list[Button]] = []
     now = time.time()
     timezone = resolve_user_timezone(config.user_timezone)
     if not slots:
-        lines.append(t("accounts.empty"))
+        lines.extend(["", t("accounts.empty")])
     for index, slot in enumerate(slots):
         name = slot["name"]
         directory = host_slot_config_dir(home, name)
@@ -292,8 +291,11 @@ def _build_page(  # noqa: C901
                 usage_lines = render_account_usage_lines(usage.get(name), config, now=now)
             except Exception as exc:
                 logger.warning("Account usage display failed: %s", type(exc).__name__)
-                usage_lines = [t("usage.account_empty")]
-            lines.extend(f"   {line}" for line in usage_lines)
+                usage_lines = []
+            if usage_lines:
+                lines.extend(["```", *usage_lines, "```"])
+            else:
+                lines.append("   " + t("usage.account_empty"))
         candidates: list[Button | None] = []
         if priority and index > 0:
             candidates.extend(
@@ -310,6 +312,6 @@ def _build_page(  # noqa: C901
         buttons = [button for button in candidates if button is not None]
         if buttons:
             rows.append(buttons)
-    lines.extend(["```", "", t("accounts.subagent_note")])
+    lines.extend(["", t("accounts.subagent_note")])
     rows.append([Button(text=t("accounts.btn_refresh"), callback_data="acs:r")])
     return SelectorResponse(text="\n".join(lines), buttons=ButtonGrid(rows=rows))
