@@ -30,6 +30,7 @@ from ductor_bot.chat_log.history import Entry, HistoryStore
 from ductor_bot.chat_log.ids import history_filename
 from ductor_bot.chat_log.outbox import Outbox
 from ductor_bot.chat_log.recorder import HistoryRecorder, chat_log_source, chat_log_turn
+from ductor_bot.cli import claude_slots
 from ductor_bot.cli.base import CLIConfig
 from ductor_bot.cli.claude_accounts import (
     DETACHED_API_KEY_HELPER,
@@ -131,18 +132,7 @@ async def test_health_meta_state_and_auth_state(bridge):
         "state": {
             "telegram": {"state": "unknown"},
             "outbox": {"pending": 2},
-            "claude": {
-                "next": "claude",
-                "slots": [
-                    {
-                        "name": "claude",
-                        "kind": "oauth",
-                        "state": "unauthenticated",
-                        "cooldown_until": None,
-                        "usage": None,
-                    }
-                ],
-            },
+            "claude": {"next": None, "slots": []},
         },
         "auth/state": {
             "password_configured": False,
@@ -164,11 +154,19 @@ def write_state_accounts(paths, accounts):
     paths.config_path.write_text(json.dumps({"claude_accounts": accounts}))
 
 
+def write_slot_credentials(home, name):
+    directory = host_slot_config_dir(home, name)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / ".credentials.json").write_text("{}")
+
+
 async def test_state_uses_current_disk_priority_for_rows_and_next(bridge):
     client, bot, _, paths = bridge
     bot.config.claude_accounts = ["claude", "claude-alt"]
     accounts = ["claude-alt", "claude"]
     write_state_accounts(paths, accounts)
+    for name in accounts:
+        write_slot_credentials(paths.ductor_home, name)
 
     response = await client.get(f"{_PREFIX}/state", headers=headers())
     assert response.status == 200
@@ -187,8 +185,8 @@ async def test_state_reports_slots_in_priority_order_with_stored_usage(bridge):
         directory.mkdir(parents=True)
         if name == "claude-api":
             (directory / "settings.json").write_text('{"apiKeyHelper":"test-helper"}')
-        elif name == "claude":
-            (directory / ".credentials.json").write_text("{}")
+        else:
+            write_slot_credentials(home, name)
     now = int(time.time())
     captured = now - 600
     cooldown = now + 1200
@@ -243,10 +241,11 @@ async def test_state_reports_slots_in_priority_order_with_stored_usage(bridge):
     }
 
 
-async def test_state_omits_missing_usage_windows_and_detached_key_usage(bridge):
+async def test_state_omits_detached_key_and_missing_usage_windows(bridge):
     client, _, _, paths = bridge
     accounts = ["claude", "claude-detached"]
     write_state_accounts(paths, accounts)
+    write_slot_credentials(paths.ductor_home, "claude")
     directory = host_slot_config_dir(paths.ductor_home, "claude-detached")
     directory.mkdir(parents=True)
     (directory / DETACHED_API_KEY_HELPER).touch()
@@ -265,13 +264,13 @@ async def test_state_omits_missing_usage_windows_and_detached_key_usage(bridge):
 
     response = await client.get(f"{_PREFIX}/state", headers=headers())
     assert response.status == 200
-    oauth, detached = (await response.json())["claude"]["slots"]
+    claude = (await response.json())["claude"]
+    assert claude["next"] == "claude"
+    (oauth,) = claude["slots"]
     assert oauth["usage"] == {
         "captured_at": 100,
         "windows": {"seven_day": {"utilization": 0.41, "resets_at": 300}},
     }
-    assert detached["kind"] == "api_key_detached"
-    assert detached["usage"] is None
 
 
 @pytest.mark.parametrize("alt_cooling", [False, True])
@@ -279,6 +278,8 @@ async def test_state_next_skips_expired_slot_and_uses_rotation_fallback(bridge, 
     client, _, _, paths = bridge
     accounts = ["claude", "claude-alt"]
     write_state_accounts(paths, accounts)
+    for name in accounts:
+        write_slot_credentials(paths.ductor_home, name)
     registry = SlotRegistry(state_file_path(paths.ductor_home))
     cooldowns = {"claude": time.time() + 1200}
     if alt_cooling:
@@ -297,6 +298,35 @@ async def test_state_next_skips_expired_slot_and_uses_rotation_fallback(bridge, 
     assert claude["next"] == (
         await fallback_slot(registry, accounts) if alt_cooling else "claude-alt"
     )
+
+
+@pytest.mark.parametrize("visible", [False, True])
+async def test_state_excludes_signed_out_and_detached_slots_and_uses_visible_priority(
+    bridge, visible
+):
+    client, _, _, paths = bridge
+    home = paths.ductor_home
+    accounts = ["claude-detached", "claude-logged-out", "claude-new"]
+    if visible:
+        accounts += ["claude-cooling", "claude-ready"]
+    write_state_accounts(paths, accounts)
+    directory = host_slot_config_dir(home, "claude-detached")
+    directory.mkdir(parents=True)
+    (directory / DETACHED_API_KEY_HELPER).touch()
+    claude_slots._mark_slot_signed_out(home, "claude-logged-out")
+    registry = SlotRegistry(state_file_path(home))
+    if visible:
+        for name in accounts[-2:]:
+            write_slot_credentials(home, name)
+        registry.update(
+            lambda snapshot: snapshot.cooldowns.update({"claude-cooling": time.time() + 1200})
+        )
+
+    response = await client.get(f"{_PREFIX}/state", headers=headers())
+    assert response.status == 200
+    claude = (await response.json())["claude"]
+    assert [slot["name"] for slot in claude["slots"]] == (accounts[-2:] if visible else [])
+    assert claude["next"] == ("claude-ready" if visible else None)
 
 
 async def test_state_preserves_other_fields_when_claude_overview_fails(bridge, monkeypatch, caplog):

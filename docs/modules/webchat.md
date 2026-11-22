@@ -47,6 +47,7 @@ After sign-in, the chat header displays the installed release version (hidden at
 The header globe selects one of nine web display languages, applied immediately and saved
 in browser localStorage across reloads; bot and Telegram language settings stay unchanged.
 The header Rename dialog updates the current topic name while keeping the conversation open.
+Clicking outside a dialog follows the same cancellation behavior as pressing Esc.
 
 ## Authentication
 
@@ -134,10 +135,12 @@ log files written by the native provider CLI itself; this feature does not manag
 ## Claude slots
 
 The header shows Claude slots in their configured priority order and highlights
-the slot that rotation will try first. On narrower screens, the header shows
+the slot that rotation will try first, or the first visible slot if that slot is hidden.
+On narrower screens, the header shows
 the next slot and a button to see the remaining slots. Open a chip to see the
 stored five-hour and seven-day usage windows, reset times and slot status.
 API-key slots have no OAuth usage data.
+The header hides OAuth slots without credentials and slots with disconnected API keys.
 
 The popover shows when the browser last fetched state and when each usage
 snapshot was captured. State refreshes on login, reconnect, when the page

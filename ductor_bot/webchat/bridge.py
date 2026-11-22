@@ -102,13 +102,14 @@ def _claude_slot_rows(home: Path, accounts: list[str]) -> list[dict[str, object]
     slots: list[dict[str, object]] = []
     for slot in overview["slots"]:
         name = slot["name"]
-        kind = slot_kind(host_slot_config_dir(home, name))
+        directory = host_slot_config_dir(home, name)
+        kind = slot_kind(directory)
+        if kind == "api_key_detached" or (kind == "oauth" and not slot_is_authenticated(directory)):
+            continue
         if slot["auth_expired"]:
             state = "expired"
         elif slot["cooldown_until"] is not None:
             state = "cooldown"
-        elif not slot["authenticated"]:
-            state = "unauthenticated"
         else:
             state = "ok"
         usage = usage_by_slot.get(name) if kind == "oauth" else None
@@ -139,11 +140,13 @@ async def _claude_state(home: Path) -> dict[str, object] | None:
     try:
         accounts = await asyncio.to_thread(claude_slots.read_accounts, home)
         slots = await asyncio.to_thread(_claude_slot_rows, home, accounts)
-        next_slot = DEFAULT_SLOT
-        if accounts:
-            registry = SlotRegistry(state_file_path(home))
-            hot = await hot_slots(registry, accounts)
-            next_slot = hot[0] if hot else await fallback_slot(registry, accounts)
+        if not slots:
+            return {"next": None, "slots": []}
+        # Rank only the slots shown, so the highlighted slot is one the user can see.
+        visible = [str(row["name"]) for row in slots]
+        registry = SlotRegistry(state_file_path(home))
+        hot = await hot_slots(registry, visible)
+        next_slot = hot[0] if hot else await fallback_slot(registry, visible)
     except Exception as exc:
         logger.warning("Webchat Claude state unavailable: %s", type(exc).__name__)
         return None
