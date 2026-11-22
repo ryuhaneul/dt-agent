@@ -89,6 +89,32 @@ export function renderRoute() {
   document.dispatchEvent(new CustomEvent('route-change', { detail: { route, view } }));
 }
 
+function closeOnBackdrop(dialog) {
+  let startedOutside = false;
+  const isBackdrop = event => {
+    if (event.target !== dialog || !dialog.matches(':modal')) return false;
+    const { left, right, top, bottom } = dialog.getBoundingClientRect();
+    return event.clientX < left || event.clientX >= right
+      || event.clientY < top || event.clientY >= bottom;
+  };
+
+  dialog.addEventListener('pointerdown', event => {
+    if (!event.isPrimary) return;
+    // A light-dismiss popover consumes the first outside gesture, just as it consumes Escape.
+    startedOutside = event.button === 0 && isBackdrop(event)
+      && !('showPopover' in dialog && dialog.querySelector('[popover="auto"]:popover-open'));
+  });
+  dialog.addEventListener('pointercancel', () => { startedOutside = false; });
+  dialog.addEventListener('close', () => { startedOutside = false; });
+  dialog.addEventListener('click', event => {
+    const dismiss = startedOutside && event.detail > 0 && isBackdrop(event);
+    startedOutside = false;
+    if (!dismiss) return;
+    if (dialog.requestClose) dialog.requestClose();
+    else if (dialog.dispatchEvent(new Event('cancel', { cancelable: true }))) dialog.close();
+  });
+}
+
 export function initRouter() {
   document.addEventListener('click', event => {
     if (event.target.closest('[data-close-dialog]')) { event.preventDefault(); closeDialog(); return; }
@@ -106,6 +132,7 @@ export function initRouter() {
     event.preventDefault(); closeDialog();
   });
   for (const dialog of document.querySelectorAll('dialog')) {
+    closeOnBackdrop(dialog);
     dialog.addEventListener('keydown', event => {
       if (event.key !== 'Tab') return;
       const controls = [...dialog.querySelectorAll('button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), a[href], [tabindex="0"]')]

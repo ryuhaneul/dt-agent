@@ -2974,3 +2974,30 @@ def test_claude_slots_browser(tmp_path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     print(result.stdout, end="")
+
+
+@pytest.mark.skipif(
+    not os.environ.get("DTW_PLAYWRIGHT_MODULE"),
+    reason="Set DTW_PLAYWRIGHT_MODULE for the dialog backdrop browser check",
+)
+def test_dialog_backdrop_browser(tmp_path):
+    config = tmp_path / "dialogs.json"
+    config.write_text(
+        json.dumps(
+            {
+                "static": str(STATIC),
+                "csp": CSP,
+                "starflowCsp": STARFLOW_CSP,
+                "strings": load_web_strings("en"),
+            }
+        )
+    )
+    result = subprocess.run(
+        ["node", str(Path(__file__).with_name("dialog_backdrop_browser.mjs")), str(config)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    print(result.stdout, end="")

@@ -17,7 +17,7 @@ function formatTime(seconds, withDay = false) {
 }
 
 function slotStatus(slot) {
-  const keyLabel = ['api_key', 'api_key_detached'].includes(slot.kind) ? t(`slots.${slot.kind}`) : '';
+  const keyLabel = slot.kind === 'api_key' ? t('slots.api_key') : '';
   if (slot.state === 'cooldown') {
     return { kind: 'cooldown', label: t('slots.resume_at', { time: formatTime(slot.cooldown_until, true) }), badge: 'warn', keyLabel };
   }

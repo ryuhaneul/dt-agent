@@ -48,7 +48,7 @@ function initialState() {
         0.87, epoch('2026-11-19T14:00:00+09:00'))),
       slot('claude-api', 'api_key', 'ok'),
       slot('claude-team', 'oauth', 'expired'),
-      slot('claude-new', 'oauth', 'unauthenticated'),
+      slot('claude-new', 'oauth', 'ok'),
     ],
   };
 }
@@ -215,7 +215,7 @@ async function checkHeaderMatrix(browser) {
           state = initialState();
           state.slots = state.slots.slice(0, count);
           while (state.slots.length < count) {
-            state.slots.push(slot(`claude-slot-${state.slots.length + 1}`, 'oauth', 'unauthenticated'));
+            state.slots.push(slot(`claude-slot-${state.slots.length + 1}`, 'oauth', 'ok'));
           }
           await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
           await page.waitForFunction(count => document.querySelectorAll('.slot-row').length === count, count);
@@ -257,7 +257,7 @@ async function checkHeaderMatrix(browser) {
     unsent = 3;
     state = initialState();
     while (state.slots.length < 12) {
-      state.slots.push(slot(`claude-slot-${state.slots.length + 1}`, 'oauth', 'unauthenticated'));
+      state.slots.push(slot(`claude-slot-${state.slots.length + 1}`, 'oauth', 'ok'));
     }
     await resize(1920);
     await page.goto(origin);
@@ -322,7 +322,7 @@ async function checkHeaderMatrix(browser) {
 
     unsent = 0;
     for (const [kind, language, width, reset] of [
-      ['api_key', 'en', 1440, cooldown], ['api_key_detached', 'en', 1440, cooldown],
+      ['api_key', 'en', 1440, cooldown],
       ['api_key', 'es', 375, cooldown], ['api_key', 'en', 375, futureCooldown],
       ['oauth', 'en', 375, futureCooldown],
     ]) {
@@ -560,21 +560,29 @@ async function check(browser, width, height, theme) {
       release();
       console.log('Shared state request: recovered on the next visibility refresh after 15 seconds.');
 
-      state.slots[2].kind = 'api_key_detached';
       state.slots[0].usage.windows.five_hour.resets_at = now - 60;
       delete state.slots[0].usage.windows.seven_day;
       await refresh.click();
       await list.getByText(strings['slots.reset_done'], { exact: true }).waitFor();
       await chip.locator('.slot-percent').waitFor();
-      assert.equal(await widget.locator('[data-slot-toggle="claude-api"]').getByText(strings['slots.api_key_detached']).count(), 1);
+      assert.equal(await widget.locator('[data-slot-toggle="claude-api"]').getByText(strings['slots.api_key']).count(), 1);
       assert.equal(await list.locator('.slot-row').first().locator('.slot-window').count(), 1);
       assert.equal(await list.locator('.slot-row').first().locator('.slot-percent').innerText(), '0%');
       assert.equal(await chip.locator('.slot-percent').innerText(), '0%');
       assert.equal(await chip.locator('.slot-mini').getAttribute('value'), '0');
       await page.screenshot({ path: path.join(config.shots, 'slots-reset-window.png'), animations: 'disabled' });
 
-      state = null;
+      state = { next: null, slots: [] };
       await refresh.click();
+      await widget.waitFor({ state: 'hidden' });
+      assert.equal(await page.locator('#telegramBadge').isVisible(), true);
+      console.log('An empty Claude slot list hides the widget.');
+
+      state = initialState();
+      await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+      await widget.waitFor();
+      state = null;
+      await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
       await widget.waitFor({ state: 'hidden' });
       assert.equal(await page.locator('#telegramBadge').isVisible(), true);
     }

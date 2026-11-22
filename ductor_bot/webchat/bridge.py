@@ -102,13 +102,14 @@ def _claude_slot_rows(home: Path, accounts: list[str]) -> list[dict[str, object]
     slots: list[dict[str, object]] = []
     for slot in overview["slots"]:
         name = slot["name"]
-        kind = slot_kind(host_slot_config_dir(home, name))
+        directory = host_slot_config_dir(home, name)
+        kind = slot_kind(directory)
+        if kind == "api_key_detached" or (kind == "oauth" and not slot_is_authenticated(directory)):
+            continue
         if slot["auth_expired"]:
             state = "expired"
         elif slot["cooldown_until"] is not None:
             state = "cooldown"
-        elif not slot["authenticated"]:
-            state = "unauthenticated"
         else:
             state = "ok"
         usage = usage_by_slot.get(name) if kind == "oauth" else None
@@ -139,6 +140,8 @@ async def _claude_state(home: Path) -> dict[str, object] | None:
     try:
         accounts = await asyncio.to_thread(claude_slots.read_accounts, home)
         slots = await asyncio.to_thread(_claude_slot_rows, home, accounts)
+        if not slots:
+            return {"next": None, "slots": []}
         next_slot = DEFAULT_SLOT
         if accounts:
             registry = SlotRegistry(state_file_path(home))
@@ -147,7 +150,8 @@ async def _claude_state(home: Path) -> dict[str, object] | None:
     except Exception as exc:
         logger.warning("Webchat Claude state unavailable: %s", type(exc).__name__)
         return None
-    return {"next": next_slot, "slots": slots}
+    next_name = next((row["name"] for row in slots if row["name"] == next_slot), slots[0]["name"])
+    return {"next": next_name, "slots": slots}
 
 
 def create_bridge_app(  # noqa: C901
