@@ -57,14 +57,51 @@ async function checkHeaderMatrix(browser) {
   const page = await browser.newPage({ viewport: { width: 844, height: 844 }, timezoneId: 'Asia/Seoul' });
   try {
     await page.clock.setFixedTime(new Date(now * 1000));
-    let locale, unsent, state = initialState();
+    let locale, unsent, state = initialState(), vaultState = 'unconfigured';
+    await page.addInitScript(() => {
+      window.headerLayout = () => {
+        const visible = selector => [...document.querySelectorAll(selector)]
+          .filter(element => element.getClientRects().length && !element.closest('.menu'));
+        const controls = visible('.bar-acts button, .stat .badge, .slot-chips button, .claude-slots>.slot-refresh, .claude-slots>time');
+        const rectangles = controls.map(control => control.getBoundingClientRect());
+        const contained = (outer, inner) => inner.left >= outer.left - 0.1 && inner.right <= outer.right + 0.1
+          && inner.top >= outer.top - 0.1 && inner.bottom <= outer.bottom + 0.1;
+        const clipped = controls.filter((control, index) => {
+          const content = [...control.children].filter(child => child.getClientRects().length
+            && !child.classList.contains('sr-only'));
+          return control.scrollWidth > control.clientWidth
+            || content.some(child => !contained(rectangles[index], child.getBoundingClientRect())
+              || (child instanceof HTMLElement && child.scrollWidth > child.clientWidth));
+        }).length;
+        const primary = visible('[data-slot-toggle][data-primary]');
+        return {
+          height: document.querySelector('.bar').getBoundingClientRect().height,
+          document: document.documentElement.scrollWidth - innerWidth,
+          overlaps: rectangles.reduce((count, a, i) => count + rectangles.slice(i + 1)
+            .filter(b => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom).length, 0),
+          clipped,
+          shown: visible('[data-slot-toggle]').length,
+          primary: primary.length,
+          primaryWidth: primary[0]?.getBoundingClientRect().width,
+          more: visible('[data-slot-more]')[0]?.textContent.trim(),
+          refresh: visible('.claude-slots>.slot-refresh, .claude-slots>time').length,
+          language: document.documentElement.lang,
+          width: innerWidth,
+          pending: !document.querySelector('#pendingBadge').hidden,
+          vault: document.querySelector('#vaultBadge span')?.textContent,
+        };
+      };
+    });
     await page.routeWebSocket('**/api/ws', () => {});
     await page.route('**/api/**', route => {
       const endpoint = new URL(route.request().url()).pathname;
       const reply = json => route.fulfill({ json });
-      if (endpoint === '/api/i18n') return reply({ lang: locale, strings: config.locales[locale] });
+      if (endpoint === '/api/i18n') {
+        const lang = new URL(route.request().url()).searchParams.get('lang') || locale;
+        return reply({ lang, strings: config.locales[lang] });
+      }
       if (endpoint === '/api/auth/state') return reply({ authenticated: true, csrf: 'fixture-csrf', bridge_up: true });
-      if (endpoint === '/api/masterkey/status') return reply({ state: 'unconfigured' });
+      if (endpoint === '/api/masterkey/status') return reply({ state: vaultState });
       if (endpoint === '/api/state') return reply({
         telegram: { state: 'up' }, bot: { up: true }, outbox: { pending: unsent },
         web_sessions: 1, version: '9.8.7', claude: state,
@@ -82,7 +119,7 @@ async function checkHeaderMatrix(browser) {
       await page.evaluate(() => document.fonts.ready);
     };
     const screenshot = name =>
-      page.screenshot({ path: path.join(config.shots, `fix2-${name}.png`), animations: 'disabled' });
+      page.screenshot({ path: path.join(config.shots, `fix3-${name}.png`), animations: 'disabled' });
     for (locale of Object.keys(config.locales)) {
       for (const [pending, delayed] of [[0, false], [3, false], [0, true], [3, true]]) {
         unsent = pending;
@@ -145,27 +182,22 @@ async function checkHeaderMatrix(browser) {
 
     const wideWidths = [1181, 1280, 1366, 1440, 1920];
     const wide = Object.fromEntries(wideWidths.map(width => [width, {
-      height: 0, heightChange: 0, document: 0, overlaps: 0, cases: 0,
+      height: 0, heightChange: 0, document: 0, overlaps: 0, clipped: 0, countErrors: 0, cases: 0,
     }]));
-    const layout = () => page.evaluate(() => {
-      const visible = selector => [...document.querySelectorAll(selector)]
-        .filter(element => element.getClientRects().length);
-      const buttons = visible('.bar-acts button, .stat .badge, .claude-slots button, .claude-slots>time');
-      const rectangles = buttons.map(button => button.getBoundingClientRect());
-      return {
-        height: document.querySelector('.bar').getBoundingClientRect().height,
-        document: document.documentElement.scrollWidth - innerWidth,
-        overlaps: rectangles.reduce((count, a, i) => count + rectangles.slice(i + 1)
-          .filter(b => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom).length, 0),
-        shown: visible('[data-slot-toggle]').length,
-        primary: visible('[data-slot-toggle][data-primary]').length,
-        more: visible('[data-slot-more]')[0]?.textContent.trim(),
-        refresh: visible('.claude-slots>.slot-refresh, .claude-slots>time').length,
-      };
-    });
+    const layout = () => page.evaluate(() => window.headerLayout());
     const resize = async width => {
+      await page.evaluate(width => {
+        window.headerResize = new Promise(resolve => {
+          const observer = new ResizeObserver(() => {
+            if (innerWidth !== width) return;
+            observer.disconnect();
+            resolve();
+          });
+          observer.observe(document.querySelector('.bar'));
+        });
+      }, width);
       await page.setViewportSize({ width, height: 900 });
-      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await page.evaluate(() => window.headerResize);
     };
     for (locale of Object.keys(config.locales)) {
       for (unsent of [0, 3]) {
@@ -197,26 +229,96 @@ async function checkHeaderMatrix(browser) {
             summary.heightChange = Math.max(summary.heightChange, change);
             summary.document = Math.max(summary.document, measure.document);
             summary.overlaps += measure.overlaps;
-            if (change > 1 || measure.document || measure.overlaps || measure.primary !== 1 || measure.refresh !== 2
-                || measure.more !== (measure.shown < count ? `+${count - 1}` : undefined)) {
+            summary.clipped += measure.clipped;
+            const hidden = count - measure.shown;
+            const correctCount = measure.more === (hidden ? `+${hidden}` : undefined);
+            summary.countErrors += Number(!correctCount);
+            if (change > 1 || measure.document || measure.overlaps || measure.clipped
+                || measure.primary !== 1 || measure.refresh !== 2 || !correctCount) {
               failures.push({ width, locale, unsent, count, baseline: baseline[width], ...measure });
             }
-            if (count === 5 && unsent === 3 && ((width === 1280 && locale === 'ko')
-                || (width === 1366 && locale === 'de'))) {
+            if (count === 5 && ((width === 1280 && locale === 'ko' && !unsent)
+                || (width === 1366 && locale === 'de' && unsent))) {
+              console.log(`${width}px ${locale}, five slots: next chip ${measure.primaryWidth}px, ${measure.shown} shown, ${measure.more || 'no overflow button'}`);
               await screenshot(`${width}-${locale}-5`);
             }
             if (count === 5 && unsent === 0 && width === 1440 && locale === 'ko') {
               console.log(`1440px Korean, five slots: ${measure.shown} chips visible`);
-              await screenshot('1440-ko-5-closed');
-              await page.locator('[data-primary]').click();
-              await screenshot('1440-ko-5-open');
-              await page.keyboard.press('Escape');
+              if (measure.shown !== 5) failures.push({ width, locale, count, design: measure.shown });
+              await screenshot('1440-ko-5');
             }
           }
         }
       }
     }
     console.log(`Wide header layout: ${JSON.stringify(wide)}`);
+
+    locale = 'ko';
+    unsent = 3;
+    state = initialState();
+    while (state.slots.length < 12) {
+      state.slots.push(slot(`claude-slot-${state.slots.length + 1}`, 'oauth', 'unauthenticated'));
+    }
+    await resize(1920);
+    await page.goto(origin);
+    await waitForHeader();
+    async function sampleFrames(name, change, expected) {
+      await page.evaluate(() => {
+        const frames = [];
+        window.headerFrames = frames;
+        function sample() {
+          if (window.headerFrames !== frames) return;
+          // Sample each rendering cycle after the application's layout observers.
+          const observer = new ResizeObserver(() => {
+            observer.disconnect();
+            if (window.headerFrames !== frames) return;
+            frames.push(window.headerLayout());
+            requestAnimationFrame(sample);
+          });
+          observer.observe(document.querySelector('.bar'));
+        }
+        requestAnimationFrame(sample);
+      });
+      await change();
+      await page.waitForFunction(expected => window.headerFrames.filter(frame =>
+        Object.entries(expected).every(([key, value]) => frame[key] === value)).length >= 3, expected);
+      const frames = await page.evaluate(() => {
+        const captured = window.headerFrames;
+        window.headerFrames = null;
+        return captured;
+      });
+      const bad = frames.filter(frame => {
+        const hidden = state.slots.length - frame.shown;
+        return frame.overlaps || frame.clipped || frame.document
+          || frame.more !== (hidden ? `+${hidden}` : undefined);
+      });
+      console.log(`${name}: ${frames.length} frames, ${bad.length} with geometry or count errors, ${frames.filter(frame => frame.overlaps || frame.clipped).length} with overlap or clipping`);
+      if (bad.length) failures.push({ transition: name, first: bad[0] });
+    }
+    const selectLanguage = async lang => {
+      await page.locator('#languageButton').click();
+      await page.locator(`[data-locale="${lang}"]`).click();
+    };
+    for (let round = 1; round <= 5; round++) {
+      if (round > 1) {
+        await selectLanguage('ko');
+        await page.waitForFunction(() => document.documentElement.lang === 'ko');
+      }
+      await sampleFrames(`Korean to French ${round}`, () => selectLanguage('fr'), { language: 'fr' });
+    }
+    await screenshot('1920-fr-12-pending3');
+    await sampleFrames('Resize', () => page.setViewportSize({ width: 1181, height: 900 }), { width: 1181 });
+    const refreshState = () => page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    unsent = 0;
+    await sampleFrames('Pending badge removed', refreshState, { pending: false });
+    unsent = 3;
+    await sampleFrames('Pending badge added', refreshState, { pending: true });
+    vaultState = 'locked';
+    await sampleFrames('Vault label changed', () => page.evaluate(() =>
+      document.dispatchEvent(new Event('vault-refresh'))), { vault: config.locales.fr['vault.locked'] });
+    vaultState = 'unconfigured';
+    await page.evaluate(() => localStorage.removeItem('dtw-web-language'));
+
 
     unsent = 0;
     for (const [kind, language, width, reset] of [
@@ -251,7 +353,7 @@ async function checkHeaderMatrix(browser) {
       }
       if (reset === futureCooldown && kind === 'oauth') await screenshot('future-cooldown');
     }
-    const examples = [...failures.slice(0, 6), ...failures.filter(failure => failure.kind).slice(0, 5)];
+    const examples = [...failures.slice(0, 6), ...failures.filter(failure => failure.kind || failure.transition).slice(0, 15)];
     assert.equal(failures.length, 0, JSON.stringify(examples, null, 2));
   } finally {
     await page.close();
@@ -469,7 +571,7 @@ async function check(browser, width, height, theme) {
       assert.equal(await list.locator('.slot-row').first().locator('.slot-percent').innerText(), '0%');
       assert.equal(await chip.locator('.slot-percent').innerText(), '0%');
       assert.equal(await chip.locator('.slot-mini').getAttribute('value'), '0');
-      await page.screenshot({ path: path.join(config.shots, 'fix2-reset-window.png'), animations: 'disabled' });
+      await page.screenshot({ path: path.join(config.shots, 'slots-reset-window.png'), animations: 'disabled' });
 
       state = null;
       await refresh.click();

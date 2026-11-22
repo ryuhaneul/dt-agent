@@ -90,13 +90,13 @@ export function initSlots(refresh) {
   const times = root.querySelectorAll('time');
   const refreshButtons = root.querySelectorAll('[data-slot-refresh]');
   const bar = root.closest('.bar');
+  const neighbors = [...bar.children].filter(child => child !== root);
   const narrow = matchMedia('(max-width: 1180px)');
   let data = null, updatedAt = null, trigger = null;
   let refreshing = false, failed = false;
 
   function chipCapacity() {
     const header = getComputedStyle(bar);
-    const neighbors = [...bar.children].filter(child => child !== root);
     const controls = [refreshButtons[0], times[0]];
     const reserved = [...neighbors, ...controls].reduce((width, element) =>
       width + element.getBoundingClientRect().width, 0);
@@ -107,31 +107,49 @@ export function initSlots(refresh) {
   }
 
   function fitChips() {
-    const more = chips.querySelector('[data-slot-more]');
-    if (!more) return;
     const buttons = [...chips.querySelectorAll('[data-slot-toggle]')];
-    for (const button of [...buttons, more]) button.hidden = false;
-    if (narrow.matches) return;
+    if (!buttons.length) return;
+    const primary = chips.querySelector('[data-primary]');
+    const more = chips.querySelector('[data-slot-more]');
+    const setHiddenCount = count => {
+      more.firstElementChild.textContent = `+${count}`;
+      more.hidden = count === 0;
+    };
+    primary.style.removeProperty('max-width');
+    buttons.forEach(button => { button.hidden = false; });
+    if (narrow.matches) {
+      if (more) setHiddenCount(buttons.length - 1);
+      return;
+    }
 
-    // Measure intrinsic chip widths before selecting the buttons that fit.
-    chips.setAttribute('data-measuring', '');
     const capacity = chipCapacity();
     const gap = parseFloat(getComputedStyle(chips).columnGap);
     const widths = buttons.map(button => button.getBoundingClientRect().width);
-    const moreWidth = more.getBoundingClientRect().width;
-    chips.removeAttribute('data-measuring');
-
     const fullWidth = widths.reduce((total, width) => total + width, 0) + gap * (buttons.length - 1);
-    more.hidden = fullWidth <= capacity;
-    if (more.hidden) return;
-    const primary = buttons.findIndex(button => button.hasAttribute('data-primary'));
-    let available = capacity - widths[primary] - moreWidth - gap;
+    if (fullWidth <= capacity || !more) {
+      if (more) more.hidden = true;
+      if (fullWidth > capacity) primary.style.maxWidth = `${Math.max(0, capacity)}px`;
+      return;
+    }
+
+    let hidden = buttons.length - 1;
+    setHiddenCount(hidden);
+    const primaryWidth = widths[buttons.indexOf(primary)];
+    const primaryLimit = capacity - gap - more.getBoundingClientRect().width;
+    if (primaryWidth > primaryLimit) primary.style.maxWidth = `${Math.max(0, primaryLimit)}px`;
+    let used = primaryWidth;
     buttons.forEach((button, index) => {
-      if (index === primary) return;
+      if (button === primary) return;
+      setHiddenCount(hidden - 1);
       const required = widths[index] + gap;
-      button.hidden = required > available;
-      if (!button.hidden) available -= required;
+      const reserve = hidden > 1 ? gap + more.getBoundingClientRect().width : 0;
+      button.hidden = used + required + reserve > capacity;
+      if (!button.hidden) {
+        hidden--;
+        used += required;
+      }
     });
+    setHiddenCount(hidden);
   }
 
   function positionPopover() {
@@ -180,7 +198,7 @@ export function initSlots(refresh) {
     const primary = slots.find(({ next }) => next) ?? slots[0];
     chips.innerHTML = slots.map(item => chip(item.slot, item.status, item.next, item === primary, now)).join('') +
       (more > 0 ? `<button class="slot-chip slot-more" type="button" data-slot-more ${TOGGLE}
-        aria-label="${esc(t('slots.show_all', { n: data.slots.length }))}">+${more}${MORE_ICON}</button>` : '');
+        aria-label="${esc(t('slots.show_all', { n: data.slots.length }))}"><span>+${more}</span>${MORE_ICON}</button>` : '');
     list.innerHTML = slots.map(({ slot, status, next }) => slotRow(slot, status, next, now)).join('');
     list.scrollTop = scroll;
     const clock = formatTime(updatedAt.getTime() / 1000);
@@ -219,22 +237,21 @@ export function initSlots(refresh) {
     const focus = trigger?.getClientRects().length ? trigger : chips.querySelector('[data-primary]');
     focus?.focus();
   });
-  document.addEventListener('language-changed', render);
+  document.addEventListener('language-changed', () => queueMicrotask(render));
   function updateLayout() {
     fitChips();
     positionPopover();
   }
   window.addEventListener('resize', updateLayout);
-  let layoutFrame = null;
-  const layout = new ResizeObserver(() => {
-    if (layoutFrame !== null) return;
-    layoutFrame = requestAnimationFrame(() => {
-      layoutFrame = null;
-      updateLayout();
-    });
-  });
+  // Neighbor text and visibility changes must be folded before the next paint.
+  const content = new MutationObserver(updateLayout);
+  const layout = new ResizeObserver(updateLayout);
   layout.observe(bar);
-  for (const child of bar.children) layout.observe(child);
+  for (const neighbor of neighbors) {
+    layout.observe(neighbor);
+    content.observe(neighbor, { subtree: true, childList: true, characterData: true,
+      attributes: true, attributeFilter: ['hidden', 'class'] });
+  }
 
   return {
     update(value) {

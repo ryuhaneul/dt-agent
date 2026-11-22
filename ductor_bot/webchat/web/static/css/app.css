@@ -547,7 +547,7 @@ dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(2px)}
 .claude-slots{position:relative;max-width:100%;flex:0 1 auto}
 .slot-chip,.slot-refresh{display:inline-flex;align-items:center;height:30px;border:1px solid var(--rule);background:var(--surface);cursor:pointer}
 .slot-chip{min-width:0;gap:6px;padding:0 9px;border-radius:999px;color:var(--fg);font-size:.76rem;font-weight:600;white-space:nowrap}
-.slot-chip:not([data-primary]),.slot-chips[data-measuring] .slot-chip{flex:none}
+.slot-chip:not([data-primary]){flex:none}
 .slot-chip:hover,.slot-refresh:hover{border-color:var(--muted)}
 .slot-chip:focus-visible,.slot-refresh:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .slot-name,.slot-percent,.slot-reset,.slot-time{font-family:var(--mono);font-variant-numeric:tabular-nums}
@@ -599,6 +599,17 @@ dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(2px)}
 .slot-window .slot-percent{color:var(--fg);font-weight:600}
 .slot-reset{font-size:.68rem}
 .slot-captured{margin-top:6px}
+@media(width > 1180px){
+  .bar:has(.claude-slots:not([hidden])) > :is(.logo,.stat),
+  .slot-chip[data-primary],.slot-chip .slot-label{flex:none}
+  .slot-chips{overflow:clip;overflow-clip-margin:4px}
+  .slot-chip[data-primary] .slot-name{min-width:0}
+}
+@media(1180px < width <= 1240px){
+  .bar:has(.claude-slots:not([hidden])){padding-inline:12px}
+  .bar:has(.claude-slots:not([hidden])) .bar-acts{gap:5px}
+  .bar:has(.claude-slots:not([hidden])) .bar-acts .theme-btn{width:32px;min-width:32px}
+}
 @media(max-width:1180px){
   .bar:has(.claude-slots:not([hidden])){flex-wrap:wrap}
   .bar:has(.claude-slots:not([hidden])) .bar-acts{margin-left:auto}
