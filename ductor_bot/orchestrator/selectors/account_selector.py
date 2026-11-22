@@ -24,7 +24,7 @@ from ductor_bot.cli.claude_usage import UsageStore, usage_file_path
 from ductor_bot.config import AgentConfig, resolve_user_timezone
 from ductor_bot.i18n import t
 from ductor_bot.orchestrator.selectors.models import Button, ButtonGrid, SelectorResponse
-from ductor_bot.orchestrator.selectors.usage_view import render_account_usage
+from ductor_bot.orchestrator.selectors.usage_view import render_account_usage_lines
 
 logger = logging.getLogger(__name__)
 
@@ -288,11 +288,14 @@ def _build_page(  # noqa: C901
         lines.append(f"{index + 1}. {name}  {auth} · {cooldown}{unused}")
         if kind == "oauth":
             try:
-                usage_line = render_account_usage(usage.get(name), config, now=now)
+                usage_lines = render_account_usage_lines(usage.get(name), config, now=now)
             except Exception as exc:
                 logger.warning("Account usage display failed: %s", type(exc).__name__)
-                usage_line = t("usage.account_empty")
-            lines.append("   " + usage_line)
+                usage_lines = []
+            if usage_lines:
+                lines.extend(["```", *usage_lines, "```"])
+            else:
+                lines.append("   " + t("usage.account_empty"))
         candidates: list[Button | None] = []
         if priority and index > 0:
             candidates.extend(

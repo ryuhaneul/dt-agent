@@ -13,10 +13,10 @@ from ductor_bot.i18n import init, t
 from ductor_bot.cli.claude_usage import SlotUsage, UsageWindow
 from ductor_bot.cli.codex_usage import CodexUsage, CodexWindow
 from ductor_bot.orchestrator.selectors.usage_view import (
+    render_account_usage_lines,
     render_usage,
-    render_account_usage,
-    usage_buttons,
     usage_bar,
+    usage_buttons,
     window_label,
 )
 
@@ -81,16 +81,33 @@ def test_design_examples_exactly():
         sha256(render_usage(config, slots, codex, now=stamp(21, 14, 5)).encode()).hexdigest()
         == AFTER_SHA256
     )
-    assert render_account_usage(slots["claude-main"], config, now=stamp(21, 13, 30)) == (
-        "5h 11% · 14:30 / 7d 2% · 10/28 06:00 (" + t("usage.captured", time="13:25") + ")"
-    )
-    assert render_account_usage(slots["claude-sub"], config, now=stamp(21, 14, 5)) == (
-        "5h "
-        + t("usage.reset", time="13:40")
-        + " / 7d 36% · 10/27 04:00 ("
-        + t("usage.captured", time="13:20")
-        + ")"
-    )
+
+def test_account_usage_bars_and_capture_time():
+    config, slots, _ = sample()
+    assert render_account_usage_lines(slots["claude-main"], config, now=stamp(21, 13, 30)) == [
+        " 5h █░░░░░░░░░  11%  14:30",
+        " 7d ░░░░░░░░░░   2%  10/28 06:00",
+        t("usage.captured", time="13:25"),
+    ]
+
+
+def test_account_usage_reset_without_a_bar_for_single_window():
+    config, slots, _ = sample()
+    usage = slots["claude-sub"]
+    del usage.windows["seven_day"]
+    assert render_account_usage_lines(usage, config, now=stamp(21, 14, 5)) == [
+        " 5h " + t("usage.reset", time="13:40"),
+        t("usage.captured", time="13:20"),
+    ]
+
+
+@pytest.mark.parametrize("has_usage", [False, True])
+def test_account_usage_without_saved_windows(has_usage):
+    config, slots, _ = sample()
+    usage = slots["claude-main"] if has_usage else None
+    if usage is not None:
+        usage.windows.clear()
+    assert render_account_usage_lines(usage, config, now=stamp(21, 13, 30)) == []
 
 
 @pytest.mark.parametrize(
@@ -128,7 +145,6 @@ def test_no_values_default_slot_and_refresh():
     config = AgentConfig(user_timezone="Asia/Seoul")
     text = render_usage(config, {}, CodexUsage(), now=stamp(21, 13, 30))
     assert ("Claude · claude\n" + t("usage.empty")) in text
-    assert render_account_usage(None, config, now=stamp(21, 13, 30)) == (t("usage.account_empty"))
     button = usage_buttons().rows[0][0]
     assert button.text == (t("usage.refresh")) and button.callback_data == "usg:refresh"
     assert len(button.callback_data.encode()) <= 64
@@ -168,7 +184,6 @@ def test_reset_boundary_and_unknown_rejection_window():
     assert " 5h " + t("usage.reset", time="13:40") in text
     slots["claude-sub"].rate_limit_type = None
     assert "⛔" not in render_usage(config, slots, codex, now=stamp(21, 13, 30))
-    assert render_account_usage(None, config, now=stamp(21, 13, 30)) == t("usage.account_empty")
 
 
 def test_percentage_half_up_at_two_and_a_half():
@@ -185,7 +200,9 @@ def test_unrepresentable_reset_keeps_values_and_marks_time_unknown():
     text = render_usage(config, slots, codex, now=stamp(21, 13, 30))
     assert " 5h █░░░░░░░░░  11%  ?" in text
     assert " 5h ██░░░░░░░░  23%  ?" in text
-    assert "5h 11% · ?" in render_account_usage(slots["claude-main"], config, now=stamp(21, 13, 30))
+    assert " 5h █░░░░░░░░░  11%  ?" in render_account_usage_lines(
+        slots["claude-main"], config, now=stamp(21, 13, 30)
+    )
 
 
 @pytest.mark.parametrize("locale", ["en", "de", "nl", "es", "fr", "id", "pt", "ru", "ko"])

@@ -121,8 +121,8 @@ Modules:
 - `cron_selector.py` (`crn:*`)
 - `session_selector.py` (`nsc:*`)
 - `task_selector.py` (`tsc:*`)
-- `account_selector.py` (`acs:*`): main Telegram bot only; Claude authentication, slot priority and cooldown management through `cli/claude_slots.py`. Both command and callback entry points enforce the existing main-only policy; stale buttons refresh without changing files. Each slot includes a saved usage summary with capture and reset times
-- `usage_view.py` (`usg:refresh`): usage bars and compact account summaries. Telegram sends saved Claude values with a Codex loading line, then edits the same fixed-width message with queried Codex values and a refresh button. Refresh rereads Claude values and requeries Codex, editing the same message once; unchanged-message errors are ignored
+- `account_selector.py` (`acs:*`): main Telegram bot only; Claude authentication, slot priority and cooldown management through `cli/claude_slots.py`. Both command and callback entry points enforce the existing main-only policy; stale buttons refresh without changing files. Each OAuth slot with saved usage shows its own fixed-width block below the slot header, with usage bars, reset notices for expired windows, and the capture time. API key slots show their status on the slot header
+- `usage_view.py` (`usg:refresh`): shared usage formatting for `/usage` and `/accounts`. For `/usage`, Telegram sends saved Claude values with a Codex loading line, then edits the same fixed-width message with queried Codex values and a refresh button. Refresh rereads Claude values and requeries Codex, editing the same message once; unchanged-message errors are ignored
 - shared models/utilities in `selectors/models.py`, `selectors/utils.py`
 
 Important model-selector behavior:
