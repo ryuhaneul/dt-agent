@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from ductor_bot.i18n import LANGUAGES
 from ductor_bot.i18n.loader import _load_toml, load_web_strings
 from ductor_bot.webchat.web.app import CSP, STARFLOW_CSP, STATE
 from tests.webchat import test_web_app as fake_contract
@@ -962,7 +963,7 @@ async function fetch(url,options={}){
   }
   throw Error(`Unexpected API: ${url}`);
 }
-const context=vm.createContext({document,window:document,CustomEvent,WebSocket,fetch,URL,TextEncoder,TextDecoder,localStorage,console,
+const context=vm.createContext({document,window:document,CustomEvent,WebSocket,fetch,URL,TextEncoder,TextDecoder,AbortController,localStorage,console,
  getComputedStyle:()=>({paddingTop:'0px'}),
   requestAnimationFrame:callback=>{frames.set(++frameId,callback);return frameId},
   cancelAnimationFrame:id=>frames.delete(id),
@@ -975,7 +976,8 @@ const context=vm.createContext({document,window:document,CustomEvent,WebSocket,f
 const modules=new Map();
 for(const [name,exports] of Object.entries({
  'router.js':{renderRoute:()=>document.querySelector('[data-view="chat"] h2').focus(),go:route=>{context.location.hash=`#${route}`;routes.push(route);document.dispatchEvent(new CustomEvent('route-change',{detail:{route,view:route==='manage'?'manage':'chat'}}))}},
- 'auth.js':{notify:key=>notices.push(key)}
+ 'auth.js':{notify:key=>notices.push(key)},
+ 'slots.js':{initSlots:()=>({update(){},setRefreshing(){}})}
 })){
   const module=new vm.SyntheticModule(Object.keys(exports),function(){for(const [key,value]of Object.entries(exports))this.setExport(key,value)},{context});
   await module.link(()=>{});await module.evaluate();modules.set(path.join(staticDir,'js',name),module);
@@ -2944,3 +2946,31 @@ def test_release_version_browser(tmp_path):
         timeout=120,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.skipif(
+    not os.environ.get("DTW_PLAYWRIGHT_MODULE"),
+    reason="Set DTW_PLAYWRIGHT_MODULE for the Claude slots browser check",
+)
+def test_claude_slots_browser(tmp_path):
+    config = tmp_path / "slots.json"
+    config.write_text(
+        json.dumps(
+            {
+                "static": str(STATIC),
+                "csp": CSP,
+                "starflowCsp": STARFLOW_CSP,
+                "shots": os.environ.get("DTW_SLOTS_SHOTS", str(tmp_path / "shots")),
+                "locales": {locale: load_web_strings(locale) for locale in LANGUAGES},
+            }
+        )
+    )
+    result = subprocess.run(
+        ["node", str(Path(__file__).with_name("claude_slots_browser.mjs")), str(config)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    print(result.stdout, end="")

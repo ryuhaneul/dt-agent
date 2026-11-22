@@ -20,13 +20,16 @@ from ductor_bot.chat_log.ids import from_tid
 from ductor_bot.cli import claude_slots
 from ductor_bot.cli.autocompact import parse_autocompact_input, resolve_autocompact
 from ductor_bot.cli.claude_accounts import (
+    DEFAULT_SLOT,
     SlotRegistry,
     host_slot_config_dir,
     slot_is_authenticated,
     slot_kind,
     state_file_path,
 )
-from ductor_bot.config import resolve_user_timezone
+from ductor_bot.cli.claude_usage import UsageStore, usage_file_path
+from ductor_bot.cli.slot_rotation import fallback_slot, hot_slots
+from ductor_bot.config import AgentConfig, resolve_user_timezone
 from ductor_bot.i18n import LANGUAGES
 from ductor_bot.i18n.loader import TranslationStore
 from ductor_bot.infra.atomic_io import atomic_text_save
@@ -79,6 +82,8 @@ from ductor_bot.webchat.uploads import (
 from ductor_bot.webchat.vault import register_vault_routes
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from ductor_bot.chat_log.runtime import ChatLogRuntime
     from ductor_bot.messenger.telegram.app import TelegramBot
     from ductor_bot.orchestrator.core import Orchestrator
@@ -88,6 +93,61 @@ logger = logging.getLogger(__name__)
 
 _PREFIX = "/webchat/v1"
 CLI_LOGIN = web.AppKey("cli_login_manager", CliLoginManager)
+
+
+def _claude_slot_rows(home: Path, accounts: list[str]) -> list[dict[str, object]]:
+    config = AgentConfig(claude_accounts=accounts or [DEFAULT_SLOT])
+    overview = claude_slots.overview(home, config)
+    usage_by_slot = UsageStore(usage_file_path(home / "workspace")).load()
+    slots: list[dict[str, object]] = []
+    for slot in overview["slots"]:
+        name = slot["name"]
+        kind = slot_kind(host_slot_config_dir(home, name))
+        if slot["auth_expired"]:
+            state = "expired"
+        elif slot["cooldown_until"] is not None:
+            state = "cooldown"
+        elif not slot["authenticated"]:
+            state = "unauthenticated"
+        else:
+            state = "ok"
+        usage = usage_by_slot.get(name) if kind == "oauth" else None
+        slots.append(
+            {
+                "name": name,
+                "kind": kind,
+                "state": state,
+                "cooldown_until": slot["cooldown_until"],
+                "usage": {
+                    "captured_at": usage.captured_at,
+                    "windows": {
+                        window_name: {
+                            "utilization": window.utilization,
+                            "resets_at": window.resets_at,
+                        }
+                        for window_name, window in usage.windows.items()
+                    },
+                }
+                if usage is not None
+                else None,
+            }
+        )
+    return slots
+
+
+async def _claude_state(home: Path) -> dict[str, object] | None:
+    try:
+        accounts = await asyncio.to_thread(claude_slots.read_accounts, home)
+        slots = await asyncio.to_thread(_claude_slot_rows, home, accounts)
+        next_slot = DEFAULT_SLOT
+        if accounts:
+            registry = SlotRegistry(state_file_path(home))
+            hot = await hot_slots(registry, accounts)
+            next_slot = hot[0] if hot else await fallback_slot(registry, accounts)
+    except Exception as exc:
+        logger.warning("Webchat Claude state unavailable: %s", type(exc).__name__)
+        return None
+    return {"next": next_slot, "slots": slots}
 
 
 def create_bridge_app(  # noqa: C901
@@ -168,6 +228,7 @@ def create_bridge_app(  # noqa: C901
             {
                 "telegram": runtime.link.state(),
                 "outbox": {"pending": len(await runtime.outbox.pending(skip_unreadable=True))},
+                "claude": await _claude_state(bot._orch.paths.ductor_home),
             }
         )
 
