@@ -326,7 +326,7 @@ async def test_state_excludes_signed_out_and_detached_slots_and_uses_visible_pri
     assert response.status == 200
     claude = (await response.json())["claude"]
     assert [slot["name"] for slot in claude["slots"]] == (accounts[-2:] if visible else [])
-    assert claude["next"] == ("claude-cooling" if visible else None)
+    assert claude["next"] == ("claude-ready" if visible else None)
 
 
 async def test_state_preserves_other_fields_when_claude_overview_fails(bridge, monkeypatch, caplog):

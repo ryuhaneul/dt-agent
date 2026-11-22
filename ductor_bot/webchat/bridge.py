@@ -142,16 +142,15 @@ async def _claude_state(home: Path) -> dict[str, object] | None:
         slots = await asyncio.to_thread(_claude_slot_rows, home, accounts)
         if not slots:
             return {"next": None, "slots": []}
-        next_slot = DEFAULT_SLOT
-        if accounts:
-            registry = SlotRegistry(state_file_path(home))
-            hot = await hot_slots(registry, accounts)
-            next_slot = hot[0] if hot else await fallback_slot(registry, accounts)
+        # Rank only the slots shown, so the highlighted slot is one the user can see.
+        visible = [str(row["name"]) for row in slots]
+        registry = SlotRegistry(state_file_path(home))
+        hot = await hot_slots(registry, visible)
+        next_slot = hot[0] if hot else await fallback_slot(registry, visible)
     except Exception as exc:
         logger.warning("Webchat Claude state unavailable: %s", type(exc).__name__)
         return None
-    next_name = next((row["name"] for row in slots if row["name"] == next_slot), slots[0]["name"])
-    return {"next": next_name, "slots": slots}
+    return {"next": next_slot, "slots": slots}
 
 
 def create_bridge_app(  # noqa: C901
