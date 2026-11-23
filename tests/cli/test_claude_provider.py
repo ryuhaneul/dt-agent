@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from contextlib import aclosing
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -25,6 +26,7 @@ from ductor_bot.cli.stream_events import (
     ResultEvent,
     StreamEvent,
     SystemInitEvent,
+    ToolUseEvent,
 )
 
 # ---------------------------------------------------------------------------
@@ -809,6 +811,224 @@ class TestMultiSlotFallback:
         assert resp.result.startswith("[Claude: claude → claude-alt switched")
         assert "15:00" in resp.result.splitlines()[0]
         assert "Hi from alt slot" in resp.result
+
+    @staticmethod
+    def _streaming_proc(
+        *deltas: str, result: str, is_error: bool = False, partial: bool = False
+    ) -> MagicMock:
+        if partial:
+            messages = [
+                {
+                    "type": "stream_event",
+                    "event": {
+                        "type": "content_block_delta",
+                        "delta": {"type": "text_delta", "text": delta},
+                    },
+                }
+                for delta in deltas
+            ]
+        else:
+            messages = [
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": delta}]},
+                }
+                for delta in deltas
+            ]
+        messages.append({"type": "result", "result": result, "is_error": is_error})
+        return _fake_streaming_process(
+            [json.dumps(message).encode() + b"\n" for message in messages],
+            returncode=int(is_error),
+        )
+
+    _SUBSCRIPTION_ERROR = (
+        "Claude Code can't use your Claude subscription, usually because a payment is past due "
+        "· Pay or renew at https://claude.ai/settings/billing (if you just paid, try again shortly), "
+        "or use an Anthropic API key instead"
+    )
+
+    @pytest.mark.parametrize("failure", ["subscription", "quota"])
+    @pytest.mark.parametrize("partial", [False, True], ids=["assistant-message", "text-delta"])
+    async def test_streaming_switch_hides_failed_diagnostic(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: str, partial: bool
+    ) -> None:
+        cli = self._make_multi_cli(monkeypatch, tmp_path)
+        cli._config.include_partial_messages = partial
+        diagnostic = (
+            self._SUBSCRIPTION_ERROR
+            if failure == "subscription"
+            else "You've hit your limit · resets at 18:30"
+        )
+        answer = "Hello from the second slot."
+        procs = [
+            self._streaming_proc(diagnostic, result=diagnostic, is_error=True, partial=partial),
+            self._streaming_proc(answer, result=answer, partial=partial),
+        ]
+
+        with patch(_EXEC_PATH, side_effect=procs):
+            events = await _collect_stream(cli)
+
+        final = events[-1]
+        assert isinstance(final, ResultEvent)
+        assert not final.is_error
+        prefix = final.result.removesuffix(answer)
+        assert prefix.startswith("[Claude: claude → claude-alt ")
+        assert prefix.endswith("]\n\n")
+        assert [event.text for event in events if isinstance(event, AssistantTextDelta)] == [
+            prefix,
+            answer,
+        ]
+
+    @pytest.mark.parametrize(
+        "shape", ["subscription-split", "quota-split", "leading-newline", "leading-empty"]
+    )
+    async def test_streaming_switch_hides_split_diagnostic(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, shape: str
+    ) -> None:
+        cli = self._make_multi_cli(monkeypatch, tmp_path)
+        cli._config.include_partial_messages = True
+        subscription_error = self._SUBSCRIPTION_ERROR
+        deltas = {
+            "subscription-split": (subscription_error[:40], subscription_error[40:]),
+            "quota-split": ("You've hit ", "your limit · resets at 18:30"),
+            "leading-newline": ("\n", subscription_error),
+            "leading-empty": ("", subscription_error),
+        }[shape]
+        diagnostic = "".join(deltas).lstrip()
+        answer = "Hello from the second slot."
+        procs = [
+            self._streaming_proc(*deltas, result=diagnostic, is_error=True, partial=True),
+            self._streaming_proc(answer, result=answer, partial=True),
+        ]
+
+        with patch(_EXEC_PATH, side_effect=procs):
+            events = await _collect_stream(cli)
+
+        final = events[-1]
+        assert isinstance(final, ResultEvent)
+        assert not final.is_error
+        prefix = final.result.removesuffix(answer)
+        assert prefix.startswith("[Claude: claude → claude-alt ")
+        assert prefix.endswith("]\n\n")
+        assert [event.text for event in events if isinstance(event, AssistantTextDelta)] == [
+            prefix,
+            answer,
+        ]
+
+    @pytest.mark.parametrize("matching", [False, True])
+    async def test_streaming_short_success_releases_held_text_at_completion(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, matching: bool
+    ) -> None:
+        cli = self._make_multi_cli(monkeypatch, tmp_path)
+        quote = self._SUBSCRIPTION_ERROR if matching else "The subscription is active."
+        deltas = ("Diagnostic example:\n", quote, "\nEnd of example.")
+        proc = self._streaming_proc(*deltas, result="".join(deltas))
+        with patch(_EXEC_PATH, return_value=proc) as execute:
+            stream = cli.send_streaming("hello")
+            first = await anext(stream)
+            assert isinstance(first, AssistantTextDelta)
+            assert first.text == deltas[0]
+            assert proc.stdout.readline.await_count == len(deltas) + 2
+            events = [first, *[event async for event in stream]]
+
+        execute.assert_called_once()
+        assert [event.text for event in events if isinstance(event, AssistantTextDelta)] == list(
+            deltas
+        )
+        final = events[-1]
+        assert isinstance(final, ResultEvent)
+        assert final.result == "".join(deltas)
+
+    async def test_streaming_all_failed_slots_surface_last_diagnostic_and_relogin(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from ductor_bot.cli.slot_rotation import build_reauth_notice
+
+        cli = self._make_multi_cli(monkeypatch, tmp_path)
+        last_error = "Not logged in · Please run /login"
+        procs = [
+            self._streaming_proc(
+                self._SUBSCRIPTION_ERROR, result=self._SUBSCRIPTION_ERROR, is_error=True
+            ),
+            self._streaming_proc(last_error, result=last_error, is_error=True),
+        ]
+
+        with patch(_EXEC_PATH, side_effect=procs):
+            events = await _collect_stream(cli)
+
+        final = events[-1]
+        assert isinstance(final, ResultEvent)
+        assert final.is_error
+        assert final.result == last_error + build_reauth_notice()
+        assert not any(isinstance(event, AssistantTextDelta) for event in events)
+
+
+    async def test_streaming_opening_releases_at_120_chars_and_later_mentions_are_immediate(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        cli = self._make_multi_cli(monkeypatch, tmp_path)
+        opening = "  " + "The API replied. ".ljust(119, "x")
+        deltas = (opening, ".", "Check the rate limit policy. ", "HTTP 429 means retry.")
+        proc = self._streaming_proc(*deltas, result="".join(deltas))
+
+        with patch(_EXEC_PATH, return_value=proc):
+            async with aclosing(cli.send_streaming("hello")) as stream:
+                for text, read_count in zip(deltas, (2, 2, 3, 4), strict=True):
+                    event = await anext(stream)
+                    assert isinstance(event, AssistantTextDelta)
+                    assert event.text == text
+                    assert proc.stdout.readline.await_count == read_count
+                assert isinstance(await anext(stream), ResultEvent)
+
+    @pytest.mark.parametrize("opening", ["I will check the rate limit. ", "I will read the file. "])
+    async def test_streaming_tool_releases_held_opening_text(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, opening: str
+    ) -> None:
+        cli = self._make_multi_cli(monkeypatch, tmp_path)
+        answer = "The server returned HTTP 429."
+        messages = [
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": opening}]}},
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "tool_use", "name": "Read"}]},
+            },
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": answer}]}},
+            {"type": "result", "result": opening + answer},
+        ]
+        proc = _fake_streaming_process([json.dumps(msg).encode() + b"\n" for msg in messages])
+
+        with patch(_EXEC_PATH, return_value=proc):
+            async with aclosing(cli.send_streaming("hello")) as stream:
+                first = await anext(stream)
+                assert isinstance(first, AssistantTextDelta)
+                assert first.text == opening
+                assert proc.stdout.readline.await_count == 2
+                tool = await anext(stream)
+                assert isinstance(tool, ToolUseEvent)
+                assert tool.tool_name == "Read"
+                assert proc.stdout.readline.await_count == 2
+                tail = await anext(stream)
+                assert isinstance(tail, AssistantTextDelta)
+                assert tail.text == answer
+                assert proc.stdout.readline.await_count == 3
+                assert isinstance(await anext(stream), ResultEvent)
+
+    async def test_streaming_releases_held_text_when_it_exceeds_600_chars(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        cli = self._make_multi_cli(monkeypatch, tmp_path)
+        start = "A rate limit can slow transfers. "
+        deltas = (start, "x" * (600 - len(start)), "!", " HTTP 429.")
+        proc = self._streaming_proc(*deltas, result="".join(deltas))
+
+        with patch(_EXEC_PATH, return_value=proc):
+            async with aclosing(cli.send_streaming("hello")) as stream:
+                for text, read_count in zip(deltas, (3, 3, 3, 4), strict=True):
+                    event = await anext(stream)
+                    assert isinstance(event, AssistantTextDelta)
+                    assert event.text == text
+                    assert proc.stdout.readline.await_count == read_count
+                assert isinstance(await anext(stream), ResultEvent)
 
     async def test_fallback_prefix_follows_the_language(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

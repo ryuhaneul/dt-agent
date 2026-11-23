@@ -69,8 +69,10 @@ from ductor_bot.cli.slot_rotation import (
     slot_extra_env,
 )
 from ductor_bot.cli.stream_events import (
+    AssistantTextDelta,
     ResultEvent,
     StreamEvent,
+    ToolUseEvent,
     parse_stream_line,
 )
 from ductor_bot.cli.types import CLIResponse
@@ -85,6 +87,11 @@ logger = logging.getLogger(__name__)
 # so neither shows up in the process list (``ps``) or hits the argv size cap.
 _SYSTEM_PREFIX = "ductor_system_"
 _APPEND_PREFIX = "ductor_append_"
+
+# Allow for split deltas across the longest fixed auth phrase, about 86 characters.
+_DIAGNOSTIC_CHECK_CHARS = 120
+# The observed subscription error is about 230 characters and fits in one short message.
+_MAX_PENDING_DIAGNOSTIC_CHARS = 600
 
 
 @dataclass(slots=True)
@@ -371,12 +378,8 @@ class ClaudeCodeCLI(BaseCLI):
     ) -> AsyncGenerator[StreamEvent, None]:
         """Send a prompt and yield stream events live as they arrive.
 
-        Multi-account setups stream events live (not buffered) from each
-        attempt. If a slot returns a rate-limit ``ResultEvent``, we record
-        the cooldown and retry on the next hot slot — subsequent stream
-        events replace the prior slot's output in the edit-mode UI. The
-        final emitted ``ResultEvent`` carries the fallback prefix so the
-        user sees ``[Claude: A → B ...]`` when a switch happened.
+        Hold opening text for diagnostic detection across deltas. Release prose
+        at the check threshold and hold matching diagnostics up to the length limit.
         """
         accounts = await current_slot_candidates(
             Path(self._config.ductor_home), self._config.claude_accounts
@@ -390,10 +393,15 @@ class ClaudeCodeCLI(BaseCLI):
 
         attempted = False
         last_error: ResultEvent | None = None
+        pending: list[StreamEvent] = []
         for slot in hot:
             with reserve_slot(self._registry, slot) as reserved:
                 if not reserved:
                     continue
+                pending.clear()
+                opening_text = ""
+                diagnostic_matched = False
+                body_started = False
                 attempted = True
                 capture = _StreamPassOutcome()
                 mtimes = (
@@ -401,6 +409,23 @@ class ClaudeCodeCLI(BaseCLI):
                     if self._registry
                     else {}
                 )
+                auth_prefix = (
+                    build_auth_fallback_prefix(first_auth_slot, slot)
+                    if first_auth_slot is not None
+                    else ""
+                )
+                quota_prefix = (
+                    build_fallback_prefix(
+                        first_rl_slot,
+                        slot,
+                        first_rl_reset,
+                        self._default_timezone(),
+                        reset_estimated=first_rl_reset_estimated,
+                    )
+                    if first_rl_slot is not None and first_rl_reset is not None
+                    else ""
+                )
+                notice = auth_prefix or quota_prefix
 
                 stream = self._stream_attempt(
                     prompt,
@@ -416,6 +441,35 @@ class ClaudeCodeCLI(BaseCLI):
                         if isinstance(event, ResultEvent):
                             # Defer final result emission until we decide on retry.
                             continue
+                        if not body_started:
+                            if isinstance(event, AssistantTextDelta):
+                                opening_text += event.text
+                            tool_started = isinstance(event, ToolUseEvent)
+                            if not diagnostic_matched and (
+                                tool_started
+                                or len(opening_text.lstrip()) >= _DIAGNOSTIC_CHECK_CHARS
+                            ):
+                                diagnostic_matched = _matches_rotation_diagnostic(opening_text)
+                                body_started = not diagnostic_matched
+                            if tool_started or (
+                                diagnostic_matched
+                                and len(opening_text) > _MAX_PENDING_DIAGNOSTIC_CHARS
+                            ):
+                                body_started = True
+                            if not body_started and (
+                                pending or isinstance(event, AssistantTextDelta)
+                            ):
+                                pending.append(event)
+                                continue
+                        if notice and (
+                            opening_text.strip()
+                            or (isinstance(event, AssistantTextDelta) and event.text.strip())
+                        ):
+                            yield AssistantTextDelta(type="assistant", text=notice)
+                            notice = ""
+                        for held in pending:
+                            yield held
+                        pending.clear()
                         yield event
 
                 final = capture.final_result
@@ -474,24 +528,20 @@ class ClaudeCodeCLI(BaseCLI):
                     if retry_failed:
                         last_error = final
                         continue
-                    if final is None:
-                        return
-                    if first_auth_slot is not None and returncode == 0 and not final.is_error:
-                        prefix = build_auth_fallback_prefix(first_auth_slot, slot)
-                        yield final.model_copy(update={"result": prefix + (final.result or "")})
-                    elif first_rl_slot is not None and first_rl_reset is not None:
-                        prefix = build_fallback_prefix(
-                            first_rl_slot,
-                            slot,
-                            first_rl_reset,
-                            self._default_timezone(),
-                            reset_estimated=first_rl_reset_estimated,
+                    result_prefix = auth_prefix if returncode == 0 and not attempt.is_error else ""
+                    result_prefix = (result_prefix or quota_prefix) if final is not None else ""
+                    if notice and result_prefix and opening_text.strip():
+                        yield AssistantTextDelta(type="assistant", text=result_prefix)
+                    for event in pending:
+                        yield event
+                    if final is not None:
+                        yield (
+                            final.model_copy(
+                                update={"result": result_prefix + (final.result or "")}
+                            )
+                            if result_prefix
+                            else final
                         )
-                        yield final.model_copy(
-                            update={"result": prefix + (final.result or "")},
-                        )
-                    else:
-                        yield final
                     return
 
                 reset_dt = parse_reset_from_text(
@@ -523,7 +573,11 @@ class ClaudeCodeCLI(BaseCLI):
                     )
 
         if last_error is not None:
+            # Let the messenger send the final error without marking text as streamed.
             yield last_error
+        else:
+            for event in pending:
+                yield event
         if attempted:
             return
 
@@ -818,6 +872,13 @@ def _unlink_prompt_files(files: _PromptFiles) -> None:
 async def _cleanup_prompt_files(files: _PromptFiles) -> None:
     """Delete both temp files in one worker call (best effort, cancel-safe)."""
     await asyncio.to_thread(_unlink_prompt_files, files)
+
+
+def _matches_rotation_diagnostic(text: str) -> bool:
+    """Check a delta for the same text patterns used to classify failed attempts."""
+    return detect_auth_failure_kind(
+        returncode=1, is_error=True, stderr="", result=text
+    ) is not None or detect_rate_limit(returncode=1, is_error=True, stderr="", result=text)
 
 
 def _make_capturing_post_handler(
