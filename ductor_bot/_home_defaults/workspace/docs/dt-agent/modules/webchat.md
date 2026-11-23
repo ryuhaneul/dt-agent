@@ -302,10 +302,11 @@ a restart, while saving preferences in the dialog does not.
 
 Uploads are sequential chunks, with per-file progress showing bytes acknowledged
 by the server. Hash calculation and final verification have separate states.
-**Resume upload** after a failure or **Cancel transfer** uses the server's received
-offset in the same tab; it does not resend already accepted chunks. Cancellation
-keeps the draft text and attachments. Removing an unfinished attachment requests
-cancellation of its server session. Refreshing or closing the tab discards the
+**Resume upload** after a retryable failure or **Cancel transfer** uses the
+server's received offset in the same tab, so already accepted chunks are skipped.
+If final verification rejects the file type, the attachment shows the reason
+and can be removed. Cancellation keeps the draft text and attachments. Removing
+an unfinished attachment requests cancellation of its server session. Refreshing or closing the tab discards the
 in-memory files and resume state; this is not cross-tab or reload recovery.
 If message submission was not confirmed after uploading, check the conversation
 before retrying. Cancellation/removal is disabled while submitting the message.

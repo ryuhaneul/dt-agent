@@ -83,7 +83,7 @@ export function initAttachments({ getTopic, changed, resume }) {
     const meter=block.querySelector('progress');meter.value=item.state==='complete'?meter.max:received;
     block.querySelector('[data-transfer-error]').textContent=item.error?t(item.error):'';
     const retry=block.querySelector('[data-resume]'),cancel=block.querySelector('[data-cancel-upload]');
-    retry.hidden=!['failed','cancelled','paused'].includes(item.state);retry.disabled=busy;
+    retry.hidden=item.error==='attach.type_rejected'||!['failed','cancelled','paused'].includes(item.state);retry.disabled=busy;
     cancel.hidden=!busy||posting||!['hashing','uploading','verifying'].includes(item.state);
     cancel.disabled=posting;
   }
@@ -292,7 +292,12 @@ export function initAttachments({ getTopic, changed, resume }) {
         return {ids,batch,run};
       } catch(error) {
         if(epoch===generation){
-          if(activeItem){activeItem.state=cancelled?'cancelled':'failed';activeItem.error=cancelled?null:(error.attachmentKey||'attach.failed');}
+          if(activeItem){
+            const typeRejected=activeItem.state==='verifying'&&error.status===415&&
+              ['mime_mismatch','invalid_type','invalid_image'].includes(error.code);
+            activeItem.state=cancelled?'cancelled':'failed';
+            activeItem.error=cancelled?null:(typeRejected?'attach.type_rejected':error.attachmentKey||'attach.failed');
+          }
           batch.filter(item=>item.state==='waiting').forEach(item=>{item.state='paused';});
         }
         const result=error.code==='auth_required'||error.attachmentKey?error:failure('attach.failed');

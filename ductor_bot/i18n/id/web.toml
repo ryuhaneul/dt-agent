@@ -522,6 +522,7 @@ too_many = "Maksimal {n} berkas per pesan."
 too_large = "{name} melebihi batas berkas {size}."
 settings_failed = "Batas lampiran tidak dapat dimuat. Coba lagi."
 failed = "Pengiriman lampiran gagal. Draf tetap tersimpan."
+type_rejected = "Jenis berkas ini tidak dapat diverifikasi sehingga berkas tidak dapat dikirim."
 command = "Kirim lampiran sebagai pesan tanpa perintah garis miring."
 
 progress = "Progres unggah {name}"

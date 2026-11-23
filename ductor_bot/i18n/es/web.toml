@@ -522,6 +522,7 @@ too_many = "Adjunta como máximo {n} archivos por mensaje."
 too_large = "{name} supera el límite de {size}."
 settings_failed = "No se pueden cargar los límites. Inténtalo de nuevo."
 failed = "Error al enviar adjuntos. Se conserva el borrador."
+type_rejected = "No se pudo verificar el tipo de este archivo, por lo que no se puede enviar."
 command = "Envía adjuntos como mensaje sin un comando de barra."
 
 progress = "Progreso de carga de {name}"
