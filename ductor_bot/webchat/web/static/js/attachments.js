@@ -47,12 +47,30 @@ export function initAttachments({ getTopic, changed, resume }) {
   const items = tid => topics.get(tid) || [];
   const current = () => items(getTopic()?.tid);
   const available = () => { const topic = getTopic(); return topic && !topic.read_only && topic.tid !== 'unknown' && !busy; };
-  function resize() {
-    input.style.height = 'auto';
+  let measuredValue = '', measuredWidth = 0, measuredMaximum = 0, minimumHeight;
+  function resize(fromInput = false) {
+    const value = input.value;
     const maximum = (window.visualViewport?.height || innerHeight) * 0.4;
-    const height = input.scrollHeight;
-    input.style.height = Math.min(height, maximum) + 'px';
-    input.style.overflowY = height > maximum ? 'auto' : 'hidden';
+    const sameBox = fromInput && maximum === measuredMaximum
+      && measuredWidth > 0 && input.clientWidth === measuredWidth;
+    const scrollHeight = sameBox ? input.scrollHeight : 0;
+    // Overflow exposes the natural height even during replacements such as IME edits.
+    const hasNaturalHeight = sameBox && scrollHeight > input.clientHeight;
+    // Otherwise scrollHeight has a floor at clientHeight, so remeasure possible shrinks.
+    const canKeepHeight = sameBox && !hasNaturalHeight
+      && (value.startsWith(measuredValue) || input.style.height === minimumHeight);
+    if (!canKeepHeight) {
+      let height = scrollHeight;
+      if (!hasNaturalHeight) {
+        input.style.height = 'auto';
+        height = input.scrollHeight;
+        measuredWidth = input.clientWidth;
+      }
+      input.style.height = Math.min(height, maximum) + 'px';
+      input.style.overflowY = height > maximum ? 'auto' : 'hidden';
+      if (!value && measuredWidth > 0) minimumHeight = input.style.height;
+    }
+    measuredValue = value; measuredMaximum = maximum;
     position();
   }
   function render() {

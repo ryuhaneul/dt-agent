@@ -22,6 +22,9 @@ const page=await context.newPage(), errors=[], sessions=new Map(), messages=[], 
 page.on('pageerror',error=>errors.push(error.message));
 const topic={tid:'123.7',chat_id:123,topic_id:7,name:'Attachment checks',group:'telegram',count:0,imported_count:0,read_only:false,renamable:true,deletable:true,busy:false,seen:0};
 let settings={max_file_bytes:2*1024**3,max_files_per_message:10,chunk_bytes:1024**2,server_max_file_bytes:2*1024**3,server_max_files_per_message:10}, failPut=false;
+const draftTopic={...topic,tid:'123.8',topic_id:8,name:'Other draft'};
+const composerDraft='Send this\nmultiline draft\nnow';
+let composerCheck=false;
 let emptyHistoryEnabled=false,historyEnabled=false,dropAfterAck=false,holdPut=false,releasePut=null,settingsPuts=0;
 const putOffsets=[];
 let wsPeer=null,backgroundReady=false,expiredPhoto=false;
@@ -37,7 +40,7 @@ await page.route('**/api/**',async route=>{
   requests.push({p,method});
   if(p==='/i18n')return response(route,{lang:'ko',strings:cfg.strings});
   if(p==='/auth/state')return response(route,{authenticated:true,csrf:'fixture-csrf',bridge_up:true,password_configured:true,totp_configured:true});
-  if(p==='/topics')return response(route,{topics:[topic]});
+  if(p==='/topics')return response(route,{topics:composerCheck?[topic,draftTopic]:[topic]});
   if(p==='/state')return response(route,{telegram:{state:'up'},outbox:{pending:0},bot:{up:true},web_sessions:1});
   if(p==='/outbox')return response(route,{items:[]});
   if(p==='/commands')return response(route,{commands:[]});
@@ -86,6 +89,7 @@ await page.route('**/api/**',async route=>{
   }
   if(p.endsWith('/messages') && method==='POST'){
     const data=request.postDataJSON();
+    if(composerCheck){assert.equal(data.text,composerDraft);return response(route,{ok:true});}
     assert(data.attachment_ids.length);assert(data.attachment_ids.every(id=>sessions.get(id).state==='complete'));
     messages.push(data);return response(route,{turn_id:crypto.randomBytes(6).toString('hex')});
   }
@@ -96,6 +100,94 @@ async function reset(){await page.goto(origin);await page.waitForSelector('#app:
 async function addFile(name='sample.png'){await page.locator('#filePick').setInputFiles(path.join(cfg.directory,name));await page.waitForFunction(()=>document.querySelectorAll('.attach-draft').length>0);}
 async function popup(){await page.locator('[data-options]').first().click();await page.waitForSelector('#imageOptions:not([hidden])');}
 async function selectMode(mode){await page.locator(`[data-mode="${mode}"]`).click();await page.waitForFunction(()=>!document.querySelector('[data-apply]').disabled);assert.equal(await page.evaluate(()=>document.activeElement.dataset.mode),mode);}
+async function checkComposerResize() {
+  composerCheck = true;
+  await reset();
+  const input = page.locator('#msgIn');
+  const sample = async name => {
+    const box = await input.evaluate(element => ({
+      height: element.getBoundingClientRect().height,
+      overflow: element.style.overflowY,
+    }));
+    results.composer[name] = box;
+    return box.height;
+  };
+  results.composer = {};
+  const empty = await sample('empty');
+  await input.fill('First line');
+  await input.press('End');
+  await input.press('Shift+Enter');
+  await page.keyboard.insertText('Second line');
+  const twoLines = await sample('newline');
+  assert(twoLines > empty);
+
+  const pasted = 'First line\nSecond line\nPasted third\nPasted fourth';
+  await page.evaluate(() => navigator.clipboard.writeText('\nPasted third\nPasted fourth'));
+  await input.press('End');
+  await input.press('Control+V');
+  await page.waitForFunction(expected => document.querySelector('#msgIn').value === expected, pasted);
+  const fourLines = await sample('paste');
+  assert(fourLines > twoLines);
+
+  await input.evaluate(element => element.setSelectionRange('First line'.length, element.value.length));
+  await input.press('Backspace');
+  assert.equal(await input.inputValue(), 'First line');
+  assert.equal(await sample('delete'), empty);
+
+  await input.fill(composerDraft);
+  const draftHeight = await sample('draftBeforeSwitch');
+  await page.locator(`#tlist [data-tid="${draftTopic.tid}"]`).click();
+  assert.equal(await input.inputValue(), '');
+  await page.locator(`#tlist [data-tid="${topic.tid}"]`).click();
+  assert.equal(await input.inputValue(), composerDraft);
+  assert.equal(await sample('draftRestored'), draftHeight);
+
+  await addFile('notes.txt');
+  assert.equal(await sample('trayAdded'), draftHeight);
+  await page.locator('[data-remove]').click();
+  await page.locator('#attachmentWrap').waitFor({ state: 'hidden' });
+  assert.equal(await sample('trayRemoved'), draftHeight);
+  await page.locator('#sendBtn').click();
+  await page.waitForFunction(() => !document.querySelector('#msgIn').value);
+  assert.equal(await sample('sent'), empty);
+
+  const multiline = 'line\n'.repeat(5);
+  await input.fill(multiline);
+  assert(await sample('beforeReplacement') > empty);
+  await input.fill('a'.repeat(multiline.length));
+  assert.equal(await sample('sameLengthReplacement'), empty);
+
+  const resize = async (width, height) => {
+    await page.setViewportSize({ width, height });
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  };
+  await input.fill('wrapped text '.repeat(28));
+  const wide = await sample('wide');
+  await resize(780, 720);
+  assert(await sample('narrow') > wide);
+  await resize(1280, 720);
+  assert.equal(await sample('wideAgain'), wide);
+
+  await input.fill('line\n'.repeat(19));
+  assert.equal(await sample('capped'), 288);
+  assert.equal(results.composer.capped.overflow, 'auto');
+  results.composer.capped.scrollTop = await input.evaluate(element => {
+    element.scrollTop = element.scrollHeight;
+    return element.scrollTop;
+  });
+  assert(results.composer.capped.scrollTop > 0);
+  await resize(1280, 540);
+  assert.equal(await sample('shorterViewport'), 216);
+  await resize(1280, 1200);
+  const uncapped = await sample('tallerViewport');
+  assert(uncapped > 288 && uncapped < 480);
+  assert.equal(results.composer.tallerViewport.overflow, 'hidden');
+  await resize(1280, 720);
+  await input.fill('');
+  assert.equal(await sample('emptyAgain'), empty);
+  composerCheck = false;
+}
+
 try{
   emptyHistoryEnabled=true;
   await page.goto(origin+'/?empty-page=1');
@@ -156,6 +248,7 @@ try{
   assert.equal(historyRequests(),readCount+1);
   results.checks.push('mirror, entry and legacy receipt events preserve unchanged message nodes');
   emptyHistoryEnabled=false;
+  await checkComposerResize();
   // Keep the requested resize format; unsupported raster formats use PNG.
   await reset();
   const other={};for(const extension of ['gif','bmp'])other[extension]=(await fs.readFile(path.join(cfg.directory,'sample.'+extension))).toString('base64');

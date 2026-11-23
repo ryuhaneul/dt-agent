@@ -1037,8 +1037,8 @@ export async function handleEvent(event) {
     }
   }
 }
-function resizeComposer() {
-  if (composerFiles) { composerFiles.resize(); return; }
+function resizeComposer(event) {
+  if (composerFiles) { composerFiles.resize(event?.type === 'input'); return; }
   const input = document.querySelector('#msgIn');
   input.style.height = 'auto';
   input.style.height = `${input.scrollHeight + input.offsetHeight - input.clientHeight}px`;
@@ -1153,11 +1153,11 @@ export function initChat() {
   initMarkdownLinks(thread);
   input.maxLength = 32000;
   composerFiles = initAttachments({ getTopic, changed: updateSendButton, resume: () => void sendMessage() });
-  function updateDraft() {
+  function updateDraft(event) {
     const topic = getTopic();
     if (topic) drafts.set(topic.tid, input.value);
     updateSendButton();
-    resizeComposer();
+    resizeComposer(event);
   }
   input.addEventListener('input', updateDraft);
   commandMenu = initCommands(input, updateDraft);
