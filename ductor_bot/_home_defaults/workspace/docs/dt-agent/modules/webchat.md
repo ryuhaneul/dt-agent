@@ -43,6 +43,15 @@ forced-HTTPS ACME exception. This bundled NPMplus instance is dedicated to web c
 the allowlist denial applies to every forced-HTTPS host on the instance. Do not add
 other hosts to it.
 
+On the configured web chat domain, a binary upload chunk PUT skips the
+CrowdSec AppSec check only when the original request URI matches the upload
+chunk path exactly, with no query string. The IP allowlist, CrowdSec IP
+decisions and the app's session and CSRF checks still apply. Upload creation,
+status, deletion and completion continue through AppSec. On existing gateway
+installations, rerun
+`python3 scripts/webchat.py up` after upgrading to apply the updated gateway
+configuration.
+
 After sign-in, the chat header displays the installed release version (hidden at widths of 760px and below; use `/version` there).
 The header globe selects one of nine web display languages, applied immediately and saved
 in browser localStorage across reloads; bot and Telegram language settings stay unchanged.
@@ -295,10 +304,11 @@ a restart, while saving preferences in the dialog does not.
 
 Uploads are sequential chunks, with per-file progress showing bytes acknowledged
 by the server. Hash calculation and final verification have separate states.
-**Resume upload** after a failure or **Cancel transfer** uses the server's received
-offset in the same tab; it does not resend already accepted chunks. Cancellation
-keeps the draft text and attachments. Removing an unfinished attachment requests
-cancellation of its server session. Refreshing or closing the tab discards the
+**Resume upload** after a retryable failure or **Cancel transfer** uses the
+server's received offset in the same tab, so already accepted chunks are skipped.
+If final verification rejects the file type, the attachment shows the reason
+and can be removed. Cancellation keeps the draft text and attachments. Removing
+an unfinished attachment requests cancellation of its server session. Refreshing or closing the tab discards the
 in-memory files and resume state; this is not cross-tab or reload recovery.
 If message submission was not confirmed after uploading, check the conversation
 before retrying. Cancellation/removal is disabled while submitting the message.
@@ -307,10 +317,13 @@ before retrying. Cancellation/removal is disabled while submitting the message.
 1 to 8 MiB. Binary chunks use `application/octet-stream`; the web app streams them
 to the bridge rather than buffering a whole file. Set proxy/WAF request limits
 for the chosen chunk size and verify the deployed ingress separately. The server
-verifies the full SHA-256 before completion. It reserves disk space for remaining
-file bytes and chunk staging while preserving a 1 GiB free-space floor; inadequate
-space rejects or stops the transfer. Incomplete sessions expire after 24 hours of
-inactivity. Their private temporary files live in `workspace/webchat_files/.incoming/`;
+verifies the full SHA-256 before completion. It determines the stored MIME type
+and extension from the file contents. A specific browser MIME type that differs
+from the detected type is rejected if either type is an image type. The server
+reserves disk space for remaining file bytes and chunk staging while preserving
+a 1 GiB free-space floor. Inadequate space rejects or stops the transfer.
+Incomplete sessions expire after 24 hours of inactivity. Their private temporary
+files live in `workspace/webchat_files/.incoming/`;
 completed files use UTC date directories and random names with verified extensions
 under `workspace/webchat_files/`. Display names never select the storage path.
 Completed uploads that have not been sent expire 24 hours after completion,

@@ -82,7 +82,6 @@ _TEXT_EXTENSIONS = frozenset(
         "tsv",
     ]
 )
-_TEXT_MIMES = frozenset({"application/json", "application/javascript", "application/xml"})
 logger = logging.getLogger(__name__)
 _TEXT_CONTROLS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
 
@@ -378,9 +377,8 @@ def _sniff(path: Path, candidate: str, name: str) -> tuple[str, str, bool]:
     if mime == "text/plain" and not _valid_text(path):
         mime, extension = "application/octet-stream", "bin"
     candidate = {"image/jpg": "image/jpeg"}.get(candidate, candidate)
-    text_candidate = candidate.startswith("text/") or candidate in _TEXT_MIMES
-    if candidate not in {"", "application/octet-stream", mime} and not (
-        mime == "text/plain" and text_candidate
+    if candidate not in {"", "application/octet-stream", mime} and (
+        candidate.startswith("image/") or mime.startswith("image/")
     ):
         raise UploadError("mime_mismatch", 415)
     if mime == "text/plain":

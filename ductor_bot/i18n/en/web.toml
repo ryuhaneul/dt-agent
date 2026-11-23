@@ -522,6 +522,8 @@ too_many = "Attach at most {n} files per message."
 too_large = "{name} exceeds the file limit of {size}."
 settings_failed = "Cannot load attachment limits. Try again."
 failed = "Attachment transfer failed. Your draft is preserved."
+type_rejected = "This file's type could not be verified, so it cannot be sent."
+image_too_large = "This image has too many pixels to send."
 command = "Send attachments with a message, without a slash command."
 
 progress = "Upload progress for {name}"
