@@ -555,6 +555,8 @@ open_original = "Ver original"
 
 [slots]
 title = "Ranuras de Claude"
+usage_title = "Uso de Claude y Codex"
+show_all_usage = "Mostrar todas las entradas de uso ({n})"
 next = "Siguiente"
 show_all = "Ver las {n} ranuras"
 refresh = "Actualizar"

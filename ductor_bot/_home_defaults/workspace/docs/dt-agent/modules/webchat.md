@@ -132,20 +132,30 @@ and is discarded 10 minutes after the job ends. Input echoed by the CLI remains 
 in the owner-only raw output; one-time codes are not masked. This guarantee does not cover
 log files written by the native provider CLI itself; this feature does not manage those files.
 
-## Claude slots
+## Provider usage
 
-The header shows Claude slots in their configured priority order and highlights
-the slot that rotation will try first, or the first visible slot if that slot is hidden.
-On narrower screens, the header shows
-the next slot and a button to see the remaining slots. Open a chip to see the
-stored five-hour and seven-day usage windows, reset times and slot status.
-API-key slots have no OAuth usage data.
-The header hides OAuth slots without credentials and slots with disconnected API keys.
+The header shows Claude slots in priority order and highlights the next visible
+slot in rotation. It shows the stored five-hour and seven-day usage on separate
+lines when both windows are available. When the next chip and overflow button
+need more room, the chips show durations and percentages without bars.
+
+The Codex chip follows the Claude slots when an observation is available. When
+chips fold into the overflow menu, Claude slots take priority over Codex. Open
+any chip or the overflow button to see every available window with its usage,
+reset time and capture time. API-key slots have no OAuth usage data. The header
+hides OAuth slots without credentials and slots with disconnected API keys.
 
 The popover shows when the browser last fetched state and when each usage
 snapshot was captured. State refreshes on login, reconnect, when the page
-becomes visible again, and when a web turn ends. Use the refresh button to
-read the latest stored usage after activity from another session.
+becomes visible again, when a web turn ends, and when a new Codex usage
+observation is stored. Use the refresh button to read the latest stored usage.
+
+State also carries the last successful Codex usage observation held by the bot.
+Codex chat turns request a refresh after completion in the background, and
+`/usage` also updates the observation on success. A failed query leaves the last
+successful value available. Turn-end refreshes share pending queries but always
+request fresh data once a query finishes. Reading state uses the stored value
+and does not start a query.
 
 ## Topics, turns and queue
 
@@ -429,7 +439,7 @@ The browser app relays bridge JSON statuses and error codes. Bridge routes use
 
 | Operation | Status and response |
 |---|---|
-| Read state (`GET /state`) | 200 with `telegram`, `outbox`, and `claude` (`{next, slots}` or `null` if unavailable). The browser relay adds `bot`, `web_sessions`, and `version`. |
+| Read state (`GET /state`) | 200 with `telegram`, `outbox`, `claude` (`{next, slots}` or `null`), and `codex` (`{captured_at, windows}` or `null`). The browser relay adds `bot`, `web_sessions`, and `version`. |
 | Delete topic while its session lock remains held beyond 30 seconds | 409 `topic_busy`; retry after the topic finishes stopping |
 | Send to or abort Unknown topic | 409 `read_only`; select a real topic |
 | List commands (`GET /commands`, optional allowed `lang`) | 200 `{ "commands": [...] }`; invalid language: 400 `bad_request` |

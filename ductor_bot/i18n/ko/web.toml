@@ -555,6 +555,8 @@ open_original = "원본 보기"
 
 [slots]
 title = "Claude 슬롯"
+usage_title = "Claude·Codex 사용량"
+show_all_usage = "사용량 {n}개 모두 보기"
 next = "현재"
 show_all = "슬롯 {n}개 모두 보기"
 refresh = "갱신"

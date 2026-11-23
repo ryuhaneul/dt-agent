@@ -20,6 +20,7 @@ let view = 'chat', selection = 0, commandMenu = null, secretDialog = null, autoc
 let streamFrame = null, historyRender = null, composerFiles = null, attachmentView = null;
 const streamUpdates = new Set();
 const HISTORY_PAGE_SIZE = 100, MESSAGE_WINDOW_SIZE = 100, WINDOW_STEP = 50;
+const LATEST_GAP = 80;
 let renderedTopic = null, pinnedDay = null;
 let threadScrollLimit = 0;
 function history(tid) {
@@ -268,7 +269,7 @@ function scheduleStreamRender(turnId) {
     const thread = document.querySelector('#thread');
     keepLatestAfterLayout(thread);
     const previousTop = thread.scrollTop;
-    const nearBottom = !history(topic.tid).range?.newer && thread.scrollHeight - thread.clientHeight - previousTop < 80;
+    const nearBottom = !history(topic.tid).range?.newer && thread.scrollHeight - thread.clientHeight - previousTop < LATEST_GAP;
     for (const id of updates) {
       const turn = turns.get(id);
       if (!turn || turn.tid !== topic.tid) continue;
@@ -333,8 +334,8 @@ function updateSendButton() {
 function keepLatestAfterLayout(thread) {
   const limit = thread.scrollHeight - thread.clientHeight;
   // A preview can grow before its load event, including between two scroll events.
-  if (limit !== threadScrollLimit && thread.dataset.readingHistory === 'false' &&
-      thread.scrollTop >= Math.min(limit, threadScrollLimit) - 2) {
+  if (limit !== threadScrollLimit && document.querySelector('#threadBottom').hidden &&
+      Math.min(limit, threadScrollLimit) - thread.scrollTop < LATEST_GAP) {
     thread.scrollTop = limit;
   }
 }
@@ -345,7 +346,7 @@ function updateThreadNavigation() {
   top.hidden = !state || (!state.range?.older && !state.hasMore && thread.scrollTop < 80);
   threadScrollLimit = thread.scrollHeight - thread.clientHeight;
   const gap = threadScrollLimit - thread.scrollTop;
-  bottom.hidden = !state || (!state.range?.newer && gap < 80);
+  bottom.hidden = !state || (!state.range?.newer && gap < LATEST_GAP);
   const readingHistory = !!state && (state.range?.newer || gap > 2);
   if (thread.dataset.readingHistory !== String(readingHistory)) {
     thread.dataset.readingHistory = String(readingHistory);
@@ -555,7 +556,7 @@ function scheduleHistoryRender(topic, rows, start, limit, end, showBusy) {
     const next = Math.max(limit, job.start - 12), batch = rows.slice(next, job.start);
     keepLatestAfterLayout(thread);
     const top = thread.scrollTop, height = thread.scrollHeight;
-    const pinned = !state.range.newer && height - thread.clientHeight - top < 80;
+    const pinned = !state.range.newer && height - thread.clientHeight - top < LATEST_GAP;
     const viewport = pinned ? null : viewportMessages(thread);
     patchThread(thread, threadGroups(mountedRows(rows, next, end, showBusy)), {});
     if (pinned) thread.scrollTop = thread.scrollHeight;
@@ -699,7 +700,7 @@ export function renderThread({
   if (sameTopic && !move && seq === null) keepLatestAfterLayout(thread);
   const previousTop = thread.scrollTop;
   const gap = thread.scrollHeight - thread.clientHeight - previousTop;
-  const followLatest = !state.range?.newer && gap < (preserveReading ? 1 : 80);
+  const followLatest = !state.range?.newer && gap < (preserveReading ? 1 : LATEST_GAP);
   const viewport = sameTopic && !bottom && seq === null && (move || !followLatest)
     ? viewportMessages(thread) : {};
   const entries = sorted(topic.tid);
@@ -825,7 +826,7 @@ function refreshState() {
     releaseVersion = typeof state.version === 'string' ? state.version : '';
     renderVersion();
     botUp = state.bot.up; webSessions = state.web_sessions; renderStatus();
-    slots.update(state.claude);
+    slots.update(state.claude, state.codex);
   }).catch(error => {
     if (!active || epoch !== generation || error.code === 'auth_required') return;
     failed = true;
@@ -834,8 +835,10 @@ function refreshState() {
   }).finally(() => {
     clearTimeout(timeout);
     if (epoch !== generation) return;
+    const refreshPending = stateRequest?.refreshPending;
     stateRequest = null;
     slots.setRefreshing(false, failed);
+    if (refreshPending) void refreshState();
   });
   stateRequest = { controller, promise, timeout };
   return promise;
@@ -903,7 +906,7 @@ function updateMirror(item, historyId, status) {
   if (!node) return;
   const existing = node.querySelector('[data-mirror]'), html = mirror(entry);
   if (!existing && !html) return;
-  const pinned = !state.range?.newer && thread.scrollHeight - thread.clientHeight - thread.scrollTop < 80;
+  const pinned = !state.range?.newer && thread.scrollHeight - thread.clientHeight - thread.scrollTop < LATEST_GAP;
   if (existing) existing.remove();
   if (html) (node.classList.contains('event') ? node.lastElementChild : node).insertAdjacentHTML('beforeend', html);
   if (pinned) thread.scrollTop = thread.scrollHeight;
@@ -916,6 +919,10 @@ export async function handleEvent(event) {
     topicVersions.set(tid, (topicVersions.get(tid) || 0) + 1);
   }
   switch (event.type) {
+    case 'codex_usage_changed':
+      if (stateRequest) stateRequest.refreshPending = true;
+      else void refreshState();
+      return;
     case 'entry': {
       const state = history(tid), entry = event.entry;
       if (!state.entries.has(entry.id)) noteEntry(tid, entry);
@@ -1192,7 +1199,7 @@ export function initChat() {
           renderThread({ move: 'older', changes: {} });
         }
       } catch (error) { if (active && generation === epoch) errorNotice(error); }
-    } else if (gap < 80 && !state.range.newer) {
+    } else if (gap < LATEST_GAP && !state.range.newer) {
       const entries = sorted(topic.tid);
       if (entries.length && visibleChat()) markSeen(topic.tid, entries.at(-1).seq);
     }

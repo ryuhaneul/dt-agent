@@ -555,6 +555,8 @@ open_original = "Origineel bekijken"
 
 [slots]
 title = "Claude-slots"
+usage_title = "Claude- en Codex-gebruik"
+show_all_usage = "Alle gebruiksgegevens tonen ({n})"
 next = "Volgende"
 show_all = "Alle {n} slots tonen"
 refresh = "Vernieuwen"

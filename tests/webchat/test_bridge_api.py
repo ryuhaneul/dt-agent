@@ -118,7 +118,8 @@ async def test_every_path_requires_bridge_token(bridge, path, token):
     assert "WWW-Authenticate" not in response.headers
 
 
-async def test_health_meta_state_and_auth_state(bridge):
+async def test_health_meta_state_and_auth_state(bridge, monkeypatch):
+    monkeypatch.setattr("ductor_bot.cli.codex_usage._last_successful", None)
     client, _, _, paths = bridge
     write_state_accounts(paths, [])
     expected = {
@@ -133,6 +134,7 @@ async def test_health_meta_state_and_auth_state(bridge):
             "telegram": {"state": "unknown"},
             "outbox": {"pending": 2},
             "claude": {"next": None, "slots": []},
+            "codex": None,
         },
         "auth/state": {
             "password_configured": False,
@@ -147,6 +149,47 @@ async def test_health_meta_state_and_auth_state(bridge):
         assert response.status == 200
         assert await response.json() == body
     assert (paths.webchat_dir / "auth_state.json").stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("scenario", ["cached", "empty", "failure"])
+async def test_state_codex_cache_does_not_start_query(bridge, monkeypatch, caplog, scenario):
+    from ductor_bot.cli import codex_usage
+    from tests.cli.test_codex_usage import RESPONSE
+
+    client, _, _, paths = bridge
+    write_state_accounts(paths, [])
+    query = AsyncMock()
+    monkeypatch.setattr(codex_usage, "query_codex_usage", query)
+    monkeypatch.setattr(codex_usage, "_last_successful", None)
+    expected = None
+    if scenario == "cached":
+        monkeypatch.setattr(codex_usage, "time", SimpleNamespace(time=lambda: 1793000000))
+        monkeypatch.setattr(
+            codex_usage, "_last_successful", codex_usage.parse_codex_usage(RESPONSE["result"])
+        )
+        expected = {
+            "captured_at": 1793000000,
+            "windows": [
+                {"used_percent": 16, "window_minutes": 10080, "resets_at": 1793082712}
+            ],
+        }
+    elif scenario == "failure":
+        monkeypatch.setattr(
+            codex_usage, "last_codex_usage", MagicMock(side_effect=ValueError("private detail"))
+        )
+
+    response = await client.get(f"{_PREFIX}/state", headers=headers())
+    assert response.status == 200
+    assert await response.json() == {
+        "telegram": {"state": "unknown"},
+        "outbox": {"pending": 2},
+        "claude": {"next": None, "slots": []},
+        "codex": expected,
+    }
+    query.assert_not_called()
+    if scenario == "failure":
+        assert "Webchat Codex state unavailable: ValueError" in caplog.text
+        assert "private detail" not in caplog.text
 
 
 def write_state_accounts(paths, accounts):
@@ -330,6 +373,7 @@ async def test_state_excludes_signed_out_and_detached_slots_and_uses_visible_pri
 
 
 async def test_state_preserves_other_fields_when_claude_overview_fails(bridge, monkeypatch, caplog):
+    monkeypatch.setattr("ductor_bot.cli.codex_usage._last_successful", None)
     client, _, _, paths = bridge
     write_state_accounts(paths, [])
 
@@ -343,6 +387,7 @@ async def test_state_preserves_other_fields_when_claude_overview_fails(bridge, m
         "telegram": {"state": "unknown"},
         "outbox": {"pending": 2},
         "claude": None,
+        "codex": None,
     }
     assert "ValueError" in caplog.text
     assert "private detail" not in caplog.text
@@ -578,6 +623,57 @@ async def post_message(harness, tid="-123.7", text="hello", **extra):
         json={"text": text, "client_id": "browser-request", **extra},
         headers=headers(),
     )
+
+
+@pytest.mark.parametrize("source", ["turn", "usage_command"])
+async def test_codex_usage_change_reaches_websocket_after_observation(conversation, monkeypatch, source):
+    from ductor_bot.cli import codex_usage
+    from ductor_bot.orchestrator.selectors.models import SelectorResponse
+    from tests.cli.test_codex_usage import RESPONSE
+
+    h = conversation
+    release, started = asyncio.Event(), asyncio.Event()
+
+    async def query():
+        started.set()
+        await release.wait()
+        return codex_usage.parse_codex_usage(RESPONSE["result"])
+
+    query_mock = AsyncMock(side_effect=query)
+    monkeypatch.setattr(codex_usage, "_query", query_mock)
+    monkeypatch.setattr(codex_usage, "_in_flight", None)
+    monkeypatch.setattr(codex_usage, "_completed_at", None)
+    monkeypatch.setattr(codex_usage, "_last_successful", None)
+    h.bot._usage_response = AsyncMock(return_value=SelectorResponse("Usage"))
+
+    async def state():
+        async with h.client.get(f"{_PREFIX}/state", headers=headers()) as response:
+            assert response.status == 200
+            return (await response.json())["codex"]
+
+    async with h.client.ws_connect(f"{_PREFIX}/events", headers=headers()) as socket:
+        command = None
+        try:
+            if source == "turn":
+                codex_usage.schedule_codex_usage_refresh()
+            else:
+                command = asyncio.create_task(post_message(h, text="/usage"))
+            await asyncio.wait_for(started.wait(), timeout=3)
+            assert await state() is None
+            release.set()
+            events = await receive_until(socket, lambda event: event["type"] == "codex_usage_changed")
+            assert events[-1] == {"type": "codex_usage_changed"}
+            assert (await state())["windows"] == [
+                {"used_percent": 16, "window_minutes": 10080, "resets_at": 1793082712},
+            ]
+            query_mock.assert_awaited_once_with()
+        finally:
+            release.set()
+            await asyncio.gather(*codex_usage._turn_refreshes)
+            if command is not None:
+                response = await command
+                assert response.status == 200
+                await response.read()
 
 
 async def test_topics_merge_sources_names_groups_and_flags(conversation):

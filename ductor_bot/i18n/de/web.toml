@@ -555,6 +555,8 @@ open_original = "Original ansehen"
 
 [slots]
 title = "Claude-Slots"
+usage_title = "Claude- und Codex-Nutzung"
+show_all_usage = "Alle Nutzungseinträge anzeigen ({n})"
 next = "Als Nächstes"
 show_all = "Alle {n} Slots anzeigen"
 refresh = "Aktualisieren"
