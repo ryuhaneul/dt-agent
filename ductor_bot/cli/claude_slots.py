@@ -153,8 +153,8 @@ def remove(home: Path, slot: str, *, expected: SlotIdentity | None = None) -> No
             if slot in accounts:
                 data["claude_accounts"] = [name for name in accounts if name != slot]
 
-        transform_config_file(home / "config" / "config.json", unregister)
-        _remove_directory(directory)
+        unregistered = transform_config_file(home / "config" / "config.json", unregister)
+        _remove_directory(directory, unregistered=unregistered)
     logger.info("Claude slot deleted: %s", slot)
 
 
@@ -279,13 +279,18 @@ def _clear_slot_state(home: Path, slot: str) -> None:
         raise OSError(msg) from exc
 
 
-def _remove_directory(directory: Path) -> None:
+def _remove_directory(directory: Path, *, unregistered: bool) -> None:
     try:
         if directory.is_symlink():
             directory.unlink()
         elif directory.is_dir():
             shutil.rmtree(directory)
     except OSError as exc:
+        if unregistered:
+            logger.warning(
+                "Claude slot unregistered but its directory could not be removed: %s",
+                directory.name,
+            )
         raise SlotDirectoryError(directory, exc) from exc
 
 
@@ -343,22 +348,27 @@ def set_priority(home: Path, slots: Sequence[str]) -> None:
 
 def clear_cooldown(home: Path, slot: str | None) -> None:
     """Remove cooldowns without overwriting concurrent cooldown records."""
+    cleared = False
 
     def validate_and_clear(data: dict[str, object]) -> None:
         if slot is not None:
             _require_slot(_accounts(data), slot)
 
         def clear(snapshot: SlotSnapshot) -> None:
+            nonlocal cleared
             if slot is None:
+                cleared = bool(snapshot.cooldowns)
                 snapshot.cooldowns.clear()
             else:
-                snapshot.cooldowns.pop(slot, None)
+                cleared = snapshot.cooldowns.pop(slot, None) is not None
 
         SlotRegistry(state_file_path(home)).update(clear)
 
     # Keep validation current against priority edits and slot removal. The
     # config transform does not change config data, so it does not save it.
     transform_config_file(home / "config" / "config.json", validate_and_clear)
+    if not cleared:
+        return
     if slot is None:
         logger.info("All Claude slot cooldowns cleared")
     else:

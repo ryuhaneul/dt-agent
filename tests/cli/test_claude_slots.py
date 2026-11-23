@@ -159,13 +159,18 @@ def test_clear_preserves_other_entries_and_overview_contract(home, slot_logs):
     clear_cooldown(home, "claude-a")
     assert registry.load().cooldowns == {"claude-b": reset, "claude-c": 1}
     assert registry.load().last_used == "claude-b"
+    expected_logs = ["Claude slot cooldown cleared: claude-a"]
+    assert slot_logs() == expected_logs
+    clear_cooldown(home, "claude-a")
+    assert slot_logs() == expected_logs
+
     clear_cooldown(home, None)
     assert registry.load().cooldowns == {}
     assert overview(home, AgentConfig()) == {"slots": []}
-    assert slot_logs() == [
-        "Claude slot cooldown cleared: claude-a",
-        "All Claude slot cooldowns cleared",
-    ]
+    expected_logs.append("All Claude slot cooldowns cleared")
+    assert slot_logs() == expected_logs
+    clear_cooldown(home, None)
+    assert slot_logs() == expected_logs
 
 
 @pytest.mark.parametrize(
@@ -463,7 +468,7 @@ def test_remove_preserves_other_state_and_shared_targets(home, slot):
         assert config_path.stat().st_ino == inode
 
 
-def test_remove_reports_partial_failure_and_allows_retry(home, monkeypatch, slot_logs):
+def test_remove_reports_partial_failure_and_allows_retry(home, monkeypatch, caplog, slot_logs):
     from ductor_bot.cli import claude_slots
 
     registry = SlotRegistry(state_file_path(home))
@@ -485,6 +490,16 @@ def test_remove_reports_partial_failure_and_allows_retry(home, monkeypatch, slot
     assert folder.is_dir()
     assert "claude-a" not in _config(home)["claude_accounts"]
     assert registry.load().cooldowns == {"claude-b": 200}
+    warnings = [
+        record
+        for record in caplog.records
+        if record.name == claude_slots.__name__ and record.levelno == logging.WARNING
+    ]
+    (warning,) = warnings
+    assert warning.getMessage() == (
+        "Claude slot unregistered but its directory could not be removed: claude-a"
+    )
+    assert warning.exc_info is None
     assert slot_logs() == []
     claude_slots.remove(home, "claude-a")
     assert not folder.exists()
