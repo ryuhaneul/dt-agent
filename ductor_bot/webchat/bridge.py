@@ -719,12 +719,12 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
 
         parsed = parse_command(text)
         if parsed is not None and parsed[0] == "secret":
-            if accept is not None:
-                await accept()
+            annotated = accept is not None and await accept()
             safe = dispatcher.secret.safe_command(parsed[1])
-            shown = strings.chat("chat_log.mirror_command", text=safe)
             entry = await runtime.recorder.command_input(key, safe)
-            await mirror_secret(tid, shown, entry.id, kind="user_mirror")
+            if not annotated:
+                shown = strings.chat("chat_log.mirror_command", text=safe)
+                await mirror_secret(tid, shown, entry.id, kind="user_mirror")
             result = await dispatcher.secret.command(tid, parsed[1])
             await record_secret_result(tid, result)
             return web.json_response(result)
@@ -734,9 +734,10 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
             return await submit_turn()
 
         async def record_input() -> None:
-            if accept is not None:
-                await accept()
+            annotated = accept is not None and await accept()
             entry = await runtime.recorder.command_input(key, text)
+            if annotated:
+                return
             await runtime.outbox.enqueue(
                 kind="user_mirror",
                 chat_id=key.chat_id,

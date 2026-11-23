@@ -39,8 +39,10 @@ task questions and replies, heartbeat alerts, cron, webhook and background resul
 New deliveries join an existing pending queue so recovery preserves order.
 Web messages, commands and replies use the same queue for their Telegram mirrors.
 Command input mirrors use the localized "Command executed" prefix; normal web
-messages retain their existing prefix. Before sending a queued result, the
-worker loads its keyboard using the existing `history_id`. Callback data and URL
+messages retain their existing prefix. When a web command button's selection is
+shown on the original Telegram message, the bridge skips its input mirror and
+still queues the result. Before sending a queued result, the worker loads its
+keyboard using the existing `history_id`. Callback data and URL
 buttons remain outside the outbox item schema, so older queue readers do not
 quarantine newly queued commands after rollback. `/secret` inputs and guidance
 responses are excluded from this command recording and mirror path.
