@@ -266,6 +266,59 @@ async function checkImageScale() {
   results.scale = records;
 }
 
+async function checkOriginalDimensionsCache() {
+  const bitmapCalls = () => page.evaluate(() => window.bitmapCalls);
+  const expectDimensions = async expected => {
+    await page.waitForFunction(expected =>
+      document.querySelector('[data-dimensions]').textContent === expected
+        && !document.querySelector('[data-apply]').disabled, expected);
+  };
+
+  for (const [valid, expected] of [[true, '200×400'], [false, '']]) {
+    await reset();
+    await page.evaluate(() => {
+      const decode = window.createImageBitmap.bind(window);
+      window.bitmapCalls = 0;
+      window.createImageBitmap = (...args) => {
+        window.bitmapCalls++;
+        return decode(...args);
+      };
+    });
+    if (valid) {
+      await addFile('rotated.jpg');
+    } else {
+      await page.locator('#filePick').setInputFiles({
+        name: 'unreadable.png', mimeType: 'image/png', buffer: Buffer.from('not an image'),
+      });
+    }
+
+    for (let open = 0; open < 3; open++) {
+      await popup();
+      await expectDimensions(expected);
+      await page.locator('[data-cancel]').click();
+    }
+    assert.equal(await bitmapCalls(), 1, 'Three original previews must share one decode');
+    if (!valid) continue;
+
+    await popup();
+    await selectMode('resize');
+    await expectDimensions('200×400 → 160×320');
+    await selectMode('original');
+    await expectDimensions('200×400');
+    assert.equal(await bitmapCalls(), 2, 'Returning to original must reuse its dimensions');
+    await selectMode('resize');
+    await expectDimensions('200×400 → 160×320');
+    assert.equal(await bitmapCalls(), 3, 'Resize must still run again');
+    await page.locator('[data-apply]').click();
+    await page.locator('#imageOptions').waitFor({ state: 'hidden' });
+    const size = await page.locator('.attach-thumb').evaluate(async image => {
+      await image.decode();
+      return [image.naturalWidth, image.naturalHeight];
+    });
+    assert.deepEqual(size, [160, 320]);
+  }
+}
+
 try{
   emptyHistoryEnabled=true;
   await page.goto(origin+'/?empty-page=1');
@@ -328,6 +381,7 @@ try{
   emptyHistoryEnabled=false;
   await checkComposerResize();
   await checkImageScale();
+  await checkOriginalDimensionsCache();
   // Keep the requested resize format; unsupported raster formats use PNG.
   await reset();
   const other={};for(const extension of ['gif','bmp'])other[extension]=(await fs.readFile(path.join(cfg.directory,'sample.'+extension))).toString('base64');

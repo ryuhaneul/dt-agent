@@ -25,7 +25,7 @@ export async function processImage(file, options, onDimensions) {
     const width = Math.max(1, Math.round(image.width * ratio));
     const height = Math.max(1, Math.round(image.height * ratio));
     const source = `${image.width}×${image.height}`;
-    onDimensions?.(shrinking ? `${source} → ${width}×${height}` : source);
+    onDimensions?.(shrinking ? `${source} → ${width}×${height}` : source, source);
     if (original) return file;
     const canvas = document.createElement('canvas');
     canvas.width = width;
@@ -180,12 +180,24 @@ export function initAttachments({ getTopic, changed, resume }) {
       previewWork = previewWork.catch(()=>{}).then(async () => {
         if (menu !== snapshot || revision !== snapshot.revision) return;
         try {
-          let size = '';
-          const result = await processImage(snapshot.item.original, {...snapshot.options}, value => { size = value; });
+          const { item, options } = snapshot;
+          let size = item.originalDimensions;
+          let result = item.original;
+          if (options.mode !== 'original' || size === undefined) {
+            let source = '';
+            try {
+              result = await processImage(item.original, {...options}, (displayed, original) => {
+                size = displayed;
+                source = original;
+              });
+            } finally {
+              item.originalDimensions ??= source;
+            }
+          }
           if (menu !== snapshot || revision !== snapshot.revision) return;
           snapshot.result = result;
           estimate.textContent = t('attach.estimate',{size:bytes(result.size)}) + ' · ' + (result.type || 'FILE');
-          dimensions.textContent = size;
+          dimensions.textContent = size ?? '';
           panel.querySelector('[data-apply]').disabled = false;
         } catch (error) {
           if (menu===snapshot && revision===snapshot.revision) estimate.textContent=t(error.attachmentKey || 'attach.processing_failed');

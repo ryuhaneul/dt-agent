@@ -92,6 +92,9 @@ def test_attachment_browser_contract(tmp_path):
     image.save(tmp_path / "sample.jpg", quality=94)
     for name, size in (("scale-large.png", (3840, 2160)), ("scale-small.png", (500, 200))):
         Image.new("RGB", size, "#0b5f58").save(tmp_path / name)
+    exif = Image.Exif()
+    exif[274] = 6  # Rotate clockwise when displayed.
+    Image.new("RGB", (400, 200), "#0b5f58").save(tmp_path / "rotated.jpg", exif=exif)
     small = Image.new("RGB", (48, 36), "blue")
     small.save(tmp_path / "sample.gif")
     small.save(tmp_path / "sample.bmp")
