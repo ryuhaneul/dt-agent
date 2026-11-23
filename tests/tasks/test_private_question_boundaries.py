@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 from types import MethodType, SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -62,6 +62,7 @@ def fake_subprocess(monkeypatch, provider, case):
     )
     spawn = AsyncMock(return_value=process)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    monkeypatch.setattr("ductor_bot.cli.codex_usage.schedule_codex_usage_refresh", Mock())
     for name in ("claude", "codex", "grok"):
         monkeypatch.setattr(f"ductor_bot.cli.{name}_provider.which", lambda _name: "fake-cli")
     monkeypatch.setattr("ductor_bot.cli.gemini_provider.find_gemini_cli", lambda: "fake-cli")

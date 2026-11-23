@@ -625,6 +625,57 @@ async def post_message(harness, tid="-123.7", text="hello", **extra):
     )
 
 
+@pytest.mark.parametrize("source", ["turn", "usage_command"])
+async def test_codex_usage_change_reaches_websocket_after_observation(conversation, monkeypatch, source):
+    from ductor_bot.cli import codex_usage
+    from ductor_bot.orchestrator.selectors.models import SelectorResponse
+    from tests.cli.test_codex_usage import RESPONSE
+
+    h = conversation
+    release, started = asyncio.Event(), asyncio.Event()
+
+    async def query():
+        started.set()
+        await release.wait()
+        return codex_usage.parse_codex_usage(RESPONSE["result"])
+
+    query_mock = AsyncMock(side_effect=query)
+    monkeypatch.setattr(codex_usage, "_query", query_mock)
+    monkeypatch.setattr(codex_usage, "_in_flight", None)
+    monkeypatch.setattr(codex_usage, "_completed_at", None)
+    monkeypatch.setattr(codex_usage, "_last_successful", None)
+    h.bot._usage_response = AsyncMock(return_value=SelectorResponse("Usage"))
+
+    async def state():
+        async with h.client.get(f"{_PREFIX}/state", headers=headers()) as response:
+            assert response.status == 200
+            return (await response.json())["codex"]
+
+    async with h.client.ws_connect(f"{_PREFIX}/events", headers=headers()) as socket:
+        command = None
+        try:
+            if source == "turn":
+                codex_usage.schedule_codex_usage_refresh()
+            else:
+                command = asyncio.create_task(post_message(h, text="/usage"))
+            await asyncio.wait_for(started.wait(), timeout=3)
+            assert await state() is None
+            release.set()
+            events = await receive_until(socket, lambda event: event["type"] == "codex_usage_changed")
+            assert events[-1] == {"type": "codex_usage_changed"}
+            assert (await state())["windows"] == [
+                {"used_percent": 16, "window_minutes": 10080, "resets_at": 1793082712},
+            ]
+            query_mock.assert_awaited_once_with()
+        finally:
+            release.set()
+            await asyncio.gather(*codex_usage._turn_refreshes)
+            if command is not None:
+                response = await command
+                assert response.status == 200
+                await response.read()
+
+
 async def test_topics_merge_sources_names_groups_and_flags(conversation):
     h = conversation
     old = SessionData(

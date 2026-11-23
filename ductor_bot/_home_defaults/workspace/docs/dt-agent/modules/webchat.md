@@ -147,14 +147,15 @@ hides OAuth slots without credentials and slots with disconnected API keys.
 
 The popover shows when the browser last fetched state and when each usage
 snapshot was captured. State refreshes on login, reconnect, when the page
-becomes visible again, and when a web turn ends. Use the refresh button to
-read the latest stored usage after activity from another session.
+becomes visible again, when a web turn ends, and when a new Codex usage
+observation is stored. Use the refresh button to read the latest stored usage.
 
 State also carries the last successful Codex usage observation held by the bot.
 Codex chat turns request a refresh after completion in the background, and
 `/usage` also updates the observation on success. A failed query leaves the last
-successful value available. Reading state uses the stored value and does not
-start a query.
+successful value available. Turn-end refreshes share pending queries but always
+request fresh data once a query finishes. Reading state uses the stored value
+and does not start a query.
 
 ## Topics, turns and queue
 

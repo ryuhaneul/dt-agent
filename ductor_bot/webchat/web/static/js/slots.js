@@ -81,7 +81,7 @@ function chip(slot, windows, status, next, primary, now) {
     usage = meter(windowHasReset(window, now) ? 0 : window.utilization, 'slot-mini', false);
   }
   const label = kind === 'ok' ? '' : status?.label ?? t('slots.no_data');
-  return `<button class="slot-chip" type="button" data-slot-toggle="${esc(slot.name)}" data-status="${kind}" ${next ? 'data-next' : ''} ${primary ? 'data-primary' : ''} ${TOGGLE}>
+  return `<button class="slot-chip" type="button" data-slot-toggle="${esc(slot.name)}" data-provider="${slot.kind === 'codex' ? 'codex' : 'claude'}" data-status="${kind}" ${next ? 'data-next' : ''} ${primary ? 'data-primary' : ''} ${TOGGLE}>
     ${next ? `<span class="slot-pip" aria-hidden="true"></span><span class="sr-only">${esc(t('slots.next'))}</span>` : ''}
     <span class="slot-name">${esc(slot.name)}</span>${usage}${label ? `<span class="slot-label">${esc(label)}</span>` : ''}
   </button>`;
@@ -157,21 +157,32 @@ export function initSlots(refresh) {
     };
 
     root.removeAttribute('data-compact');
+    const name = primary.querySelector('.slot-name');
+    const usage = primary.querySelector('.slot-usage');
     primary.style.removeProperty('max-width');
+    primary.style.removeProperty('min-width');
     buttons.forEach(button => { button.hidden = false; });
     setHiddenCount(buttons.length - 1);
     const capacity = chipCapacity();
     const gap = parseFloat(getComputedStyle(chips).columnGap);
-    const name = primary.querySelector('.slot-name');
     const widthOf = button => button.getBoundingClientRect().width;
     const widthWithoutClippedName = () =>
       widthOf(primary) + Math.max(0, name.scrollWidth - name.clientWidth);
     const widths = () => buttons.map(widthOf);
     const groupWidth = sizes => sizes.reduce((sum, width) => sum + width, 0) + gap * (sizes.length - 1);
     const reserved = more ? gap + widthOf(more) : 0;
-    if (primary.querySelector('.slot-usage') && (narrow.matches || groupWidth(widths()) > capacity)
+    if (usage && (narrow.matches || groupWidth(widths()) > capacity)
         && widthWithoutClippedName() + reserved > capacity) {
       root.setAttribute('data-compact', '');
+    }
+    if (usage) {
+      // Keep the meter rows inside the chip while the breakpoint styles catch up.
+      const style = getComputedStyle(primary);
+      const pip = primary.querySelector('.slot-pip');
+      const fixedWidth = widthOf(usage) + parseFloat(style.columnGap) * (pip ? 2 : 1)
+        + (pip ? widthOf(pip) : 0) + parseFloat(style.paddingLeft) + parseFloat(style.paddingRight)
+        + parseFloat(style.borderLeftWidth) + parseFloat(style.borderRightWidth);
+      primary.style.minWidth = `${Math.ceil(fixedWidth + 1)}px`;
     }
     if (narrow.matches) return;
 
@@ -194,7 +205,7 @@ export function initSlots(refresh) {
       setHiddenCount(hidden - 1);
       const required = sizes[index] + gap;
       const reserve = hidden > 1 ? gap + widthOf(more) : 0;
-      button.hidden = (button.dataset.slotToggle === 'Codex' && hidden > 1)
+      button.hidden = (button.dataset.provider === 'codex' && hidden > 1)
         || used + required + reserve > capacity;
       if (!button.hidden) {
         hidden--;
@@ -268,7 +279,8 @@ export function initSlots(refresh) {
     fitChips();
     function replacement(button) {
       if (button?.hasAttribute('data-slot-more')) return chips.querySelector('[data-slot-more]');
-      return [...chips.querySelectorAll('[data-slot-toggle]')].find(item => item.dataset.slotToggle === button?.dataset.slotToggle);
+      return [...chips.querySelectorAll('[data-slot-toggle]')].find(item =>
+        item.dataset.provider === button?.dataset.provider && item.dataset.slotToggle === button?.dataset.slotToggle);
     }
     trigger = replacement(trigger) || chips.querySelector('[data-primary]');
     replacement(focused)?.focus();

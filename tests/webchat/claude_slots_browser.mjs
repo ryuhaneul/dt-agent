@@ -773,11 +773,192 @@ async function checkUsageDesign(browser, longestLocale) {
   }
 }
 
+async function checkUsageRegressions(browser) {
+  const page = await browser.newPage({ viewport: { width: 1920, height: 900 }, timezoneId: 'Asia/Seoul' });
+  try {
+    const topic = { tid: '1.2', name: 'Usage topic', group: 'telegram', unread: 0 };
+    const observation = percent => ({
+      captured_at: now, windows: [{ used_percent: percent, window_minutes: 300, resets_at: cooldown }],
+    });
+    let claude = initialState(), codex = null, stateReads = 0, socket, holdState, releaseCommand;
+    let commandReceived, stateStarted;
+    const commandStarted = new Promise(resolve => { commandReceived = resolve; });
+    await page.clock.setFixedTime(new Date(now * 1000));
+    await page.routeWebSocket('**/api/ws', connection => { socket = connection; });
+    await page.route('**/api/**', async route => {
+      const endpoint = new URL(route.request().url()).pathname;
+      const reply = json => route.fulfill({ json });
+      if (endpoint === '/api/i18n') return reply({ lang: 'ko', strings: config.locales.ko });
+      if (endpoint === '/api/auth/state') return reply({ authenticated: true, csrf: 'fixture', bridge_up: true });
+      if (endpoint === '/api/masterkey/status') return reply({ state: 'unconfigured' });
+      if (endpoint === '/api/state') {
+        stateReads++;
+        const snapshot = codex;
+        const hold = holdState;
+        holdState = null;
+        if (hold) {
+          stateStarted();
+          await hold;
+        }
+        return reply({
+          telegram: { state: 'up' }, bot: { up: true }, outbox: { pending: 0 },
+          web_sessions: 1, claude, codex: snapshot,
+        });
+      }
+      if (endpoint === '/api/topics') return reply({ topics: [topic] });
+      if (endpoint.endsWith('/messages')) {
+        if (route.request().method() !== 'POST') return reply({ entries: [], has_more: false });
+        assert.equal(route.request().postDataJSON().text, '/usage');
+        await new Promise(resolve => {
+          releaseCommand = resolve;
+          commandReceived();
+        });
+        return reply({ text: 'Usage result', buttons: [] });
+      }
+      return reply({ commands: [], items: [], keys: [], files: [] });
+    });
+    await page.goto(origin);
+    await page.waitForURL('**/#chat');
+    const widget = page.locator('#claudeSlots');
+    const codexChip = widget.locator('[data-provider="codex"]');
+    const claudeNamedCodex = widget.locator('[data-provider="claude"][data-slot-toggle="Codex"]');
+    const stateResponse = () => page.waitForResponse(response => response.url().endsWith('/api/state'));
+    await widget.locator('[data-primary]').waitFor();
+    await page.waitForFunction(() => !document.querySelector('#msgIn').disabled);
+    await page.waitForFunction(() => !document.querySelector('#claudeSlots>.slot-refresh').disabled);
+    const send = event => socket.send(JSON.stringify(event));
+    const changeUsage = () => send({ type: 'codex_usage_changed' });
+    const endTurn = id => send({ type: 'turn', tid: topic.tid, turn_id: id, phase: 'done' });
+
+    async function expectPercent(percent) {
+      await codexChip.locator('.slot-percent').filter({ hasText: `${percent}%` }).waitFor({ state: 'attached' });
+      await page.waitForFunction(() => !document.querySelector('#claudeSlots>.slot-refresh').disabled);
+    }
+
+    let before = stateReads;
+    let releaseState;
+    holdState = new Promise(resolve => { releaseState = resolve; });
+    const stale = stateResponse();
+    const stateArrived = new Promise(resolve => { stateStarted = resolve; });
+    endTurn('first-codex-turn');
+    await stateArrived;
+    assert.equal(await codexChip.count(), 0);
+    codex = observation(10);
+    changeUsage();
+    changeUsage();
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+    releaseState();
+    await stale;
+    await expectPercent(10);
+    assert.equal(stateReads - before, 2);
+    console.log('First Codex observation: 1 stale turn request + 1 event-triggered request');
+
+    before = stateReads;
+    const turnState = stateResponse();
+    endTurn('second-codex-turn');
+    await turnState;
+    await expectPercent(10);
+    codex = observation(77);
+    changeUsage();
+    await expectPercent(77);
+    assert.equal(stateReads - before, 2);
+    console.log('Updated Codex observation: 1 turn request + 1 event-triggered request');
+
+    before = stateReads;
+    const commandResponse = page.waitForResponse(response =>
+      response.url().endsWith('/messages') && response.request().method() === 'POST');
+    await page.locator('#msgIn').fill('/usage');
+    await page.locator('#sendBtn').click();
+    await commandStarted;
+    assert.equal(stateReads, before);
+    codex = observation(52);
+    changeUsage();
+    releaseCommand();
+    await commandResponse;
+    await expectPercent(52);
+    assert.equal(stateReads - before, 1);
+    console.log('Web /usage: 1 event-triggered request');
+
+    claude = { next: 'claude', slots: [
+      slot('claude', 'oauth', 'ok'), slot('Codex', 'oauth', 'ok'),
+      slot('claude-long-alternate-name', 'oauth', 'ok'), slot('claude-other', 'oauth', 'ok'),
+    ] };
+    await page.setViewportSize({ width: 1280, height: 900 });
+    codex = null;
+    changeUsage();
+    await claudeNamedCodex.waitFor();
+    assert.equal(await codexChip.count(), 0);
+    codex = observation(52);
+    changeUsage();
+    await codexChip.waitFor({ state: 'attached' });
+    assert.equal(await claudeNamedCodex.isVisible(), true);
+    assert.equal(await codexChip.isVisible(), false);
+    await page.setViewportSize({ width: 1920, height: 900 });
+    await codexChip.click();
+    const popover = widget.locator('.slot-popover');
+    await popover.waitFor();
+    assert.equal(await popover.locator('.slot-name').getByText('Codex', { exact: true }).count(), 2);
+    codex = observation(64);
+    changeUsage();
+    await expectPercent(64);
+    await page.keyboard.press('Escape');
+    assert.equal(await codexChip.evaluate(button => button === document.activeElement), true);
+    console.log('Claude slot named Codex: kept before the Codex provider chip and focus restored to its provider');
+
+    claude = { next: 'claude-team', slots: [
+      slot('claude', 'oauth', 'ok', null, usage(0.26, cooldown, 0.94, futureCooldown)),
+      slot('claude-weekly', 'oauth', 'ok', null, { captured_at: now, windows: {
+        seven_day: { utilization: 0.94, resets_at: futureCooldown },
+      } }),
+      slot('claude-empty', 'oauth', 'ok'),
+      slot('claude-team', 'oauth', 'ok', null, usage(0.26, cooldown, 0.94, futureCooldown)),
+    ] };
+    codex.windows.push({ used_percent: 91, window_minutes: 10080, resets_at: futureCooldown });
+    changeUsage();
+    await widget.locator('[data-primary][data-slot-toggle="claude-team"]').waitFor();
+    const settle = () => page.evaluate(() => new Promise(resolve =>
+      requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    let clipped = 0;
+    for (let repeat = 0; repeat < 20; repeat++) {
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await settle();
+      await page.setViewportSize({ width: 1180, height: 900 });
+      await settle();
+      await page.evaluate(() => {
+        window.usageTransition = [];
+        function sample() {
+          if (innerWidth === 1181) {
+            const primary = document.querySelector('#claudeSlots [data-primary]');
+            const chip = primary.getBoundingClientRect();
+            const parts = [...primary.querySelectorAll('.slot-name,.slot-period,.slot-mini,.slot-percent')];
+            window.usageTransition.push(parts.filter(part => part.getClientRects().length).some(part => {
+              const bounds = part.getBoundingClientRect();
+              return bounds.width === 0 || bounds.left < chip.left - 0.6 || bounds.right > chip.right + 0.6;
+            }));
+          }
+          if (window.usageTransition.length < 8) requestAnimationFrame(sample);
+        }
+        requestAnimationFrame(sample);
+      });
+      await page.setViewportSize({ width: 1181, height: 900 });
+      await page.waitForFunction(() => window.usageTransition.length === 8);
+      clipped += await page.evaluate(() => window.usageTransition.filter(Boolean).length);
+    }
+    console.log(`1180 to 1181 usage transition: ${clipped}/160 clipped frames`);
+    assert.equal(clipped, 0);
+
+  } finally {
+    await page.close();
+  }
+}
+
+
 try {
   const browser = await chromium.launch({ headless: true });
   try {
     const longestLocale = await checkHeaderMatrix(browser);
     await checkUsageDesign(browser, longestLocale);
+    await checkUsageRegressions(browser);
     for (const [width, height, theme] of [
       [1440, 900, 'light'], [1440, 900, 'dark'], [390, 844, 'light'],
       [844, 390, 'light'], [1280, 900, 'light'], [768, 900, 'light'], [375, 844, 'light'],

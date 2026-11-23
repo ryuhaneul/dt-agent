@@ -201,6 +201,17 @@ def create_bridge_app(  # noqa: C901
 
     app.on_cleanup.append(close_auth)
 
+    async def notify_codex_usage(_app: web.Application) -> AsyncIterator[None]:
+        unsubscribe = codex_usage.subscribe_codex_usage(
+            lambda: runtime.events.publish({"type": "codex_usage_changed"})
+        )
+        try:
+            yield
+        finally:
+            unsubscribe()
+
+    app.cleanup_ctx.append(notify_codex_usage)
+
     async def health(_request: web.Request) -> web.Response:
         return web.json_response({"ok": True, "agent": "main"})
 

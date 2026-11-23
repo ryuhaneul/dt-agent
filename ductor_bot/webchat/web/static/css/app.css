@@ -621,6 +621,7 @@ dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(2px)}
   .slot-chip[data-primary],.slot-chip .slot-label{flex:none}
   .slot-chips{overflow:clip;overflow-clip-margin:4px}
   .slot-chip[data-primary] .slot-name{min-width:0}
+  .slot-chip[data-primary][data-status="cooldown"] .slot-mini{flex-shrink:1;min-width:32px}
 }
 @media(1180px < width <= 1240px){
   .bar:has(.claude-slots:not([hidden])){padding-inline:12px}

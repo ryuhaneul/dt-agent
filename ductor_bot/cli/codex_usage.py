@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from shutil import which
 from typing import Literal
@@ -43,6 +44,8 @@ _in_flight: asyncio.Task[CodexUsage] | None = None
 _completed_at: float | None = None
 _last_successful: CodexUsage | None = None
 _turn_refreshes: set[asyncio.Task[None]] = set()
+_usage_listeners: set[Callable[[], None]] = set()
+_logged_refresh_errors: set[str] = set()
 
 
 def parse_codex_usage(result: object) -> CodexUsage:
@@ -63,6 +66,12 @@ def last_codex_usage() -> CodexUsage | None:
     return _last_successful
 
 
+def subscribe_codex_usage(listener: Callable[[], None]) -> Callable[[], None]:
+    """Notify the listener after a new successful observation is stored."""
+    _usage_listeners.add(listener)
+    return lambda: _usage_listeners.discard(listener)
+
+
 def schedule_codex_usage_refresh() -> None:
     """Refresh after a turn without making its response wait for the query."""
     task = asyncio.create_task(_refresh_after_turn(), name="codex-usage-refresh")
@@ -72,20 +81,23 @@ def schedule_codex_usage_refresh() -> None:
 
 async def _refresh_after_turn() -> None:
     try:
-        result = await query_codex_usage()
-        if result.error is not None:
-            logger.warning("Codex usage refresh failed: %s", result.error)
+        reason: str | None = (await query_codex_usage(reuse_completed=False)).error
     except Exception as exc:
-        logger.warning("Codex usage refresh failed: %s", type(exc).__name__)
+        reason = type(exc).__name__
+    if reason is not None:
+        level = logging.DEBUG if reason in _logged_refresh_errors else logging.WARNING
+        _logged_refresh_errors.add(reason)
+        logger.log(level, "Codex usage refresh failed: %s", reason)
 
 
-async def query_codex_usage() -> CodexUsage:
-    """Share pending queries and reuse their completed results for ten seconds."""
+async def query_codex_usage(*, reuse_completed: bool = True) -> CodexUsage:
+    """Share pending queries and optionally reuse results for ten seconds."""
     global _in_flight  # noqa: PLW0603
     if _in_flight is None or (
         _in_flight.done()
         and (
-            _in_flight.cancelled()
+            not reuse_completed
+            or _in_flight.cancelled()
             or _completed_at is None
             or time.monotonic() - _completed_at >= 10
         )
@@ -97,8 +109,15 @@ async def query_codex_usage() -> CodexUsage:
 async def _query_and_cache() -> CodexUsage:
     global _completed_at, _last_successful  # noqa: PLW0603
     result = await _query()
+    changed = result.error is None and result != _last_successful
     if result.error is None:
         _last_successful = result
+    if changed:
+        for listener in tuple(_usage_listeners):
+            try:
+                listener()
+            except Exception as exc:
+                logger.debug("Codex usage listener failed: %s", type(exc).__name__)
     _completed_at = time.monotonic()
     return result
 

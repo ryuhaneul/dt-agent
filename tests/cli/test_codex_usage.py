@@ -59,6 +59,7 @@ def isolate_query_state(monkeypatch):
     monkeypatch.setattr(codex_usage, "_in_flight", None)
     monkeypatch.setattr(codex_usage, "_completed_at", None)
     monkeypatch.setattr(codex_usage, "_last_successful", None)
+    monkeypatch.setattr(codex_usage, "_logged_refresh_errors", set())
 
 
 @pytest.fixture
@@ -463,7 +464,7 @@ async def test_turn_completion_schedules_usage_without_waiting(monkeypatch, prov
         assert response.result == "completed"
         if provider == "codex":
             await asyncio.wait_for(started.wait(), timeout=2)
-            usage_query.assert_awaited_once_with()
+            usage_query.assert_awaited_once_with(reuse_completed=False)
         else:
             usage_query.assert_not_awaited()
         assert codex_usage.last_codex_usage() is None
@@ -477,15 +478,51 @@ async def test_turn_completion_schedules_usage_without_waiting(monkeypatch, prov
         assert codex_usage.last_codex_usage() is None
 
 
+async def test_turn_usage_refreshes_bypass_completed_cache_and_share_pending_queries(monkeypatch):
+    from types import SimpleNamespace
+
+    clock = [0.0]
+    release = asyncio.Event()
+    observations = []
+
+    async def query():
+        observations.append(clock[0])
+        await release.wait()
+        return parse_codex_usage(RESPONSE["result"])
+
+    monkeypatch.setattr(codex_usage, "_query", query)
+    monkeypatch.setattr(
+        codex_usage, "time", SimpleNamespace(time=lambda: clock[0], monotonic=lambda: clock[0])
+    )
+
+    for timestamp in (0.0, 1.0, 11.0):
+        clock[0] = timestamp
+        release.clear()
+        for _ in range(50):
+            codex_usage.schedule_codex_usage_refresh()
+        await asyncio.sleep(0)
+        release.set()
+        await asyncio.gather(*codex_usage._turn_refreshes)
+        await query_codex_usage()
+        assert observations[-1] == timestamp
+
+    assert observations == [0.0, 1.0, 11.0]
+
+
 async def test_turn_usage_refresh_logs_failure_once(monkeypatch, caplog):
     query = AsyncMock(return_value=codex_usage.CodexUsage(error="timeout"))
     monkeypatch.setattr(codex_usage, "_query", query)
+    caplog.set_level(logging.DEBUG, logger=codex_usage.__name__)
 
-    codex_usage.schedule_codex_usage_refresh()
-    await asyncio.gather(*codex_usage._turn_refreshes)
+    for _ in range(3):
+        codex_usage.schedule_codex_usage_refresh()
+        await asyncio.gather(*codex_usage._turn_refreshes)
 
-    query.assert_awaited_once_with()
-    assert caplog.messages == ["Codex usage refresh failed: timeout"]
+    assert query.await_count == 3
+    assert caplog.record_tuples == [
+        (codex_usage.__name__, level, "Codex usage refresh failed: timeout")
+        for level in (logging.WARNING, logging.DEBUG, logging.DEBUG)
+    ]
 
 
 def test_event_loop_shutdown_reaps_turn_usage_query(server, caplog):
