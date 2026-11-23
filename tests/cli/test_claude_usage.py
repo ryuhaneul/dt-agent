@@ -33,6 +33,21 @@ ALLOWED = {'type': 'rate_limit_event',
                                         'seven_day': {'utilization': 0.02,
                                                       'resetsAt': 1793134800}}}}
 
+SEVEN_DAY_ONLY = {
+    "type": "rate_limit_event",
+    "rate_limit_info": {
+        "status": "allowed",
+        "resetsAt": 1795554000,
+        "rateLimitType": "seven_day",
+        "overageStatus": "rejected",
+        "overageDisabledReason": "org_level_disabled",
+        "isUsingOverage": False,
+        "unifiedWindows": {
+            "seven_day": {"utilization": 0.44, "resetsAt": 1795554000, "status": "allowed"}
+        },
+    },
+}
+
 
 def window_event(name, value, *, status="allowed"):
     return {"type": "rate_limit_event", "rate_limit_info": {
@@ -81,16 +96,66 @@ def test_partial_and_status_only_events_preserve_other_window(tmp_path):
     assert current.windows == usage.windows
 
 
-def test_one_unified_window_does_not_replace_other_window(tmp_path):
+def test_unified_windows_replace_absent_windows(tmp_path):
     store = UsageStore(usage_file_path(tmp_path))
     store.record("claude-a", REJECTED, captured_at=CAPTURED)
-    event = {"type": "rate_limit_event", "rate_limit_info": {
-        "status": "allowed", "unifiedWindows": {
-            "seven_day": {"utilization": 0.4, "resetsAt": CAPTURED + 5000}}}}
-    store.record("claude-a", event, captured_at=CAPTURED + 1)
+    store.record("claude-a", SEVEN_DAY_ONLY, captured_at=CAPTURED + 1)
+
     usage = store.load()["claude-a"]
-    assert usage.windows["five_hour"].utilization == 1.0
-    assert usage.windows["seven_day"].utilization == 0.4
+    assert usage == parse_usage_event(SEVEN_DAY_ONLY, captured_at=CAPTURED + 1)
+    assert set(usage.windows) == {"seven_day"}
+    assert usage.windows["seven_day"].utilization == 0.44
+
+    store.record("claude-a", ALLOWED, captured_at=CAPTURED + 2)
+    assert store.load()["claude-a"] == parse_usage_event(ALLOWED, captured_at=CAPTURED + 2)
+
+
+def test_present_invalid_window_is_preserved_and_absent_window_is_removed(tmp_path):
+    store = UsageStore(usage_file_path(tmp_path))
+    store.record("claude-a", REJECTED, captured_at=CAPTURED)
+    before = store.load()["claude-a"].windows["seven_day"]
+    event = {
+        "type": "rate_limit_event",
+        "rate_limit_info": {
+            "status": "allowed",
+            "unifiedWindows": {"seven_day": {"utilization": 0.44}},
+        },
+    }
+    store.record("claude-a", event, captured_at=CAPTURED + 1)
+
+    assert store.load()["claude-a"].windows == {"seven_day": before}
+
+
+@pytest.mark.parametrize("offset", [-1, 0, 1])
+def test_absent_window_removal_uses_its_own_capture_time(tmp_path, offset):
+    store = UsageStore(usage_file_path(tmp_path))
+    store.record("claude-a", REJECTED, captured_at=CAPTURED)
+    store.record("claude-a", window_event("seven_day", 0.7), captured_at=CAPTURED + 2)
+    before = store.load()["claude-a"]
+    store.record("claude-a", SEVEN_DAY_ONLY, captured_at=CAPTURED + offset)
+
+    after = store.load()["claude-a"]
+    expected_windows = {"seven_day": before.windows["seven_day"]}
+    if offset <= 0:
+        expected_windows["five_hour"] = before.windows["five_hour"]
+    assert after.windows == expected_windows
+    assert after.captured_at == before.captured_at
+
+
+@pytest.mark.parametrize("raw_windows", [{}, None, []])
+def test_only_empty_dictionary_clears_all_known_windows(tmp_path, raw_windows):
+    store = UsageStore(usage_file_path(tmp_path))
+    store.record("claude-a", ALLOWED, captured_at=CAPTURED)
+    before = store.load()["claude-a"].windows
+    event = {
+        "type": "rate_limit_event",
+        "rate_limit_info": {"status": "allowed", "unifiedWindows": raw_windows},
+    }
+    store.record("claude-a", event, captured_at=CAPTURED + 1)
+
+    usage = store.load()["claude-a"]
+    assert usage.windows == ({} if raw_windows == {} else before)
+    assert usage.captured_at == CAPTURED + 1
 
 
 @pytest.mark.parametrize("bad", [None, [], "synthetic-private-value", {"status": "new-status"}])
