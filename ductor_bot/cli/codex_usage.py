@@ -41,6 +41,8 @@ class CodexUsage:
 
 _in_flight: asyncio.Task[CodexUsage] | None = None
 _completed_at: float | None = None
+_last_successful: CodexUsage | None = None
+_turn_refreshes: set[asyncio.Task[None]] = set()
 
 
 def parse_codex_usage(result: object) -> CodexUsage:
@@ -54,6 +56,27 @@ def parse_codex_usage(result: object) -> CodexUsage:
         if limits.get(name) is not None
     )
     return CodexUsage(windows=windows, captured_at=int(time.time()))
+
+
+def last_codex_usage() -> CodexUsage | None:
+    """Read the last successful observation without starting or awaiting a query."""
+    return _last_successful
+
+
+def schedule_codex_usage_refresh() -> None:
+    """Refresh after a turn without making its response wait for the query."""
+    task = asyncio.create_task(_refresh_after_turn(), name="codex-usage-refresh")
+    _turn_refreshes.add(task)
+    task.add_done_callback(_turn_refreshes.discard)
+
+
+async def _refresh_after_turn() -> None:
+    try:
+        result = await query_codex_usage()
+        if result.error is not None:
+            logger.warning("Codex usage refresh failed: %s", result.error)
+    except Exception as exc:
+        logger.warning("Codex usage refresh failed: %s", type(exc).__name__)
 
 
 async def query_codex_usage() -> CodexUsage:
@@ -72,8 +95,10 @@ async def query_codex_usage() -> CodexUsage:
 
 
 async def _query_and_cache() -> CodexUsage:
-    global _completed_at  # noqa: PLW0603
+    global _completed_at, _last_successful  # noqa: PLW0603
     result = await _query()
+    if result.error is None:
+        _last_successful = result
     _completed_at = time.monotonic()
     return result
 

@@ -9,7 +9,7 @@ import logging
 import os
 import sys
 import time
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -58,6 +58,7 @@ RESPONSE = {
 def isolate_query_state(monkeypatch):
     monkeypatch.setattr(codex_usage, "_in_flight", None)
     monkeypatch.setattr(codex_usage, "_completed_at", None)
+    monkeypatch.setattr(codex_usage, "_last_successful", None)
 
 
 @pytest.fixture
@@ -396,3 +397,108 @@ async def test_query_cancellation_remains_visible(monkeypatch):
     monkeypatch.setattr(codex_usage, "check_codex_auth", Mock(side_effect=asyncio.CancelledError))
     with pytest.raises(asyncio.CancelledError):
         await codex_usage._query()
+
+
+async def test_last_successful_usage_is_read_only_and_survives_failures(monkeypatch):
+    from types import SimpleNamespace
+
+    clock = [50.0]
+    monkeypatch.setattr(codex_usage, "time", SimpleNamespace(time=time.time, monotonic=lambda: clock[0]))
+    initial = parse_codex_usage(RESPONSE["result"])
+    latest = parse_codex_usage(RESPONSE["result"])
+    failed = codex_usage.CodexUsage(error="timeout")
+    query = AsyncMock(side_effect=[initial, latest, failed])
+    monkeypatch.setattr(codex_usage, "_query", query)
+
+    assert codex_usage.last_codex_usage() is None
+    query.assert_not_awaited()
+    assert await query_codex_usage() is initial
+    assert codex_usage.last_codex_usage() is initial
+
+    clock[0] += 10
+    assert codex_usage.last_codex_usage() is initial
+    assert query.await_count == 1
+    assert await query_codex_usage() is latest
+    assert codex_usage.last_codex_usage() is latest
+
+    clock[0] += 10
+    assert await query_codex_usage() is failed
+    clock[0] += 3600
+    assert codex_usage.last_codex_usage() is latest
+    assert query.await_count == 3
+
+
+@pytest.mark.parametrize("provider", ["codex", "claude"])
+@pytest.mark.parametrize("mode", ["oneshot", "stream", "fallback"])
+async def test_turn_completion_schedules_usage_without_waiting(monkeypatch, provider, mode):
+    from ductor_bot.cli.stream_events import ResultEvent
+    from ductor_bot.cli.types import AgentRequest, CLIResponse
+    from tests.cli.test_service import _make_service
+
+    service = _make_service()
+    release = asyncio.Event()
+    started = asyncio.Event()
+
+    async def query():
+        started.set()
+        await release.wait()
+        return parse_codex_usage(RESPONSE["result"])
+
+    async def stream(**_kwargs):
+        if mode != "fallback":
+            yield ResultEvent(type="result", result="completed")
+
+    usage_query = AsyncMock(wraps=codex_usage.query_codex_usage)
+    monkeypatch.setattr(codex_usage, "query_codex_usage", usage_query)
+    monkeypatch.setattr(codex_usage, "_query", query)
+    monkeypatch.setattr(
+        service, "_make_cli", lambda _request: Mock(
+            send=AsyncMock(return_value=CLIResponse(result="completed")), send_streaming=stream
+        )
+    )
+    request = AgentRequest(prompt="Example", provider_override=provider)
+    execute = service.execute if mode == "oneshot" else service.execute_streaming
+    try:
+        response = await asyncio.wait_for(execute(request), timeout=2)
+        assert response.result == "completed"
+        if provider == "codex":
+            await asyncio.wait_for(started.wait(), timeout=2)
+            usage_query.assert_awaited_once_with()
+        else:
+            usage_query.assert_not_awaited()
+        assert codex_usage.last_codex_usage() is None
+    finally:
+        release.set()
+        await asyncio.gather(*codex_usage._turn_refreshes)
+
+    if provider == "codex":
+        assert codex_usage.last_codex_usage().windows[0].used_percent == 16
+    else:
+        assert codex_usage.last_codex_usage() is None
+
+
+async def test_turn_usage_refresh_logs_failure_once(monkeypatch, caplog):
+    query = AsyncMock(return_value=codex_usage.CodexUsage(error="timeout"))
+    monkeypatch.setattr(codex_usage, "_query", query)
+
+    codex_usage.schedule_codex_usage_refresh()
+    await asyncio.gather(*codex_usage._turn_refreshes)
+
+    query.assert_awaited_once_with()
+    assert caplog.messages == ["Codex usage refresh failed: timeout"]
+
+
+def test_event_loop_shutdown_reaps_turn_usage_query(server, caplog):
+    pids = server("timeout")
+
+    async def run():
+        codex_usage.schedule_codex_usage_refresh()
+        async with asyncio.timeout(5):
+            while not pids.exists() or not pids.read_text().strip():
+                await asyncio.sleep(0.01)
+
+    asyncio.run(run(), debug=True)
+
+    assert not codex_usage._turn_refreshes
+    assert codex_usage._in_flight.cancelled()
+    assert not [record for record in caplog.records if record.levelno >= logging.WARNING]

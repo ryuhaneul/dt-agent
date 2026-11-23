@@ -147,6 +147,12 @@ snapshot was captured. State refreshes on login, reconnect, when the page
 becomes visible again, and when a web turn ends. Use the refresh button to
 read the latest stored usage after activity from another session.
 
+State also carries the last successful Codex usage observation held by the bot.
+Codex chat turns request a refresh after completion in the background, and
+`/usage` also updates the observation on success. A failed query leaves the last
+successful value available. Reading state uses the stored value and does not
+start a query.
+
 ## Topics, turns and queue
 
 Web turns share the target Telegram `tg:` session key and `LockPool` lock.
@@ -429,7 +435,7 @@ The browser app relays bridge JSON statuses and error codes. Bridge routes use
 
 | Operation | Status and response |
 |---|---|
-| Read state (`GET /state`) | 200 with `telegram`, `outbox`, and `claude` (`{next, slots}` or `null` if unavailable). The browser relay adds `bot`, `web_sessions`, and `version`. |
+| Read state (`GET /state`) | 200 with `telegram`, `outbox`, `claude` (`{next, slots}` or `null`), and `codex` (`{captured_at, windows}` or `null`). The browser relay adds `bot`, `web_sessions`, and `version`. |
 | Delete topic while its session lock remains held beyond 30 seconds | 409 `topic_busy`; retry after the topic finishes stopping |
 | Send to or abort Unknown topic | 409 `read_only`; select a real topic |
 | List commands (`GET /commands`, optional allowed `lang`) | 200 `{ "commands": [...] }`; invalid language: 400 `bad_request` |

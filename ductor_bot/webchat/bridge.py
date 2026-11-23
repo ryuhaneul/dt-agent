@@ -17,7 +17,7 @@ from aiohttp import ClientError, web
 
 from ductor_bot.chat_log.history import InvalidSelectorButtonError, SelectorConflictError
 from ductor_bot.chat_log.ids import from_tid
-from ductor_bot.cli import claude_slots
+from ductor_bot.cli import claude_slots, codex_usage
 from ductor_bot.cli.autocompact import parse_autocompact_input, resolve_autocompact
 from ductor_bot.cli.claude_accounts import (
     DEFAULT_SLOT,
@@ -153,6 +153,20 @@ async def _claude_state(home: Path) -> dict[str, object] | None:
     return {"next": next_slot, "slots": slots}
 
 
+def _codex_state() -> dict[str, object] | None:
+    try:
+        usage = codex_usage.last_codex_usage()
+        if usage is None or usage.captured_at is None:
+            return None
+        return {
+            "captured_at": usage.captured_at,
+            "windows": [window.model_dump(by_alias=False) for window in usage.windows],
+        }
+    except Exception as exc:
+        logger.warning("Webchat Codex state unavailable: %s", type(exc).__name__)
+        return None
+
+
 def create_bridge_app(  # noqa: C901
     bot: TelegramBot, runtime: ChatLogRuntime, token: str
 ) -> web.Application:
@@ -232,6 +246,7 @@ def create_bridge_app(  # noqa: C901
                 "telegram": runtime.link.state(),
                 "outbox": {"pending": len(await runtime.outbox.pending(skip_unreadable=True))},
                 "claude": await _claude_state(bot._orch.paths.ductor_home),
+                "codex": _codex_state(),
             }
         )
 

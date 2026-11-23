@@ -118,7 +118,8 @@ async def test_every_path_requires_bridge_token(bridge, path, token):
     assert "WWW-Authenticate" not in response.headers
 
 
-async def test_health_meta_state_and_auth_state(bridge):
+async def test_health_meta_state_and_auth_state(bridge, monkeypatch):
+    monkeypatch.setattr("ductor_bot.cli.codex_usage._last_successful", None)
     client, _, _, paths = bridge
     write_state_accounts(paths, [])
     expected = {
@@ -133,6 +134,7 @@ async def test_health_meta_state_and_auth_state(bridge):
             "telegram": {"state": "unknown"},
             "outbox": {"pending": 2},
             "claude": {"next": None, "slots": []},
+            "codex": None,
         },
         "auth/state": {
             "password_configured": False,
@@ -147,6 +149,47 @@ async def test_health_meta_state_and_auth_state(bridge):
         assert response.status == 200
         assert await response.json() == body
     assert (paths.webchat_dir / "auth_state.json").stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("scenario", ["cached", "empty", "failure"])
+async def test_state_codex_cache_does_not_start_query(bridge, monkeypatch, caplog, scenario):
+    from ductor_bot.cli import codex_usage
+    from tests.cli.test_codex_usage import RESPONSE
+
+    client, _, _, paths = bridge
+    write_state_accounts(paths, [])
+    query = AsyncMock()
+    monkeypatch.setattr(codex_usage, "query_codex_usage", query)
+    monkeypatch.setattr(codex_usage, "_last_successful", None)
+    expected = None
+    if scenario == "cached":
+        monkeypatch.setattr(codex_usage, "time", SimpleNamespace(time=lambda: 1793000000))
+        monkeypatch.setattr(
+            codex_usage, "_last_successful", codex_usage.parse_codex_usage(RESPONSE["result"])
+        )
+        expected = {
+            "captured_at": 1793000000,
+            "windows": [
+                {"used_percent": 16, "window_minutes": 10080, "resets_at": 1793082712}
+            ],
+        }
+    elif scenario == "failure":
+        monkeypatch.setattr(
+            codex_usage, "last_codex_usage", MagicMock(side_effect=ValueError("private detail"))
+        )
+
+    response = await client.get(f"{_PREFIX}/state", headers=headers())
+    assert response.status == 200
+    assert await response.json() == {
+        "telegram": {"state": "unknown"},
+        "outbox": {"pending": 2},
+        "claude": {"next": None, "slots": []},
+        "codex": expected,
+    }
+    query.assert_not_called()
+    if scenario == "failure":
+        assert "Webchat Codex state unavailable: ValueError" in caplog.text
+        assert "private detail" not in caplog.text
 
 
 def write_state_accounts(paths, accounts):
@@ -330,6 +373,7 @@ async def test_state_excludes_signed_out_and_detached_slots_and_uses_visible_pri
 
 
 async def test_state_preserves_other_fields_when_claude_overview_fails(bridge, monkeypatch, caplog):
+    monkeypatch.setattr("ductor_bot.cli.codex_usage._last_successful", None)
     client, _, _, paths = bridge
     write_state_accounts(paths, [])
 
@@ -343,6 +387,7 @@ async def test_state_preserves_other_fields_when_claude_overview_fails(bridge, m
         "telegram": {"state": "unknown"},
         "outbox": {"pending": 2},
         "claude": None,
+        "codex": None,
     }
     assert "ValueError" in caplog.text
     assert "private detail" not in caplog.text
