@@ -65,6 +65,10 @@ async function open(kind,width,entries,secondEntries=entries) {
     else if(url.pathname==='/api/cli-login/status')result={providers:{},claude_slots:[],running:false};
     else if(url.pathname==='/api/masterkey/status')result={state:'unconfigured',ttl_seconds:0};
     else if(url.pathname==='/api/files')result={files:[{name:'PERSONA.md'}]};
+    else if(url.pathname==='/api/files/PERSONA.md' && cfg.mode==='preview-overflow')result={
+      name:'PERSONA.md',content:'A paragraph in a long file.\n\n'.repeat(300)+'Citation[^ref].\n\n[^ref]: Example source.',
+      sha256:'fake-sha',
+    };
     else if(url.pathname==='/api/files/PERSONA.md')result={name:'PERSONA.md',content:'# Preview\n\n**bold** [link](https://example.test/preview)\n\nA[^1]\n\n[^1]: preview note\n\n<script>attack()</script>',sha256:'fake-sha'};
     else throw Error('Unexpected API '+url.pathname);
     await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(result)});
@@ -162,6 +166,23 @@ async function visual() {
   fs.writeFileSync(path.join(cfg.artifacts,'visual.json'),JSON.stringify({results,failures,violations},null,2));
   assert.deepEqual(failures,[]);assert.deepEqual(violations,[]);
   console.log(JSON.stringify({results,failures,violations}));
+}
+
+async function previewOverflow() {
+  const {page,context}=await open('current',1280,[]);
+  try {
+    await page.locator('.bar-acts [data-route="files"]').click();
+    await page.waitForFunction(()=>!document.querySelector('#ed').disabled);
+    await page.locator('#tPrev').click();
+    await page.locator('#prev .footnotes > h2.sr-only').waitFor({state:'attached'});
+    const {height,viewport}=await page.evaluate(()=>({
+      height:document.scrollingElement.scrollHeight,
+      viewport:window.innerHeight,
+    }));
+    assert.equal(height,viewport,'Markdown file preview expanded the document past the viewport');
+  } finally {
+    await context.close();
+  }
 }
 
 async function navigation() {
@@ -337,6 +358,7 @@ try {
   if(cfg.mode==='window')await historyWindow();
   else if(cfg.mode==='navigation')await navigation();
   else if(cfg.mode==='visual') await visual();
+  else if(cfg.mode==='preview-overflow') await previewOverflow();
   else {
   const texts={
     blocks:(`## Section\n\n${koreanParagraph} **${koreanEmphasis}** https://example.test/path 🙂\n\n`).repeat(500).slice(0,20000),

@@ -2834,6 +2834,32 @@ def test_message_dates_browser(tmp_path, scenario):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+@pytest.mark.skipif(
+    not os.environ.get("DTW_PLAYWRIGHT_MODULE"),
+    reason="Set DTW_PLAYWRIGHT_MODULE for the Markdown preview overflow browser check",
+)
+def test_markdown_preview_does_not_expand_document():
+    root = str(STATIC.parents[3])
+    result = subprocess.run(
+        ["node", str(Path(__file__).with_name("markdown_browser.mjs"))],
+        input=json.dumps(
+            {
+                "root": root,
+                "baseline": root,
+                "mode": "preview-overflow",
+                "csp": CSP,
+                "starflowCsp": STARFLOW_CSP,
+                "strings": load_web_strings("en"),
+            }
+        ),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_cron_modal_and_header_contract(markup):
     nodes = {attrs.get("id"): (tag, attrs) for tag, attrs in markup.tags if attrs.get("id")}
     assert nodes["cronDlg"][0] == "dialog"
