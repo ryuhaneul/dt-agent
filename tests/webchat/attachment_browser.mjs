@@ -23,7 +23,7 @@ page.on('pageerror',error=>errors.push(error.message));
 const topic={tid:'123.7',chat_id:123,topic_id:7,name:'Attachment checks',group:'telegram',count:0,imported_count:0,read_only:false,renamable:true,deletable:true,busy:false,seen:0};
 let settings={max_file_bytes:2*1024**3,max_files_per_message:10,chunk_bytes:1024**2,server_max_file_bytes:2*1024**3,server_max_files_per_message:10}, failPut=false;
 let emptyHistoryEnabled=false,historyEnabled=false,dropAfterAck=false,holdPut=false,releasePut=null,settingsPuts=0;
-let forbiddenPut=false, completeError=null;
+let chunkError=null, completeError=null;
 const putOffsets=[];
 let wsPeer=null,backgroundReady=false,expiredPhoto=false;
 const incoming='[INCOMING FILE]\nThe user sent you a file via Telegram.\nPath: telegram_files/2026-11-18/photo.png\nType: image/png\nOriginal filename: photo.png\n\nCheck tools/media_tools/CLAUDE.md for file handling instructions.\n\nUser message: Please check the photo.';
@@ -69,9 +69,10 @@ await page.route('**/api/**',async route=>{
     if(method==='DELETE'){sessions.delete(id);return response(route,{ok:true});}
     if(method==='PUT'){
       if(failPut){failPut=false;return response(route,{error:'upload_timeout'},408);}
-      if(forbiddenPut){
-        forbiddenPut=false;
-        return route.fulfill({status:403,contentType:'text/html',body:'<p>Forbidden</p>'});
+      if(chunkError){
+        const {status,code}=chunkError;chunkError=null;
+        if(code)return response(route,{error:code},status);
+        return route.fulfill({status,contentType:'text/html',body:'<p>Forbidden</p>'});
       }
       assert.equal(request.headers()['content-type'],'application/octet-stream');
       assert.equal(request.headers()['x-dtw-client'],'web');
@@ -254,7 +255,9 @@ try{
     {phase:'complete',status:415,code:'mime_mismatch',key:'attach.type_rejected',resume:false},
     {phase:'complete',status:415,code:'invalid_type',key:'attach.type_rejected',resume:false},
     {phase:'complete',status:415,code:'invalid_image',key:'attach.type_rejected',resume:false},
+    {phase:'complete',status:413,code:'image_too_large',key:'attach.image_too_large',resume:false},
     {phase:'chunk',status:403,code:null,key:'attach.failed',resume:true},
+    {phase:'chunk',status:413,code:'too_large',key:'attach.failed',resume:true},
     {phase:'complete',status:500,code:'internal_error',key:'attach.failed',resume:true},
   ];
   results.failures=[];
@@ -268,7 +271,7 @@ try{
       await page.waitForFunction(count=>document.querySelectorAll('.attach-draft').length===count,files.length);
       await page.locator('#msgIn').fill('Draft after upload failure');
       const before=messages.length;
-      if(phase==='chunk')forbiddenPut=true;
+      if(phase==='chunk')chunkError={status,code};
       else completeError={status,code};
       const failure=page.waitForResponse(reply=>reply.status()===status&&(
         phase==='chunk'?reply.request().method()==='PUT'&&reply.url().includes('/uploads/'):

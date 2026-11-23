@@ -6,6 +6,13 @@ import { Sha256 } from './sha256.js';
 
 const ENCODE_LIMIT = 32 * 1024 * 1024, PIXEL_LIMIT = 32_000_000;
 const modes = ['original', 'resize', 'compress', 'resize-compress'];
+const completionRejections = new Map([
+  ['415:mime_mismatch', 'attach.type_rejected'],
+  ['415:invalid_type', 'attach.type_rejected'],
+  ['415:invalid_image', 'attach.type_rejected'],
+  ['413:image_too_large', 'attach.image_too_large'],
+]);
+const nonRetryableErrors = new Set(completionRejections.values());
 const bytes = size => size >= 1024 ** 2 ? `${(size / 1024 ** 2).toFixed(1)} MiB` : `${Math.ceil(size / 1024)} KiB`;
 const failure = (key, values = {}) => Object.assign(new Error(key), { attachmentKey: key, attachmentValues: values });
 function raster(type) { return type.startsWith('image/') && !type.startsWith('image/svg'); }
@@ -83,7 +90,7 @@ export function initAttachments({ getTopic, changed, resume }) {
     const meter=block.querySelector('progress');meter.value=item.state==='complete'?meter.max:received;
     block.querySelector('[data-transfer-error]').textContent=item.error?t(item.error):'';
     const retry=block.querySelector('[data-resume]'),cancel=block.querySelector('[data-cancel-upload]');
-    retry.hidden=item.error==='attach.type_rejected'||!['failed','cancelled','paused'].includes(item.state);retry.disabled=busy;
+    retry.hidden=nonRetryableErrors.has(item.error)||!['failed','cancelled','paused'].includes(item.state);retry.disabled=busy;
     cancel.hidden=!busy||posting||!['hashing','uploading','verifying'].includes(item.state);
     cancel.disabled=posting;
   }
@@ -294,9 +301,10 @@ export function initAttachments({ getTopic, changed, resume }) {
         let result=error.code==='auth_required'||error.attachmentKey?error:failure('attach.failed');
         if(epoch===generation){
           if(activeItem){
-            const typeRejected=activeItem.state==='verifying'&&error.status===415&&
-              ['mime_mismatch','invalid_type','invalid_image'].includes(error.code);
-            if(typeRejected)result=failure('attach.type_rejected');
+            if(activeItem.state==='verifying'){
+              const rejection=completionRejections.get(error.status+':'+error.code);
+              if(rejection)result=failure(rejection);
+            }
             activeItem.state=cancelled?'cancelled':'failed';
             activeItem.error=cancelled?null:(result.attachmentKey||'attach.failed');
           }

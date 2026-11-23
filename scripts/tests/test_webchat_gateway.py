@@ -139,7 +139,8 @@ class GatewayTests(unittest.TestCase):
         domain = "web-chat.example.com"
         rendered = GW.render_nginx_config(source, config(domain=domain))
         block = re.search(
-            r'map "\$host:\$request_method:\$uri" \$dtw_upload_disable_appsec \{(.*?)\n  \}',
+            r'map "\$host:\$request_method:\$request_uri" '
+            r'\$dtw_upload_disable_appsec \{(.*?)\n  \}',
             rendered,
             re.DOTALL,
         )
@@ -160,6 +161,11 @@ class GatewayTests(unittest.TestCase):
             (domain, "POST", base, False),
             (domain, "POST", f"{path}/complete", False),
             (domain, "PUT", f"{path}/complete", False),
+            (domain, "PUT", f"/api/files/..%2Ftopics%2F123%2Fuploads%2F{upload_id}", False),
+            (domain, "PUT", f"/api/files/..%2Ftopics/123/uploads/{upload_id}", False),
+            (domain, "PUT", f"/api/topics/123/uploads/x%2F..%2F{upload_id}", False),
+            (domain, "PUT", f"/{path}", False),
+            (domain, "PUT", f"{path}?x=1", False),
             ("other.example.com", "PUT", path, False),
             ("web-chatXexampleXcom", "PUT", path, False),
             (domain, "PUT", f"{base}/{upload_id[:-1]}", False),

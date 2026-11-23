@@ -523,6 +523,7 @@ too_large = "{name} dépasse la limite de {size}."
 settings_failed = "Impossible de charger les limites. Réessayez."
 failed = "Échec de l’envoi. Le brouillon est conservé."
 type_rejected = "Le type de ce fichier n’a pas pu être vérifié. L’envoi est impossible."
+image_too_large = "Cette image contient trop de pixels pour être envoyée."
 command = "Envoyez les pièces jointes sans commande commençant par une barre oblique."
 
 progress = "Progression de {name}"

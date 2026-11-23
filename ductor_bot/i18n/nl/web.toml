@@ -523,6 +523,7 @@ too_large = "{name} overschrijdt de bestandslimiet van {size}."
 settings_failed = "Bijlagelimieten laden mislukt. Probeer opnieuw."
 failed = "Bijlage verzenden mislukt. Uw concept blijft behouden."
 type_rejected = "Het bestandstype kon niet worden geverifieerd, waardoor dit bestand niet kan worden verzonden."
+image_too_large = "Deze afbeelding heeft te veel pixels om te verzenden."
 command = "Verzend bijlagen als bericht zonder slashopdracht."
 
 progress = "Uploadvoortgang voor {name}"

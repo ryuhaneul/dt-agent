@@ -154,7 +154,7 @@ def render_nginx_config(source: str, config: dict[str, Any]) -> str:
     upload_path = r"/api/topics/-?[0-9]+(?:\.[0-9]+)?/uploads/[a-f0-9]{32}\z"
     return stripped.replace(
         "  map $host $crowdsec_disable_appsec {\n    default 0;\n  }",
-        '  map "$host:$request_method:$uri" $dtw_upload_disable_appsec {\n'
+        '  map "$host:$request_method:$request_uri" $dtw_upload_disable_appsec {\n'
         "    default 0;\n"
         f'    "~^{host}:PUT:{upload_path}" 1;\n'
         "  }\n"
