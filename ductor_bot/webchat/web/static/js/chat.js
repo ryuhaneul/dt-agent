@@ -331,11 +331,12 @@ function updateSendButton() {
   const input = document.querySelector('#msgIn');
   document.querySelector('#sendBtn').disabled = !getTopic() || (sending && !isControlCommand(input.value));
 }
-function keepLatestAfterLayout(thread) {
+function keepLatestAfterLayout(thread, limitBeforeImageResize = threadScrollLimit) {
   const limit = thread.scrollHeight - thread.clientHeight;
   // A preview can grow before its load event, including between two scroll events.
-  if (limit !== threadScrollLimit && document.querySelector('#threadBottom').hidden &&
-      Math.min(limit, threadScrollLimit) - thread.scrollTop < LATEST_GAP) {
+  if ((limit !== threadScrollLimit || limit !== limitBeforeImageResize) &&
+      document.querySelector('#threadBottom').hidden &&
+      Math.min(limit, threadScrollLimit, limitBeforeImageResize) - thread.scrollTop < LATEST_GAP) {
     thread.scrollTop = limit;
   }
 }
@@ -1142,7 +1143,14 @@ export function initChat() {
     });
   }
   function updateThreadAfterLayout() {
-    keepLatestAfterLayout(thread);
+    const { height } = thread.getBoundingClientRect();
+    let limitBeforeImageResize = threadScrollLimit;
+    if (height > 0 && thread.style.getPropertyValue('--thread-height') !== `${height}px`) {
+      // A taller scrollport can clamp scrollTop before its images grow.
+      limitBeforeImageResize = thread.scrollHeight - thread.clientHeight;
+      thread.style.setProperty('--thread-height', `${height}px`);
+    }
+    keepLatestAfterLayout(thread, limitBeforeImageResize);
     updateThreadNavigation();
   }
   new ResizeObserver(updateThreadAfterLayout).observe(thread);
