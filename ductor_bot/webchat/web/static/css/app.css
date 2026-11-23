@@ -160,7 +160,7 @@ dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(2px)}
 .center{background:color-mix(in srgb,var(--surface) 55%,transparent)}
 [data-theme="dark"] .center,[data-theme="dark"] .topics{background:var(--veil)}
 .thread-wrap{position:relative;display:flex;flex:1;min-height:0;min-width:0}
-.thread{--thread-inset:20px;--thread-bottom-inset:68px;contain:size;flex:1;min-height:0;min-width:0;padding:var(--thread-inset) 28px var(--thread-bottom-inset);overscroll-behavior:none}
+.thread{--thread-inset:20px;--thread-bottom-inset:68px;contain:size;position:relative;flex:1;min-height:0;min-width:0;padding:var(--thread-inset) 28px var(--thread-bottom-inset);overscroll-behavior:none}
 .thread-nav{position:absolute;right:12px;bottom:12px;display:flex;gap:8px;pointer-events:none}
 .thread-nav .btn{pointer-events:auto;box-shadow:0 2px 8px color-mix(in srgb,var(--fg) 12%,transparent)}
 .thread>[data-thread-offset]{overflow-anchor:none}
