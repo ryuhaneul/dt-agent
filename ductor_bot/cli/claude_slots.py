@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -36,6 +37,8 @@ from ductor_bot.config import AgentConfig, transform_config_file
 from ductor_bot.infra.atomic_io import atomic_text_save
 from ductor_bot.infra.json_store import atomic_json_save
 
+logger = logging.getLogger(__name__)
+
 
 class SlotOverview(TypedDict):
     """One configured slot, in priority order."""
@@ -65,6 +68,10 @@ def is_slot_name(name: str) -> bool:
         name != "claude-slots"
         and re.fullmatch(r"claude(?:-[a-z0-9][a-z0-9_-]*)?", name) is not None
     )
+
+
+def _slot_name_for_log(name: str) -> str:
+    return name if is_slot_name(name) else "<invalid slot name>"
 
 
 def read_accounts(home: Path) -> list[str]:
@@ -146,8 +153,9 @@ def remove(home: Path, slot: str, *, expected: SlotIdentity | None = None) -> No
             if slot in accounts:
                 data["claude_accounts"] = [name for name in accounts if name != slot]
 
-        transform_config_file(home / "config" / "config.json", unregister)
-        _remove_directory(directory)
+        unregistered = transform_config_file(home / "config" / "config.json", unregister)
+        _remove_directory(directory, unregistered=unregistered)
+    logger.info("Claude slot deleted: %s", slot)
 
 
 def _validate_auth_slot_path(directory: Path, expected_path: Path) -> None:
@@ -205,6 +213,7 @@ def logout(home: Path, slot: str, *, expected: SlotIdentity | None = None) -> No
             _mark_slot_signed_out(home, slot)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise SlotDeleteError("logout_failed") from exc
+    logger.info("Claude slot logged out: %s", slot)
 
 
 def disconnect_api_key(home: Path, slot: str, *, expected: SlotIdentity | None = None) -> None:
@@ -238,6 +247,7 @@ def disconnect_api_key(home: Path, slot: str, *, expected: SlotIdentity | None =
             except OSError as rollback_error:
                 raise SlotDeleteError("disconnect_failed") from rollback_error
             raise SlotDeleteError("disconnect_failed") from exc
+    logger.info("Claude slot API key disconnected: %s", slot)
 
 
 def _mark_slot_signed_out(home: Path, slot: str) -> None:
@@ -269,21 +279,26 @@ def _clear_slot_state(home: Path, slot: str) -> None:
         raise OSError(msg) from exc
 
 
-def _remove_directory(directory: Path) -> None:
+def _remove_directory(directory: Path, *, unregistered: bool) -> None:
     try:
         if directory.is_symlink():
             directory.unlink()
         elif directory.is_dir():
             shutil.rmtree(directory)
     except OSError as exc:
+        if unregistered:
+            logger.warning(
+                "Claude slot unregistered but its directory could not be removed: %s",
+                directory.name,
+            )
         raise SlotDirectoryError(directory, exc) from exc
 
 
-def _change_priority(home: Path, fn: Callable[[list[str]], list[str]]) -> None:
+def _change_priority(home: Path, fn: Callable[[list[str]], list[str]]) -> bool:
     def apply(data: dict[str, object]) -> None:
         data["claude_accounts"] = fn(_accounts(data))
 
-    transform_config_file(home / "config" / "config.json", apply)
+    return transform_config_file(home / "config" / "config.json", apply)
 
 
 def _require_slot(accounts: list[str], slot: str) -> None:
@@ -298,7 +313,8 @@ def prefer(home: Path, slot: str) -> None:
         _require_slot(accounts, slot)
         return [slot, *[name for name in accounts if name != slot]]
 
-    _change_priority(home, reorder)
+    if _change_priority(home, reorder):
+        logger.info("Claude slot preferred: %s", _slot_name_for_log(slot))
 
 
 def move(home: Path, slot: str, delta: int) -> None:
@@ -314,7 +330,8 @@ def move(home: Path, slot: str, delta: int) -> None:
             accounts[index], accounts[target] = accounts[target], accounts[index]
         return accounts
 
-    _change_priority(home, reorder)
+    if _change_priority(home, reorder):
+        logger.info("Claude slot moved: %s (%+d)", _slot_name_for_log(slot), delta)
 
 
 def set_priority(home: Path, slots: Sequence[str]) -> None:
@@ -325,27 +342,37 @@ def set_priority(home: Path, slots: Sequence[str]) -> None:
             raise ValueError("invalid_priority")
         return list(slots)
 
-    _change_priority(home, reorder)
+    if _change_priority(home, reorder):
+        logger.info("Claude slot priority set: %s", ", ".join(map(_slot_name_for_log, slots)))
 
 
 def clear_cooldown(home: Path, slot: str | None) -> None:
     """Remove cooldowns without overwriting concurrent cooldown records."""
+    cleared = False
 
     def validate_and_clear(data: dict[str, object]) -> None:
         if slot is not None:
             _require_slot(_accounts(data), slot)
 
         def clear(snapshot: SlotSnapshot) -> None:
+            nonlocal cleared
             if slot is None:
+                cleared = bool(snapshot.cooldowns)
                 snapshot.cooldowns.clear()
             else:
-                snapshot.cooldowns.pop(slot, None)
+                cleared = snapshot.cooldowns.pop(slot, None) is not None
 
         SlotRegistry(state_file_path(home)).update(clear)
 
     # Keep validation current against priority edits and slot removal. The
     # config transform does not change config data, so it does not save it.
     transform_config_file(home / "config" / "config.json", validate_and_clear)
+    if not cleared:
+        return
+    if slot is None:
+        logger.info("All Claude slot cooldowns cleared")
+    else:
+        logger.info("Claude slot cooldown cleared: %s", _slot_name_for_log(slot))
 
 
 def overview(home: Path, config: AgentConfig) -> Overview:
