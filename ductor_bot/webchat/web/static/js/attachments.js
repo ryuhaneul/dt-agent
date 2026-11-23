@@ -6,21 +6,30 @@ import { Sha256 } from './sha256.js';
 
 const ENCODE_LIMIT = 32 * 1024 * 1024, PIXEL_LIMIT = 32_000_000;
 const modes = ['original', 'resize', 'compress', 'resize-compress'];
+const scales = [80, 50, 25];
+const resizes = mode => mode === 'resize' || mode === 'resize-compress';
 const bytes = size => size >= 1024 ** 2 ? `${(size / 1024 ** 2).toFixed(1)} MiB` : `${Math.ceil(size / 1024)} KiB`;
 const failure = (key, values = {}) => Object.assign(new Error(key), { attachmentKey: key, attachmentValues: values });
 function raster(type) { return type.startsWith('image/') && !type.startsWith('image/svg'); }
 
-export async function processImage(file, options) {
-  if (options.mode === 'original') return file;
-  if (file.size > ENCODE_LIMIT) throw failure('attach.processing_limit');
-  const image = await createImageBitmap(file);
+export async function processImage(file, options, onDimensions) {
+  const original = options.mode === 'original';
+  if (original && !onDimensions) return file;
+  let image;
   try {
+    if (file.size > ENCODE_LIMIT) throw failure('attach.processing_limit');
+    image = await createImageBitmap(file);
     if (image.width * image.height > PIXEL_LIMIT) throw failure('attach.processing_limit');
-    const shrinking = ['resize', 'resize-compress'].includes(options.mode);
-    const ratio = shrinking ? Math.min(1, options.edge / Math.max(image.width, image.height)) : 1;
+    const shrinking = resizes(options.mode);
+    const ratio = shrinking ? Math.min(1, options.scale / 100) : 1;
+    const width = Math.max(1, Math.round(image.width * ratio));
+    const height = Math.max(1, Math.round(image.height * ratio));
+    const source = `${image.width}×${image.height}`;
+    onDimensions?.(shrinking ? `${source} → ${width}×${height}` : source);
+    if (original) return file;
     const canvas = document.createElement('canvas');
-    canvas.width = Math.max(1, Math.round(image.width * ratio));
-    canvas.height = Math.max(1, Math.round(image.height * ratio));
+    canvas.width = width;
+    canvas.height = height;
     const context = canvas.getContext('2d');
     if (!context) throw failure('attach.processing_failed');
     context.drawImage(image, 0, 0, canvas.width, canvas.height);
@@ -32,7 +41,10 @@ export async function processImage(file, options) {
     if (!blob || blob.type !== type) throw failure('attach.processing_failed');
     const extension = { 'image/jpeg':'jpg', 'image/png':'png', 'image/webp':'webp' }[type];
     return new File([blob], file.name.replace(/\.[^.]*$/, '') + '.' + extension, { type, lastModified: file.lastModified });
-  } finally { image.close(); }
+  } catch (error) {
+    if (original) return file;
+    throw error;
+  } finally { image?.close(); }
 }
 
 export function initAttachments({ getTopic, changed, resume }) {
@@ -131,7 +143,7 @@ export function initAttachments({ getTopic, changed, resume }) {
       const settings = await limits();
       if (epoch !== generation) return;
       const existing = items(topic.tid);
-      const added = incoming.map(file => ({ id:crypto.randomUUID(), original:file, output:file, image:raster(file.type), options:{ mode:'original',edge:1920,quality:80 }, url:null, upload:null, state:'ready', received:0, error:null }));
+      const added = incoming.map(file => ({ id:crypto.randomUUID(), original:file, output:file, image:raster(file.type), options:{ mode:'original',scale:scales[0],quality:80 }, url:null, upload:null, state:'ready', received:0, error:null }));
       validate([...existing,...added], settings);
       for (const item of added) setPreview(item);
       topics.set(topic.tid,[...existing,...added]); render(); changed();
@@ -156,22 +168,27 @@ export function initAttachments({ getTopic, changed, resume }) {
     snapshot.result = null;
     panel.querySelector('[data-apply]').disabled = true;
     panel.querySelectorAll('[data-mode]').forEach(node => node.setAttribute('aria-pressed',String(node.dataset.mode===snapshot.options.mode)));
-    panel.querySelector('[data-edge-row]').hidden = !['resize','resize-compress'].includes(snapshot.options.mode);
+    panel.querySelector('[data-scale-row]').hidden = !resizes(snapshot.options.mode);
     panel.querySelector('[data-quality-row]').hidden = !['compress','resize-compress'].includes(snapshot.options.mode);
     panel.querySelector('output').textContent = snapshot.options.quality;
-    panel.querySelector('[data-estimate]').textContent = t('attach.calculating');
+    const estimate = panel.querySelector('[data-estimate-text]');
+    const dimensions = panel.querySelector('[data-dimensions]');
+    estimate.textContent = t('attach.calculating');
+    dimensions.textContent = '';
     clearTimeout(timer);
     timer = setTimeout(() => {
       previewWork = previewWork.catch(()=>{}).then(async () => {
         if (menu !== snapshot || revision !== snapshot.revision) return;
         try {
-          const result = await processImage(snapshot.item.original,{...snapshot.options});
+          let size = '';
+          const result = await processImage(snapshot.item.original, {...snapshot.options}, value => { size = value; });
           if (menu !== snapshot || revision !== snapshot.revision) return;
           snapshot.result = result;
-          panel.querySelector('[data-estimate]').textContent = t('attach.estimate',{size:bytes(result.size)}) + ' · ' + (result.type || 'FILE');
+          estimate.textContent = t('attach.estimate',{size:bytes(result.size)}) + ' · ' + (result.type || 'FILE');
+          dimensions.textContent = size;
           panel.querySelector('[data-apply]').disabled = false;
         } catch (error) {
-          if (menu===snapshot && revision===snapshot.revision) panel.querySelector('[data-estimate]').textContent=t(error.attachmentKey || 'attach.processing_failed');
+          if (menu===snapshot && revision===snapshot.revision) estimate.textContent=t(error.attachmentKey || 'attach.processing_failed');
         }
         position();
       });
@@ -182,9 +199,9 @@ export function initAttachments({ getTopic, changed, resume }) {
     closeMenu(false);
     menu = {item, options:{...item.options}, revision:0, result:null};
     panel.innerHTML = `<h3>${esc(t('attach.processing'))}</h3><div class="attach-modes" role="group" aria-label="${esc(t('attach.processing'))}">${modes.map(mode=>`<button type="button" data-mode="${mode}" aria-pressed="${mode===item.options.mode}">${esc(t('attach.'+mode))}</button>`).join('')}</div>
-      <label data-edge-row>${esc(t('attach.edge'))}<select data-edge aria-label="${esc(t('attach.edge'))}">${[1280,1920,2560].map(edge=>`<option value="${edge}"${edge===item.options.edge?' selected':''}>${edge} px</option>`).join('')}</select></label>
+      <label data-scale-row>${esc(t('attach.scale'))}<select data-scale aria-label="${esc(t('attach.scale'))}">${scales.map(scale=>`<option value="${scale}"${scale===item.options.scale?' selected':''}>${scale}%</option>`).join('')}</select></label>
       <label data-quality-row>WebP · ${esc(t('attach.quality'))}<input data-quality type="range" min="10" max="100" value="${item.options.quality}" aria-label="${esc(t('attach.quality'))}"><output>${item.options.quality}</output></label>
-      ${item.original.type==='image/gif'?`<p class="attach-note">${esc(t('attach.gif_note'))}</p>`:''}<p data-estimate role="status"></p><div class="attach-actions"><button type="button" class="btn btn-sm" data-cancel>${esc(t('common.cancel'))}</button><button type="button" class="btn btn-primary btn-sm" data-apply>${esc(t('attach.apply'))}</button></div>`;
+      ${item.original.type==='image/gif'?`<p class="attach-note">${esc(t('attach.gif_note'))}</p>`:''}<p data-estimate role="status"><span data-estimate-text></span><span data-dimensions></span></p><div class="attach-actions"><button type="button" class="btn btn-sm" data-cancel>${esc(t('common.cancel'))}</button><button type="button" class="btn btn-primary btn-sm" data-apply>${esc(t('attach.apply'))}</button></div>`;
     panel.hidden = false;
     tray.querySelector(`[data-options="${item.id}"]`).setAttribute('aria-expanded','true');
     optionsChanged(); panel.querySelector(`[data-mode="${item.options.mode}"]`).focus();
@@ -231,7 +248,7 @@ export function initAttachments({ getTopic, changed, resume }) {
     if (event.target.matches('[data-quality]')) { menu.options.quality=Number(event.target.value); optionsChanged(); }
   });
   panel.addEventListener('change',event=>{
-    if(menu && event.target.matches('[data-edge]')) { menu.options.edge=Number(event.target.value); optionsChanged(); }
+    if(menu && event.target.matches('[data-scale]')) { menu.options.scale=Number(event.target.value); optionsChanged(); }
   });
   panel.addEventListener('keydown',event=>{
     if(event.key==='Escape') { event.preventDefault();closeMenu(); }

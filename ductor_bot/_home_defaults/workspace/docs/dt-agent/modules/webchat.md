@@ -267,14 +267,16 @@ of the visible height; the attachment tray scrolls independently.
 
 Each image has its own processing menu. **Original** is the default and uploads
 the selected file's bytes unchanged. Processing happens in the browser only when
-selected, and the displayed size is calculated from the resulting file:
+selected. The options show the estimated output file size and, for supported
+images within the processing limits, the original pixel dimensions. Resize
+modes also show the resulting pixel dimensions.
 
 | Choice | Uploaded result |
 |---|---|
 | Original | Original bytes, format and resolution |
-| Resize | Fit within the selected longest edge, preserving aspect ratio and never enlarging; JPEG/PNG/WebP retain their format, other decoded formats become PNG |
+| Resize | Scale both dimensions to 80% (default), 50%, or 25%; JPEG/PNG/WebP retain their format, other decoded formats become PNG |
 | Compress | Convert to WebP at the selected quality, retaining the dimensions |
-| Resize + compress | Apply both the selected longest edge and WebP quality |
+| Resize + compress | Apply both the selected scale and WebP quality |
 
 Browser processing accepts inputs up to 32 MiB and 32 million decoded pixels.
 Larger files can still be sent as originals within the configured upload limit.
