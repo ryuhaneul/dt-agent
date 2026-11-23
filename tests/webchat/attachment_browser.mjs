@@ -20,7 +20,7 @@ const browser=await chromium.launch({headless:true});
 const context=await browser.newContext({viewport:{width:1280,height:720},permissions:['clipboard-read','clipboard-write']});
 const page=await context.newPage(), errors=[], sessions=new Map(), messages=[], requests=[];
 page.on('pageerror',error=>errors.push(error.message));
-const topic={tid:'123.7',chat_id:123,topic_id:7,name:'Attachment checks',group:'telegram',count:0,imported_count:0,read_only:false,renamable:true,deletable:true,busy:false,seen:0};
+const topic={tid:'123.7',chat_id:123,topic_id:7,name:'Attachment checks',preview:'',group:'telegram',count:0,imported_count:0,read_only:false,renamable:true,deletable:true,busy:false,seen:0};
 let settings={max_file_bytes:2*1024**3,max_files_per_message:10,chunk_bytes:1024**2,server_max_file_bytes:2*1024**3,server_max_files_per_message:10}, failPut=false;
 const draftTopic={...topic,tid:'123.8',topic_id:8,name:'Other draft'};
 const composerDraft='Send this\nmultiline draft\nnow';
@@ -198,6 +198,137 @@ async function checkComposerResize() {
   composerCheck = false;
 }
 
+async function checkImageScale() {
+  const dimensions = page.locator('[data-dimensions]');
+  const scale = page.locator('[data-scale]');
+  const apply = page.locator('[data-apply]');
+  const records = [];
+  const displayed = async expected => {
+    await page.waitForFunction(expected =>
+      document.querySelector('[data-dimensions]').textContent === expected
+        && !document.querySelector('[data-apply]').disabled, expected);
+    return dimensions.textContent();
+  };
+  const output = async () => {
+    await apply.click();
+    await page.locator('#imageOptions').waitFor({ state: 'hidden' });
+    const preview = page.locator('.attach-thumb');
+    return preview.evaluate(async image => {
+      await image.decode();
+      return [image.naturalWidth, image.naturalHeight];
+    });
+  };
+
+  await reset();
+  await addFile('scale-large.png');
+  await popup();
+  assert.equal(await displayed('3840×2160'), '3840×2160');
+  assert(await scale.isHidden());
+  await selectMode('compress');
+  assert.equal(await displayed('3840×2160'), '3840×2160');
+  assert(await scale.isHidden());
+  await selectMode('resize');
+  assert.equal(await scale.getAttribute('aria-label'), cfg.strings['attach.scale']);
+  assert.equal(await scale.inputValue(), '80');
+  assert.deepEqual(await scale.locator('option').allTextContents(), ['80%', '50%', '25%']);
+  await fs.mkdir(cfg.scaleShots, { recursive: true });
+  for (const width of [1280, 375]) {
+    await page.setViewportSize({ width, height: 812 });
+    await displayed('3840×2160 → 3072×1728');
+    const overflow = await page.locator('#imageOptions').evaluate(panel => {
+      const { left, right } = panel.getBoundingClientRect();
+      return Math.max(0, -left, right - innerWidth, panel.scrollWidth - panel.clientWidth,
+        document.documentElement.scrollWidth - innerWidth);
+    });
+    assert.equal(overflow, 0, `Image options overflow at ${width}px`);
+    await page.screenshot({ path: path.join(cfg.scaleShots, `scale-${width}.png`), animations: 'disabled' });
+    records.push({ width, overflow });
+  }
+  await page.setViewportSize({ width: 1280, height: 720 });
+  for (const [percent, width, height] of [[80, 3072, 1728], [50, 1920, 1080], [25, 960, 540]]) {
+    await scale.selectOption(String(percent));
+    const label = await displayed(`3840×2160 → ${width}×${height}`);
+    const actual = await output();
+    assert.deepEqual(actual, [width, height]);
+    records.push({ percent, label, actual });
+    await popup();
+  }
+  await selectMode('resize-compress');
+  assert.equal(await displayed('3840×2160 → 960×540'), '3840×2160 → 960×540');
+  assert.deepEqual(await output(), [960, 540]);
+
+  await reset();
+  await addFile('scale-small.png');
+  await popup();
+  await selectMode('resize');
+  assert.equal(await scale.inputValue(), '80');
+  const label = await displayed('500×200 → 400×160');
+  const actual = await output();
+  assert.deepEqual(actual, [400, 160]);
+  records.push({ percent: 80, label, actual });
+
+  await reset();
+  await page.locator('#filePick').setInputFiles({
+    name: 'unreadable.png', mimeType: 'image/png', buffer: Buffer.from('not an image'),
+  });
+  await popup();
+  assert.equal(await displayed(''), '');
+  results.scale = records;
+}
+
+async function checkOriginalDimensionsCache() {
+  const bitmapCalls = () => page.evaluate(() => window.bitmapCalls);
+  const expectDimensions = async expected => {
+    await page.waitForFunction(expected =>
+      document.querySelector('[data-dimensions]').textContent === expected
+        && !document.querySelector('[data-apply]').disabled, expected);
+  };
+
+  for (const [valid, expected] of [[true, '200×400'], [false, '']]) {
+    await reset();
+    await page.evaluate(() => {
+      const decode = window.createImageBitmap.bind(window);
+      window.bitmapCalls = 0;
+      window.createImageBitmap = (...args) => {
+        window.bitmapCalls++;
+        return decode(...args);
+      };
+    });
+    if (valid) {
+      await addFile('rotated.jpg');
+    } else {
+      await page.locator('#filePick').setInputFiles({
+        name: 'unreadable.png', mimeType: 'image/png', buffer: Buffer.from('not an image'),
+      });
+    }
+
+    for (let open = 0; open < 3; open++) {
+      await popup();
+      await expectDimensions(expected);
+      await page.locator('[data-cancel]').click();
+    }
+    assert.equal(await bitmapCalls(), 1, 'Three original previews must share one decode');
+    if (!valid) continue;
+
+    await popup();
+    await selectMode('resize');
+    await expectDimensions('200×400 → 160×320');
+    await selectMode('original');
+    await expectDimensions('200×400');
+    assert.equal(await bitmapCalls(), 2, 'Returning to original must reuse its dimensions');
+    await selectMode('resize');
+    await expectDimensions('200×400 → 160×320');
+    assert.equal(await bitmapCalls(), 3, 'Resize must still run again');
+    await page.locator('[data-apply]').click();
+    await page.locator('#imageOptions').waitFor({ state: 'hidden' });
+    const size = await page.locator('.attach-thumb').evaluate(async image => {
+      await image.decode();
+      return [image.naturalWidth, image.naturalHeight];
+    });
+    assert.deepEqual(size, [160, 320]);
+  }
+}
+
 try{
   emptyHistoryEnabled=true;
   await page.goto(origin+'/?empty-page=1');
@@ -259,6 +390,8 @@ try{
   results.checks.push('mirror, entry and legacy receipt events preserve unchanged message nodes');
   emptyHistoryEnabled=false;
   await checkComposerResize();
+  await checkImageScale();
+  await checkOriginalDimensionsCache();
   // Keep the requested resize format; unsupported raster formats use PNG.
   await reset();
   const other={};for(const extension of ['gif','bmp'])other[extension]=(await fs.readFile(path.join(cfg.directory,'sample.'+extension))).toString('base64');
@@ -268,9 +401,9 @@ try{
     const files=[];
     for(const type of ['image/jpeg','image/png','image/webp']){const blob=await new Promise(resolve=>canvas.toBlob(resolve,type));files.push(new File([blob],'image.bin',{type}));}
     for(const extension of ['gif','bmp'])files.push(new File([Uint8Array.from(atob(other[extension]),c=>c.charCodeAt(0))],'image.'+extension,{type:'image/'+extension}));
-    for(const file of files){const original=await processImage(file,{mode:'original'}),converted=await processImage(file,{mode:'resize',edge:24,quality:80}),bitmap=await createImageBitmap(converted);output.push({source:file.type,type:converted.type,width:bitmap.width,height:bitmap.height,originalSame:original===file});bitmap.close();}
+    for(const file of files){const original=await processImage(file,{mode:'original'}),converted=await processImage(file,{mode:'resize',scale:50,quality:80}),bitmap=await createImageBitmap(converted);output.push({source:file.type,type:converted.type,width:bitmap.width,height:bitmap.height,originalSame:original===file});bitmap.close();}
     const big=new File([new Uint8Array(32*1024*1024+1)],'big.png',{type:'image/png'});
-    let code=null;try{await processImage(big,{mode:'resize',edge:1280,quality:80});}catch(error){code=error.attachmentKey;}
+    let code=null;try{await processImage(big,{mode:'resize',scale:80,quality:80});}catch(error){code=error.attachmentKey;}
     if(code!=='attach.processing_limit'||await processImage(big,{mode:'original'})!==big)throw Error('processing cap');
     return output;
   },other);
@@ -319,7 +452,7 @@ try{
     await reset();await addFile(mode==='resize'?'sample.jpg':'sample.png');
     if(mode!=='original'){
       await popup();await selectMode(mode);
-      if(['resize','resize-compress'].includes(mode))await page.locator('[data-edge]').selectOption('1280');
+      if(['resize','resize-compress'].includes(mode))await page.locator('[data-scale]').selectOption('50');
       if(['compress','resize-compress'].includes(mode)){
         await page.locator('[data-quality]').focus();
         await page.locator('[data-quality]').evaluate(node=>{node.value='55';node.dispatchEvent(new Event('input',{bubbles:true}));});

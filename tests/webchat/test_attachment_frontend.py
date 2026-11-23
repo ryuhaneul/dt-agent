@@ -90,6 +90,11 @@ def test_attachment_browser_contract(tmp_path):
     draw.rectangle((400, 850, 1750, 910), fill="#f4f4f2")
     image.save(tmp_path / "sample.png")
     image.save(tmp_path / "sample.jpg", quality=94)
+    for name, size in (("scale-large.png", (3840, 2160)), ("scale-small.png", (500, 200))):
+        Image.new("RGB", size, "#0b5f58").save(tmp_path / name)
+    exif = Image.Exif()
+    exif[274] = 6  # Rotate clockwise when displayed.
+    Image.new("RGB", (400, 200), "#0b5f58").save(tmp_path / "rotated.jpg", exif=exif)
     small = Image.new("RGB", (48, 36), "blue")
     small.save(tmp_path / "sample.gif")
     small.save(tmp_path / "sample.bmp")
@@ -100,6 +105,7 @@ def test_attachment_browser_contract(tmp_path):
         "shots": os.environ.get("DTW_ATTACH_SHOTS", str(tmp_path / "shots")),
         "csp": CSP,
         "scenario": os.environ.get("DTW_ATTACH_SCENARIO", "4a"),
+        "scaleShots": os.environ.get("DTW_SCALE_SHOTS", str(tmp_path / "shots")),
         "strings": _load_toml(STATIC.parents[2] / "i18n/ko/web.toml"),
     }
     config = tmp_path / "browser.json"
@@ -130,7 +136,7 @@ def test_attachment_browser_contract(tmp_path):
                 == {"image/png": "PNG", "image/jpeg": "JPEG", "image/webp": "WEBP"}[result["mime"]]
             )
             expected = (
-                (1280, 853) if result["mode"] in {"resize", "resize-compress"} else (2400, 1600)
+                (1200, 800) if result["mode"] in {"resize", "resize-compress"} else (2400, 1600)
             )
             assert actual.size == expected
         if result["mode"] == "original":
