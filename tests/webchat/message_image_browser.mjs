@@ -22,7 +22,7 @@ const server = http.createServer(async (request, response) => {
 });
 
 const names = Object.keys(cfg.sizes);
-const evidence = { layouts: [], resize: {}, scroll: {} };
+const evidence = { layouts: [], resize: {}, scroll: {}, delayed: [], resizing: {} };
 const fixtures = new Map(await Promise.all(names.map(async name =>
   [name, await fs.readFile(path.join(cfg.directory, `${name}.png`))],
 )));
@@ -31,8 +31,8 @@ const topic = {
 };
 const stamp = '2026-01-01T12:00:00Z';
 
-async function openChat(page, images, delayed = null) {
-  const entries = Array.from({ length: 32 }, (_, i) => {
+async function openChat(page, images, { count = 32, delayed, previewDelay } = {}) {
+  const entries = Array.from({ length: count }, (_, i) => {
     const seq = i + 1;
     const name = images[seq];
     return {
@@ -62,7 +62,8 @@ async function openChat(page, images, delayed = null) {
         const [, seq, suffix] = match;
         const filename = images[seq];
         if (suffix.endsWith('/preview')) {
-          if (delayed && Number(seq) === delayed.seq) await delayed.ready;
+          if (Number(seq) === delayed?.seq) await delayed.ready;
+          if (previewDelay) await new Promise(resolve => setTimeout(resolve, previewDelay(Number(seq))));
           return route.fulfill({ contentType: 'image/png', body: fixtures.get(filename) });
         }
         const id = 'a'.repeat(32);
@@ -75,7 +76,7 @@ async function openChat(page, images, delayed = null) {
     }
   });
   await page.goto(`http://127.0.0.1:${server.address().port}`);
-  await page.locator('#thread [data-entry-seq="1"]').waitFor();
+  await entry(page, Math.max(1, count - 99)).waitFor();
 }
 
 const entry = (page, seq) => page.locator(`#thread [data-entry-seq="${seq}"]`);
@@ -89,7 +90,17 @@ async function measure(page, seq, name) {
     const bounds = img.getBoundingClientRect();
     const card = img.closest('.attachment-image').getBoundingClientRect();
     const thread = img.closest('#thread');
+    const line = img.closest('.message-attachment').querySelector('.attachment-fileline');
+    const filename = line.querySelector('.attachment-filename');
+    const text = document.createRange();
+    text.selectNodeContents(filename);
+    const style = getComputedStyle(line);
+    const filelineWidth = text.getBoundingClientRect().width +
+      line.querySelector('.attachment-download').getBoundingClientRect().width +
+      parseFloat(style.columnGap) + parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
     return {
+      cardWidth: card.width, gutter: card.width - bounds.width,
+      filelineWidth, filenameLines: text.getClientRects().length,
       width: bounds.width, height: bounds.height, thread: thread.getBoundingClientRect().height,
       naturalWidth: img.naturalWidth, naturalHeight: img.naturalHeight,
       overflow: Math.max(0, thread.scrollWidth - thread.clientWidth,
@@ -138,7 +149,7 @@ async function checkDelayedLoad(browser, pinned) {
   const { promise, resolve } = Promise.withResolvers();
   try {
     const page = await context.newPage();
-    await openChat(page, { [seq]: 'portrait' }, { seq, ready: promise });
+    await openChat(page, { [seq]: 'portrait' }, { delayed: { seq, ready: promise } });
     const anchor = entry(page, 10);
     await image(page, seq).waitFor({ state: 'attached' });
     if (pinned) {
@@ -175,6 +186,80 @@ async function checkDelayedLoad(browser, pinned) {
   }
 }
 
+const gap = page => page.locator('#thread').evaluate(
+  node => node.scrollHeight - node.clientHeight - node.scrollTop,
+);
+const afterLayout = page => page.evaluate(
+  () => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))),
+);
+
+async function checkManyImages(browser, delay, round) {
+  const viewport = delay === 'shuffled' ? { width: 375, height: 812 } : { width: 1280, height: 720 };
+  const context = await browser.newContext({ viewport });
+  try {
+    const page = await context.newPage();
+    const previews = new Set();
+    page.on('requestfinished', request => {
+      if (request.url().endsWith('/preview')) previews.add(request.url());
+    });
+    const images = Object.fromEntries(Array.from({ length: 60 }, (_, i) => [
+      (i + 1) * 2, delay === 'shuffled' ? names[i % names.length] : i % 2 ? 'portrait' : 'square',
+    ]));
+    const previewDelay = seq => delay === 'shuffled' ? 30 + (seq * 73 + round * 17) % 111 : delay;
+    await openChat(page, images, { count: 120, previewDelay });
+    await page.waitForTimeout(2500);
+    await page.waitForLoadState('networkidle');
+    assert(previews.size > 1);
+    const opened = await gap(page);
+    let delivered = null;
+    if (delay === 'shuffled' && opened <= 1) {
+      images[121] = 'square';
+      await page.evaluate(async () => {
+        const { handleEvent } = await import('/static/js/chat.js');
+        await handleEvent({ type: 'entry', tid: '1.2', entry: {
+          id: 'message-121', seq: 121, ts: '2026-01-01T12:00:00Z', role: 'bot',
+          source: 'web', text: '<file:./square.png>', has_attachments: true,
+        } });
+      });
+      await image(page, 121).evaluate(img => img.decode());
+      await afterLayout(page);
+      delivered = await gap(page);
+    }
+    evidence.delayed.push({ delay, round, opened, delivered, previews: previews.size });
+  } finally {
+    await context.close();
+  }
+}
+
+async function checkResizing(browser) {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+  try {
+    const page = await context.newPage();
+    await openChat(page, { 28: 'square', 30: 'portrait', 32: 'square' });
+    for (const seq of [28, 30, 32]) await image(page, seq).evaluate(img => img.decode());
+    await page.locator('#thread').evaluate(thread => { thread.scrollTop = thread.scrollHeight; });
+    await afterLayout(page);
+    const input = page.locator('#msgIn');
+    await input.fill(Array(8).fill('Compose a message').join('\n'));
+    await afterLayout(page);
+    const expanded = await gap(page);
+    await input.clear();
+    await afterLayout(page);
+    const cleared = await gap(page);
+    await page.locator('#thread').evaluate(thread => { thread.scrollTop = thread.scrollHeight; });
+    await afterLayout(page);
+    await page.setViewportSize({ width: 1280, height: 500 });
+    await afterLayout(page);
+    const shortened = await gap(page);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await afterLayout(page);
+    const restored = await gap(page);
+    evidence.resizing = { expanded, cleared, shortened, restored };
+  } finally {
+    await context.close();
+  }
+}
+
 await fs.mkdir(cfg.shots, { recursive: true });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 try {
@@ -185,11 +270,27 @@ try {
     }
     await checkDelayedLoad(browser, false);
     await checkDelayedLoad(browser, true);
+    for (const delay of [30, 100, 'shuffled']) {
+      for (let round = 1; round <= 5; round++) await checkManyImages(browser, delay, round);
+    }
+    await checkResizing(browser);
   } finally {
     await browser.close();
   }
   await fs.writeFile(path.join(cfg.shots, 'geometry.json'), JSON.stringify(evidence, null, 2));
   console.log(JSON.stringify(evidence));
+  const gaps = [...evidence.delayed.flatMap(row => [row.opened, row.delivered ?? 0]),
+    ...Object.values(evidence.resizing)];
+  assert(gaps.every(value => Math.abs(value) <= 1), 'Latest message lost its pinned position');
+  for (const row of evidence.layouts) {
+    if (row.name === 'small') {
+      assert(row.gutter > 0);
+      assert.equal(row.filenameLines, 1);
+      assert(row.cardWidth >= row.filelineWidth && row.cardWidth - row.filelineWidth <= 1);
+    } else {
+      assert(Math.abs(row.gutter) <= 1, JSON.stringify(row));
+    }
+  }
 } finally {
   await new Promise(resolve => server.close(resolve));
 }

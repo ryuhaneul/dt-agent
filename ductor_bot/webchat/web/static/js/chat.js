@@ -21,6 +21,7 @@ let streamFrame = null, historyRender = null, composerFiles = null, attachmentVi
 const streamUpdates = new Set();
 const HISTORY_PAGE_SIZE = 100, MESSAGE_WINDOW_SIZE = 100, WINDOW_STEP = 50;
 let renderedTopic = null, pinnedDay = null;
+let threadScrollLimit = 0;
 function history(tid) {
   if (!histories.has(tid)) histories.set(tid, { entries: new Map(), meta: new Map(), choices: new Map(), mirrorReaders: new Set(), hasMore: false, loaded: false, rendered: false, renderStart: null, range: null, markdown: createMarkdownCache(`entry:${tid}`) });
   return histories.get(tid);
@@ -264,7 +265,9 @@ function scheduleStreamRender(turnId) {
     const updates = [...streamUpdates]; streamUpdates.clear();
     const topic = getTopic();
     if (!active || !topic) return;
-    const thread = document.querySelector('#thread'), previousTop = thread.scrollTop;
+    const thread = document.querySelector('#thread');
+    keepLatestAfterLayout(thread);
+    const previousTop = thread.scrollTop;
     const nearBottom = !history(topic.tid).range?.newer && thread.scrollHeight - thread.clientHeight - previousTop < 80;
     for (const id of updates) {
       const turn = turns.get(id);
@@ -327,12 +330,21 @@ function updateSendButton() {
   const input = document.querySelector('#msgIn');
   document.querySelector('#sendBtn').disabled = !getTopic() || (sending && !isControlCommand(input.value));
 }
+function keepLatestAfterLayout(thread) {
+  const limit = thread.scrollHeight - thread.clientHeight;
+  // A preview can grow before its load event, including between two scroll events.
+  if (limit !== threadScrollLimit && thread.dataset.readingHistory === 'false' &&
+      thread.scrollTop >= Math.min(limit, threadScrollLimit) - 2) {
+    thread.scrollTop = limit;
+  }
+}
 function updateThreadNavigation() {
   const thread = document.querySelector('#thread');
   const top = document.querySelector('#threadTop'), bottom = document.querySelector('#threadBottom');
   const topic = getTopic(), state = topic ? history(topic.tid) : null;
   top.hidden = !state || (!state.range?.older && !state.hasMore && thread.scrollTop < 80);
-  const gap = thread.scrollHeight - thread.clientHeight - thread.scrollTop;
+  threadScrollLimit = thread.scrollHeight - thread.clientHeight;
+  const gap = threadScrollLimit - thread.scrollTop;
   bottom.hidden = !state || (!state.range?.newer && gap < 80);
   const readingHistory = !!state && (state.range?.newer || gap > 2);
   if (thread.dataset.readingHistory !== String(readingHistory)) {
@@ -541,6 +553,7 @@ function scheduleHistoryRender(topic, rows, start, limit, end, showBusy) {
   function appendOlder() {
     if (historyRender !== job || !active || getTopic()?.tid !== job.tid) return;
     const next = Math.max(limit, job.start - 12), batch = rows.slice(next, job.start);
+    keepLatestAfterLayout(thread);
     const top = thread.scrollTop, height = thread.scrollHeight;
     const pinned = !state.range.newer && height - thread.clientHeight - top < 80;
     const viewport = pinned ? null : viewportMessages(thread);
@@ -683,6 +696,7 @@ export function renderThread({
   if (active && (dayChanged || zoneChanged || midnightTimer === null)) scheduleMidnight(calendar.now);
   if (changes && (dayChanged || zoneChanged)) changes = { ...changes, dayChanged, zoneChanged };
   const state = history(topic.tid);
+  if (sameTopic && !move && seq === null) keepLatestAfterLayout(thread);
   const previousTop = thread.scrollTop;
   const gap = thread.scrollHeight - thread.clientHeight - previousTop;
   const followLatest = !state.range?.newer && gap < (preserveReading ? 1 : 80);
@@ -1120,11 +1134,14 @@ export function initChat() {
       finally { if (topRequest === request) cancelTop(); updateThreadNavigation(); }
     });
   }
-  new ResizeObserver(updateThreadNavigation).observe(thread);
+  function updateThreadAfterLayout() {
+    keepLatestAfterLayout(thread);
+    updateThreadNavigation();
+  }
+  new ResizeObserver(updateThreadAfterLayout).observe(thread);
   thread.addEventListener('load', event => {
     if (!event.target.matches('.attachment-image img')) return;
-    if (thread.dataset.readingHistory === 'false') thread.scrollTop = thread.scrollHeight;
-    updateThreadNavigation();
+    updateThreadAfterLayout();
   }, true);
   initMarkdownLinks(thread);
   input.maxLength = 32000;
@@ -1159,7 +1176,7 @@ export function initChat() {
   });
   thread.addEventListener('scroll', async () => {
     refreshCalendar();
-    updateThreadNavigation();
+    updateThreadAfterLayout();
     const topic = getTopic();
     if (!topic || topRequest || pagination?.tid === topic.tid) return;
     const state = history(topic.tid);
