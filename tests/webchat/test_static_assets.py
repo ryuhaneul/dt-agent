@@ -2808,7 +2808,9 @@ def test_autocompact_dialog_has_labeled_scopes_and_bounded_token_inputs(markup):
     not os.environ.get("DTW_PLAYWRIGHT_MODULE"),
     reason="Set DTW_PLAYWRIGHT_MODULE for message date browser checks",
 )
-@pytest.mark.parametrize("scenario", ["dates", "window", "focus"])
+@pytest.mark.parametrize(
+    "scenario", ["dates", "window", "focus", "overflow-footnote", "overflow-activity"]
+)
 def test_message_dates_browser(tmp_path, scenario):
     config = tmp_path / "dates.json"
     config.write_text(
@@ -2828,6 +2830,32 @@ def test_message_dates_browser(tmp_path, scenario):
         text=True,
         check=False,
         timeout=180,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.skipif(
+    not os.environ.get("DTW_PLAYWRIGHT_MODULE"),
+    reason="Set DTW_PLAYWRIGHT_MODULE for the Markdown preview overflow browser check",
+)
+def test_markdown_preview_does_not_expand_document():
+    root = str(STATIC.parents[3])
+    result = subprocess.run(
+        ["node", str(Path(__file__).with_name("markdown_browser.mjs"))],
+        input=json.dumps(
+            {
+                "root": root,
+                "baseline": root,
+                "mode": "preview-overflow",
+                "csp": CSP,
+                "starflowCsp": STARFLOW_CSP,
+                "strings": load_web_strings("en"),
+            }
+        ),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
     )
     assert result.returncode == 0, result.stdout + result.stderr
 
