@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import multiprocessing
 import os
 import subprocess
@@ -33,9 +34,25 @@ def _config(home):
     return json.loads((home / "config" / "config.json").read_text())
 
 
-def test_priority_operations_keep_other_fields_and_lock_inode(home):
+@pytest.fixture
+def slot_logs(caplog):
+    logger_name = "ductor_bot.cli.claude_slots"
+    caplog.set_level(logging.INFO, logger=logger_name)
+
+    def messages():
+        return [
+            message
+            for name, level, message in caplog.record_tuples
+            if name == logger_name and level == logging.INFO
+        ]
+
+    return messages
+
+
+def test_priority_operations_keep_other_fields_and_lock_inode(home, slot_logs):
     from ductor_bot.cli.claude_slots import move, prefer, set_priority
 
+    prefer(home, "claude-c")
     prefer(home, "claude-c")
     lock = home / "config" / ".config.json.lock"
     inode = lock.stat().st_ino
@@ -47,15 +64,37 @@ def test_priority_operations_keep_other_fields_and_lock_inode(home):
     move(home, "claude-a", -1)
     assert _config(home)["claude_accounts"] == ["claude-c", "claude-a", "claude-b"]
     set_priority(home, ["claude-b", "claude-a", "claude-c"])
+    set_priority(home, ["claude-b", "claude-a", "claude-c"])
     assert _config(home) == {
         "claude_accounts": ["claude-b", "claude-a", "claude-c"],
         "model": "opus",
     }
     assert lock.stat().st_ino == inode
+    assert slot_logs() == [
+        "Claude slot preferred: claude-c",
+        "Claude slot moved: claude-a (+1)",
+        "Claude slot moved: claude-a (-1)",
+        "Claude slot priority set: claude-b, claude-a, claude-c",
+    ]
+
+
+def test_priority_log_hides_invalid_configured_names(home, slot_logs):
+    from ductor_bot.cli.claude_slots import prefer, set_priority
+
+    invalid_name = "unexpected/path"
+    update_config_file(home / "config" / "config.json", claude_accounts=["claude-a", invalid_name])
+
+    prefer(home, invalid_name)
+    set_priority(home, ["claude-a", invalid_name])
+
+    assert slot_logs() == [
+        "Claude slot preferred: <invalid slot name>",
+        "Claude slot priority set: claude-a, <invalid slot name>",
+    ]
 
 
 @pytest.mark.parametrize("operation", ["prefer", "move", "clear", "missing", "duplicate", "delta"])
-def test_invalid_operations_do_not_write_data(home, operation):
+def test_invalid_operations_do_not_write_data(home, operation, slot_logs):
     from ductor_bot.cli.claude_slots import clear_cooldown, move, prefer, set_priority
 
     path = home / "config" / "config.json"
@@ -78,9 +117,10 @@ def test_invalid_operations_do_not_write_data(home, operation):
     with pytest.raises(ValueError, match=expected):
         operations[operation]()
     assert before == (path.read_bytes(), registry.state_path.read_bytes())
+    assert slot_logs() == []
 
 
-def test_clear_preserves_other_entries_and_overview_contract(home):
+def test_clear_preserves_other_entries_and_overview_contract(home, slot_logs):
     from ductor_bot.cli.claude_slots import clear_cooldown, overview
 
     reset = time.time() + 3600
@@ -122,6 +162,10 @@ def test_clear_preserves_other_entries_and_overview_contract(home):
     clear_cooldown(home, None)
     assert registry.load().cooldowns == {}
     assert overview(home, AgentConfig()) == {"slots": []}
+    assert slot_logs() == [
+        "Claude slot cooldown cleared: claude-a",
+        "All Claude slot cooldowns cleared",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -374,13 +418,14 @@ def test_overview_ignores_stored_api_key_auth_failure(home):
         ("../claude-a", "invalid_slot"),
     ],
 )
-def test_remove_refuses_default_missing_and_invalid_slots(home, slot, code):
+def test_remove_refuses_default_missing_and_invalid_slots(home, slot, code, slot_logs):
     from ductor_bot.cli.claude_slots import remove
 
     before = _config(home)
     with pytest.raises(ValueError, match=code):
         remove(home, slot)
     assert _config(home) == before
+    assert slot_logs() == []
 
 
 @pytest.mark.parametrize("slot", ["claude-a", "claude-unregistered"])
@@ -418,7 +463,7 @@ def test_remove_preserves_other_state_and_shared_targets(home, slot):
         assert config_path.stat().st_ino == inode
 
 
-def test_remove_reports_partial_failure_and_allows_retry(home, monkeypatch):
+def test_remove_reports_partial_failure_and_allows_retry(home, monkeypatch, slot_logs):
     from ductor_bot.cli import claude_slots
 
     registry = SlotRegistry(state_file_path(home))
@@ -440,8 +485,10 @@ def test_remove_reports_partial_failure_and_allows_retry(home, monkeypatch):
     assert folder.is_dir()
     assert "claude-a" not in _config(home)["claude_accounts"]
     assert registry.load().cooldowns == {"claude-b": 200}
+    assert slot_logs() == []
     claude_slots.remove(home, "claude-a")
     assert not folder.exists()
+    assert slot_logs() == ["Claude slot deleted: claude-a"]
 
 
 def _seed_auth_change(home, slot):
@@ -461,7 +508,7 @@ def _seed_auth_change(home, slot):
 
 @pytest.mark.parametrize("slot", ["claude", "claude-a"])
 async def test_logout_preserves_slot_and_quarantines_until_credentials_change(
-    home, monkeypatch, slot
+    home, monkeypatch, slot, slot_logs
 ):
     from ductor_bot.cli import claude_slots
     from ductor_bot.cli.claude_accounts import container_slot_config_dir
@@ -487,6 +534,7 @@ async def test_logout_preserves_slot_and_quarantines_until_credentials_change(
     monkeypatch.setattr(claude_slots.subprocess, "run", fake_logout)
     claude_slots.logout(home, slot)
 
+    assert slot_logs() == [f"Claude slot logged out: {slot}"]
     assert folder.is_dir()
     assert _config(home) == original_config
     snapshot = registry.load()
@@ -511,7 +559,7 @@ async def test_logout_preserves_slot_and_quarantines_until_credentials_change(
         ("missing_cli", "logout_failed"),
     ],
 )
-def test_logout_failure_preserves_state(home, monkeypatch, case, code):
+def test_logout_failure_preserves_state(home, monkeypatch, case, code, slot_logs):
     from ductor_bot.cli import claude_slots
     from ductor_bot.cli.slot_rotation import slot_use_lock
 
@@ -544,10 +592,11 @@ def test_logout_failure_preserves_state(home, monkeypatch, case, code):
             claude_slots.logout(home, slot)
     assert (registry.state_path.read_bytes(), usage.load(), _config(home)) == before
     assert credentials.read_text() == "fixture"
+    assert slot_logs() == []
 
 
 @pytest.mark.parametrize("helper", ["./api-key-helper.sh", "helper.sh"])
-def test_disconnect_api_key_preserves_settings_and_can_be_restored(home, helper):
+def test_disconnect_api_key_preserves_settings_and_can_be_restored(home, helper, slot_logs):
     from ductor_bot.cli.claude_accounts import slot_kind
     from ductor_bot.cli.claude_slots import disconnect_api_key
 
@@ -564,6 +613,7 @@ def test_disconnect_api_key_preserves_settings_and_can_be_restored(home, helper)
 
     disconnect_api_key(home, slot)
 
+    assert slot_logs() == ["Claude slot API key disconnected: claude-a"]
     assert _config(home) == before
     assert json.loads(settings.read_text()) == other
     assert slot_kind(folder) == "api_key_detached"
@@ -589,7 +639,7 @@ def test_disconnect_api_key_preserves_settings_and_can_be_restored(home, helper)
 
 
 @pytest.mark.parametrize("failure", ["marker", "settings", "usage"])
-def test_disconnect_write_failure_preserves_settings(home, monkeypatch, failure):
+def test_disconnect_write_failure_preserves_settings(home, monkeypatch, failure, slot_logs):
     from ductor_bot.cli import claude_slots
     from ductor_bot.cli.claude_accounts import slot_kind
 
@@ -617,6 +667,7 @@ def test_disconnect_write_failure_preserves_settings(home, monkeypatch, failure)
     else:
         assert registry.state_path.read_bytes() == before[1]
     assert slot_kind(folder) == "api_key"
+    assert slot_logs() == []
 
 
 def test_disconnect_refuses_oauth_and_busy_slots(home):
