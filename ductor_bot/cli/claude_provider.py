@@ -88,6 +88,8 @@ logger = logging.getLogger(__name__)
 _SYSTEM_PREFIX = "ductor_system_"
 _APPEND_PREFIX = "ductor_append_"
 
+# Allow for split deltas across the longest fixed auth phrase, about 86 characters.
+_DIAGNOSTIC_CHECK_CHARS = 120
 # The observed subscription error is about 230 characters and fits in one short message.
 _MAX_PENDING_DIAGNOSTIC_CHARS = 600
 
@@ -376,8 +378,8 @@ class ClaudeCodeCLI(BaseCLI):
     ) -> AsyncGenerator[StreamEvent, None]:
         """Send a prompt and yield stream events live as they arrive.
 
-        Hold a matching opening diagnostic until the attempt ends, a tool
-        starts, or the held text exceeds the diagnostic length limit.
+        Hold opening text for diagnostic detection across deltas. Release prose
+        at the check threshold and hold matching diagnostics up to the length limit.
         """
         accounts = await current_slot_candidates(
             Path(self._config.ductor_home), self._config.claude_accounts
@@ -397,7 +399,8 @@ class ClaudeCodeCLI(BaseCLI):
                 if not reserved:
                     continue
                 pending.clear()
-                pending_chars = 0
+                opening_text = ""
+                diagnostic_matched = False
                 body_started = False
                 attempted = True
                 capture = _StreamPassOutcome()
@@ -438,26 +441,35 @@ class ClaudeCodeCLI(BaseCLI):
                         if isinstance(event, ResultEvent):
                             # Defer final result emission until we decide on retry.
                             continue
-                        if not body_started and isinstance(event, AssistantTextDelta):
-                            pending_chars += len(event.text)
-                            if pending_chars <= _MAX_PENDING_DIAGNOSTIC_CHARS and (
-                                pending or _matches_rotation_diagnostic(event.text)
+                        if not body_started:
+                            if isinstance(event, AssistantTextDelta):
+                                opening_text += event.text
+                            tool_started = isinstance(event, ToolUseEvent)
+                            if not diagnostic_matched and (
+                                tool_started
+                                or len(opening_text.lstrip()) >= _DIAGNOSTIC_CHECK_CHARS
+                            ):
+                                diagnostic_matched = _matches_rotation_diagnostic(opening_text)
+                                body_started = not diagnostic_matched
+                            if tool_started or (
+                                diagnostic_matched
+                                and len(opening_text) > _MAX_PENDING_DIAGNOSTIC_CHARS
+                            ):
+                                body_started = True
+                            if not body_started and (
+                                pending or isinstance(event, AssistantTextDelta)
                             ):
                                 pending.append(event)
                                 continue
-                        elif pending and not isinstance(event, ToolUseEvent):
-                            pending.append(event)
-                            continue
                         if notice and (
-                            pending or (isinstance(event, AssistantTextDelta) and event.text)
+                            opening_text.strip()
+                            or (isinstance(event, AssistantTextDelta) and event.text.strip())
                         ):
                             yield AssistantTextDelta(type="assistant", text=notice)
                             notice = ""
                         for held in pending:
                             yield held
                         pending.clear()
-                        if isinstance(event, (AssistantTextDelta, ToolUseEvent)):
-                            body_started = True
                         yield event
 
                 final = capture.final_result
@@ -518,7 +530,7 @@ class ClaudeCodeCLI(BaseCLI):
                         continue
                     result_prefix = auth_prefix if returncode == 0 and not attempt.is_error else ""
                     result_prefix = (result_prefix or quota_prefix) if final is not None else ""
-                    if notice and result_prefix and pending:
+                    if notice and result_prefix and opening_text.strip():
                         yield AssistantTextDelta(type="assistant", text=result_prefix)
                     for event in pending:
                         yield event
@@ -560,11 +572,12 @@ class ClaudeCodeCLI(BaseCLI):
                         }
                     )
 
-        # No replacement was found. Surface the last held diagnostic via the live path.
-        for event in pending:
-            yield event
         if last_error is not None:
+            # Let the messenger send the final error without marking text as streamed.
             yield last_error
+        else:
+            for event in pending:
+                yield event
         if attempted:
             return
 

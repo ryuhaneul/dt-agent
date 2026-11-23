@@ -879,18 +879,56 @@ class TestMultiSlotFallback:
             answer,
         ]
 
-    async def test_streaming_success_releases_matching_text_in_order(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    @pytest.mark.parametrize(
+        "shape", ["subscription-split", "quota-split", "leading-newline", "leading-empty"]
+    )
+    async def test_streaming_switch_hides_split_diagnostic(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, shape: str
     ) -> None:
         cli = self._make_multi_cli(monkeypatch, tmp_path)
-        deltas = ("Diagnostic example:\n", self._SUBSCRIPTION_ERROR, "\nEnd of example.")
+        cli._config.include_partial_messages = True
+        subscription_error = self._SUBSCRIPTION_ERROR
+        deltas = {
+            "subscription-split": (subscription_error[:40], subscription_error[40:]),
+            "quota-split": ("You've hit ", "your limit · resets at 18:30"),
+            "leading-newline": ("\n", subscription_error),
+            "leading-empty": ("", subscription_error),
+        }[shape]
+        diagnostic = "".join(deltas).lstrip()
+        answer = "Hello from the second slot."
+        procs = [
+            self._streaming_proc(*deltas, result=diagnostic, is_error=True, partial=True),
+            self._streaming_proc(answer, result=answer, partial=True),
+        ]
+
+        with patch(_EXEC_PATH, side_effect=procs):
+            events = await _collect_stream(cli)
+
+        final = events[-1]
+        assert isinstance(final, ResultEvent)
+        assert not final.is_error
+        prefix = final.result.removesuffix(answer)
+        assert prefix.startswith("[Claude: claude → claude-alt ")
+        assert prefix.endswith("]\n\n")
+        assert [event.text for event in events if isinstance(event, AssistantTextDelta)] == [
+            prefix,
+            answer,
+        ]
+
+    @pytest.mark.parametrize("matching", [False, True])
+    async def test_streaming_short_success_releases_held_text_at_completion(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, matching: bool
+    ) -> None:
+        cli = self._make_multi_cli(monkeypatch, tmp_path)
+        quote = self._SUBSCRIPTION_ERROR if matching else "The subscription is active."
+        deltas = ("Diagnostic example:\n", quote, "\nEnd of example.")
         proc = self._streaming_proc(*deltas, result="".join(deltas))
         with patch(_EXEC_PATH, return_value=proc) as execute:
             stream = cli.send_streaming("hello")
             first = await anext(stream)
             assert isinstance(first, AssistantTextDelta)
             assert first.text == deltas[0]
-            assert proc.stdout.readline.await_count == 1
+            assert proc.stdout.readline.await_count == len(deltas) + 2
             events = [first, *[event async for event in stream]]
 
         execute.assert_called_once()
@@ -922,41 +960,40 @@ class TestMultiSlotFallback:
         assert isinstance(final, ResultEvent)
         assert final.is_error
         assert final.result == last_error + build_reauth_notice()
-        assert [event.text for event in events if isinstance(event, AssistantTextDelta)] == [
-            last_error
-        ]
+        assert not any(isinstance(event, AssistantTextDelta) for event in events)
 
 
-    async def test_streaming_later_rate_limit_mentions_are_immediate(
+    async def test_streaming_opening_releases_at_120_chars_and_later_mentions_are_immediate(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         cli = self._make_multi_cli(monkeypatch, tmp_path)
-        deltas = ("The API replied. ", "Check the rate limit policy. ", "HTTP 429 means retry.")
+        opening = "  " + "The API replied. ".ljust(119, "x")
+        deltas = (opening, ".", "Check the rate limit policy. ", "HTTP 429 means retry.")
         proc = self._streaming_proc(*deltas, result="".join(deltas))
 
         with patch(_EXEC_PATH, return_value=proc):
             async with aclosing(cli.send_streaming("hello")) as stream:
-                for read_count, text in enumerate(deltas, start=1):
+                for text, read_count in zip(deltas, (2, 2, 3, 4), strict=True):
                     event = await anext(stream)
                     assert isinstance(event, AssistantTextDelta)
                     assert event.text == text
                     assert proc.stdout.readline.await_count == read_count
                 assert isinstance(await anext(stream), ResultEvent)
 
-    async def test_streaming_tool_releases_held_rate_limit_text(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    @pytest.mark.parametrize("opening", ["I will check the rate limit. ", "I will read the file. "])
+    async def test_streaming_tool_releases_held_opening_text(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, opening: str
     ) -> None:
         cli = self._make_multi_cli(monkeypatch, tmp_path)
-        prompt_text = "I will check the rate limit. "
         answer = "The server returned HTTP 429."
         messages = [
-            {"type": "assistant", "message": {"content": [{"type": "text", "text": prompt_text}]}},
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": opening}]}},
             {
                 "type": "assistant",
                 "message": {"content": [{"type": "tool_use", "name": "Read"}]},
             },
             {"type": "assistant", "message": {"content": [{"type": "text", "text": answer}]}},
-            {"type": "result", "result": prompt_text + answer},
+            {"type": "result", "result": opening + answer},
         ]
         proc = _fake_streaming_process([json.dumps(msg).encode() + b"\n" for msg in messages])
 
@@ -964,7 +1001,7 @@ class TestMultiSlotFallback:
             async with aclosing(cli.send_streaming("hello")) as stream:
                 first = await anext(stream)
                 assert isinstance(first, AssistantTextDelta)
-                assert first.text == prompt_text
+                assert first.text == opening
                 assert proc.stdout.readline.await_count == 2
                 tool = await anext(stream)
                 assert isinstance(tool, ToolUseEvent)
