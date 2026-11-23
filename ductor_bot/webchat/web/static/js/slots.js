@@ -5,7 +5,7 @@ const REFRESH_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
 const MORE_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
 const TOGGLE = 'aria-haspopup="dialog" aria-controls="claudeSlotPopover" aria-expanded="false"';
 const REFRESH = `<button class="slot-refresh" type="button" data-slot-refresh>${REFRESH_ICON}</button>`;
-const WINDOWS = ['five_hour', 'seven_day'];
+const WINDOWS = { five_hour: '5h', seven_day: '7d' };
 
 function formatTime(seconds, withDay = false) {
   const date = new Date(seconds * 1000);
@@ -23,54 +23,88 @@ function slotStatus(slot) {
   }
   if (keyLabel) return { kind: 'key', label: keyLabel, badge: 'off' };
   if (slot.state === 'expired') return { kind: 'expired', label: t('slots.expired'), badge: 'down' };
-  if (slot.state === 'ok' && WINDOWS.some(name => slot.usage?.windows?.[name])) {
+  if (slot.state === 'ok' && Object.keys(WINDOWS).some(name => slot.usage?.windows?.[name])) {
     return { kind: 'ok', label: t('slots.ok'), badge: 'ok' };
   }
   return { kind: 'empty', label: t('slots.no_data'), badge: 'off' };
 }
 
+function usageLevel(value) {
+  return value >= 0.9 ? 'high' : value >= 0.75 ? 'mid' : 'low';
+}
+
 function meter(value, className, showPercent = true) {
-  const percent = new Intl.NumberFormat(document.documentElement.lang, { style: 'percent' }).format(value);
-  const level = value >= 0.9 ? 'high' : value >= 0.75 ? 'mid' : 'low';
+  const level = usageLevel(value);
+  const percent = showPercent
+    ? new Intl.NumberFormat(document.documentElement.lang, { style: 'percent' }).format(value) : '';
   return `<progress class="${className}" data-level="${level}" max="1" value="${Math.min(value, 1)}" aria-hidden="true"></progress>` +
-    (showPercent ? `<b class="slot-percent">${esc(percent)}</b>` : '');
+    (showPercent ? `<b class="slot-percent" data-level="${level}">${esc(percent)}</b>` : '');
 }
 
 function windowHasReset(window, now) {
-  return window.resets_at <= now;
+  return window.resets_at != null && window.resets_at <= now;
 }
 
-function chip(slot, status, next, primary, now) {
-  const window = slot.usage?.windows?.five_hour;
-  const usage = window && (status.kind === 'ok' || status.kind === 'cooldown')
-    ? meter(windowHasReset(window, now) ? 0 : window.utilization, 'slot-mini', status.kind !== 'cooldown') : '';
-  const label = status.kind === 'ok' ? (usage ? '' : t('slots.no_data')) : status.label;
-  return `<button class="slot-chip" type="button" data-slot-toggle="${esc(slot.name)}" data-status="${status.kind}" ${next ? 'data-next' : ''} ${primary ? 'data-primary' : ''} ${TOGGLE}>
+function windowDuration(minutes) {
+  if (minutes == null) return '?';
+  if (minutes % 1440 === 0) return `${minutes / 1440}d`;
+  if (minutes % 60 === 0) return `${minutes / 60}h`;
+  return `${minutes}m`;
+}
+
+function usageWindows(slot) {
+  if (slot.kind === 'codex') {
+    return [...slot.usage.windows]
+      .sort((a, b) => (a.window_minutes ?? Infinity) - (b.window_minutes ?? Infinity))
+      .map(window => {
+        const short = windowDuration(window.window_minutes);
+        return { short, label: short, utilization: window.used_percent / 100, resets_at: window.resets_at };
+      });
+  }
+  return Object.entries(WINDOWS).flatMap(([name, short]) => {
+    const window = slot.usage?.windows?.[name];
+    return window ? [{ ...window, short, label: t(`slots.${name}`) }] : [];
+  });
+}
+
+function chip(slot, windows, status, next, primary, now) {
+  const kind = status?.kind ?? (windows.length ? 'ok' : 'empty');
+  let usage = '';
+  if (kind === 'ok') {
+    const rows = windows.map(window => `<span class="slot-chip-window">
+      <span class="slot-period" title="${esc(window.label)}">${esc(window.short)}</span>
+      ${meter(windowHasReset(window, now) ? 0 : window.utilization, 'slot-mini')}
+    </span>`).join('');
+    if (rows) usage = `<span class="slot-usage">${rows}</span>`;
+  } else if (kind === 'cooldown' && slot.usage?.windows?.five_hour) {
+    const window = slot.usage.windows.five_hour;
+    usage = meter(windowHasReset(window, now) ? 0 : window.utilization, 'slot-mini', false);
+  }
+  const label = kind === 'ok' ? '' : status?.label ?? t('slots.no_data');
+  return `<button class="slot-chip" type="button" data-slot-toggle="${esc(slot.name)}" data-status="${kind}" ${next ? 'data-next' : ''} ${primary ? 'data-primary' : ''} ${TOGGLE}>
     ${next ? `<span class="slot-pip" aria-hidden="true"></span><span class="sr-only">${esc(t('slots.next'))}</span>` : ''}
     <span class="slot-name">${esc(slot.name)}</span>${usage}${label ? `<span class="slot-label">${esc(label)}</span>` : ''}
   </button>`;
 }
 
-function slotRow(slot, status, next, now) {
-  const usage = slot.usage;
-  const rows = WINDOWS.map(name => {
-    const window = usage?.windows?.[name];
-    if (!window) return '';
+function slotRow(slot, windows, status, next, now) {
+  const rows = windows.map(window => {
     const reset = windowHasReset(window, now);
     const resetText = reset ? t('slots.reset_done')
-      : window.resets_at === slot.cooldown_until && status.kind === 'cooldown' ? status.label
+      : window.resets_at == null ? ''
+      : window.resets_at === slot.cooldown_until && status?.kind === 'cooldown' ? status.label
       : t('slots.reset_at', { time: formatTime(window.resets_at, true) });
     return `<div class="slot-window">
-      <span>${esc(t(`slots.${name}`))}</span>${meter(reset ? 0 : window.utilization, 'slot-meter')}
+      <span>${esc(window.label)}</span>${meter(reset ? 0 : window.utilization, 'slot-meter')}
       <span class="slot-reset">${esc(resetText)}</span>
     </div>`;
   }).join('');
-  const captured = usage ? t('slots.captured_at', { time: formatTime(usage.captured_at, true) }) : '';
-  const label = status.keyLabel ? `${status.keyLabel} · ${status.label}` : status.label;
+  const captured = slot.usage ? t('slots.captured_at', { time: formatTime(slot.usage.captured_at, true) }) : '';
+  const label = status?.keyLabel ? `${status.keyLabel} · ${status.label}` : status?.label;
   return `<div class="slot-row" ${next ? 'data-next' : ''}>
     <div class="slot-row-top"><span class="slot-name">${esc(slot.name)}</span>
       ${next ? `<span class="slot-next-tag">${esc(t('slots.next'))}</span>` : ''}
-      <span class="badge badge-${status.badge}">${esc(label)}</span>
+      ${status ? `<span class="badge badge-${status.badge}">${esc(label)}</span>` : ''}
     </div>${rows ? `<div class="slot-windows">${rows}</div>` : ''}
     ${captured ? `<div class="slot-time slot-captured">${esc(captured)}</div>` : ''}
   </div>`;
@@ -92,18 +126,23 @@ export function initSlots(refresh) {
   const bar = root.closest('.bar');
   const neighbors = [...bar.children].filter(child => child !== root);
   const narrow = matchMedia('(max-width: 1180px)');
-  let data = null, updatedAt = null, trigger = null;
+  const mobile = matchMedia('(max-width: 760px)');
+  let data = null, codex = null, updatedAt = null, trigger = null;
   let refreshing = false, failed = false;
 
   function chipCapacity() {
     const header = getComputedStyle(bar);
-    const controls = [refreshButtons[0], times[0]];
+    const available = bar.clientWidth - parseFloat(header.paddingLeft) - parseFloat(header.paddingRight);
+    const headerGap = parseFloat(header.columnGap);
+    if (mobile.matches) {
+      return available - bar.querySelector('.stat').getBoundingClientRect().width - headerGap;
+    }
+    const controls = narrow.matches ? [] : [refreshButtons[0], times[0]];
     const reserved = [...neighbors, ...controls].reduce((width, element) =>
       width + element.getBoundingClientRect().width, 0);
-    return bar.clientWidth - parseFloat(header.paddingLeft) - parseFloat(header.paddingRight)
-      - neighbors.length * parseFloat(header.columnGap) - reserved
+    return available - neighbors.length * headerGap - reserved
       - controls.length * parseFloat(getComputedStyle(root).columnGap)
-      - parseFloat(getComputedStyle(times[0]).marginLeft);
+      - (narrow.matches ? 0 : parseFloat(getComputedStyle(times[0]).marginLeft));
   }
 
   function fitChips() {
@@ -112,38 +151,51 @@ export function initSlots(refresh) {
     const primary = chips.querySelector('[data-primary]');
     const more = chips.querySelector('[data-slot-more]');
     const setHiddenCount = count => {
+      if (!more) return;
       more.firstElementChild.textContent = `+${count}`;
       more.hidden = count === 0;
     };
+
+    root.removeAttribute('data-compact');
     primary.style.removeProperty('max-width');
     buttons.forEach(button => { button.hidden = false; });
-    if (narrow.matches) {
-      if (more) setHiddenCount(buttons.length - 1);
-      return;
-    }
-
+    setHiddenCount(buttons.length - 1);
     const capacity = chipCapacity();
     const gap = parseFloat(getComputedStyle(chips).columnGap);
-    const widths = buttons.map(button => button.getBoundingClientRect().width);
-    const fullWidth = widths.reduce((total, width) => total + width, 0) + gap * (buttons.length - 1);
+    const name = primary.querySelector('.slot-name');
+    const widthOf = button => button.getBoundingClientRect().width;
+    const widthWithoutClippedName = () =>
+      widthOf(primary) + Math.max(0, name.scrollWidth - name.clientWidth);
+    const widths = () => buttons.map(widthOf);
+    const groupWidth = sizes => sizes.reduce((sum, width) => sum + width, 0) + gap * (sizes.length - 1);
+    const reserved = more ? gap + widthOf(more) : 0;
+    if (primary.querySelector('.slot-usage') && (narrow.matches || groupWidth(widths()) > capacity)
+        && widthWithoutClippedName() + reserved > capacity) {
+      root.setAttribute('data-compact', '');
+    }
+    if (narrow.matches) return;
+
+    const sizes = widths();
+    const fullWidth = groupWidth(sizes);
     if (fullWidth <= capacity || !more) {
-      if (more) more.hidden = true;
+      setHiddenCount(0);
       if (fullWidth > capacity) primary.style.maxWidth = `${Math.max(0, capacity)}px`;
       return;
     }
 
     let hidden = buttons.length - 1;
-    setHiddenCount(hidden);
-    const primaryWidth = widths[buttons.indexOf(primary)];
-    const primaryLimit = capacity - gap - more.getBoundingClientRect().width;
+    const primaryWidth = sizes[buttons.indexOf(primary)];
+    const primaryLimit = capacity - reserved;
     if (primaryWidth > primaryLimit) primary.style.maxWidth = `${Math.max(0, primaryLimit)}px`;
     let used = primaryWidth;
+    // Try the remaining Claude slots in order. Codex is last and folds first.
     buttons.forEach((button, index) => {
       if (button === primary) return;
       setHiddenCount(hidden - 1);
-      const required = widths[index] + gap;
-      const reserve = hidden > 1 ? gap + more.getBoundingClientRect().width : 0;
-      button.hidden = used + required + reserve > capacity;
+      const required = sizes[index] + gap;
+      const reserve = hidden > 1 ? gap + widthOf(more) : 0;
+      button.hidden = (button.dataset.slotToggle === 'Codex' && hidden > 1)
+        || used + required + reserve > capacity;
       if (!button.hidden) {
         hidden--;
         used += required;
@@ -178,7 +230,14 @@ export function initSlots(refresh) {
   }
 
   function render() {
-    root.hidden = !data?.slots?.length;
+    const slots = (data?.slots ?? []).map(slot => ({
+      slot, windows: usageWindows(slot), status: slotStatus(slot), next: slot.name === data.next,
+    }));
+    if (codex) {
+      const slot = { name: 'Codex', kind: 'codex', usage: codex };
+      slots.push({ slot, windows: usageWindows(slot), status: null, next: false });
+    }
+    root.hidden = slots.length === 0;
     if (root.hidden) {
       chips.replaceChildren();
       list.replaceChildren();
@@ -186,20 +245,18 @@ export function initSlots(refresh) {
       setOpen(false);
       return;
     }
-    root.setAttribute('aria-label', t('slots.title'));
-    popover.setAttribute('aria-label', t('slots.title'));
+    const title = t(codex ? 'slots.usage_title' : 'slots.title');
+    root.setAttribute('aria-label', title);
+    popover.setAttribute('aria-label', title);
     const scroll = list.scrollTop;
     const focused = document.activeElement;
-    const more = data.slots.length - 1;
+    const more = slots.length - 1;
     const now = Date.now() / 1000;
-    const slots = data.slots.map(slot => ({
-      slot, status: slotStatus(slot), next: slot.name === data.next,
-    }));
     const primary = slots.find(({ next }) => next) ?? slots[0];
-    chips.innerHTML = slots.map(item => chip(item.slot, item.status, item.next, item === primary, now)).join('') +
+    chips.innerHTML = slots.map(item => chip(item.slot, item.windows, item.status, item.next, item === primary, now)).join('') +
       (more > 0 ? `<button class="slot-chip slot-more" type="button" data-slot-more ${TOGGLE}
-        aria-label="${esc(t('slots.show_all', { n: data.slots.length }))}"><span>+${more}</span>${MORE_ICON}</button>` : '');
-    list.innerHTML = slots.map(({ slot, status, next }) => slotRow(slot, status, next, now)).join('');
+        aria-label="${esc(t(codex ? 'slots.show_all_usage' : 'slots.show_all', { n: slots.length }))}"><span>+${more}</span>${MORE_ICON}</button>` : '');
+    list.innerHTML = slots.map(({ slot, windows, status, next }) => slotRow(slot, windows, status, next, now)).join('');
     list.scrollTop = scroll;
     const clock = formatTime(updatedAt.getTime() / 1000);
     const label = t('slots.refreshed_at', { time: clock });
@@ -254,8 +311,9 @@ export function initSlots(refresh) {
   }
 
   return {
-    update(value) {
+    update(value, codexUsage = null) {
       data = value;
+      codex = codexUsage;
       updatedAt = new Date();
       render();
     },

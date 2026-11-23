@@ -825,7 +825,7 @@ function refreshState() {
     releaseVersion = typeof state.version === 'string' ? state.version : '';
     renderVersion();
     botUp = state.bot.up; webSessions = state.web_sessions; renderStatus();
-    slots.update(state.claude);
+    slots.update(state.claude, state.codex);
   }).catch(error => {
     if (!active || epoch !== generation || error.code === 'auth_required') return;
     failed = true;

@@ -132,15 +132,18 @@ and is discarded 10 minutes after the job ends. Input echoed by the CLI remains 
 in the owner-only raw output; one-time codes are not masked. This guarantee does not cover
 log files written by the native provider CLI itself; this feature does not manage those files.
 
-## Claude slots
+## Provider usage
 
-The header shows Claude slots in their configured priority order and highlights
-the slot that rotation will try first, or the first visible slot if that slot is hidden.
-On narrower screens, the header shows
-the next slot and a button to see the remaining slots. Open a chip to see the
-stored five-hour and seven-day usage windows, reset times and slot status.
-API-key slots have no OAuth usage data.
-The header hides OAuth slots without credentials and slots with disconnected API keys.
+The header shows Claude slots in priority order and highlights the next visible
+slot in rotation. It shows the stored five-hour and seven-day usage on separate
+lines when both windows are available. When the next chip and overflow button
+need more room, the chips show durations and percentages without bars.
+
+The Codex chip follows the Claude slots when an observation is available. When
+chips fold into the overflow menu, Claude slots take priority over Codex. Open
+any chip or the overflow button to see every available window with its usage,
+reset time and capture time. API-key slots have no OAuth usage data. The header
+hides OAuth slots without credentials and slots with disconnected API keys.
 
 The popover shows when the browser last fetched state and when each usage
 snapshot was captured. State refreshes on login, reconnect, when the page
