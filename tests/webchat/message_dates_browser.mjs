@@ -390,11 +390,56 @@ async function messageDates(browser) {
   console.log(JSON.stringify(measurements));
 }
 
+async function documentOverflow(browser, scenario) {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  try {
+    const page = await context.newPage();
+    const paragraph = 'A paragraph in a long conversation.\n\n';
+    const entries = messages.slice(0, 16).map(entry => ({ ...entry, text: paragraph.repeat(5) }));
+    await mockChat(page, entries);
+    await page.goto(origin);
+    await page.waitForFunction(count => document.querySelectorAll('#thread [data-entry-seq]').length === count, entries.length);
+    await page.evaluate(() => document.fonts.ready);
+
+    await page.evaluate(async ({ scenario, paragraph, tid }) => {
+      const { handleEvent } = await import('/static/js/chat.js');
+      const turn = { tid, turn_id: 'overflow-turn' };
+      const thread = document.querySelector('#thread');
+      await handleEvent({ ...turn, type: 'turn', phase: 'started' });
+      await handleEvent({
+        ...turn, type: 'delta', text: scenario === 'overflow-footnote' ? paragraph.repeat(250) : 'Short response.',
+      });
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      thread.scrollTop = 0;
+      if (scenario === 'overflow-footnote') {
+        await handleEvent({ ...turn, type: 'delta', text: 'Citation[^ref].\n\n[^ref]: Example source.\n\n' });
+      } else {
+        await handleEvent({ ...turn, type: 'tool', name: 'Read' });
+        await handleEvent({ ...turn, type: 'turn', phase: 'done' });
+      }
+    }, { scenario, paragraph, tid: topic.tid });
+
+    const selector = scenario === 'overflow-footnote'
+      ? '#streamMsg .footnotes > h2.sr-only'
+      : '[data-turn="overflow-turn"] .activity-trace summary > span.sr-only';
+    await page.locator(selector).waitFor({ state: 'attached' });
+    const { height, viewport } = await page.evaluate(() => ({
+      height: document.scrollingElement.scrollHeight,
+      viewport: window.innerHeight,
+    }));
+    assert.equal(height, viewport, `${scenario} expanded the document past the viewport`);
+  } finally {
+    await context.close();
+  }
+}
+
 const browser = await chromium.launch();
 try {
   await fs.mkdir(config.shots, { recursive: true });
   const scenarios = { dates: messageDates, window: preserveOldestGroup, focus: chatFocus };
-  await scenarios[process.argv[3] ?? 'dates'](browser);
+  const scenario = process.argv[3] ?? 'dates';
+  if (scenario.startsWith('overflow-')) await documentOverflow(browser, scenario);
+  else await scenarios[scenario](browser);
 } finally {
   await browser.close();
   await new Promise(resolve => server.close(resolve));
