@@ -281,6 +281,9 @@ try{
       await page.locator('#attachBtn:not(:disabled)').waitFor();
       const error=await rejected.locator('[data-transfer-error]').textContent();
       assert.equal(error,cfg.strings[key],JSON.stringify({width,phase,status,code}));
+      const toast=page.locator('#toasts [role="alert"] span');
+      await toast.waitFor();
+      assert.equal(await toast.textContent(),cfg.strings[key],JSON.stringify({width,phase,status,code}));
       assert.equal(await rejected.locator('[data-resume]').isVisible(),resume);
       assert(await rejected.locator('[data-remove]').isEnabled());
       assert(await rejected.locator('[data-cancel-upload]').isHidden());

@@ -291,16 +291,17 @@ export function initAttachments({ getTopic, changed, resume }) {
         posting=true;render();changed();
         return {ids,batch,run};
       } catch(error) {
+        let result=error.code==='auth_required'||error.attachmentKey?error:failure('attach.failed');
         if(epoch===generation){
           if(activeItem){
             const typeRejected=activeItem.state==='verifying'&&error.status===415&&
               ['mime_mismatch','invalid_type','invalid_image'].includes(error.code);
+            if(typeRejected)result=failure('attach.type_rejected');
             activeItem.state=cancelled?'cancelled':'failed';
-            activeItem.error=cancelled?null:(typeRejected?'attach.type_rejected':error.attachmentKey||'attach.failed');
+            activeItem.error=cancelled?null:(result.attachmentKey||'attach.failed');
           }
           batch.filter(item=>item.state==='waiting').forEach(item=>{item.state='paused';});
         }
-        const result=error.code==='auth_required'||error.attachmentKey?error:failure('attach.failed');
         result.attachmentRun=run;if(cancelled)result.silent=true;throw result;
       } finally {if(activeRun===run){controller=null;render();changed();}}
     },
