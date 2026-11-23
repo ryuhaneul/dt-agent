@@ -187,8 +187,10 @@ language without changing Telegram's language.
 Known commands execute outside the normal streaming turn. Inputs are recorded
 with source `web`, role `user` and `kind="command"`; results use role `bot`.
 Their Telegram mirrors use the existing durable outbox. Input mirrors say
-"Command executed: /command" instead of the normal web-message prefix. Selector
-callback data, URL buttons and keyboard rows survive queuing and restart.
+"Command executed: /command" instead of the normal web-message prefix. If a web
+command button's selection is shown on the original Telegram message, the bridge
+skips the separate input mirror and still mirrors the result. Selector callback
+data, URL buttons and keyboard rows survive queuing and restart.
 The JSON response contains `text` and `buttons`; callback and URL buttons use
 `{text, callback_data}` and `{text, url}`, respectively.
 
@@ -209,9 +211,10 @@ the restart marker; any pending mirror resumes after restart.
 turn submission or recording of raw command text. Web dialogs support listing,
 setting and deleting secrets, with overwrite/delete confirmation and a two-minute
 input window. Values go directly to `POST /api/topics/{tid}/secret/value`;
-confirmations use `POST /api/topics/{tid}/secret/confirm`. Only sanitized command
-text and result messages are recorded and mirrored. Values and input tokens never
-enter conversation history, the outbox, mirrors, logs or CLI input.
+confirmations use `POST /api/topics/{tid}/secret/confirm`. The bridge records
+sanitized command text and result messages. The same command-button rule applies
+to Telegram mirrors. Values and input tokens never enter conversation history,
+the outbox, mirrors, logs or CLI input.
 
 ## Cron menu
 

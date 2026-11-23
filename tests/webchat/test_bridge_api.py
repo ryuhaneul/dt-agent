@@ -2578,7 +2578,7 @@ async def test_response_button_claim_dispatch_edit_and_duplicate(conversation, m
         "entry_id": entry.id,
         "answered": "Yes",
     }
-    submit.assert_called_once_with("-123.7", "Yes")
+    submit.assert_called_once_with("-123.7", "Yes", session_name=None, mirror_user=False)
     edit = h.bot.bot_instance.edit_message_text.await_args.kwargs
     assert edit["chat_id"] == -123
     assert edit["message_id"] == 42
@@ -2616,7 +2616,7 @@ async def test_response_button_named_destination_and_selector_rejection(conversa
         headers=headers(),
     )
     assert response.status == 202
-    submit.assert_called_once_with("-123.7", "Yes", session_name="worker")
+    submit.assert_called_once_with("-123.7", "Yes", session_name="worker", mirror_user=True)
     h.bot.bot_instance.edit_message_text.assert_not_awaited()
     selector = await h.runtime.history.append(
         h.key,
@@ -2858,7 +2858,7 @@ async def test_response_button_edit_failure_keeps_dispatch_and_answer(conversati
     )
     assert response.status == 202
     assert await h.runtime.history.is_answered("-123.7", entry.id)
-    submit.assert_called_once_with("-123.7", "Yes")
+    submit.assert_called_once_with("-123.7", "Yes", session_name=None, mirror_user=True)
 
 
 async def test_response_button_competing_transports_dispatch_once(conversation, monkeypatch):
@@ -3379,7 +3379,10 @@ async def test_web_choice_binding_between_context_and_claim_is_annotated(
     assert response.status == 202
     assert (await response.json())["answered"] == "Yes"
     submit.assert_called_once_with(
-        "-123.7", "Yes" if route == "buttons" else resolve_welcome_callback(callback_data)
+        "-123.7",
+        "Yes" if route == "buttons" else resolve_welcome_callback(callback_data),
+        session_name=None,
+        mirror_user=False,
     )
     meta = (await h.runtime.history.metadata("-123.7"))[entry.id]
     assert meta["telegram_message_id"] == 42

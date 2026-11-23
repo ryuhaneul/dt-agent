@@ -15,11 +15,13 @@ import pytest
 from aiogram.exceptions import TelegramNetworkError
 
 from ductor_bot.chat_log.events import EventHub
+from ductor_bot.chat_log.history import Entry
 from ductor_bot.chat_log.link import OutboxDrainer, TelegramLinkMonitor
 from ductor_bot.chat_log.outbox import Outbox
 from ductor_bot.i18n.loader import TranslationStore
 from ductor_bot.messenger.telegram.sender import SendProgress
 from ductor_bot.messenger.telegram.webchat_ops import TelegramWebchatOps
+from ductor_bot.text.response_format import stop_text
 from ductor_bot.webchat.turns import WebTurns
 from tests.webchat.test_bridge_api import (
     conversation as conversation,  # noqa: PLC0414 -- shared bridge fixture
@@ -103,6 +105,149 @@ async def test_web_user_mirror_is_literal_and_reply_unchanged(conversation, tmp_
     assert calls[-1].kwargs["parse_mode"] == "HTML"
     assert_no_media(bot.bot_instance)
     assert not await h.runtime.outbox.pending()
+
+
+@pytest.mark.parametrize(
+    ("annotation", "mirror_count"),
+    [("success", 0), ("failed", 1), ("keyboard-only", 1), ("missing", 1)],
+)
+async def test_web_button_mirrors_only_without_a_telegram_annotation(
+    conversation, annotation, mirror_count
+):
+    h = conversation
+    bot = bot_at(h)
+    raw = bot.bot_instance
+    failure = TelegramNetworkError(MagicMock(), "unavailable")
+    raw.edit_message_text = AsyncMock(
+        side_effect=failure if annotation in {"failed", "keyboard-only"} else None
+    )
+    raw.edit_message_reply_markup = AsyncMock(
+        side_effect=failure if annotation == "failed" else None
+    )
+    tid = "-123.7"
+    entry = await h.runtime.history.append(h.key, Entry("bot", "telegram", "Pick [button:Yes]"))
+    if annotation != "missing":
+        await h.runtime.history.bind_telegram_message(tid, entry.id, 42, html_text="Pick")
+
+    ws = await h.client.ws_connect("/webchat/v1/events", headers=headers())
+    try:
+        response = await h.client.post(
+            f"/webchat/v1/topics/{tid}/buttons",
+            json={"entry_id": entry.id, "label": "Yes"},
+            headers=headers(),
+        )
+        assert response.status == 202
+        await receive_until(
+            ws, lambda event: event.get("type") == "turn" and event.get("phase") == "done"
+        )
+    finally:
+        await ws.close()
+
+    assert await h.runtime.history.is_answered(tid, entry.id)
+    assert h.calls[0][1] == "Yes"
+    assert raw.edit_message_text.await_count == int(annotation != "missing")
+    assert raw.edit_message_reply_markup.await_count == int(
+        annotation in {"failed", "keyboard-only"}
+    )
+    await drain(h.runtime.outbox, bot, h.runtime.history)
+    mirror_text = TranslationStore("en").chat("chat_log.mirror_user", text="Yes")
+    delivered = [call.kwargs["text"] for call in raw.send_message.await_args_list]
+    assert delivered == [mirror_text] * mirror_count + ["answer"]
+
+
+@pytest.mark.parametrize("label", ["/stop", "/new", "/secret list"])
+@pytest.mark.parametrize("annotated", [True, False], ids=["edit-success", "edit-failure"])
+async def test_web_command_button_mirrors_only_without_a_telegram_annotation(
+    conversation, label, annotated
+):
+    h = conversation
+    bot = bot_at(h)
+    raw = bot.bot_instance
+    raw.edit_message_text = AsyncMock(
+        side_effect=None if annotated else TelegramNetworkError(MagicMock(), "unavailable")
+    )
+    raw.edit_message_reply_markup = AsyncMock()
+    bot._orch.reset_active_provider_session = AsyncMock(return_value="Claude Code")
+    tid = "-123.7"
+    entry = await h.runtime.history.append(h.key, Entry("bot", "telegram", f"Pick [button:{label}]"))
+    await h.runtime.history.bind_telegram_message(tid, entry.id, 42, html_text="Pick")
+
+    response = await h.client.post(
+        f"/webchat/v1/topics/{tid}/buttons",
+        json={"entry_id": entry.id, "label": label},
+        headers=headers(),
+    )
+    assert response.status == (202 if label == "/stop" else 200)
+    body = await response.json()
+    assert body["answered"] == label
+    raw.edit_message_text.assert_awaited_once()
+    assert raw.edit_message_reply_markup.await_count == int(not annotated)
+    assert (await h.runtime.history.read(tid))[1].text == label
+    if label == "/new":
+        bot._orch.reset_active_provider_session.assert_awaited_once_with(h.key)
+    elif label == "/secret list":
+        assert body["secret"]["stage"] == "list"
+
+    items = await h.runtime.outbox.pending()
+    assert items[-1].kind == "reply_mirror"
+    assert items[-1].text == (stop_text(False, "") if label == "/stop" else body["text"])
+    await drain(h.runtime.outbox, bot, h.runtime.history)
+    mirror = TranslationStore("en").chat("chat_log.mirror_command", text=label)
+    delivered = [call.kwargs["text"] for call in raw.send_message.await_args_list]
+    assert delivered.count(mirror) == int(not annotated)
+    assert len(delivered) == int(not annotated) + 1
+
+
+async def test_typed_web_stop_keeps_one_command_mirror(conversation):
+    h = conversation
+    assert (await post_message(h, text="/stop")).status == 202
+    bot = bot_at(h)
+    await drain(h.runtime.outbox, bot, h.runtime.history)
+    mirror = TranslationStore("en").chat("chat_log.mirror_command", text="/stop")
+    delivered = [call.kwargs["text"] for call in bot.bot_instance.send_message.await_args_list]
+    assert delivered.count(mirror) == 1
+    assert len(delivered) == 2
+
+
+async def test_cancelling_annotated_web_button_keeps_the_user_mirror_suppressed(conversation):
+    h = conversation
+    bot = bot_at(h)
+    bot.bot_instance.edit_message_text = AsyncMock()
+    tid = "-123.7"
+    entry = await h.runtime.history.append(h.key, Entry("bot", "telegram", "Pick [button:Yes]"))
+    await h.runtime.history.bind_telegram_message(tid, entry.id, 42, html_text="Pick")
+
+    async with h.pool.get(h.key.lock_key):
+        response = await h.client.post(
+            f"/webchat/v1/topics/{tid}/buttons",
+            json={"entry_id": entry.id, "label": "Yes"},
+            headers=headers(),
+        )
+        assert response.status == 202
+        turn_id = (await response.json())["turn_id"]
+        response = await h.client.post(
+            f"/webchat/v1/topics/{tid}/turns/{turn_id}/cancel", headers=headers()
+        )
+        assert response.status == 200
+
+    assert not h.calls
+    bot.bot_instance.edit_message_text.assert_awaited_once()
+    await drain(h.runtime.outbox, bot, h.runtime.history)
+    bot.bot_instance.send_message.assert_awaited_once()
+    notice = bot.bot_instance.send_message.await_args.kwargs["text"]
+    assert html.unescape(notice) == TranslationStore("en").chat("notice.queue_cancelled")
+
+
+async def test_typed_web_message_keeps_one_user_mirror(conversation):
+    h = conversation
+    await queue_message(h, "Yes")
+    bot = bot_at(h)
+    await drain(h.runtime.outbox, bot, h.runtime.history)
+    mirror_text = TranslationStore("en").chat("chat_log.mirror_user", text="Yes")
+    assert [call.kwargs["text"] for call in bot.bot_instance.send_message.await_args_list] == [
+        mirror_text,
+        "answer",
+    ]
 
 
 async def test_literal_chunk_retry_resumes_before_reply(conversation):

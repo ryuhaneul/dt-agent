@@ -706,33 +706,38 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
         text: str,
         *,
         session_name: str | None = None,
-        accept: Callable[[], Awaitable[None]] | None = None,
+        accept: Callable[[], Awaitable[bool]] | None = None,
     ) -> web.Response:
         key = from_tid(tid)
+
+        async def submit_turn() -> web.Response:
+            annotated = accept is not None and await accept()
+            turn_id = await turns.submit(
+                tid, text, session_name=session_name, mirror_user=not annotated
+            )
+            return web.json_response({"turn_id": turn_id}, status=202)
+
         parsed = parse_command(text)
         if parsed is not None and parsed[0] == "secret":
-            if accept is not None:
-                await accept()
+            annotated = accept is not None and await accept()
             safe = dispatcher.secret.safe_command(parsed[1])
-            shown = strings.chat("chat_log.mirror_command", text=safe)
             entry = await runtime.recorder.command_input(key, safe)
-            await mirror_secret(tid, shown, entry.id, kind="user_mirror")
+            if not annotated:
+                shown = strings.chat("chat_log.mirror_command", text=safe)
+                await mirror_secret(tid, shown, entry.id, kind="user_mirror")
             result = await dispatcher.secret.command(tid, parsed[1])
             await record_secret_result(tid, result)
             return web.json_response(result)
         if session_name is not None:
             if turns.busy(tid):
                 raise WebCommandBusyError
-            if accept is not None:
-                await accept()
-            return web.json_response(
-                {"turn_id": await turns.submit(tid, text, session_name=session_name)}, status=202
-            )
+            return await submit_turn()
 
         async def record_input() -> None:
-            if accept is not None:
-                await accept()
+            annotated = accept is not None and await accept()
             entry = await runtime.recorder.command_input(key, text)
+            if annotated:
+                return
             await runtime.outbox.enqueue(
                 kind="user_mirror",
                 chat_id=key.chat_id,
@@ -774,9 +779,7 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
             return web.json_response(command)
         if turns.busy(tid) and accept is not None:
             raise WebCommandBusyError
-        if accept is not None:
-            await accept()
-        return web.json_response({"turn_id": await turns.submit(tid, text)}, status=202)
+        return await submit_turn()
 
     async def mirror_secret(
         tid: str, text: str, entry_id: str, *, kind: Literal["user_mirror", "reply_mirror"]
@@ -860,7 +863,7 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
             logger.warning("Accepted choice metadata failed: %s", type(exc).__name__)
             return fallback
 
-    async def buttons(request: web.Request) -> web.Response:  # noqa: PLR0911 -- request status cases
+    async def buttons(request: web.Request) -> web.Response:  # noqa: C901, PLR0911 -- request status and acceptance
         tid = request.match_info["tid"]
         if tid == "unknown":
             return _error("read_only", 409)
@@ -878,14 +881,16 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
             if meta.get("answered") is not None:
                 return _error("already_answered", 409)
             response: web.Response | None = None
+            annotated = False
             key = from_tid(tid)
 
             async def claim() -> bool:
                 return await runtime.history.mark_answered(tid, entry_id, label)
 
             async def annotate() -> None:
+                nonlocal annotated
                 latest = await annotation_metadata(tid, entry_id, {**meta, "answered": label})
-                await edit_button_choice(
+                annotated = await edit_button_choice(
                     bot.bot_instance,
                     key.chat_id,
                     latest.get("telegram_message_id"),
@@ -897,7 +902,14 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
                 text: str, session_name: str | None, accept: Callable[[], Awaitable[None]]
             ) -> None:
                 nonlocal response
-                response = await dispatch_text(tid, text, session_name=session_name, accept=accept)
+
+                async def accept_choice() -> bool:
+                    await accept()
+                    return annotated
+
+                response = await dispatch_text(
+                    tid, text, session_name=session_name, accept=accept_choice
+                )
 
             try:
                 accepted = await process_button_choice(callback_data, claim, annotate, submit)
@@ -965,12 +977,12 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
 
                         accepted_meta = {**meta, "answered": label}
 
-                        async def accept() -> None:
+                        async def accept() -> bool:
                             nonlocal accepted_meta
                             if not await runtime.history.mark_answered(tid, entry_id, label):
                                 raise SelectorConflictError  # noqa: TRY301 -- acceptance runs inside dispatch ingress
                             accepted_meta = await annotation_metadata(tid, entry_id, accepted_meta)
-                            await edit_button_choice(
+                            return await edit_button_choice(
                                 bot.bot_instance,
                                 key.chat_id,
                                 accepted_meta.get("telegram_message_id"),
