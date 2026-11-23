@@ -134,7 +134,7 @@ def compose_settings(config: dict[str, Any]) -> dict[str, str]:
 
 
 def render_nginx_config(source: str, config: dict[str, Any]) -> str:
-    """Limit proxy trust and exempt only the loopback management listener from AppSec."""
+    """Limit proxy trust and scope the AppSec exemptions."""
     if hashlib.sha256(source.encode()).hexdigest() != NPMPLUS_NGINX_SOURCE_SHA256:
         raise GatewayError("npmplus_nginx_source_mismatch")
     networks = dict.fromkeys(
@@ -149,10 +149,17 @@ def render_nginx_config(source: str, config: dict[str, Any]) -> str:
     )
     # NPMplus 2026-11-18-r1 nginx.conf:176-178 defines this bouncer variable.
     # Its pinned lua-cs-bouncer checks for "1" before calling AppSec.
+    host = re.escape(config["domain"])
+    # Match uploads.py's _ID, using PCRE's strict end-of-string anchor.
+    upload_path = r"/api/topics/-?[0-9]+(?:\.[0-9]+)?/uploads/[a-f0-9]{32}\z"
     return stripped.replace(
         "  map $host $crowdsec_disable_appsec {\n    default 0;\n  }",
-        '  map "$server_addr:$server_port" $crowdsec_disable_appsec {\n'
+        '  map "$host:$request_method:$uri" $dtw_upload_disable_appsec {\n'
         "    default 0;\n"
+        f'    "~^{host}:PUT:{upload_path}" 1;\n'
+        "  }\n"
+        '  map "$server_addr:$server_port" $crowdsec_disable_appsec {\n'
+        "    default $dtw_upload_disable_appsec;\n"
         f'    "127.0.0.1:{config["npm_admin_port"]}" 1;\n'
         f'    "::1:{config["npm_admin_port"]}" 1;\n'
         "  }",

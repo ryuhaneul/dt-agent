@@ -11,6 +11,7 @@ import struct
 import subprocess
 import sys
 import time
+import zipfile
 import zlib
 from types import SimpleNamespace
 
@@ -285,8 +286,49 @@ async def test_text_sniff_checks_past_the_prefix(tmp_path):
     store = UploadStore(tmp_path / "files")
     session = await begin(store, payload, name="bad.py", mime="text/plain")
     await store.put(session.id, "123", "session-one", 0, chunks(payload))
-    with pytest.raises(UploadError, match="mime_mismatch"):
-        await store.complete(session.id, "123", "session-one", hashlib.sha256(payload).hexdigest())
+    result = await store.complete(
+        session.id, "123", "session-one", hashlib.sha256(payload).hexdigest()
+    )
+    assert result.mime == "application/octet-stream"
+    assert result.path.endswith(".bin")
+    assert result.inline_allowed is False
+
+
+@pytest.mark.parametrize(
+    ("candidate", "content", "mime", "extension"),
+    [
+        ("application/x-zip-compressed", "zip", "application/zip", ".zip"),
+        ("image/png", "zip", None, None),
+        ("application/pdf", "png", None, None),
+        ("text/html", "text", "text/plain", ".txt"),
+    ],
+)
+async def test_only_image_mime_mismatches_are_rejected(
+    tmp_path, candidate, content, mime, extension
+):
+    data = io.BytesIO()
+    if content == "zip":
+        with zipfile.ZipFile(data, "w") as archive:
+            archive.writestr("example.txt", "sample")
+    elif content == "png":
+        Image.new("RGB", (9, 7), "white").save(data, format="PNG")
+    else:
+        data.write(b"sample UTF-8 text")
+    payload = data.getvalue()
+    store = UploadStore(tmp_path / "files")
+    session = await begin(store, payload, mime=candidate)
+    await store.put(session.id, "123", "session-one", 0, chunks(payload))
+    digest = hashlib.sha256(payload).hexdigest()
+    if mime is None:
+        with pytest.raises(UploadError, match="mime_mismatch") as error:
+            await store.complete(session.id, "123", "session-one", digest)
+        assert error.value.status == 415
+    else:
+        result = await store.complete(session.id, "123", "session-one", digest)
+        assert result.mime == mime
+        assert result.path.endswith(extension)
+        assert result.inline_allowed is False
+        assert (store.directory / result.path).read_bytes() == payload
 
 
 async def test_raster_is_verified_and_bytes_preserved(tmp_path):

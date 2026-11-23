@@ -95,7 +95,10 @@ class GatewayTests(unittest.TestCase):
                 peer = ipaddress.ip_address("10.0.0.2")
                 self.assertFalse(any(peer in ipaddress.ip_network(net) for net in networks))
                 stripped = re.sub(r"^  set_real_ip_from [^;]+;\n", "", source, flags=re.MULTILINE)
-                normalize_map = r"  map [^\n]+ \$crowdsec_disable_appsec \{.*?\n  \}"
+                normalize_map = (
+                    r"  map [^\n]+ \$(?:crowdsec_disable_appsec|dtw_upload_disable_appsec)"
+                    r" \{.*?\n  \}\n"
+                )
                 self.assertEqual(
                     re.sub(
                         normalize_map,
@@ -111,7 +114,7 @@ class GatewayTests(unittest.TestCase):
         self.assertIn(":/etc/dtw-nginx-entrypoint.sh:ro", compose)
         self.assertNotIn("TRUST_IP:", compose)
 
-    def test_appsec_bypass_is_limited_to_loopback_management_listener(self):
+    def test_appsec_bypass_preserves_loopback_management_listener(self):
         source = (ROOT / "scripts/tests/fixtures/npmplus-nginx.conf").read_text()
         for port in (81, 8181):
             with self.subTest(port=port):
@@ -122,7 +125,7 @@ class GatewayTests(unittest.TestCase):
                     re.DOTALL,
                 ).group(1)
                 entries = dict(re.findall(r'"([^" ]+)" ([01]);', block))
-                self.assertIn("default 0;", block)
+                self.assertIn("default $dtw_upload_disable_appsec;", block)
                 self.assertEqual(entries, {f"127.0.0.1:{port}": "1", f"::1:{port}": "1"})
                 for address in ("127.0.0.1", "::1", "203.0.113.7"):
                     for public_port in (80, 443):
@@ -130,6 +133,43 @@ class GatewayTests(unittest.TestCase):
                 self.assertNotIn("$host", block)
                 self.assertNotIn("$http_", block)
                 self.assertFalse(GW.proxy_payload(config())["npmplus_crowdsec_appsec"])
+
+    def test_appsec_bypass_matches_only_webchat_upload_chunk_puts(self):
+        source = (ROOT / "scripts/tests/fixtures/npmplus-nginx.conf").read_text()
+        domain = "web-chat.example.com"
+        rendered = GW.render_nginx_config(source, config(domain=domain))
+        block = re.search(
+            r'map "\$host:\$request_method:\$uri" \$dtw_upload_disable_appsec \{(.*?)\n  \}',
+            rendered,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(block)
+        self.assertIn("default 0;", block[1])
+        rule = re.search(r'"~([^"\n]+)" 1;', block[1])
+        self.assertIsNotNone(rule)
+        self.assertTrue(rule[1].endswith(r"\z"))
+        pattern = re.compile(rule[1].replace(r"\z", r"\Z"))
+        base = "/api/topics/-123.7/uploads"
+        upload_id = "ab02" * 8
+        path = f"{base}/{upload_id}"
+        for host, method, uri, expected in (
+            (domain, "PUT", path, True),
+            (domain, "PUT", f"/api/topics/123/uploads/{upload_id}", True),
+            (domain, "GET", path, False),
+            (domain, "DELETE", path, False),
+            (domain, "POST", base, False),
+            (domain, "POST", f"{path}/complete", False),
+            (domain, "PUT", f"{path}/complete", False),
+            ("other.example.com", "PUT", path, False),
+            ("web-chatXexampleXcom", "PUT", path, False),
+            (domain, "PUT", f"{base}/{upload_id[:-1]}", False),
+            (domain, "PUT", f"{path}0", False),
+            (domain, "PUT", f"{base}/{upload_id.upper()}", False),
+            (domain, "PUT", f"{base}/g{upload_id[1:]}", False),
+            (domain, "PUT", f"{path}\n", False),
+        ):
+            with self.subTest(host=host, method=method, uri=uri):
+                self.assertEqual(bool(pattern.fullmatch(f"{host}:{method}:{uri}")), expected)
 
     def test_nginx_source_mismatch_stops_before_writes(self):
         with (
