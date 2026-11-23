@@ -13,7 +13,7 @@ import pytest
 from PIL import Image, ImageDraw
 
 from ductor_bot.i18n.loader import _load_toml
-from ductor_bot.webchat.web.app import CSP
+from ductor_bot.webchat.web.app import CSP, STARFLOW_CSP
 
 STATIC = Path(__file__).resolve().parents[2] / "ductor_bot/webchat/web/static"
 NODE_HASH = r"""
@@ -136,3 +136,43 @@ def test_attachment_browser_contract(tmp_path):
         if result["mode"] == "original":
             assert stored.read_bytes() == (tmp_path / "sample.png").read_bytes()
     print(json.dumps(evidence, ensure_ascii=False))
+
+
+def test_message_image_browser_geometry(tmp_path):
+    if not os.environ.get("DTW_PLAYWRIGHT_MODULE"):
+        pytest.skip("Set DTW_PLAYWRIGHT_MODULE for message image browser checks")
+    sizes = {"wide": (1600, 600), "square": (800, 800), "portrait": (600, 1600), "small": (120, 80)}
+    for name, (width, height) in sizes.items():
+        image = Image.new("RGB", (width, height), "#123f4b")
+        draw = ImageDraw.Draw(image)
+        inset = max(3, min(width, height) // 16)
+        draw.rectangle((inset, inset, width - inset, height - inset), outline="#70d4c7", width=inset)
+        radius = min(width, height) // 5
+        x, y = width // 2, height // 2
+        draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill="#f4f4f2")
+        image.thumbnail((512, 512))
+        image.save(tmp_path / f"{name}.png")
+
+    config = tmp_path / "message-image.json"
+    config.write_text(
+        json.dumps(
+            {
+                "static": str(STATIC),
+                "directory": str(tmp_path),
+                "shots": os.environ.get("DTW_IMAGE_SHOTS", str(tmp_path / "shots")),
+                "csp": CSP,
+                "starflowCsp": STARFLOW_CSP,
+                "strings": _load_toml(STATIC.parents[2] / "i18n/ko/web.toml"),
+                "sizes": sizes,
+            }
+        )
+    )
+    result = subprocess.run(
+        [shutil.which("node"), "tests/webchat/message_image_browser.mjs", str(config)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    print(result.stdout)

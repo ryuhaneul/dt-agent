@@ -1121,6 +1121,11 @@ export function initChat() {
     });
   }
   new ResizeObserver(updateThreadNavigation).observe(thread);
+  thread.addEventListener('load', event => {
+    if (!event.target.matches('.attachment-image img')) return;
+    if (thread.dataset.readingHistory === 'false') thread.scrollTop = thread.scrollHeight;
+    updateThreadNavigation();
+  }, true);
   initMarkdownLinks(thread);
   input.maxLength = 32000;
   composerFiles = initAttachments({ getTopic, changed: updateSendButton, resume: () => void sendMessage() });
