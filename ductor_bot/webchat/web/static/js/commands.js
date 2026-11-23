@@ -6,6 +6,7 @@ export function initCommands(input, onChoose) {
   const menu = document.querySelector('#commandMenu'), list = document.querySelector('#commandList');
   let catalog = [], filtered = [], selected = 0, enabled = false, generation = 0;
   function close() {
+    if (menu.hidden) return;
     menu.hidden = true;
     input.setAttribute('aria-expanded', 'false');
     input.removeAttribute('aria-activedescendant');

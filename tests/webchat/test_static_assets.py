@@ -853,8 +853,14 @@ class ThreadRow extends Element {
   }
 }
 class Thread extends Element {
-  constructor(){super();this.style.removeProperty=()=>{};}
-  getBoundingClientRect(){return {top:0,bottom:500};}
+  constructor(){
+    super();
+    const properties=new Map();
+    this.style.getPropertyValue=name=>properties.get(name)??'';
+    this.style.setProperty=(name,value)=>properties.set(name,value);
+    this.style.removeProperty=name=>properties.delete(name);
+  }
+  getBoundingClientRect(){return {top:0,bottom:500,height:500};}
   get firstElementChild(){return this.children[0]??null;}
   get innerHTML(){return this.children.map(row=>row.markup).join('');}
   set innerHTML(html){this.replaceChildren();this.insertAdjacentHTML('beforeend',html);}
@@ -1917,6 +1923,10 @@ input.value='/';input.emit('input');controller.keydown({key:'Escape',preventDefa
 assert.equal(controller.keydown({key:'Enter',preventDefault(){}}),false);
 input.value='/no_such_command';input.emit('input');assert.ok(list.innerHTML.includes(strings['commands.empty']));controller.keydown({key:'Escape',preventDefault(){}});
 input.value='/new argument';input.emit('input');assert.equal(menu.hidden,true);
+const {setAttribute,removeAttribute}=input;
+input.setAttribute=input.removeAttribute=()=>assert.fail('Typing with the command menu closed rewrote an attribute');
+input.value='Plain text';input.emit('input');
+Object.assign(input,{setAttribute,removeAttribute});
 input.value='/mo';input.emit('input');assert.equal(controller.keydown({key:'Enter',isComposing:true,preventDefault(){}}),false);assert.equal(input.value,'/mo');
 list.emit('pointerdown',{target:{closest(){return {dataset:{index:'0'}}}}});assert.equal(input.value,'/model ');assert.equal(menu.hidden,true);
 input.value='/';input.emit('input');document.emit('click',{target:{closest(){return null}}});assert.equal(menu.hidden,true);

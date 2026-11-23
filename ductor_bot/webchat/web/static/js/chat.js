@@ -331,11 +331,12 @@ function updateSendButton() {
   const input = document.querySelector('#msgIn');
   document.querySelector('#sendBtn').disabled = !getTopic() || (sending && !isControlCommand(input.value));
 }
-function keepLatestAfterLayout(thread) {
+function keepLatestAfterLayout(thread, limitBeforeImageResize = threadScrollLimit) {
   const limit = thread.scrollHeight - thread.clientHeight;
   // A preview can grow before its load event, including between two scroll events.
-  if (limit !== threadScrollLimit && document.querySelector('#threadBottom').hidden &&
-      Math.min(limit, threadScrollLimit) - thread.scrollTop < LATEST_GAP) {
+  if ((limit !== threadScrollLimit || limit !== limitBeforeImageResize) &&
+      document.querySelector('#threadBottom').hidden &&
+      Math.min(limit, threadScrollLimit, limitBeforeImageResize) - thread.scrollTop < LATEST_GAP) {
     thread.scrollTop = limit;
   }
 }
@@ -1037,8 +1038,8 @@ export async function handleEvent(event) {
     }
   }
 }
-function resizeComposer() {
-  if (composerFiles) { composerFiles.resize(); return; }
+function resizeComposer(event) {
+  if (composerFiles) { composerFiles.resize(event?.type === 'input'); return; }
   const input = document.querySelector('#msgIn');
   input.style.height = 'auto';
   input.style.height = `${input.scrollHeight + input.offsetHeight - input.clientHeight}px`;
@@ -1142,7 +1143,14 @@ export function initChat() {
     });
   }
   function updateThreadAfterLayout() {
-    keepLatestAfterLayout(thread);
+    const { height } = thread.getBoundingClientRect();
+    let limitBeforeImageResize = threadScrollLimit;
+    if (height > 0 && thread.style.getPropertyValue('--thread-height') !== `${height}px`) {
+      // A taller scrollport can clamp scrollTop before its images grow.
+      limitBeforeImageResize = thread.scrollHeight - thread.clientHeight;
+      thread.style.setProperty('--thread-height', `${height}px`);
+    }
+    keepLatestAfterLayout(thread, limitBeforeImageResize);
     updateThreadNavigation();
   }
   new ResizeObserver(updateThreadAfterLayout).observe(thread);
@@ -1153,11 +1161,11 @@ export function initChat() {
   initMarkdownLinks(thread);
   input.maxLength = 32000;
   composerFiles = initAttachments({ getTopic, changed: updateSendButton, resume: () => void sendMessage() });
-  function updateDraft() {
+  function updateDraft(event) {
     const topic = getTopic();
     if (topic) drafts.set(topic.tid, input.value);
     updateSendButton();
-    resizeComposer();
+    resizeComposer(event);
   }
   input.addEventListener('input', updateDraft);
   commandMenu = initCommands(input, updateDraft);

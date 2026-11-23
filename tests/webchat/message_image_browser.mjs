@@ -31,7 +31,7 @@ const topic = {
 };
 const stamp = '2026-01-01T12:00:00Z';
 
-async function openChat(page, images, { count = 32, delayed, previewDelay, filenames = {} } = {}) {
+async function openChat(page, images, { count = 32, delayed, previewDelay, filenames = {}, switchable = false } = {}) {
   const entries = Array.from({ length: count }, (_, i) => {
     const seq = i + 1;
     const name = images[seq] && (filenames[seq] ?? `${images[seq]}.png`);
@@ -49,13 +49,17 @@ async function openChat(page, images, { count = 32, delayed, previewDelay, filen
       case '/api/i18n': return reply({ lang: 'ko', strings: cfg.strings });
       case '/api/auth/state':
         return reply({ authenticated: true, csrf: 'fixture', bridge_up: true, totp_configured: true });
-      case '/api/topics':
-        return reply({ topics: [{ ...topic, count: entries.length, created_at: stamp, last_ts: stamp }] });
+      case '/api/topics': {
+        const primary = { ...topic, count: entries.length, created_at: stamp, last_ts: stamp };
+        const other = { ...primary, tid: '1.3', topic_id: 3, name: 'Other images' };
+        return reply({ topics: switchable ? [primary, other] : [primary] });
+      }
       case '/api/state':
         return reply({ telegram: { state: 'up' }, bot: { up: true }, outbox: { pending: 0 }, web_sessions: 1 });
       case '/api/masterkey/status':
         return reply({ configured: true, state: 'locked', remaining_seconds: null });
-      case '/api/topics/1.2/messages': return reply({ entries, has_more: false });
+      case '/api/topics/1.2/messages':
+      case '/api/topics/1.3/messages': return reply({ entries, has_more: false });
       default: {
         const match = pathname.match(/\/messages\/message-(\d+)\/attachments(.*)$/);
         if (!match) return reply({ items: [], commands: [], files: [] });
@@ -338,6 +342,94 @@ async function checkResizing(browser) {
   }
 }
 
+async function checkHeightTransitions(browser) {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+  try {
+    const page = await context.newPage();
+    await page.addInitScript(() => {
+      window.imagePhase = 'firstLoad';
+      window.imageFrames = [];
+      function frame() {
+        const thread = document.querySelector('#thread');
+        const img = thread?.querySelector('.attachment-image img');
+        if (img) {
+          const phase = window.imagePhase;
+          // These rectangles come from the rendering step after ResizeObserver delivery.
+          const observer = new IntersectionObserver(entries => {
+            observer.disconnect();
+            const height = entries.find(entry => entry.target === img)?.boundingClientRect.height;
+            const threadHeight = entries.find(entry => entry.target === thread)?.boundingClientRect.height;
+            if (!height || !threadHeight || !img.naturalHeight) return;
+            const expected = Math.min(img.naturalHeight, threadHeight * 0.8);
+            window.imageFrames.push({
+              phase, height, threadHeight, expected,
+              hasSize: !!thread.style.getPropertyValue('--thread-height'),
+            });
+          });
+          observer.observe(thread);
+          observer.observe(img);
+        }
+        requestAnimationFrame(frame);
+      }
+      requestAnimationFrame(frame);
+    });
+    await openChat(page, { 32: 'portrait' }, { switchable: true });
+    const preview = image(page, 32);
+    const current = async () => {
+      await preview.evaluate(img => img.decode());
+      await page.waitForFunction(() => window.imageFrames.some(frame => frame.phase === window.imagePhase));
+      await afterLayout(page);
+      return preview.evaluate(img => ({
+        image: img.getBoundingClientRect().height,
+        thread: img.closest('#thread').getBoundingClientRect().height,
+        overflow: document.scrollingElement.scrollHeight - innerHeight,
+      }));
+    };
+    const stage = async (phase, change) => {
+      await page.evaluate(phase => { window.imagePhase = phase; }, phase);
+      await change();
+      return current();
+    };
+    const input = page.locator('#msgIn');
+    const firstLoad = await current();
+    const composerExpanded = await stage('composerExpanded', () => input.fill('Draft\n'.repeat(7) + 'Draft'));
+    const heightChanged = await stage('heightChanged', () => page.setViewportSize({ width: 1280, height: 650 }));
+    const widthChanged = await stage('widthChanged', () => page.setViewportSize({ width: 1000, height: 650 }));
+    const short = await stage('short', () => page.setViewportSize({ width: 1000, height: 600 }));
+    const mobile = await stage('mobile', () => page.setViewportSize({ width: 375, height: 812 }));
+    await input.clear();
+    await page.setViewportSize({ width: 1280, height: 720 });
+    const topicChanged = await stage('topicChanged', async () => {
+      await page.locator('#tlist [data-tid="1.3"]').click();
+      await page.waitForFunction(() =>
+        document.querySelector('#thread .attachment-image img')?.src.includes('/topics/1.3/'));
+    });
+    assert(composerExpanded.image < firstLoad.image);
+    assert(heightChanged.image < composerExpanded.image);
+
+    const frames = await page.evaluate(() => window.imageFrames);
+    assert(frames.length > 0);
+    const invalid = frames.filter(frame => Math.abs(frame.height - frame.expected) > 1);
+    assert.deepEqual(invalid, [], 'Image height differed from the thread cap during a frame');
+    if (frames.some(frame => frame.hasSize)) {
+      assert(frames.every(frame => frame.hasSize), 'A decoded preview was laid out before sizing was initialized');
+    }
+    const fallback = await preview.evaluate(img => {
+      const probe = img.parentElement.cloneNode(true);
+      probe.style.cssText = 'position:absolute;visibility:hidden';
+      document.body.append(probe);
+      const size = parseFloat(getComputedStyle(probe.querySelector('img')).maxHeight);
+      probe.remove();
+      return size;
+    });
+    if (frames.some(frame => frame.hasSize)) assert(Math.abs(fallback - 0.8 * 720) <= 1);
+    evidence.transitions = { firstLoad, composerExpanded, heightChanged, widthChanged, short, mobile, topicChanged,
+      frames: frames.length, framesBeforeSize: frames.filter(frame => !frame.hasSize).length, fallback };
+  } finally {
+    await context.close();
+  }
+}
+
 await fs.mkdir(cfg.shots, { recursive: true });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 try {
@@ -354,6 +446,7 @@ try {
       for (let round = 1; round <= 5; round++) await checkManyImages(browser, delay, round);
     }
     await checkResizing(browser);
+    await checkHeightTransitions(browser);
   } finally {
     await browser.close();
   }
