@@ -103,10 +103,10 @@ async def edit_button_choice(
     label: str,
     *,
     html_text: str | None = None,
-) -> None:
-    """Annotate the exact keyboard message; absent snapshots use keyboard-only removal."""
+) -> bool:
+    """Return whether the choice was shown in the Telegram message body."""
     if message_id is None:
-        return
+        return False
     if html_text is not None:
         updated = f"{html_text}\n\n{t('notice.user_answer', answer=html_mod.escape(label))}"
         try:
@@ -120,7 +120,7 @@ async def edit_button_choice(
         except Exception as exc:
             logger.warning("Failed to annotate button choice: %s", type(exc).__name__)
         else:
-            return
+            return True
     try:
         await bot.edit_message_reply_markup(
             chat_id=chat_id,
@@ -129,6 +129,7 @@ async def edit_button_choice(
         )
     except Exception as exc:
         logger.warning("Failed to remove button keyboard: %s", type(exc).__name__)
+    return False
 
 
 class ButtonAlreadyAnsweredError(Exception):

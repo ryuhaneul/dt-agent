@@ -50,6 +50,7 @@ class _QueuedTurn:
     tid: str
     text: str
     identity: ChatLogTurn
+    mirror_user: bool = True
     received: str = field(default_factory=timestamp)
     phase: str = "queued"
     started_at: str | None = None
@@ -323,7 +324,7 @@ class WebTurns:
             {"tid": state.tid, "turn_id": state.identity["turn_id"], **activity}
         )
 
-    async def submit(
+    async def submit(  # noqa: PLR0913 -- optional turn identity and delivery fields
         self,
         tid: str,
         text: str,
@@ -331,13 +332,14 @@ class WebTurns:
         session_name: str | None = None,
         turn: ChatLogTurn | None = None,
         attachments: AttachmentMessage | None = None,
+        mirror_user: bool = True,
     ) -> str:
         turn = turn or {
             "turn_id": new_id(),
             "user_entry_id": new_id(),
             "reply_entry_id": new_id(),
         }
-        state = _QueuedTurn(tid, text, turn)
+        state = _QueuedTurn(tid, text, turn, mirror_user=mirror_user)
         async with self._admission_lock:
             if tid in self.blocked:
                 raise OSError("Topic no longer accepts turns")
@@ -436,7 +438,9 @@ class WebTurns:
             if state.tid in self.blocked:
                 self._turns.pop(turn["turn_id"], None)
                 return
-            if await self.runtime.outbox.mirror_state(turn["user_entry_id"]) is None:
+            if state.mirror_user and (
+                await self.runtime.outbox.mirror_state(turn["user_entry_id"]) is None
+            ):
                 mirror_text, origin = user_mirror_fields(state.text, self._strings)
                 await self.runtime.outbox.enqueue(
                     kind="user_mirror",
@@ -701,7 +705,8 @@ class WebTurns:
         try:
             if tid in self.blocked:
                 return
-            await self._mirror_user(tid, text, turn, attachments)
+            if state.mirror_user:
+                await self._mirror_user(tid, text, turn, attachments)
             state.prepared.set()
             if state.phase == "cancelled":
                 return
