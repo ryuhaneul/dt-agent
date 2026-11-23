@@ -22,7 +22,7 @@ const server = http.createServer(async (request, response) => {
 });
 
 const names = Object.keys(cfg.sizes);
-const evidence = { layouts: [], resize: {}, scroll: {}, delayed: [], resizing: {} };
+const evidence = { layouts: [], filenames: [], nearLatest: [], resize: {}, scroll: {}, delayed: [], resizing: {} };
 const fixtures = new Map(await Promise.all(names.map(async name =>
   [name, await fs.readFile(path.join(cfg.directory, `${name}.png`))],
 )));
@@ -31,13 +31,13 @@ const topic = {
 };
 const stamp = '2026-01-01T12:00:00Z';
 
-async function openChat(page, images, { count = 32, delayed, previewDelay } = {}) {
+async function openChat(page, images, { count = 32, delayed, previewDelay, filenames = {} } = {}) {
   const entries = Array.from({ length: count }, (_, i) => {
     const seq = i + 1;
-    const name = images[seq];
+    const name = images[seq] && (filenames[seq] ?? `${images[seq]}.png`);
     return {
       id: `message-${seq}`, seq, ts: stamp, role: 'bot', source: 'web',
-      text: name ? `<file:./${name}.png>` : `Message ${seq}`,
+      text: name ? `<file:./${name}>` : `Message ${seq}`,
       has_attachments: Boolean(name),
     };
   });
@@ -69,7 +69,7 @@ async function openChat(page, images, { count = 32, delayed, previewDelay } = {}
         const id = 'a'.repeat(32);
         const base = `${pathname}/${id}`;
         return reply({ attachments: [{
-          id, size: 2048, mime: 'image/png', name: `${filename}.png`, inline_allowed: true,
+          id, size: 2048, mime: 'image/png', name: filenames[seq] ?? `${filename}.png`, inline_allowed: true,
           download_url: base, original_url: `${base}?inline=1`, preview_url: `${base}/preview`,
         }] });
       }
@@ -95,12 +95,16 @@ async function measure(page, seq, name) {
     const text = document.createRange();
     text.selectNodeContents(filename);
     const style = getComputedStyle(line);
-    const filelineWidth = text.getBoundingClientRect().width +
+    const filelineWidth = parseFloat(getComputedStyle(filename.parentElement).minWidth) +
       line.querySelector('.attachment-download').getBoundingClientRect().width +
       parseFloat(style.columnGap) + parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+    const filenameBounds = filename.getBoundingClientRect();
+    const lines = new Set([...text.getClientRects()].filter(rect => rect.top < filenameBounds.bottom)
+      .map(rect => rect.top));
     return {
+      filename: filename.textContent, title: filename.getAttribute('title'),
       cardWidth: card.width, gutter: card.width - bounds.width,
-      filelineWidth, filenameLines: text.getClientRects().length,
+      filelineWidth, filenameLines: lines.size,
       width: bounds.width, height: bounds.height, thread: thread.getBoundingClientRect().height,
       naturalWidth: img.naturalWidth, naturalHeight: img.naturalHeight,
       overflow: Math.max(0, thread.scrollWidth - thread.clientWidth,
@@ -121,7 +125,9 @@ async function checkLayout(browser, width, height, theme) {
   const context = await browser.newContext({ viewport: { width, height }, colorScheme: theme });
   try {
     const page = await context.newPage();
-    await openChat(page, { 4: 'wide', 8: 'square', 12: 'portrait', 16: 'small' });
+    await openChat(page, { 4: 'wide', 8: 'square', 12: 'portrait', 16: 'small' }, {
+      filenames: { 16: 'a.png' },
+    });
     assert.equal(await page.locator('html').getAttribute('data-theme'), theme);
     for (const [i, name] of names.entries()) {
       const seq = (i + 1) * 4;
@@ -137,6 +143,40 @@ async function checkLayout(browser, width, height, theme) {
       const after = await measure(page, 12, 'portrait');
       assert(after.thread < before.thread && after.height < before.height);
       evidence.resize = { before, after };
+    }
+  } finally {
+    await context.close();
+  }
+}
+
+async function checkFilenames(browser, width, height) {
+  const context = await browser.newContext({ viewport: { width, height }, colorScheme: 'light' });
+  try {
+    const page = await context.newPage();
+    const samples = [
+      'KakaoTalk_Photo_2026-11-23-13-58-13_001.png',
+      '스크린샷 2026-11-23 오후 1.58.13 회의 자료 정리본.png',
+      'small-icon.png',
+      'small.png',
+    ];
+    const images = {}, filenames = {};
+    for (const [index, filename] of samples.entries()) {
+      for (const [offset, name] of ['portrait', 'small'].entries()) {
+        const seq = index * 6 + offset * 3 + 2;
+        images[seq] = name;
+        filenames[seq] = filename;
+      }
+    }
+    await openChat(page, images, { filenames });
+    await page.evaluate(() => document.fonts.ready);
+    for (const [seq, name] of Object.entries(images)) {
+      const result = await measure(page, seq, name);
+      evidence.filenames.push({ viewport: `${width}x${height}`, name, ...result });
+      if (name === 'portrait' && result.filename === samples[0] ||
+          name === 'small' && result.filename === samples[1]) {
+        await entry(page, seq).locator('.message-attachment').scrollIntoViewIfNeeded();
+        await page.screenshot({ path: path.join(cfg.shots, `longname-${name}-${width}-light.png`) });
+      }
     }
   } finally {
     await context.close();
@@ -192,6 +232,44 @@ const gap = page => page.locator('#thread').evaluate(
 const afterLayout = page => page.evaluate(
   () => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))),
 );
+
+async function checkNearLatest(browser, initialGap) {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+  const { promise, resolve } = Promise.withResolvers();
+  try {
+    const page = await context.newPage();
+    await openChat(page, { 32: 'portrait' }, { delayed: { seq: 32, ready: promise } });
+    const preview = image(page, 32);
+    await preview.waitFor({ state: 'attached' });
+    await page.locator('#thread').evaluate((thread, offset) => {
+      thread.scrollTop = thread.scrollHeight - thread.clientHeight - offset;
+    }, initialGap);
+    await afterLayout(page);
+    assert.equal(await gap(page), initialGap);
+    const anchor = entry(page, 28);
+    const offset = () => anchor.evaluate(node =>
+      node.getBoundingClientRect().top - node.closest('#thread').getBoundingClientRect().top);
+    const before = await offset();
+    resolve();
+    await preview.evaluate(img => img.decode());
+    await afterLayout(page);
+    const loaded = await gap(page);
+    const button = await page.locator('#threadBottom').isVisible();
+    const shift = await offset() - before;
+    await page.evaluate(async () => {
+      const { handleEvent } = await import('/static/js/chat.js');
+      await handleEvent({ type: 'entry', tid: '1.2', entry: {
+        id: 'message-33', seq: 33, ts: '2026-01-01T12:00:00Z', role: 'bot',
+        source: 'web', text: 'Message 33',
+      } });
+    });
+    await afterLayout(page);
+    evidence.nearLatest.push({ initialGap, loaded, button, shift, delivered: await gap(page) });
+  } finally {
+    resolve();
+    await context.close();
+  }
+}
 
 async function checkManyImages(browser, delay, round) {
   const viewport = delay === 'shuffled' ? { width: 375, height: 812 } : { width: 1280, height: 720 };
@@ -268,6 +346,8 @@ try {
     for (const layout of [[1280, 720, 'light'], [1280, 720, 'dark'], [768, 900, 'light'], [375, 812, 'light']]) {
       await checkLayout(browser, ...layout);
     }
+    for (const viewport of [[1280, 720], [375, 812]]) await checkFilenames(browser, ...viewport);
+    for (const initialGap of [0, 3, 40, 79, 200]) await checkNearLatest(browser, initialGap);
     await checkDelayedLoad(browser, false);
     await checkDelayedLoad(browser, true);
     for (const delay of [30, 100, 'shuffled']) {
@@ -282,11 +362,23 @@ try {
   const gaps = [...evidence.delayed.flatMap(row => [row.opened, row.delivered ?? 0]),
     ...Object.values(evidence.resizing)];
   assert(gaps.every(value => Math.abs(value) <= 1), 'Latest message lost its pinned position');
+  for (const row of evidence.filenames) {
+    assert(row.filenameLines <= 2, JSON.stringify(row));
+    assert.equal(row.title, row.filename);
+    assert(Math.abs(row.cardWidth - Math.max(row.width, row.filelineWidth)) <= 1, JSON.stringify(row));
+  }
+  for (const row of evidence.nearLatest) {
+    if (row.initialGap < 80) {
+      assert(!row.button && row.delivered <= 2, JSON.stringify(row));
+    } else {
+      assert(Math.abs(row.shift) <= 1, JSON.stringify(row));
+    }
+  }
   for (const row of evidence.layouts) {
     if (row.name === 'small') {
       assert(row.gutter > 0);
       assert.equal(row.filenameLines, 1);
-      assert(row.cardWidth >= row.filelineWidth && row.cardWidth - row.filelineWidth <= 1);
+      assert(Math.abs(row.cardWidth - row.filelineWidth) <= 1, JSON.stringify(row));
     } else {
       assert(Math.abs(row.gutter) <= 1, JSON.stringify(row));
     }
