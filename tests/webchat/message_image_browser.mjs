@@ -155,7 +155,7 @@ async function checkFilenames(browser, width, height) {
     const page = await context.newPage();
     const samples = [
       'KakaoTalk_Photo_2026-11-23-13-58-13_001.png',
-      '스크린샷 2026-11-23 오후 1.58.13 회의 자료 정리본.png',
+      'Screenshot 2026-11-23 at 1.58.13 PM meeting notes final copy.png',
       'small-icon.png',
       'small.png',
     ];
