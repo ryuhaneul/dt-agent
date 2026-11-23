@@ -162,15 +162,22 @@ class UsageStore:
                 atomic_json_save(self._path, UsageSnapshot(slots=slots).model_dump(mode="json"))
 
     def record(self, slot: str, event: object, *, captured_at: int | None = None) -> None:
-        """Merge only the supplied windows; never touch the cooldown state file."""
+        """Reconcile a full window list or merge a single-window update."""
         usage = parse_usage_event(event, captured_at=captured_at)
         if usage is None:
             return
+        info = event.get("rate_limit_info") if isinstance(event, dict) else None
+        unified = info.get("unifiedWindows") if isinstance(info, dict) else None
         with exclusive_file_lock(self._path):
             slots = self.load()
             previous = slots.get(slot)
             if previous is not None:
                 windows = previous.windows.copy()
+                if isinstance(unified, dict):
+                    # Check raw keys so a reported but malformed window is preserved.
+                    for name in _WINDOW_NAMES.difference(unified):
+                        if name in windows and windows[name].captured_at < usage.captured_at:
+                            del windows[name]
                 for name, window in usage.windows.items():
                     if name not in windows or window.captured_at >= windows[name].captured_at:
                         windows[name] = window
