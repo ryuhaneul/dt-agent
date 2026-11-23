@@ -522,6 +522,8 @@ too_many = "Maximal {n} Dateien pro Nachricht."
 too_large = "{name} überschreitet die Dateigrenze von {size}."
 settings_failed = "Anhangslimits können nicht geladen werden. Erneut versuchen."
 failed = "Anhangsübertragung fehlgeschlagen. Der Entwurf bleibt erhalten."
+type_rejected = "Der Dateityp konnte nicht überprüft werden. Die Datei kann daher nicht gesendet werden."
+image_too_large = "Dieses Bild hat zu viele Pixel und kann nicht gesendet werden."
 command = "Anhänge als Nachricht ohne Schrägstrichbefehl senden."
 
 progress = "Upload-Fortschritt für {name}"

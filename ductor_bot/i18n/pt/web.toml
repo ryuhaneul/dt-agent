@@ -522,6 +522,8 @@ too_many = "Máximo de {n} arquivos por mensagem."
 too_large = "{name} excede o limite de {size}."
 settings_failed = "Não foi possível carregar os limites. Tente novamente."
 failed = "Falha no envio. O rascunho foi preservado."
+type_rejected = "Não foi possível verificar o tipo deste arquivo, por isso ele não pode ser enviado."
+image_too_large = "Esta imagem tem pixels demais para ser enviada."
 command = "Envie anexos como mensagem sem um comando de barra."
 
 progress = "Progresso do envio de {name}"

@@ -26,6 +26,7 @@ const draftTopic={...topic,tid:'123.8',topic_id:8,name:'Other draft'};
 const composerDraft='Send this\nmultiline draft\nnow';
 let composerCheck=false;
 let emptyHistoryEnabled=false,historyEnabled=false,dropAfterAck=false,holdPut=false,releasePut=null,settingsPuts=0;
+let chunkError=null, completeError=null;
 const putOffsets=[];
 let wsPeer=null,backgroundReady=false,expiredPhoto=false;
 const incoming='[INCOMING FILE]\nThe user sent you a file via Telegram.\nPath: telegram_files/2026-11-18/photo.png\nType: image/png\nOriginal filename: photo.png\n\nCheck tools/media_tools/CLAUDE.md for file handling instructions.\n\nUser message: Please check the photo.';
@@ -71,6 +72,11 @@ await page.route('**/api/**',async route=>{
     if(method==='DELETE'){sessions.delete(id);return response(route,{ok:true});}
     if(method==='PUT'){
       if(failPut){failPut=false;return response(route,{error:'upload_timeout'},408);}
+      if(chunkError){
+        const {status,code}=chunkError;chunkError=null;
+        if(code)return response(route,{error:code},status);
+        return route.fulfill({status,contentType:'text/html',body:'<p>Forbidden</p>'});
+      }
       assert.equal(request.headers()['content-type'],'application/octet-stream');
       assert.equal(request.headers()['x-dtw-client'],'web');
       assert.equal(request.headers()['x-dtw-csrf'],'fixture-csrf');
@@ -84,6 +90,10 @@ await page.route('**/api/**',async route=>{
     if(suffix.endsWith('/complete')){
       state.bytes=Buffer.concat(state.parts);assert.equal(state.bytes.length,state.size);
       assert.equal(request.postDataJSON().sha256,crypto.createHash('sha256').update(state.bytes).digest('hex'));
+      if(completeError){
+        const {status,code}=completeError;completeError=null;
+        return response(route,{error:code},status);
+      }
       state.state='complete';return response(route,{id,offset:state.offset,state:'complete'});
     }
   }
@@ -467,6 +477,67 @@ try{
   settings={...settings,max_file_bytes:5};await reset();await page.locator('#filePick').setInputFiles(path.join(cfg.directory,'notes.txt'));await page.waitForSelector('#toasts [role="alert"]');assert.equal(await page.locator('.attach-draft').count(),0);results.checks.push('count cap','size cap');
   settings={...settings,max_file_bytes:2*1024**3,max_files_per_message:10};await reset();await addFile();
   await page.locator('#msgIn').fill('Draft after transfer failure');failPut=true;await page.locator('#sendBtn').click();await page.waitForSelector('#toasts [role="alert"]');assert.equal(await page.locator('.attach-draft').count(),1);assert.equal(await page.locator('#msgIn').inputValue(),'Draft after transfer failure');results.checks.push('transfer failure preserves draft');
+  const failureCases=[
+    {phase:'complete',status:415,code:'mime_mismatch',key:'attach.type_rejected',resume:false},
+    {phase:'complete',status:415,code:'invalid_type',key:'attach.type_rejected',resume:false},
+    {phase:'complete',status:415,code:'invalid_image',key:'attach.type_rejected',resume:false},
+    {phase:'complete',status:413,code:'image_too_large',key:'attach.image_too_large',resume:false},
+    {phase:'chunk',status:403,code:null,key:'attach.failed',resume:true},
+    {phase:'chunk',status:413,code:'too_large',key:'attach.failed',resume:true},
+    {phase:'complete',status:500,code:'internal_error',key:'attach.failed',resume:true},
+  ];
+  results.failures=[];
+  for(const [width,height] of [[1280,720],[375,667]]){
+    await page.setViewportSize({width,height});
+    for(const {phase,status,code,key,resume} of failureCases){
+      await reset();
+      const queued=code==='invalid_type';
+      const files=queued?['sample.gif','notes.txt']:['sample.gif'];
+      await page.locator('#filePick').setInputFiles(files.map(name=>path.join(cfg.directory,name)));
+      await page.waitForFunction(count=>document.querySelectorAll('.attach-draft').length===count,files.length);
+      await page.locator('#msgIn').fill('Draft after upload failure');
+      const before=messages.length;
+      if(phase==='chunk')chunkError={status,code};
+      else completeError={status,code};
+      const failure=page.waitForResponse(reply=>reply.status()===status&&(
+        phase==='chunk'?reply.request().method()==='PUT'&&reply.url().includes('/uploads/'):
+          reply.request().method()==='POST'&&reply.url().endsWith('/complete')
+      ));
+      await page.locator('#sendBtn').click();
+      await failure;
+      const rejected=page.locator('.attach-draft').first();
+      await rejected.locator('[data-upload-state="failed"]').waitFor();
+      await page.locator('#attachBtn:not(:disabled)').waitFor();
+      const error=await rejected.locator('[data-transfer-error]').textContent();
+      assert.equal(error,cfg.strings[key],JSON.stringify({width,phase,status,code}));
+      const toast=page.locator('#toasts [role="alert"] span');
+      await toast.waitFor();
+      assert.equal(await toast.textContent(),cfg.strings[key],JSON.stringify({width,phase,status,code}));
+      assert.equal(await rejected.locator('[data-resume]').isVisible(),resume);
+      assert(await rejected.locator('[data-remove]').isEnabled());
+      assert(await rejected.locator('[data-cancel-upload]').isHidden());
+      assert.equal(await page.locator('#msgIn').inputValue(),'Draft after upload failure');
+      assert.equal(messages.length,before);
+      if(queued){
+        const waiting=page.locator('.attach-draft').last();
+        assert.equal(await waiting.locator('[data-transfer]').getAttribute('data-upload-state'),'paused');
+        assert(await waiting.locator('[data-resume]').isVisible());
+      }
+      if(code==='mime_mismatch'){
+        await page.evaluate(()=>document.documentElement.dataset.theme='light');
+        await page.screenshot({path:path.join(cfg.shots,`upload-type-rejected-${width}.png`)});
+      }
+      const state=[...sessions.values()].at(-1);
+      const deleted=page.waitForResponse(reply=>
+        reply.request().method()==='DELETE'&&reply.url().endsWith('/uploads/'+state.id));
+      await rejected.locator('[data-remove]').click();
+      await deleted;
+      assert(!sessions.has(state.id));
+      assert.equal(await page.locator('.attach-draft').count(),files.length-1);
+      results.failures.push({width,phase,status,code,key,resume});
+    }
+  }
+  await page.setViewportSize({width:1280,height:720});
   if(cfg.scenario==='4b'){
     await reset();await addFile();await page.locator('#msgIn').fill('Resume upload check');dropAfterAck=true;
     await page.locator('#sendBtn').click();await page.waitForSelector('[data-upload-state="failed"]');
