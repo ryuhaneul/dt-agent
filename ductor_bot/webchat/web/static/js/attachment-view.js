@@ -93,7 +93,8 @@ export function initAttachmentView({changed}) {
         if(item.status==='expired')return `<article class="message-attachment"><div class="grow"><span class="attachment-filename">${esc(item.name)}</span><span class="attachment-meta" role="status">${esc(t('attach.expired'))}</span></div></article>`;
         const token=encodeURIComponent(key(tid,entry.id)+item.id);references.set(token,item);
         const action=item.original_url?`<button type="button" class="attachment-image${item.preview_url?'':' attachment-no-preview'}" data-open-attachment="${token}" aria-label="${esc(t('attach.view',{name:item.name}))}">${item.preview_url?`<img src="${esc(item.preview_url)}" loading="lazy" alt="${esc(t('attach.preview',{name:item.name}))}">`:esc(t('attach.open_original'))}</button>`:'';
-        return `<article class="message-attachment">${action}<div class="attachment-fileline"><div class="grow"><span class="attachment-filename">${esc(item.name)}</span><span class="attachment-meta">${esc(sizeLabel(item.size))} · ${esc(item.mime)}</span></div><a class="btn btn-sm attachment-download" href="${esc(item.download_url)}" download aria-label="${esc(t('attach.download_name',{name:item.name}))}">${esc(t('attach.download'))}</a></div></article>`;
+        const filenameTitle=action&&item.preview_url?` title="${esc(item.name)}"`:'';
+        return `<article class="message-attachment">${action}<div class="attachment-fileline"><div class="grow"><span class="attachment-filename"${filenameTitle}>${esc(item.name)}</span><span class="attachment-meta">${esc(sizeLabel(item.size))} · ${esc(item.mime)}</span></div><a class="btn btn-sm attachment-download" href="${esc(item.download_url)}" download aria-label="${esc(t('attach.download_name',{name:item.name}))}">${esc(t('attach.download'))}</a></div></article>`;
       }).join('');
     },
   };
