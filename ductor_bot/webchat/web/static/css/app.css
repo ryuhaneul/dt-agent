@@ -583,6 +583,15 @@ dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(2px)}
 .claude-slots>.slot-time{flex:none;margin-left:-1px}
 .slot-mini,.slot-meter{appearance:none;display:block;width:100%;height:6px;overflow:hidden;border:0;border-radius:3px;background:color-mix(in srgb,var(--muted) 20%,transparent);--slot-fill:var(--accent)}
 .slot-mini{width:34px;height:5px;flex:none}
+.slot-usage{display:grid;grid-template-columns:max-content 24px max-content;align-items:center;gap:2px 3px;flex:none;font:600 .67rem/1.05 var(--mono);font-variant-numeric:tabular-nums}
+.slot-chip-window{display:contents}
+.slot-period{color:var(--muted)}
+.slot-usage .slot-mini{width:24px;height:3px}
+.slot-usage .slot-percent{text-align:right}
+.slot-usage .slot-percent[data-level="mid"]{color:var(--warn)}
+.slot-usage .slot-percent[data-level="high"]{color:var(--danger)}
+.claude-slots[data-compact] .slot-usage{grid-template-columns:max-content max-content}
+.claude-slots[data-compact] .slot-usage .slot-mini{display:none}
 .slot-mini::-webkit-progress-bar,.slot-meter::-webkit-progress-bar{background:transparent}
 .slot-mini::-webkit-progress-value,.slot-meter::-webkit-progress-value{border-radius:3px;background:var(--slot-fill)}
 .slot-mini::-moz-progress-bar,.slot-meter::-moz-progress-bar{border-radius:3px;background:var(--slot-fill)}
@@ -612,6 +621,7 @@ dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(2px)}
   .slot-chip[data-primary],.slot-chip .slot-label{flex:none}
   .slot-chips{overflow:clip;overflow-clip-margin:4px}
   .slot-chip[data-primary] .slot-name{min-width:0}
+  .slot-chip[data-primary][data-status="cooldown"] .slot-mini{flex-shrink:1;min-width:32px}
 }
 @media(1180px < width <= 1240px){
   .bar:has(.claude-slots:not([hidden])){padding-inline:12px}

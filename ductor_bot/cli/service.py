@@ -12,6 +12,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
+from ductor_bot.cli import codex_usage
 from ductor_bot.cli.autocompact import resolve_autocompact
 from ductor_bot.cli.base import CLIConfig
 from ductor_bot.cli.claude_features import SNAPSHOT_FLAG
@@ -180,8 +181,13 @@ class CLIService:
             return request.model_override or f"<{request.provider_override} default>"
         return request.model_override or self._config.default_model
 
-    def _mark_stale_killed(self, request: AgentRequest, response: AgentResponse) -> AgentResponse:
-        """Mark a response whose process the stale cleanup killed, whatever provider ran it."""
+    def _complete(
+        self, request: AgentRequest, response: AgentResponse, provider: str
+    ) -> AgentResponse:
+        """Run completion bookkeeping for both streaming and non-streaming calls."""
+        # A streaming fallback already completes through execute().
+        if provider == "codex" and not response.stream_fallback:
+            codex_usage.schedule_codex_usage_refresh()
         registry = self._process_registry
         if registry.pop_stale_killed(request.chat_id, request.process_label) is True:
             return replace(response, stale_killed=True)
@@ -190,7 +196,8 @@ class CLIService:
     async def execute(self, request: AgentRequest) -> AgentResponse:
         """Execute a CLI call."""
         self._process_registry.clear_stale_killed(request.chat_id, request.process_label)
-        return self._mark_stale_killed(request, await self._execute(request))
+        provider, _ = self.resolve_provider(request)
+        return self._complete(request, await self._execute(request), provider)
 
     async def _execute(self, request: AgentRequest) -> AgentResponse:
         cli = self._make_cli(request)
@@ -226,6 +233,7 @@ class CLIService:
     ) -> AgentResponse:
         """Execute a streaming CLI call with automatic fallback to non-streaming."""
         self._process_registry.clear_stale_killed(request.chat_id, request.process_label)
+        provider, _ = self.resolve_provider(request)
         response = await self._execute_streaming(
             request,
             on_text_delta=on_text_delta,
@@ -235,7 +243,7 @@ class CLIService:
             on_reasoning_delta=on_reasoning_delta,
             on_compact_boundary=on_compact_boundary,
         )
-        return self._mark_stale_killed(request, response)
+        return self._complete(request, response, provider)
 
     async def _execute_streaming(  # noqa: PLR0913
         self,

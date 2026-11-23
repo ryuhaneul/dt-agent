@@ -825,7 +825,7 @@ function refreshState() {
     releaseVersion = typeof state.version === 'string' ? state.version : '';
     renderVersion();
     botUp = state.bot.up; webSessions = state.web_sessions; renderStatus();
-    slots.update(state.claude);
+    slots.update(state.claude, state.codex);
   }).catch(error => {
     if (!active || epoch !== generation || error.code === 'auth_required') return;
     failed = true;
@@ -834,8 +834,10 @@ function refreshState() {
   }).finally(() => {
     clearTimeout(timeout);
     if (epoch !== generation) return;
+    const refreshPending = stateRequest?.refreshPending;
     stateRequest = null;
     slots.setRefreshing(false, failed);
+    if (refreshPending) void refreshState();
   });
   stateRequest = { controller, promise, timeout };
   return promise;
@@ -916,6 +918,10 @@ export async function handleEvent(event) {
     topicVersions.set(tid, (topicVersions.get(tid) || 0) + 1);
   }
   switch (event.type) {
+    case 'codex_usage_changed':
+      if (stateRequest) stateRequest.refreshPending = true;
+      else void refreshState();
+      return;
     case 'entry': {
       const state = history(tid), entry = event.entry;
       if (!state.entries.has(entry.id)) noteEntry(tid, entry);

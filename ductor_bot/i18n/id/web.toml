@@ -555,6 +555,8 @@ open_original = "Lihat asli"
 
 [slots]
 title = "Slot Claude"
+usage_title = "Penggunaan Claude dan Codex"
+show_all_usage = "Lihat semua entri penggunaan ({n})"
 next = "Berikutnya"
 show_all = "Tampilkan semua {n} slot"
 refresh = "Muat ulang"
