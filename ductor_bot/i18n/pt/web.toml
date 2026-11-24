@@ -81,6 +81,7 @@ last_active = "Última atividade: {time}"
 
 [chat]
 copy_message = "Copiar mensagem"
+copy_code = "Copiar código"
 activity = "Detalhes da atividade"
 queued = "Na fila"
 cancelled = "Cancelado"

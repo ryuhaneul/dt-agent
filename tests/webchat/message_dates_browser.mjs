@@ -156,13 +156,13 @@ async function preserveOldestGroup(browser) {
     const result = await page.evaluate(async ({ seq, latest, split }) => {
       const { handleEvent } = await import('/static/js/chat.js');
       const row = document.querySelector(`[data-entry-seq="${seq}"]`);
-      const pre = row.querySelector('pre');
+      const code = row.querySelector('pre > code');
       const range = document.createRange();
       range.selectNodeContents(row.querySelector('.md p'));
       window.getSelection().removeAllRanges();
       window.getSelection().addRange(range);
-      pre.scrollLeft = 200;
-      const before = { selection: window.getSelection().toString(), scrollLeft: pre.scrollLeft };
+      code.scrollLeft = 200;
+      const before = { selection: window.getSelection().toString(), scrollLeft: code.scrollLeft };
       if (split) {
         await handleEvent({ type: 'turn', tid: '1.2', turn_id: 'live-turn', phase: 'started' });
       } else {
@@ -170,7 +170,7 @@ async function preserveOldestGroup(browser) {
       }
       return {
         before,
-        after: { selection: window.getSelection().toString(), scrollLeft: pre.scrollLeft },
+        after: { selection: window.getSelection().toString(), scrollLeft: code.scrollLeft },
         first: document.querySelector('[data-entry-seq]').dataset.entrySeq,
       };
     }, { seq, latest: entries.at(-1), split });
@@ -433,10 +433,290 @@ async function documentOverflow(browser, scenario) {
   }
 }
 
+async function copyOpenBlockWithMouse(page, event) {
+  const turnId = 'pointer-copy';
+  await event({ type: 'delta', turn_id: turnId, text: '~~~text\nStreaming code' });
+  const button = page.locator('[data-turn="pointer-copy"] [data-copy-code]');
+  await button.waitFor();
+  await button.scrollIntoViewIfNeeded();
+  await page.evaluate(() => {
+    window.copyToasts = 0;
+    const toasts = document.querySelector('#toasts');
+    toasts.replaceChildren();
+    new MutationObserver(records => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (node.querySelector?.('[data-i18n="common.copied"]')) window.copyToasts++;
+        }
+      }
+    }).observe(toasts, { childList: true });
+    document.addEventListener('pointerdown', event => {
+      window.pressedCopyButton = event.target.closest('[data-copy-code]');
+      window.pressedCopyTurn = window.pressedCopyButton?.closest('[data-turn]');
+    }, true);
+    document.addEventListener('pointerup', event => {
+      const button = event.target.closest('[data-copy-code]');
+      window.copyButtonReplaced = Boolean(window.pressedCopyButton && !window.pressedCopyButton.isConnected);
+      window.releasedCode = button?.nextElementSibling.textContent.replace(/\r?\n$/, '');
+    }, true);
+  });
+
+  async function copyAfterUpdate(update) {
+    const before = await page.evaluate(async () => {
+      await navigator.clipboard.writeText('Waiting for copy');
+      document.querySelector('#toasts').replaceChildren();
+      return window.copyToasts;
+    });
+    const bounds = await button.boundingBox();
+    await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+    await page.mouse.down();
+    await update();
+    await page.mouse.up();
+    assert(await page.evaluate(() => window.releasedCode), 'mouse release lands on a code button');
+    const replaced = await page.evaluate(() => window.copyButtonReplaced);
+    await page.waitForFunction(async () => {
+      return window.releasedCode && (await navigator.clipboard.readText()) === window.releasedCode;
+    }, null, { timeout: 2000 });
+    await page.waitForFunction(count => window.copyToasts > count, before, { timeout: 2000 });
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(await page.evaluate(() => window.copyToasts), before + 1, 'one toast per click');
+    return replaced;
+  }
+
+  const results = [];
+  for (const interval of [30, 100, 250]) {
+    let copied = 0, replaced = 0;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const updated = await copyAfterUpdate(() => page.evaluate(async ({ turnId, interval, phase }) => {
+        const { handleEvent } = await import('/static/js/chat.js');
+        const append = () => handleEvent({ tid: '1.2', turn_id: turnId, type: 'delta', text: ' more' });
+        let updates;
+        const first = setTimeout(() => {
+          void append();
+          updates = setInterval(append, interval);
+        }, phase);
+        await new Promise(resolve => setTimeout(resolve, 80));
+        clearTimeout(first);
+        clearInterval(updates);
+      }, { turnId, interval, phase: attempt * interval / 10 }));
+      if (updated) replaced++;
+      copied++;
+    }
+    assert(replaced > 0, `a render replaces the pressed button at ${interval}ms`);
+    results.push({ interval, copied, replaced });
+  }
+
+  const replacedByTool = await copyAfterUpdate(async () => {
+    const thread = page.locator('#thread');
+    const top = await thread.evaluate(node => node.scrollTop);
+    await event({ type: 'delta', turn_id: turnId, text: ' after delta' });
+    await event({ type: 'tool', turn_id: turnId, name: 'Read' });
+    await page.waitForFunction(() => {
+      const pressedRow = window.pressedCopyTurn;
+      const row = document.querySelector('[data-turn="pointer-copy"]');
+      return pressedRow && !pressedRow.isConnected && row?.querySelector('.activity-line')?.textContent.includes('Read');
+    });
+    // Restore the scroll position so the release hits the new button at the original coordinates.
+    await thread.evaluate((node, top) => { node.scrollTop = top; }, top);
+  });
+  assert(replacedByTool, 'a tool event replaces the pressed button and its turn row');
+  assert(await page.evaluate(() => window.releasedCode.endsWith(' after delta')));
+
+  const nextTurn = 'pointer-copy-two-blocks';
+  const firstCode = 'echo AAAAAAAAAA', secondCode = 'echo BBBBBBBBBB';
+  await event({ type: 'delta', turn_id: nextTurn, text: '~~~sh\n' + firstCode });
+  const next = page.locator('[data-turn="pointer-copy-two-blocks"] [data-copy-code]');
+  await next.first().scrollIntoViewIfNeeded();
+  const before = await page.evaluate(async () => {
+    await navigator.clipboard.writeText('Waiting for copy');
+    document.querySelector('#toasts').replaceChildren();
+    return window.copyToasts;
+  });
+  const bounds = await next.first().boundingBox();
+  await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+  await page.mouse.down();
+  assert.equal(await page.evaluate(() => window.pressedCopyButton?.nextElementSibling.textContent.trim()), firstCode);
+  await event({ type: 'delta', turn_id: nextTurn, text: '\n~~~\n\n~~~sh\n' + secondCode });
+  await next.nth(1).waitFor();
+  await page.mouse.up();
+  assert(await page.evaluate(() => window.copyButtonReplaced), 'the pressed button was replaced');
+  assert.equal(await page.evaluate(() => window.releasedCode), secondCode, 'auto-scroll puts the second block under the mouse');
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), 'Waiting for copy');
+  assert.equal(await page.evaluate(() => window.copyToasts), before, 'releasing on a different block does not show a toast');
+  return results;
+}
+
+async function copyFromCachedTopic(page, event) {
+  const other = { ...topic, tid: '1.3', topic_id: 3, name: 'Other conversation', count: 1 };
+  const original = { ...topic, name: 'Code examples', count: 2 };
+  let topics = [original, other];
+  await page.route('**/api/topics', route => route.fulfill({ json: { topics } }));
+  await page.route(/\/api\/topics\/1\.3\/messages\?/, route => route.fulfill({
+    json: { entries: [{ ...messages[0], seq: 42, text: 'Other conversation history' }], has_more: false },
+  }));
+  await event({ type: 'topics' });
+  await page.locator('#tlist [data-tid="1.3"]').click();
+  await page.locator('#thread [data-entry-seq="42"]').waitFor();
+
+  // Fail the history reload and let the separate unread-count request reach the fixture.
+  await page.route(/\/api\/topics\/1\.2\/messages\?/, route =>
+    route.fulfill({ status: 503, json: {} }), { times: 1 });
+  const unavailable = page.waitForResponse(response =>
+    new URL(response.url()).pathname === '/api/topics/1.2/messages' && response.status() === 503);
+  topics = [original];
+  await event({ type: 'topics' });
+  await unavailable;
+  assert.equal(await page.locator('#tlist [data-tid="1.3"]').count(), 0);
+  const counts = seq => page.locator(`#thread [data-entry-seq="${seq}"] .md pre`).evaluateAll(blocks =>
+    blocks.map(block => block.querySelectorAll(':scope > [data-copy-code]').length));
+  assert.deepEqual(await counts(1), [1], 'cached user code block');
+  assert.deepEqual(await counts(2), [1, 1], 'cached assistant code blocks');
+}
+
+async function codeCopy(browser) {
+  const measurements = [];
+  const fence = '`';
+  const first = 'const path = "' + 'reports/weekly/'.repeat(14) + 'summary.txt";\n  console.log(path);  \n';
+  const second = 'Literal <&>  ';
+  const userCode = 'echo "typed by the user"';
+  const answer = 'Two examples with ' + fence + 'inline code' + fence + '.\n\n'
+    + fence.repeat(3) + 'js\n' + first + '\n' + fence.repeat(3) + '\n\n'
+    + second.split('\n').map(line => '    ' + line).join('\n');
+  const prompt = 'Example input:\n\n' + fence.repeat(3) + 'sh\n' + userCode + '\n' + fence.repeat(3);
+  const entries = [
+    { ...messages[194], seq: 1, role: 'user', text: prompt },
+    { ...messages[195], seq: 2, role: 'bot', text: answer },
+  ];
+  for (const [width, height] of [[1280, 720], [375, 812]]) {
+    for (const colorScheme of ['light', 'dark']) {
+      const context = await browser.newContext({ viewport: { width, height }, colorScheme,
+        permissions: ['clipboard-read', 'clipboard-write'] });
+      try {
+        const page = await context.newPage();
+        await page.addInitScript(() => localStorage.setItem('dtw-web-language', 'en'));
+        await mockChat(page, entries, { ...topic, name: 'Code examples', preview: 'Copy a code block' });
+        await page.goto(origin);
+        const bot = page.locator('#thread [data-entry-seq="2"]');
+        const user = page.locator('#thread [data-entry-seq="1"]');
+        const codes = bot.getByRole('button', { name: 'Copy code', exact: true });
+        await codes.last().waitFor();
+        assert.equal(await page.locator('html').getAttribute('data-theme'), colorScheme);
+        assert.equal(await codes.count(), 2);
+        assert.equal(await bot.locator('p [data-copy-code]').count(), 0);
+
+        const overflow = () => page.evaluate(() => ({
+          documentHeight: document.scrollingElement.scrollHeight, viewportHeight: innerHeight,
+          documentWidth: document.scrollingElement.scrollWidth, viewportWidth: innerWidth,
+        }));
+        const checkDocument = async () => {
+          const bounds = await overflow();
+          assert.equal(bounds.documentHeight, bounds.viewportHeight, JSON.stringify(bounds));
+          assert.equal(bounds.documentWidth, bounds.viewportWidth, JSON.stringify(bounds));
+        };
+        const block = bot.locator('pre').first();
+        const layout = await block.evaluate(pre => {
+          const button = pre.querySelector('[data-copy-code]');
+          const code = pre.querySelector('code');
+          const before = button.getBoundingClientRect();
+          code.scrollLeft = code.scrollWidth;
+          const after = button.getBoundingClientRect();
+          const scrolled = code.scrollLeft;
+          const text = document.createRange();
+          text.selectNodeContents(code);
+          const endGap = after.left - text.getBoundingClientRect().right;
+          code.scrollLeft = 0;
+          return { scrolled, buttonFixed: before.x === after.x && before.y === after.y, endGap };
+        });
+        assert(layout.scrolled > 0, JSON.stringify(layout));
+        assert(layout.buttonFixed, JSON.stringify(layout));
+        assert(layout.endGap > 0, JSON.stringify(layout));
+        const short = await user.locator('pre').evaluate(pre => {
+          const code = pre.querySelector('code');
+          const text = document.createRange();
+          text.selectNodeContents(code);
+          const button = pre.querySelector('[data-copy-code]').getBoundingClientRect();
+          return { overflow: code.scrollWidth - code.clientWidth, endGap: button.left - text.getBoundingClientRect().right };
+        });
+        assert.equal(short.overflow, 0, JSON.stringify(short));
+        assert(short.endGap > 0, JSON.stringify(short));
+        const compact = await bot.locator('pre').last().evaluate(pre => {
+          const button = pre.querySelector('[data-copy-code]');
+          const block = pre.getBoundingClientRect();
+          const target = button.getBoundingClientRect();
+          return {
+            height: block.height,
+            paddingTop: getComputedStyle(pre.querySelector('code')).paddingTop,
+            buttonHeight: target.height,
+            buttonWidth: target.width,
+            buttonFits: target.top >= block.top && target.bottom <= block.bottom
+              && target.left >= block.left && target.right <= block.right,
+            matchingBackground: getComputedStyle(button).backgroundColor === getComputedStyle(pre).backgroundColor,
+          };
+        });
+        assert.equal(compact.paddingTop, '12px');
+        assert(compact.buttonFits && compact.matchingBackground, JSON.stringify(compact));
+        measurements.push({ width, colorScheme, ...compact, shortEndGap: short.endGap, longEndGap: layout.endGap });
+        await checkDocument();
+        await page.locator('#msgIn').focus();
+        await bot.scrollIntoViewIfNeeded();
+        await page.screenshot({ path: path.join(config.shots, 'code-copy-' + width + '-' + colorScheme + '.png') });
+
+        const readClipboard = value => page.waitForFunction(
+          async expected => await navigator.clipboard.readText() === expected, value,
+        );
+        await codes.first().press('Enter');
+        await readClipboard(first);
+        await codes.last().click();
+        await readClipboard(second);
+        await user.getByRole('button', { name: 'Copy code', exact: true }).click();
+        await readClipboard(userCode);
+        await bot.getByRole('button', { name: 'Copy message', exact: true }).click();
+        await readClipboard(answer);
+
+        const event = detail => page.evaluate(async data => {
+          const { handleEvent } = await import('/static/js/chat.js');
+          await handleEvent({ tid: '1.2', turn_id: 'code-turn', ...data });
+        }, detail);
+        const live = page.locator('#streamMsg');
+        const codeButton = live.getByRole('button', { name: 'Copy code', exact: true });
+        await event({ type: 'turn', phase: 'started' });
+        await event({ type: 'delta', text: fence.repeat(3) + 'sh\nfirst line' });
+        await codeButton.waitFor();
+        assert.equal(await codeButton.count(), 1);
+        await codeButton.focus();
+        await event({ type: 'delta', text: '\n  second line  ' });
+        await page.waitForFunction(() => document.querySelector('#streamMsg pre code')?.textContent.includes('second line'));
+        assert.equal(await codeButton.count(), 1);
+        assert(await codeButton.evaluate(button => button === document.activeElement));
+        await codeButton.press('Enter');
+        await readClipboard('first line\n  second line  ');
+        await event({ type: 'delta', text: '\n' + fence.repeat(3) + '\n\nEnd of response.' });
+        await live.locator('[data-stream-complete] [data-copy-code]').waitFor();
+        assert.equal(await codeButton.count(), 1);
+        await event({ type: 'turn', phase: 'done' });
+        const finished = page.locator('[data-turn="code-turn"]').getByRole('button', { name: 'Copy code', exact: true });
+        await finished.waitFor();
+        assert.equal(await finished.count(), 1);
+        await finished.click();
+        await readClipboard('first line\n  second line  ');
+        await checkDocument();
+        if (width === 1280 && colorScheme === 'light') {
+          await copyFromCachedTopic(page, event);
+          console.log(JSON.stringify(await copyOpenBlockWithMouse(page, event)));
+        }
+      } finally {
+        await context.close();
+      }
+    }
+  }
+  console.log(JSON.stringify(measurements));
+}
+
 const browser = await chromium.launch();
 try {
   await fs.mkdir(config.shots, { recursive: true });
-  const scenarios = { dates: messageDates, window: preserveOldestGroup, focus: chatFocus };
+  const scenarios = { dates: messageDates, window: preserveOldestGroup, focus: chatFocus, 'code-copy': codeCopy };
   const scenario = process.argv[3] ?? 'dates';
   if (scenario.startsWith('overflow-')) await documentOverflow(browser, scenario);
   else await scenarios[scenario](browser);

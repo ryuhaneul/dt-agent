@@ -141,9 +141,22 @@ function queueStatus(turnId, status = null) {
   const cancel = !cancelled ? `<button class="btn queue-cancel" type="button" data-cancel-turn="${esc(turnId)}" aria-label="${esc(t('chat.cancel_queued'))}"${turn.cancelling ? ' disabled' : ''}>${esc(t('common.cancel'))}</button>` : '';
   return `<div class="queue-status${cancelled ? ' stopped' : ''}" role="status"><span>${esc(label)}</span>${cancel}</div>`;
 }
-function copyButton(entryId = '', hidden = false) {
-  const label = esc(t('chat.copy_message'));
-  return `<button class="btn btn-sm btn-ghost" type="button" data-copy-message="${esc(entryId)}" aria-label="${label}"${hidden ? ' hidden' : ''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"></rect><path d="M16 4H6a2 2 0 0 0-2 2v10"></path></svg><span>${label}</span></button>`;
+function copyButton({ entryId = '', hidden = false, code = false } = {}) {
+  const label = esc(t(code ? 'chat.copy_code' : 'chat.copy_message'));
+  const target = code ? 'data-copy-code' : 'data-copy-message="' + esc(entryId) + '"';
+  return `<button class="btn btn-sm btn-ghost" type="button" ${target} aria-label="${label}"${hidden ? ' hidden' : ''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"></rect><path d="M16 4H6a2 2 0 0 0-2 2v10"></path></svg>${code ? '' : '<span>' + label + '</span>'}</button>`;
+}
+function addCodeCopy(root) {
+  const blocks = root.querySelectorAll('.md pre:not(:has(> [data-copy-code]))');
+  if (!blocks.length) return;
+  const button = copyButton({ code: true });
+  for (const block of blocks) {
+    const code = block.querySelector(':scope > code');
+    if (!code) continue;
+    block.removeAttribute('tabindex');
+    code.tabIndex = 0;
+    block.insertAdjacentHTML('afterbegin', button);
+  }
 }
 function queuedMarkup(turn) {
   return `<div class="msg me" data-queue-turn="${esc(turn.id)}"><div class="meta"><span class="tag">${esc(t('tag.web'))}</span>${messageTime(turn.received)}${turn.userText ? copyButton() : ''}</div><div class="bubble md">${md(turn.userText)}</div>${queueStatus(turn.id)}</div>`;
@@ -217,7 +230,7 @@ function streamContent(turn, live) {
 function entryMarkup(entry) {
   const displayText=attachmentView?.text(getTopic().tid,entry)??entry.text;
   const attachmentCards=attachmentView?.markup(getTopic().tid,entry)||'';
-  const copy = displayText ? copyButton(entry.id) : '';
+  const copy = displayText ? copyButton({ entryId: entry.id }) : '';
   const time = messageTime(entry.ts);
   const delegated = entry.role === 'event' && entry.kind === 'interagent';
   if (entry.role === 'event' && !delegated) {
@@ -233,7 +246,7 @@ function entryMarkup(entry) {
 function streamMarkup(turn) {
   const live = ['queued', 'started'].includes(turn.phase);
   const dots = live ? '<span class="typing" aria-hidden="true"><i></i><i></i><i></i></span>' : '';
-  return `<div class="msg bot" ${live ? 'id="streamMsg"' : ''} data-turn="${esc(turn.id)}"><div class="meta"><span class="tag">${esc(t('tag.web'))}</span>${messageTime(streamTimestamp(turn))}${live ? `<span>${esc(t('chat.answering'))}</span>` : ''}${dots}${copyButton('', !turn.text)}</div><div class="bubble md">${streamContent(turn, live)}${live ? '<span class="caret" aria-hidden="true"></span>' : ''}</div>${turn.phase === 'aborted' ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : turn.phase === 'error' ? `<div class="stopped">${esc(t('error.generic'))}</div>` : ''}</div>`;
+  return `<div class="msg bot" ${live ? 'id="streamMsg"' : ''} data-turn="${esc(turn.id)}"><div class="meta"><span class="tag">${esc(t('tag.web'))}</span>${messageTime(streamTimestamp(turn))}${live ? `<span>${esc(t('chat.answering'))}</span>` : ''}${dots}${copyButton({ hidden: !turn.text })}</div><div class="bubble md">${streamContent(turn, live)}${live ? '<span class="caret" aria-hidden="true"></span>' : ''}</div>${turn.phase === 'aborted' ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : turn.phase === 'error' ? `<div class="stopped">${esc(t('error.generic'))}</div>` : ''}</div>`;
 }
 async function copyMessage(button) {
   const row = button.closest('[data-entry-seq], [data-turn], [data-queue-turn]');
@@ -243,13 +256,21 @@ async function copyMessage(button) {
   const text = entry ? attachmentView?.text(topic.tid, entry) ?? entry.text
     : turns.get(turn)?.text ?? turns.get(queueTurn)?.userText;
   if (!text) return;
+  await copyText(button, text, row.querySelector('.md'));
+}
+async function copyCode(button) {
+  const code = button.nextElementSibling;
+  await copyText(button, code.textContent.replace(/\r?\n$/, ''), code,
+    button.closest('[data-stream-tail]') ?? button);
+}
+async function copyText(button, text, fallback, notificationTarget = button) {
   try {
     await navigator.clipboard.writeText(text);
-    if (button.isConnected) notify('common.copied', {}, { success: true });
+    if (notificationTarget.isConnected) notify('common.copied', {}, { success: true });
   } catch {
     if (!button.isConnected) return;
     const selection = window.getSelection(), range = document.createRange();
-    range.selectNodeContents(row.querySelector('.md'));
+    range.selectNodeContents(fallback);
     selection.removeAllRanges(); selection.addRange(range);
     notify('common.copy_failed');
   }
@@ -280,15 +301,29 @@ function scheduleStreamRender(turnId) {
           continue;
         }
         element.querySelector('[data-copy-message]').hidden = !turn.text;
+        const focused = document.activeElement;
+        const copyIndex = focused?.dataset.copyCode !== undefined && element.contains(focused)
+          ? [...element.querySelectorAll('[data-copy-code]')].indexOf(focused)
+          : -1;
         turn.markdown.render(turn.text.slice(turn.markdownOffset || 0));
         const complete = element.querySelector('[data-stream-complete]');
         const tail = element.querySelector('[data-stream-tail]');
         const length = Number(complete.dataset.length || 0);
-        if (Number(complete.dataset.revision) !== turn.markdown.revision || turn.markdown.completeHTML.length < length) complete.innerHTML = turn.markdown.completeHTML;
-        else complete.insertAdjacentHTML('beforeend', turn.markdown.completeHTML.slice(length));
-        complete.dataset.length = turn.markdown.completeHTML.length;
+        const html = turn.markdown.completeHTML;
+        if (Number(complete.dataset.revision) !== turn.markdown.revision || html.length < length) {
+          complete.innerHTML = html;
+          addCodeCopy(complete);
+        } else if (html.length > length) {
+          complete.insertAdjacentHTML('beforeend', html.slice(length));
+          addCodeCopy(complete);
+        }
+        complete.dataset.length = html.length;
         complete.dataset.revision = turn.markdown.revision;
         tail.innerHTML = turn.markdown.tailHTML;
+        addCodeCopy(tail);
+        if (copyIndex !== -1 && !focused.isConnected) {
+          element.querySelectorAll('[data-copy-code]')[copyIndex]?.focus({ preventScroll: true });
+        }
       } else if (!history(topic.tid).range?.newer && !hasTurnEntry(turn, 'bot')) {
         updateTurn(turn);
       }
@@ -514,6 +549,7 @@ function patchThread(thread, groups, changes) {
         if (node) rememberActivity(node);
         template.innerHTML = itemMarkup(item);
         const replacement = template.content.firstElementChild;
+        addCodeCopy(replacement);
         if (!node?.isEqualNode(replacement)) {
           if (node) node.replaceWith(replacement);
           node = replacement;
@@ -720,7 +756,10 @@ export function renderThread({
   const showBusy = !state.range.newer && (busy.get(topic.tid) ?? topic.busy) && !liveTurns.length;
   const mounted = mountedRows(rows, start, end, showBusy), groups = threadGroups(mounted);
   if (changes || sameTopic) patchThread(thread, groups, changes);
-  else thread.innerHTML = groups.map(group => groupStart(group) + group.rows.map(itemMarkup).join('') + '</div>').join('');
+  else {
+    thread.innerHTML = groups.map(group => groupStart(group) + group.rows.map(itemMarkup).join('') + '</div>').join('');
+    addCodeCopy(thread);
+  }
   loadWindowAttachments(topic.tid, mounted);
   const pinned = !move && (bottom || followLatest) && !state.range.newer;
   if (seq !== null) {
@@ -1179,9 +1218,35 @@ export function initChat() {
   });
   document.querySelector('#sendBtn').addEventListener('click', sendMessage);
   document.querySelector('#stopBtn').addEventListener('click', stopAnswer);
+  let pressedCode = null, recoveredCode = null;
+  thread.addEventListener('pointerdown', event => {
+    pressedCode = recoveredCode = null;
+    if (event.pointerType !== 'mouse' || event.button !== 0) return;
+    const button = event.target.closest('[data-stream-tail] [data-copy-code]');
+    if (!button) return;
+    const row = button.closest('[data-turn]');
+    const index = [...row.querySelectorAll('[data-copy-code]')].indexOf(button);
+    pressedCode = { button, turnId: row.dataset.turn, index };
+  });
+  document.addEventListener('pointerup', event => {
+    if (event.pointerType !== 'mouse' || event.button !== 0) return;
+    const pressed = pressedCode, released = event.target.closest('[data-copy-code]');
+    pressedCode = null;
+    if (!pressed || !released || pressed.button.isConnected) return;
+    recoveredCode = released;
+    const row = released.closest('[data-turn]');
+    if (row?.dataset.turn !== pressed.turnId) return;
+    const index = [...row.querySelectorAll('[data-copy-code]')].indexOf(released);
+    if (index === pressed.index) void copyCode(released);
+  });
   thread.addEventListener('click', event => {
     const copy = event.target.closest('[data-copy-message]');
     if (copy) { void copyMessage(copy); return; }
+    const code = event.target.closest('[data-copy-code]');
+    if (code) {
+      if (code !== recoveredCode || event.detail === 0) void copyCode(code);
+      return;
+    }
     const cancel = event.target.closest('[data-cancel-turn]');
     if (cancel && !cancel.disabled) void cancelQueued(cancel.dataset.cancelTurn);
     const button = event.target.closest('[data-response-entry]');

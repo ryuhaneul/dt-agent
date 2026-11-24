@@ -63,6 +63,9 @@ in browser localStorage across reloads; bot and Telegram language settings stay 
 The header Rename dialog updates the current topic name while keeping the conversation open.
 Clicking outside a dialog follows the same cancellation behavior as pressing Esc.
 
+In the conversation, use **Copy code** at the top right of a code block to copy
+its contents. This works in your messages and in agent responses as they stream.
+
 ## Authentication
 
 Set the password with `ductor webchat set-password` (at least 12 characters).

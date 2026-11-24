@@ -81,6 +81,7 @@ last_active = "Последняя активность: {time}"
 
 [chat]
 copy_message = "Копировать сообщение"
+copy_code = "Копировать код"
 activity = "Подробности действий"
 queued = "В очереди"
 cancelled = "Отменено"
