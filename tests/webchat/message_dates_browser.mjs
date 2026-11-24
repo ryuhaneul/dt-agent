@@ -521,6 +521,29 @@ async function copyOpenBlockWithMouse(page, event) {
   });
   assert(replacedByTool, 'a tool event replaces the pressed button and its turn row');
   assert(await page.evaluate(() => window.releasedCode.endsWith(' after delta')));
+
+  const nextTurn = 'pointer-copy-two-blocks';
+  const firstCode = 'echo AAAAAAAAAA', secondCode = 'echo BBBBBBBBBB';
+  await event({ type: 'delta', turn_id: nextTurn, text: '~~~sh\n' + firstCode });
+  const next = page.locator('[data-turn="pointer-copy-two-blocks"] [data-copy-code]');
+  await next.first().scrollIntoViewIfNeeded();
+  const before = await page.evaluate(async () => {
+    await navigator.clipboard.writeText('Waiting for copy');
+    document.querySelector('#toasts').replaceChildren();
+    return window.copyToasts;
+  });
+  const bounds = await next.first().boundingBox();
+  await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+  await page.mouse.down();
+  assert.equal(await page.evaluate(() => window.pressedCopyButton?.nextElementSibling.textContent.trim()), firstCode);
+  await event({ type: 'delta', turn_id: nextTurn, text: '\n~~~\n\n~~~sh\n' + secondCode });
+  await next.nth(1).waitFor();
+  await page.mouse.up();
+  assert(await page.evaluate(() => window.copyButtonReplaced), 'the pressed button was replaced');
+  assert.equal(await page.evaluate(() => window.releasedCode), secondCode, 'auto-scroll puts the second block under the mouse');
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), 'Waiting for copy');
+  assert.equal(await page.evaluate(() => window.copyToasts), before, 'releasing on a different block does not show a toast');
   return results;
 }
 

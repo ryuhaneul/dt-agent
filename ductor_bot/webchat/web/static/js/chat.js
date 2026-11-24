@@ -1224,17 +1224,20 @@ export function initChat() {
     if (event.pointerType !== 'mouse' || event.button !== 0) return;
     const button = event.target.closest('[data-stream-tail] [data-copy-code]');
     if (!button) return;
-    pressedCode = { button, turnId: button.closest('[data-turn]').dataset.turn };
+    const row = button.closest('[data-turn]');
+    const index = [...row.querySelectorAll('[data-copy-code]')].indexOf(button);
+    pressedCode = { button, turnId: row.dataset.turn, index };
   });
   document.addEventListener('pointerup', event => {
     if (event.pointerType !== 'mouse' || event.button !== 0) return;
     const pressed = pressedCode, released = event.target.closest('[data-copy-code]');
     pressedCode = null;
-    if (pressed && released && !pressed.button.isConnected &&
-        released.closest('[data-turn]')?.dataset.turn === pressed.turnId) {
-      recoveredCode = released;
-      void copyCode(released);
-    }
+    if (!pressed || !released || pressed.button.isConnected) return;
+    recoveredCode = released;
+    const row = released.closest('[data-turn]');
+    if (row?.dataset.turn !== pressed.turnId) return;
+    const index = [...row.querySelectorAll('[data-copy-code]')].indexOf(released);
+    if (index === pressed.index) void copyCode(released);
   });
   thread.addEventListener('click', event => {
     const copy = event.target.closest('[data-copy-message]');
