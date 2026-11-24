@@ -68,6 +68,7 @@ function mergeButtonMeta(state, entryId, incoming) {
     }
   }
   if (typeof incoming.answered === 'string') meta.answered = incoming.answered;
+  if (typeof incoming.display_markdown === 'string') meta.display_markdown = incoming.display_markdown;
   state.meta.set(entryId, meta);
   return meta;
 }
@@ -228,9 +229,10 @@ function streamContent(turn, live) {
 }
 
 function entryMarkup(entry) {
-  const displayText=attachmentView?.text(getTopic().tid,entry)??entry.text;
+  const text=attachmentView?.text(getTopic().tid,entry)??entry.text;
+  const displayText = entry.role === 'user' ? entry.display_markdown ?? text : text;
   const attachmentCards=attachmentView?.markup(getTopic().tid,entry)||'';
-  const copy = displayText ? copyButton({ entryId: entry.id }) : '';
+  const copy = text ? copyButton({ entryId: entry.id }) : '';
   const time = messageTime(entry.ts);
   const delegated = entry.role === 'event' && entry.kind === 'interagent';
   if (entry.role === 'event' && !delegated) {
@@ -549,6 +551,11 @@ function patchThread(thread, groups, changes) {
         template.innerHTML = itemMarkup(item);
         const replacement = template.content.firstElementChild;
         addCodeCopy(replacement);
+        if (entry?.role === 'user' && entry.display_markdown !== undefined) {
+          for (const code of replacement.querySelectorAll('.md code:not(pre code)')) {
+            code.style.whiteSpace = 'break-spaces';
+          }
+        }
         if (!node?.isEqualNode(replacement)) {
           if (node) node.replaceWith(replacement);
           node = replacement;
@@ -984,10 +991,10 @@ export async function handleEvent(event) {
     }
     case 'entry_meta': {
       const state = history(tid);
-      mergeButtonMeta(state, event.entry_id, event.meta || {});
+      const meta = mergeButtonMeta(state, event.entry_id, event.meta || {});
       const entry = state.entries.get(event.entry_id);
       if (entry) {
-        mergeHistory(state, [entry]);
+        mergeHistory(state, [{ ...entry, display_markdown: meta.display_markdown }]);
         updateEntries(tid, [entry.id]);
       }
       return;

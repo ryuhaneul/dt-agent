@@ -8,9 +8,12 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import CallbackQuery, Chat, Message, User
+from aiogram.types import CallbackQuery, Chat, Message, MessageEntity, User
 
+from ductor_bot.chat_log.recorder import received_display_markdown
 from ductor_bot.config import AgentConfig, StreamingConfig
+from ductor_bot.messenger.telegram.handlers import build_reply_prompt
+from ductor_bot.messenger.telegram.message_dispatch import NonStreamingDispatch
 from tests.messenger.telegram import test_usage as usage_contract
 
 # ---------------------------------------------------------------------------
@@ -99,6 +102,7 @@ def _make_message(
     msg.chat.type = chat_type
     type(msg).message_id = PropertyMock(return_value=message_id)
     msg.text = text
+    msg.entities = None
     msg.answer = AsyncMock(return_value=msg)
 
     user = MagicMock(spec=User)
@@ -432,6 +436,58 @@ class TestOnMessage:
 
         orch.handle_message.assert_not_called()
         orch.handle_message_streaming.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("text", "entity_type", "reply", "expected_raw", "expected_display"),
+        [
+            ("echo hi", "pre", False, "echo hi", "\n\n```sh\necho hi\n```\n\n"),
+            ("echo hi", "pre", True, "echo hi", "\n\n```sh\necho hi\n```\n\n"),
+            ("echo hi", "code", False, "echo hi", "`echo hi`"),
+            ("echo hi", "bold", False, "echo hi", None),
+            ("@testbot echo hi", "code", False, "echo hi", None),
+        ],
+    )
+    async def test_passes_raw_text_with_optional_code_display(
+        self,
+        text: str,
+        entity_type: str,
+        reply: bool,
+        expected_raw: str,
+        expected_display: str | None,
+    ) -> None:
+        tg_bot, _ = _make_tg_bot(_make_config(streaming_enabled=False))
+        tg_bot._bot_username = "testbot"
+        tg_bot._orchestrator = _make_orchestrator()
+        msg = _make_message(text=text)
+        msg.entities = [
+            MessageEntity(
+                type=entity_type,
+                offset=text.index("echo"),
+                length=7,
+                language="sh" if entity_type == "pre" else None,
+            )
+        ]
+        if reply:
+            msg.reply_to_message = _make_message(text="Quoted line")
+        display = (
+            build_reply_prompt(msg, expected_display) if expected_display is not None else None
+        )
+
+        async def handle(dispatch: NonStreamingDispatch) -> str:
+            assert dispatch.text == build_reply_prompt(msg, expected_raw)
+            assert received_display_markdown.get() == display
+            return "reply"
+
+        token = received_display_markdown.set("stale")
+        try:
+            with patch(
+                "ductor_bot.messenger.telegram.app.run_non_streaming_message", side_effect=handle
+            ) as mock_run:
+                await tg_bot._on_message(msg)
+            mock_run.assert_awaited_once()
+            assert received_display_markdown.get() is None
+        finally:
+            received_display_markdown.reset(token)
 
     @patch("ductor_bot.messenger.telegram.app.strip_mention", return_value="clean text")
     async def test_strips_mention_from_text(self, mock_strip: MagicMock) -> None:

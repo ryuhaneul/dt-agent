@@ -973,6 +973,25 @@ async def test_deleting_queued_turn_cannot_recreate_history(conversation):
     await ws.close()
 
 
+async def test_history_returns_telegram_code_display_and_raw_message(
+    conversation: SimpleNamespace,
+) -> None:
+    h = conversation
+    tid = "-123.7"
+    raw, display = "echo hi", "```sh\necho hi\n```"
+    entry = await h.runtime.history.append(tid, Entry(role="user", source="telegram", text=raw))
+    await h.runtime.history.record_display_markdown(tid, entry.id, display)
+
+    response = await h.client.get(
+        f"{_PREFIX}/topics/{tid}/messages", headers={"X-Dtw-Bridge-Token": _TOKEN}
+    )
+    assert response.status == 200
+    (message,) = (await response.json())["entries"]
+    assert (message["id"], message["text"], message["display_markdown"], message["buttons"]) == (
+        entry.id, raw, display, [],
+    )
+
+
 async def test_history_pagination_mirror_join_and_search(conversation):
     h = conversation
     await h.runtime.history.append(

@@ -17,11 +17,11 @@ Deleting a topic removes its history; the empty companion lock file remains
 to preserve safe concurrent access.
 
 Web command inputs use the existing `kind="command"` field; command results use
-normal bot entries. The `Entry` schema is unchanged. Optional keyboards live in
-`history/<tid>.meta.jsonl`, keyed by entry ID and containing only `buttons`.
-History responses and entry events include these rows when available. Old
-readers can still construct `Entry(**json)` from every history line and ignore
-the companion files. Deleting a topic also deletes its keyboard metadata.
+normal bot entries. The `Entry` schema is unchanged. Optional keyboards and
+Telegram code formatting live in `history/<tid>.meta.jsonl`, keyed by entry ID.
+The optional `display_markdown` field is for display. The original message
+remains in `Entry.text`. Old readers can still construct `Entry(**json)` from
+every history line. Deleting a topic also deletes its entry metadata.
 
 `outbox.py` persists pending items and completed/failed delivery state under
 `$DUCTOR_HOME/chat_log/outbox/`. `link.py` probes Telegram every 30 seconds,

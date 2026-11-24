@@ -133,6 +133,7 @@ class HistoryStore:
                     "text",
                     "selector_revision",
                     "mirror_revision",
+                    "display_markdown",
                 )
                 if key in item
             }
@@ -231,6 +232,14 @@ class HistoryStore:
             self._events.publish(
                 {"type": "entry_meta", "tid": tid, "entry_id": entry_id, "meta": metadata}
             )
+
+    async def record_display_markdown(self, tid: str, entry_id: str, value: str) -> None:
+        async with self._lock(tid):
+            metadata = await complete_write(
+                self._update_metadata, tid, entry_id, {"display_markdown": value}
+            )
+        assert metadata is not None
+        self._publish_metadata(tid, entry_id, metadata)
 
     async def bind_telegram_message(  # noqa: PLR0913 -- keyboard identity, snapshot and observed revision
         self,

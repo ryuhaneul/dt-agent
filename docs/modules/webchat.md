@@ -186,6 +186,9 @@ The **Imported history** group covers topics with zero live entries and activity
 older than 30 days. Real imported topics remain usable and manageable.
 **Unknown topic** is a read-only history group.
 
+Webchat displays code blocks and inline code from new Telegram text messages.
+Copying the whole message uses the original recorded text.
+
 `GET /outbox` returns `{ "items": [...] }` containing web mirrors and buffered
 bus deliveries, including public origin/title metadata. See
 [recording and recovery](chat_log.md) for ordering, chunk splitting and the

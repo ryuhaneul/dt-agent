@@ -433,6 +433,39 @@ async def test_button_metadata_keeps_old_entry_reader_and_events_compatible(tmp_
     assert not (tmp_path / "1.7.meta.jsonl").exists()
 
 
+async def test_code_display_metadata_preserves_v154_readers(tmp_path: Path) -> None:
+    hub = EventHub()
+    queue = hub.subscribe()
+    store = HistoryStore(tmp_path, hub)
+    tid = "1.7"
+    saved = await store.append(tid, entry("echo hi"))
+    history = tmp_path / history_filename(tid)
+    raw = history.read_bytes()
+    queue.get_nowait()
+
+    await store.record_display_markdown(tid, saved.id, "```sh\necho hi\n```")
+
+    expected_meta = {"buttons": [], "display_markdown": "```sh\necho hi\n```"}
+    assert await HistoryStore(tmp_path).metadata(tid) == {saved.id: expected_meta}
+    assert queue.get_nowait() == {
+        "type": "entry_meta", "tid": tid, "entry_id": saved.id, "meta": expected_meta
+    }
+    assert history.read_bytes() == raw
+    assert Entry(**json.loads(raw)) == saved
+
+    item = json.loads((tmp_path / f"{tid}.meta.jsonl").read_bytes())
+    assert isinstance(item, dict)
+    assert isinstance(item.get("id"), str)
+    assert isinstance(item.get("buttons"), list)
+    legacy_keys = (
+        "buttons", "telegram_message_id", "telegram_html_text", "answered", "text",
+        "selector_revision", "mirror_revision",
+    )
+    assert {item["id"]: {key: item[key] for key in legacy_keys if key in item}} == {
+        saved.id: {"buttons": []}
+    }
+
+
 @pytest.mark.parametrize("role", ["bot", "event"])
 @pytest.mark.parametrize(
     "text",

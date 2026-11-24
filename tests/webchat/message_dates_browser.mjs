@@ -40,9 +40,9 @@ const messages = Array.from({ length: topic.count }, (_, index) => ({
 }));
 messages[74].role = 'event';
 messages[74].kind = 'background';
-async function mockChat(page, entries = messages, fixture = topic) {
+async function mockChat(page, entries = messages, fixture = topic, onSocket = () => {}) {
   const fixtureTopic = { ...fixture, count: entries.length, last_ts: entries.at(-1).ts };
-  await page.routeWebSocket('**/api/ws', () => {});
+  await page.routeWebSocket('**/api/ws', onSocket);
   await page.route('**/api/**', async route => {
     const request = route.request(), url = new URL(request.url());
     const fulfill = (data, status = 200) => route.fulfill({ status, json: data });
@@ -555,10 +555,53 @@ async function codeCopy(browser) {
   console.log(JSON.stringify(measurements));
 }
 
+async function telegramCode(browser) {
+  const { text, display, block, inline } = config.telegramCode;
+  const entries = [
+    { ...messages[194], seq: 1, role: 'user', source: 'telegram', text, buttons: [], display_markdown: display },
+    { ...messages[195], seq: 2, role: 'user', source: 'telegram', text: '**Old message**' },
+    { ...messages[196], seq: 3, role: 'user', source: 'telegram', text },
+  ];
+
+  const context = await browser.newContext({ viewport: { width: 1280, height: 720 },
+    permissions: ['clipboard-read', 'clipboard-write'] });
+  try {
+    const page = await context.newPage();
+    let socket;
+    await mockChat(page, entries, topic, route => { socket = route; });
+    await page.goto(origin);
+    const formatted = page.locator('#thread [data-entry-seq="1"]');
+    const legacy = page.locator('#thread [data-entry-seq="2"]');
+    const live = page.locator('#thread [data-entry-seq="3"]');
+    await live.waitFor();
+    await formatted.locator('pre code').waitFor();
+    assert.equal(await formatted.locator('pre code').textContent(), block + '\n');
+    const span = formatted.locator('p code');
+    assert.equal(await span.textContent(), inline);
+    assert.equal(await span.innerText(), inline);
+    assert.equal(await span.evaluate(node => getComputedStyle(node).whiteSpace), 'break-spaces');
+    assert.equal(await formatted.locator('.response-button-row').count(), 0);
+    assert.equal(await legacy.locator('strong').textContent(), 'Old message');
+    assert.equal(await legacy.locator('pre').count(), 0);
+    assert.equal(await live.locator('pre').count(), 0);
+
+    socket.send(JSON.stringify({ type: 'entry_meta', tid: topic.tid, entry_id: entries[2].id,
+      meta: { display_markdown: display, buttons: [] } }));
+    await live.locator('pre code').waitFor();
+    assert.equal(await live.locator('pre code').textContent(), block + '\n');
+    assert.equal(await live.locator('p code').innerText(), inline);
+    assert.equal(await live.locator('.response-button-row').count(), 0);
+    await live.locator('[data-copy-message]').click();
+    assert.equal(await page.evaluate(() => navigator.clipboard.readText()), text);
+  } finally {
+    await context.close();
+  }
+}
+
 const browser = await chromium.launch();
 try {
   await fs.mkdir(config.shots, { recursive: true });
-  const scenarios = { dates: messageDates, window: preserveOldestGroup, focus: chatFocus, 'code-copy': codeCopy };
+  const scenarios = { dates: messageDates, window: preserveOldestGroup, focus: chatFocus, 'code-copy': codeCopy, 'telegram-code': telegramCode };
   const scenario = process.argv[3] ?? 'dates';
   if (scenario.startsWith('overflow-')) await documentOverflow(browser, scenario);
   else await scenarios[scenario](browser);
