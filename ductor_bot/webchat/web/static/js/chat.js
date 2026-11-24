@@ -263,12 +263,13 @@ async function copyMessage(button) {
 }
 async function copyCode(button) {
   const code = button.nextElementSibling;
-  await copyText(button, code.textContent.replace(/\r?\n$/, ''), code);
+  await copyText(button, code.textContent.replace(/\r?\n$/, ''), code,
+    button.closest('[data-stream-tail]') ?? button);
 }
-async function copyText(button, text, fallback) {
+async function copyText(button, text, fallback, notificationTarget = button) {
   try {
     await navigator.clipboard.writeText(text);
-    if (button.isConnected) notify('common.copied', {}, { success: true });
+    if (notificationTarget.isConnected) notify('common.copied', {}, { success: true });
   } catch {
     if (!button.isConnected) return;
     const selection = window.getSelection(), range = document.createRange();
@@ -758,7 +759,10 @@ export function renderThread({
   const showBusy = !state.range.newer && (busy.get(topic.tid) ?? topic.busy) && !liveTurns.length;
   const mounted = mountedRows(rows, start, end, showBusy), groups = threadGroups(mounted);
   if (changes || sameTopic) patchThread(thread, groups, changes);
-  else thread.innerHTML = groups.map(group => groupStart(group) + group.rows.map(itemMarkup).join('') + '</div>').join('');
+  else {
+    thread.innerHTML = groups.map(group => groupStart(group) + group.rows.map(itemMarkup).join('') + '</div>').join('');
+    addCodeCopy(thread);
+  }
   loadWindowAttachments(topic.tid, mounted);
   const pinned = !move && (bottom || followLatest) && !state.range.newer;
   if (seq !== null) {
@@ -1217,11 +1221,35 @@ export function initChat() {
   });
   document.querySelector('#sendBtn').addEventListener('click', sendMessage);
   document.querySelector('#stopBtn').addEventListener('click', stopAnswer);
+  let pressedCode = null, recoveredCode = null;
+  thread.addEventListener('pointerdown', event => {
+    pressedCode = recoveredCode = null;
+    if (event.pointerType !== 'mouse' || event.button !== 0) return;
+    const button = event.target.closest('[data-stream-tail] [data-copy-code]');
+    if (!button) return;
+    const row = button.closest('[data-turn]');
+    const index = [...row.querySelectorAll('[data-copy-code]')].indexOf(button);
+    pressedCode = { button, turnId: row.dataset.turn, index };
+  });
+  document.addEventListener('pointerup', event => {
+    if (event.pointerType !== 'mouse' || event.button !== 0) return;
+    const pressed = pressedCode, released = event.target.closest('[data-copy-code]');
+    pressedCode = null;
+    if (!pressed || !released || pressed.button.isConnected) return;
+    recoveredCode = released;
+    const row = released.closest('[data-turn]');
+    if (row?.dataset.turn !== pressed.turnId) return;
+    const index = [...row.querySelectorAll('[data-copy-code]')].indexOf(released);
+    if (index === pressed.index) void copyCode(released);
+  });
   thread.addEventListener('click', event => {
     const copy = event.target.closest('[data-copy-message]');
     if (copy) { void copyMessage(copy); return; }
     const code = event.target.closest('[data-copy-code]');
-    if (code) { void copyCode(code); return; }
+    if (code) {
+      if (code !== recoveredCode || event.detail === 0) void copyCode(code);
+      return;
+    }
     const cancel = event.target.closest('[data-cancel-turn]');
     if (cancel && !cancel.disabled) void cancelQueued(cancel.dataset.cancelTurn);
     const button = event.target.closest('[data-response-entry]');

@@ -288,6 +288,12 @@ async function checkOriginalDimensionsCache() {
     await reset();
     await page.evaluate(() => {
       const decode = window.createImageBitmap.bind(window);
+      const encode = HTMLCanvasElement.prototype.toBlob;
+      window.encodedTypes = [];
+      HTMLCanvasElement.prototype.toBlob = function (callback, type, quality) {
+        window.encodedTypes.push(type);
+        return encode.call(this, callback, type, quality);
+      };
       window.bitmapCalls = 0;
       window.createImageBitmap = (...args) => {
         window.bitmapCalls++;
@@ -326,7 +332,86 @@ async function checkOriginalDimensionsCache() {
       return [image.naturalWidth, image.naturalHeight];
     });
     assert.deepEqual(size, [160, 320]);
+    assert((await page.locator('.attach-sub').textContent()).endsWith(' · image/jpeg'));
+    assert.deepEqual(await page.evaluate(() => window.encodedTypes), ['image/jpeg', 'image/jpeg']);
   }
+}
+
+async function checkImageSizeFallback() {
+  const dimensions = page.locator('[data-dimensions]');
+  const estimate = page.locator('[data-estimate-text]');
+  const notice = page.locator('[data-kept-original]');
+  const records = [];
+  for (const [name, mode, originalSize, kept] of [
+    ['capture.png', 'resize', '1600×900', true],
+    ['low-quality.jpg', 'resize', '1600×1200', true],
+    ['low-quality.jpg', 'compress', '1600×1200', true],
+    ['low-quality.jpg', 'resize-compress', '1600×1200', true],
+    ['scale-small.png', 'resize', '500×200', false],
+  ]) {
+    await reset();
+    const source = await fs.readFile(path.join(cfg.directory, name));
+    await addFile(name);
+    const originalTrayEstimate = await page.locator('.attach-estimate').textContent();
+    const originalTrayDetails = await page.locator('.attach-sub').textContent();
+    await popup();
+    await selectMode('original');
+    const originalEstimate = await estimate.textContent();
+    assert.equal(await notice.isHidden(), true);
+    await selectMode(mode);
+    const selectedEstimate = await estimate.textContent();
+    const selectedDimensions = await dimensions.textContent();
+    if (kept) {
+      assert.equal(await notice.isVisible(), true);
+      assert.equal(await notice.textContent(), cfg.strings['attach.kept_original']);
+      assert.equal(selectedDimensions, originalSize);
+      assert.equal(selectedEstimate, originalEstimate);
+    } else {
+      assert.equal(await notice.isHidden(), true);
+      assert.equal(selectedDimensions, '500×200 → 400×160');
+    }
+
+    const pngSize = kept ? null : await page.locator('.attach-thumb').evaluate(async image => {
+      await image.decode();
+      const canvas = document.createElement('canvas');
+      canvas.width = 400;
+      canvas.height = 160;
+      canvas.getContext('2d').drawImage(image, 0, 0, 400, 160);
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png', 0.92));
+      return blob.size;
+    });
+    await page.locator('[data-apply]').click();
+    await page.locator('#imageOptions').waitFor({ state: 'hidden' });
+    assert.equal((await page.locator('.attach-chip').textContent()).trim(), cfg.strings['attach.' + mode]);
+    if (kept) {
+      assert.equal(await page.locator('.attach-estimate').textContent(), originalTrayEstimate);
+      assert.equal(await page.locator('.attach-sub').textContent(), originalTrayDetails);
+    }
+    const before = messages.length;
+    await page.locator('#sendBtn').click();
+    await page.waitForFunction(() => document.querySelectorAll('.attach-draft').length === 0);
+    assert.equal(messages.length, before + 1);
+    const uploaded = sessions.get(messages.at(-1).attachment_ids[0]);
+    if (kept) {
+      assert.equal(uploaded.name, name);
+      assert.equal(uploaded.size, source.length);
+      assert.equal(uploaded.mime, name.endsWith('.png') ? 'image/png' : 'image/jpeg');
+      assert.deepEqual(uploaded.bytes, source);
+    } else {
+      assert.equal(uploaded.name, 'scale-small.webp');
+      assert.equal(uploaded.mime, 'image/webp');
+      assert(uploaded.size < Math.min(source.length, pngSize));
+      const chunks = [];
+      for (let offset = 12; offset + 8 <= uploaded.size;) {
+        chunks.push(uploaded.bytes.toString('ascii', offset, offset + 4));
+        const length = uploaded.bytes.readUInt32LE(offset + 4);
+        offset += 8 + length + length % 2;
+      }
+      assert(chunks.includes('VP8L'), 'The browser must produce lossless WebP');
+    }
+    records.push({ name, mode, source: source.length, output: uploaded.size, mime: uploaded.mime, pngSize });
+  }
+  results.imageSize = records;
 }
 
 try{
@@ -392,7 +477,7 @@ try{
   await checkComposerResize();
   await checkImageScale();
   await checkOriginalDimensionsCache();
-  // Keep the requested resize format; unsupported raster formats use PNG.
+  await checkImageSizeFallback();
   await reset();
   const other={};for(const extension of ['gif','bmp'])other[extension]=(await fs.readFile(path.join(cfg.directory,'sample.'+extension))).toString('base64');
   results.formatMatrix=await page.evaluate(async other=>{
@@ -401,13 +486,31 @@ try{
     const files=[];
     for(const type of ['image/jpeg','image/png','image/webp']){const blob=await new Promise(resolve=>canvas.toBlob(resolve,type));files.push(new File([blob],'image.bin',{type}));}
     for(const extension of ['gif','bmp'])files.push(new File([Uint8Array.from(atob(other[extension]),c=>c.charCodeAt(0))],'image.'+extension,{type:'image/'+extension}));
-    for(const file of files){const original=await processImage(file,{mode:'original'}),converted=await processImage(file,{mode:'resize',scale:50,quality:80}),bitmap=await createImageBitmap(converted);output.push({source:file.type,type:converted.type,width:bitmap.width,height:bitmap.height,originalSame:original===file});bitmap.close();}
+    for(const file of files){
+      const original=await processImage(file,{mode:'original'});
+      const converted=await processImage(file,{mode:'resize',scale:50,quality:80});
+      const bitmap=await createImageBitmap(converted);
+      output.push({source:file.type,inputSize:file.size,size:converted.size,type:converted.type,
+        width:bitmap.width,height:bitmap.height,originalSame:original===file,kept:converted===file});
+      bitmap.close();
+    }
     const big=new File([new Uint8Array(32*1024*1024+1)],'big.png',{type:'image/png'});
     let code=null;try{await processImage(big,{mode:'resize',scale:80,quality:80});}catch(error){code=error.attachmentKey;}
     if(code!=='attach.processing_limit'||await processImage(big,{mode:'original'})!==big)throw Error('processing cap');
     return output;
   },other);
-  for(const item of results.formatMatrix){assert.equal(item.width,24);assert.equal(item.height,18);assert(item.originalSame);assert.equal(item.type,['image/jpeg','image/png','image/webp'].includes(item.source)?item.source:'image/png');}
+  for(const item of results.formatMatrix){
+    assert(item.originalSame);
+    if(item.source==='image/jpeg') assert.equal(item.type,'image/jpeg');
+    if(item.kept){
+      assert.deepEqual([item.width,item.height,item.type,item.size],[48,36,item.source,item.inputSize]);
+    } else {
+      const base=['image/jpeg','image/png','image/webp'].includes(item.source)?item.source:'image/png';
+      assert.deepEqual([item.width,item.height],[24,18]);
+      assert([base,'image/webp'].includes(item.type));
+      assert(item.size<item.inputSize);
+    }
+  }
   // Clipboard image and ordinary file, plus a real DataTransfer drop.
   await page.evaluate(async png=>{
     const blob=new Blob([Uint8Array.from(atob(png),c=>c.charCodeAt(0))],{type:'image/png'});

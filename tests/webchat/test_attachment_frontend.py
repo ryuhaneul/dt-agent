@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import random
 import shutil
 import subprocess
 from pathlib import Path
@@ -78,10 +79,31 @@ def test_sha256_binary_chunk_boundaries(tmp_path, stride):
     assert run_hash(tmp_path, payload, stride) == hashlib.sha256(payload).hexdigest()
 
 
+def image_size_fixtures(directory):
+    rng = random.Random(23)
+    capture = Image.new("RGB", (1600, 900), "#f5f7f9")
+    draw = ImageDraw.Draw(capture)
+    draw.rectangle((0, 0, 1600, 65), fill="#083344")
+    for top in range(92, 862, 56):
+        draw.rounded_rectangle((165, top, 1460, top + 47), 8, fill="#ffffff", outline="#dde9eb")
+        for _ in range(65):
+            left = rng.randrange(190, 1380)
+            y = top + rng.choice((10, 23, 36))
+            draw.line((left, y, left + rng.randrange(4, 31), y),
+                      fill=rng.choice(("#083344", "#475569", "#0e7490")))
+    capture.save(directory / "capture.png", optimize=True)
+
+    size = (1600, 1200)
+    noise = random.Random(42).randbytes(size[0] * size[1])
+    pixels = noise.translate(bytes(96 + value // 4 for value in range(256)))
+    Image.frombytes("L", size, pixels).convert("RGB").save(directory / "low-quality.jpg", quality=40)
+
+
 def test_attachment_browser_contract(tmp_path):
     module = os.environ.get("DTW_PLAYWRIGHT_MODULE")
     if not module:
         pytest.skip("Set DTW_PLAYWRIGHT_MODULE for optional real browser attachment checks")
+    image_size_fixtures(tmp_path)
     image = Image.effect_noise((2400, 1600), 25).convert("RGB")
     draw = ImageDraw.Draw(image)
     draw.rounded_rectangle((220, 240, 2100, 1350), radius=100, fill="#0b5f58")

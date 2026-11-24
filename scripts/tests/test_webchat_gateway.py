@@ -134,7 +134,7 @@ class GatewayTests(unittest.TestCase):
                 self.assertNotIn("$http_", block)
                 self.assertFalse(GW.proxy_payload(config())["npmplus_crowdsec_appsec"])
 
-    def test_appsec_bypass_matches_only_webchat_upload_chunk_puts(self):
+    def test_appsec_bypass_matches_only_webchat_chunk_puts_and_chat_posts(self):
         source = (ROOT / "scripts/tests/fixtures/npmplus-nginx.conf").read_text()
         domain = "web-chat.example.com"
         rendered = GW.render_nginx_config(source, config(domain=domain))
@@ -146,10 +146,10 @@ class GatewayTests(unittest.TestCase):
         )
         self.assertIsNotNone(block)
         self.assertIn("default 0;", block[1])
-        rule = re.search(r'"~([^"\n]+)" 1;', block[1])
-        self.assertIsNotNone(rule)
-        self.assertTrue(rule[1].endswith(r"\z"))
-        pattern = re.compile(rule[1].replace(r"\z", r"\Z"))
+        rules = re.findall(r'"~([^"\n]+)" 1;', block[1])
+        self.assertEqual(len(rules), 3)
+        self.assertTrue(all(rule.endswith(r"\z") for rule in rules))
+        patterns = [re.compile(rule.replace(r"\z", r"\Z")) for rule in rules]
         base = "/api/topics/-123.7/uploads"
         upload_id = "ab02" * 8
         path = f"{base}/{upload_id}"
@@ -173,9 +173,21 @@ class GatewayTests(unittest.TestCase):
             (domain, "PUT", f"{base}/{upload_id.upper()}", False),
             (domain, "PUT", f"{base}/g{upload_id[1:]}", False),
             (domain, "PUT", f"{path}\n", False),
+            (domain, "POST", "/api/topics/123/messages", True),
+            (domain, "POST", "/api/topics/-100123.45/messages", True),
+            (domain, "POST", "/api/topics/123/buttons", True),
+            (domain, "GET", "/api/topics/123/messages", False),
+            (domain, "PUT", "/api/topics/123/messages", False),
+            (domain, "DELETE", "/api/topics/123/messages", False),
+            (domain, "POST", "/api/topics/123/messages?x=1", False),
+            (domain, "POST", "/api/topics/123/messages/extra", False),
+            (domain, "POST", "/api/topics/123/callbacks", False),
+            (domain, "POST", "/api/topics/abc/messages", False),
+            ("other.example.com", "POST", "/api/topics/123/messages", False),
         ):
             with self.subTest(host=host, method=method, uri=uri):
-                self.assertEqual(bool(pattern.fullmatch(f"{host}:{method}:{uri}")), expected)
+                matched = any(pattern.fullmatch(f"{host}:{method}:{uri}") for pattern in patterns)
+                self.assertEqual(matched, expected)
 
     def test_nginx_source_mismatch_stops_before_writes(self):
         with (

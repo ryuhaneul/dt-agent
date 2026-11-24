@@ -433,6 +433,147 @@ async function documentOverflow(browser, scenario) {
   }
 }
 
+async function copyOpenBlockWithMouse(page, event) {
+  const turnId = 'pointer-copy';
+  await event({ type: 'delta', turn_id: turnId, text: '~~~text\nStreaming code' });
+  const button = page.locator('[data-turn="pointer-copy"] [data-copy-code]');
+  await button.waitFor();
+  await button.scrollIntoViewIfNeeded();
+  await page.evaluate(() => {
+    window.copyToasts = 0;
+    const toasts = document.querySelector('#toasts');
+    toasts.replaceChildren();
+    new MutationObserver(records => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (node.querySelector?.('[data-i18n="common.copied"]')) window.copyToasts++;
+        }
+      }
+    }).observe(toasts, { childList: true });
+    document.addEventListener('pointerdown', event => {
+      window.pressedCopyButton = event.target.closest('[data-copy-code]');
+      window.pressedCopyTurn = window.pressedCopyButton?.closest('[data-turn]');
+    }, true);
+    document.addEventListener('pointerup', event => {
+      const button = event.target.closest('[data-copy-code]');
+      window.copyButtonReplaced = Boolean(window.pressedCopyButton && !window.pressedCopyButton.isConnected);
+      window.releasedCode = button?.nextElementSibling.textContent.replace(/\r?\n$/, '');
+    }, true);
+  });
+
+  async function copyAfterUpdate(update) {
+    const before = await page.evaluate(async () => {
+      await navigator.clipboard.writeText('Waiting for copy');
+      document.querySelector('#toasts').replaceChildren();
+      return window.copyToasts;
+    });
+    const bounds = await button.boundingBox();
+    await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+    await page.mouse.down();
+    await update();
+    await page.mouse.up();
+    assert(await page.evaluate(() => window.releasedCode), 'mouse release lands on a code button');
+    const replaced = await page.evaluate(() => window.copyButtonReplaced);
+    await page.waitForFunction(async () => {
+      return window.releasedCode && (await navigator.clipboard.readText()) === window.releasedCode;
+    }, null, { timeout: 2000 });
+    await page.waitForFunction(count => window.copyToasts > count, before, { timeout: 2000 });
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(await page.evaluate(() => window.copyToasts), before + 1, 'one toast per click');
+    return replaced;
+  }
+
+  const results = [];
+  for (const interval of [30, 100, 250]) {
+    let copied = 0, replaced = 0;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const updated = await copyAfterUpdate(() => page.evaluate(async ({ turnId, interval, phase }) => {
+        const { handleEvent } = await import('/static/js/chat.js');
+        const append = () => handleEvent({ tid: '1.2', turn_id: turnId, type: 'delta', text: ' more' });
+        let updates;
+        const first = setTimeout(() => {
+          void append();
+          updates = setInterval(append, interval);
+        }, phase);
+        await new Promise(resolve => setTimeout(resolve, 80));
+        clearTimeout(first);
+        clearInterval(updates);
+      }, { turnId, interval, phase: attempt * interval / 10 }));
+      if (updated) replaced++;
+      copied++;
+    }
+    assert(replaced > 0, `a render replaces the pressed button at ${interval}ms`);
+    results.push({ interval, copied, replaced });
+  }
+
+  const replacedByTool = await copyAfterUpdate(async () => {
+    const thread = page.locator('#thread');
+    const top = await thread.evaluate(node => node.scrollTop);
+    await event({ type: 'delta', turn_id: turnId, text: ' after delta' });
+    await event({ type: 'tool', turn_id: turnId, name: 'Read' });
+    await page.waitForFunction(() => {
+      const pressedRow = window.pressedCopyTurn;
+      const row = document.querySelector('[data-turn="pointer-copy"]');
+      return pressedRow && !pressedRow.isConnected && row?.querySelector('.activity-line')?.textContent.includes('Read');
+    });
+    // Restore the scroll position so the release hits the new button at the original coordinates.
+    await thread.evaluate((node, top) => { node.scrollTop = top; }, top);
+  });
+  assert(replacedByTool, 'a tool event replaces the pressed button and its turn row');
+  assert(await page.evaluate(() => window.releasedCode.endsWith(' after delta')));
+
+  const nextTurn = 'pointer-copy-two-blocks';
+  const firstCode = 'echo AAAAAAAAAA', secondCode = 'echo BBBBBBBBBB';
+  await event({ type: 'delta', turn_id: nextTurn, text: '~~~sh\n' + firstCode });
+  const next = page.locator('[data-turn="pointer-copy-two-blocks"] [data-copy-code]');
+  await next.first().scrollIntoViewIfNeeded();
+  const before = await page.evaluate(async () => {
+    await navigator.clipboard.writeText('Waiting for copy');
+    document.querySelector('#toasts').replaceChildren();
+    return window.copyToasts;
+  });
+  const bounds = await next.first().boundingBox();
+  await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+  await page.mouse.down();
+  assert.equal(await page.evaluate(() => window.pressedCopyButton?.nextElementSibling.textContent.trim()), firstCode);
+  await event({ type: 'delta', turn_id: nextTurn, text: '\n~~~\n\n~~~sh\n' + secondCode });
+  await next.nth(1).waitFor();
+  await page.mouse.up();
+  assert(await page.evaluate(() => window.copyButtonReplaced), 'the pressed button was replaced');
+  assert.equal(await page.evaluate(() => window.releasedCode), secondCode, 'auto-scroll puts the second block under the mouse');
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), 'Waiting for copy');
+  assert.equal(await page.evaluate(() => window.copyToasts), before, 'releasing on a different block does not show a toast');
+  return results;
+}
+
+async function copyFromCachedTopic(page, event) {
+  const other = { ...topic, tid: '1.3', topic_id: 3, name: 'Other conversation', count: 1 };
+  const original = { ...topic, name: 'Code examples', count: 2 };
+  let topics = [original, other];
+  await page.route('**/api/topics', route => route.fulfill({ json: { topics } }));
+  await page.route(/\/api\/topics\/1\.3\/messages\?/, route => route.fulfill({
+    json: { entries: [{ ...messages[0], seq: 42, text: 'Other conversation history' }], has_more: false },
+  }));
+  await event({ type: 'topics' });
+  await page.locator('#tlist [data-tid="1.3"]').click();
+  await page.locator('#thread [data-entry-seq="42"]').waitFor();
+
+  // Fail the history reload and let the separate unread-count request reach the fixture.
+  await page.route(/\/api\/topics\/1\.2\/messages\?/, route =>
+    route.fulfill({ status: 503, json: {} }), { times: 1 });
+  const unavailable = page.waitForResponse(response =>
+    new URL(response.url()).pathname === '/api/topics/1.2/messages' && response.status() === 503);
+  topics = [original];
+  await event({ type: 'topics' });
+  await unavailable;
+  assert.equal(await page.locator('#tlist [data-tid="1.3"]').count(), 0);
+  const counts = seq => page.locator(`#thread [data-entry-seq="${seq}"] .md pre`).evaluateAll(blocks =>
+    blocks.map(block => block.querySelectorAll(':scope > [data-copy-code]').length));
+  assert.deepEqual(await counts(1), [1], 'cached user code block');
+  assert.deepEqual(await counts(2), [1, 1], 'cached assistant code blocks');
+}
+
 async function codeCopy(browser) {
   const measurements = [];
   const fence = '`';
@@ -481,11 +622,24 @@ async function codeCopy(browser) {
           code.scrollLeft = code.scrollWidth;
           const after = button.getBoundingClientRect();
           const scrolled = code.scrollLeft;
+          const text = document.createRange();
+          text.selectNodeContents(code);
+          const endGap = after.left - text.getBoundingClientRect().right;
           code.scrollLeft = 0;
-          return { scrolled, buttonFixed: before.x === after.x && before.y === after.y };
+          return { scrolled, buttonFixed: before.x === after.x && before.y === after.y, endGap };
         });
         assert(layout.scrolled > 0, JSON.stringify(layout));
         assert(layout.buttonFixed, JSON.stringify(layout));
+        assert(layout.endGap > 0, JSON.stringify(layout));
+        const short = await user.locator('pre').evaluate(pre => {
+          const code = pre.querySelector('code');
+          const text = document.createRange();
+          text.selectNodeContents(code);
+          const button = pre.querySelector('[data-copy-code]').getBoundingClientRect();
+          return { overflow: code.scrollWidth - code.clientWidth, endGap: button.left - text.getBoundingClientRect().right };
+        });
+        assert.equal(short.overflow, 0, JSON.stringify(short));
+        assert(short.endGap > 0, JSON.stringify(short));
         const compact = await bot.locator('pre').last().evaluate(pre => {
           const button = pre.querySelector('[data-copy-code]');
           const block = pre.getBoundingClientRect();
@@ -502,7 +656,7 @@ async function codeCopy(browser) {
         });
         assert.equal(compact.paddingTop, '12px');
         assert(compact.buttonFits && compact.matchingBackground, JSON.stringify(compact));
-        measurements.push({ width, colorScheme, ...compact });
+        measurements.push({ width, colorScheme, ...compact, shortEndGap: short.endGap, longEndGap: layout.endGap });
         await checkDocument();
         await page.locator('#msgIn').focus();
         await bot.scrollIntoViewIfNeeded();
@@ -547,6 +701,10 @@ async function codeCopy(browser) {
         await finished.click();
         await readClipboard('first line\n  second line  ');
         await checkDocument();
+        if (width === 1280 && colorScheme === 'light') {
+          await copyFromCachedTopic(page, event);
+          console.log(JSON.stringify(await copyOpenBlockWithMouse(page, event)));
+        }
       } finally {
         await context.close();
       }
