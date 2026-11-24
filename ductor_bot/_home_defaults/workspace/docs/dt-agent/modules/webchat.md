@@ -43,11 +43,12 @@ forced-HTTPS ACME exception. This bundled NPMplus instance is dedicated to web c
 the allowlist denial applies to every forced-HTTPS host on the instance. Do not add
 other hosts to it.
 
-On the configured web chat domain, a binary upload chunk PUT skips the
-CrowdSec AppSec check only when the original request URI matches the upload
-chunk path exactly, with no query string. The IP allowlist, CrowdSec IP
-decisions and the app's session and CSRF checks still apply. Upload creation,
-status, deletion and completion continue through AppSec.
+On the configured web chat domain, binary upload chunk PUTs and POST requests
+to `/api/topics/{tid}/messages` and `/api/topics/{tid}/buttons` skip CrowdSec
+AppSec when the original request URI matches the path exactly, with no query
+string. The IP allowlist, CrowdSec IP decisions and the app's session and CSRF
+checks still apply. Upload creation, status, deletion and completion continue
+through AppSec.
 
 After a successful container swap, `scripts/update.sh` runs
 `python3 scripts/webchat.py up` when the repository's `.env` lists `webchat` in
