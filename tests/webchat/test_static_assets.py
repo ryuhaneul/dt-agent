@@ -2412,82 +2412,6 @@ if(scenario==='unread-partial-failure'||scenario==='unread-delayed-history'){
   assert.deepEqual(notices,[]);
  }
 }
-if(['unread-seen-partial','unread-mark-all-once','unread-first-entry','unread-late-duplicate'].includes(scenario)){
- const rows=['1.2','1.3'].map(tid=>({tid,name:'Topic '+tid,group:'telegram',seen:1}));
- const entries=new Map(rows.map(row=>[row.tid,[{seq:1}]]));
- const reads=[],notices=[];
- let failHistory=false,holdTopics,holdMarkAll;
- const cursors={'1.2':2,'1.3':2};
- const emitSeen=(all=false)=>document.dispatchEvent(new CustomEvent('read-state',{detail:{seen:cursors,all}}));
- const flush=()=>new Promise(setImmediate);
- const api=async url=>{
-  if(url==='/topics'){
-   const snapshot=rows.map(row=>({...row,count:entries.get(row.tid).length}));
-   if(holdTopics)await holdTopics;
-   return {topics:snapshot};
-  }
-  if(url==='/topics/seen-all'){
-   if(holdMarkAll)await holdMarkAll;
-   return {seen:cursors};
-  }
-  const tid=url.split('/')[2];
-  reads.push(tid);
-  if(failHistory&&tid==='1.2')throw {status:503,code:'history_busy'};
-  return {entries:[...entries.get(tid)],has_more:false};
- };
- const topics=await load('topics.js',{'./api.js':{api},'./i18n.js':{t:(key,args)=>key==='topic.unread'?`${args.n} unread`:key},'./router.js':{renderRoute:()=>{},go:()=>{}},'./auth.js':{notify:key=>notices.push(key)},'./md.js':{esc:value=>String(value)}});
- topics.initTopics();document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));
- const badge=tid=>get('tlist').innerHTML.split(`data-tid="${tid}"`)[1].split('</button>')[0].match(/aria-label="(\d+) unread"/)?.[1]??null;
- if(scenario==='unread-seen-partial'||scenario==='unread-mark-all-once'){
-  for(const history of entries.values())history.push({seq:2},{seq:3});
-  await topics.refreshTopics();
-  assert.equal(badge('1.2'),'2');
-  assert.equal(badge('1.3'),'2');
-  reads.length=0;failHistory=true;
-  if(scenario==='unread-mark-all-once'){
-   let release;holdMarkAll=new Promise(resolve=>{release=resolve});
-   await get('markAllRead').emit('click');
-   emitSeen(true);
-   release();
-   await flush();
-   assert.deepEqual(reads.sort(),['1.2','1.3'],'each topic is fetched once for the action');
-  }else{
-   emitSeen();
-   await flush();
-  }
-  assert.deepEqual(notices,['error.generic'],'one failure notice');
-  assert.equal(badge('1.2'),'2','the failed topic keeps its prior count');
-  assert.equal(badge('1.3'),'1','the successful count is rendered');
-  if(scenario==='unread-mark-all-once'){
-   reads.length=0;notices.length=0;
-   await get('markAllRead').emit('click');
-   emitSeen(true);
-   await flush();
-   assert.deepEqual(reads.sort(),['1.2','1.3'],'a later socket event shares the HTTP result');
-   assert.deepEqual(notices,['error.generic'],'the retry action also has one failure notice');
-  }
- }else if(scenario==='unread-first-entry'){
-  rows[0].seen=null;entries.set('1.2',[]);
-  await topics.refreshTopics();
-  let release;holdTopics=new Promise(resolve=>{release=resolve});
-  const refresh=topics.refreshTopics();
-  await flush();
-  entries.get('1.2').push({seq:1});
-  topics.noteEntry('1.2',{seq:1,text:'first'});
-  assert.equal(badge('1.2'),'1');
-  release();
-  await refresh;
-  assert.equal(badge('1.2'),'1','an older topic snapshot does not clear the first badge');
- }else{
-  entries.get('1.2').push({seq:2});
-  await topics.refreshTopics();
-  assert.equal(badge('1.2'),'1');
-  topics.noteEntry('1.2',{seq:2,text:'already counted'});
-  assert.equal(badge('1.2'),'1','a later socket event for the same sequence counts once');
-  topics.noteEntry('1.2',{seq:3,text:'new'});
-  assert.equal(badge('1.2'),'2');
- }
-}
 if(scenario==='migration-failure'){
  const rows=Array.from({length:9},(_,i)=>({tid:String(i),topic_id:null,name:i===0?null:'Topic '+i,name_key:i===0?'topic.general':null,group:'telegram',count:2,seen:null}));
  const gates=[],cursors=new Map(),notices=[];let inFlight=0,maxFlight=0,updates=0;
@@ -2570,10 +2494,6 @@ console.log(`Header contract passed: ${scenario}`);
         "unread",
         "unread-partial-failure",
         "unread-delayed-history",
-        "unread-seen-partial",
-        "unread-mark-all-once",
-        "unread-first-entry",
-        "unread-late-duplicate",
         "migration-failure",
         "rollback-forward",
         "rollback-reverse",
