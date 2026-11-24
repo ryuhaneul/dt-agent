@@ -207,12 +207,13 @@ export async function refreshTopics() {
 export function noteEntry(tid, entry) {
   const topic = topics.find(item => item.tid === tid);
   if (!topic) return;
+  const counted = unreadSequences.get(tid);
+  if (counted?.has(entry.seq)) return;
   for (const arrived of unreadReaders.get(topic) ?? []) arrived.add(entry.seq);
   topic.last_ts = entry.ts; topic.preview = entry.text; topic.count++;
   latest.set(tid, Math.max(latest.get(tid) ?? -Infinity, entry.seq));
   if (entry.imported) topic.imported_count++;
-  const counted = unreadSequences.get(tid);
-  if (!counted?.has(entry.seq) && (storedSeen(tid) === null || entry.seq > storedSeen(tid))) {
+  if (storedSeen(tid) === null || entry.seq > storedSeen(tid)) {
     const sequences = counted ?? new Set();
     sequences.add(entry.seq);
     unreadSequences.set(tid, sequences);
