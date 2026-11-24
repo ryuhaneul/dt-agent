@@ -175,6 +175,13 @@ and restart the stack. `scripts/update.sh` and `scripts/rebuild.sh` are
 available for their documented maintenance flows; review their effects
 before using them with active work. Rebuild/update recreate services and can interrupt running work. Keep a reviewed ref and home backup for rollback.
 
+After a successful container swap, `scripts/update.sh` runs
+`python3 scripts/webchat.py up` when the repository's `.env` lists `webchat` in
+`COMPOSE_PROFILES`. For the first upgrade with `update.sh` from a version that
+predates this step, rerun `python3 scripts/webchat.py up` manually after upgrading.
+The older script running that upgrade lacks the gateway refresh step. Also rerun
+the command manually after upgrading without `update.sh`.
+
 ## Troubleshooting
 
 - Telegram token whitespace/format error: onboarding trims leading/trailing whitespace and rejects internal whitespace or invalid format without echoing the token. Correct the private input file; existing saved config is kept without --force, so correct it privately or back up before rerunning with --force.

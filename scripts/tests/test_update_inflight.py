@@ -1,4 +1,4 @@
-"""Exercise update.sh in disposable homes with fake git and Docker commands."""
+"""Exercise update.sh in disposable homes with fake git, Docker, and gateway commands."""
 
 # ruff: noqa: INP001 -- Standalone unittest discovery needs no package initializer.
 from __future__ import annotations
@@ -35,6 +35,19 @@ fi
 exit 0
 """
 
+FAKE_PYTHON = """#!/bin/sh
+if [ "$1" = scripts/webchat.py ]; then
+    printf 'python3 %s\\n' "$*" >> "$FAKE_LOG"
+    if [ "$PWD" != "$FAKE_REPO" ] || [ -t 0 ]; then exit 99; fi
+    printf 'gateway output\\n'
+    exit "$FAKE_GATEWAY_EXIT"
+fi
+exec "$FAKE_PYTHON" "$@"
+"""
+GATEWAY_CALL = "python3 scripts/webchat.py up"
+GATEWAY_HEADING = "=== Updating web chat gateway ==="
+GATEWAY_FAILED = "The web chat gateway was not updated. Run python3 scripts/webchat.py up to retry."
+
 
 class UpdateInflightTests(unittest.TestCase):
     def setUp(self):
@@ -47,23 +60,33 @@ class UpdateInflightTests(unittest.TestCase):
             shutil.copy2(ROOT / "scripts" / name, self.repo / "scripts" / name)
         self.bin = self.root / "bin"
         self.bin.mkdir()
-        for name, source in (("git", FAKE_GIT), ("docker", FAKE_DOCKER)):
+        for name, source in (
+            ("git", FAKE_GIT), ("docker", FAKE_DOCKER), ("python3", FAKE_PYTHON)
+        ):
             command = self.bin / name
             command.write_text(source, encoding="utf-8")
             command.chmod(0o700)
-        (self.bin / "python3").symlink_to(sys.executable)
         self.log = self.root / "commands.log"
         self.home = self.root / "home"
 
-    def run_update(self, answers, *, turns=(), tasks=(), initial_turns=(), initial_tasks=()):
+    def run_update(
+        self, answers, *, turns=(), tasks=(), initial_turns=(), initial_tasks=(), profiles="",
+        gateway_exit=0,
+    ):
         self.home.mkdir(exist_ok=True)
-        (self.home / "inflight_turns.json").write_text(json.dumps({"turns": dict(enumerate(initial_turns))}), encoding="utf-8")
+        (self.home / "inflight_turns.json").write_text(
+            json.dumps({"turns": dict(enumerate(initial_turns))}), encoding="utf-8"
+        )
         (self.home / "tasks.json").write_text(
             json.dumps({"tasks": initial_tasks}), encoding="utf-8"
         )
-        (self.repo / ".env").write_text(
-            "DUCTOR_HOME=" + json.dumps(str(self.home)) + "\n", encoding="utf-8"
-        )
+        env_file = self.repo / ".env"
+        if profiles is None:
+            env_file.unlink(missing_ok=True)
+        else:
+            env_file.write_text(
+                "DUCTOR_HOME=" + json.dumps(str(self.home)) + "\n" + profiles, encoding="utf-8"
+            )
         self.log.unlink(missing_ok=True)
         env = dict(
             os.environ,
@@ -72,11 +95,16 @@ class UpdateInflightTests(unittest.TestCase):
             LC_ALL="C",
             PATH=str(self.bin) + os.pathsep + "/usr/bin" + os.pathsep + "/bin",
             FAKE_LOG=str(self.log),
+            FAKE_PYTHON=sys.executable,
+            FAKE_REPO=str(self.repo),
+            FAKE_GATEWAY_EXIT=str(gateway_exit),
             FAKE_HOME=str(self.home),
             FAKE_TURNS_AFTER_BUILD=json.dumps({"turns": dict(enumerate(turns))}),
             FAKE_TASKS_AFTER_BUILD=json.dumps({"tasks": tasks}),
         )
         env.pop("DUCTOR_HOME", None)
+        if profiles is None:
+            env["DUCTOR_HOME"] = str(self.home)
         # read -p displays prompts only with terminal input; output remains captured.
         master, slave = pty.openpty()
         try:
@@ -96,6 +124,51 @@ class UpdateInflightTests(unittest.TestCase):
             os.close(master)
         calls = self.log.read_text(encoding="utf-8").splitlines()
         return result, calls
+
+    def test_webchat_profile_refreshes_gateway_after_swap(self):
+        for profiles in (
+            "COMPOSE_PROFILES=webchat",
+            "COMPOSE_PROFILES=other,webchat",
+            'COMPOSE_PROFILES="webchat"',
+            "COMPOSE_PROFILES=other\nCOMPOSE_PROFILES='other, webchat' # enabled",
+        ):
+            with self.subTest(profiles=profiles):
+                result, calls = self.run_update("y\n", profiles=profiles)
+                assert result.returncode == 0, result.stderr
+                assert calls.count(GATEWAY_CALL) == 1
+                assert calls[-3:] == ["docker compose up -d", GATEWAY_CALL, "docker compose ps"]
+                assert GATEWAY_HEADING in result.stdout
+                assert "gateway output" in result.stdout
+
+    def test_without_webchat_profile_skips_gateway(self):
+        for profiles in (
+            None, "", "COMPOSE_PROFILES=other", "COMPOSE_PROFILES=webchat2",
+            "COMPOSE_PROFILES=webchat\nCOMPOSE_PROFILES=other",
+        ):
+            with self.subTest(profiles=profiles):
+                result, calls = self.run_update("y\n", profiles=profiles)
+                assert result.returncode == 0, result.stderr
+                assert calls[-2:] == ["docker compose up -d", "docker compose ps"]
+                assert GATEWAY_CALL not in calls
+                assert GATEWAY_HEADING not in result.stdout
+
+    def test_declining_update_skips_gateway(self):
+        for answers, turns in (("n\n", ()), ("y\nn\n", ({},))):
+            with self.subTest(answers=answers):
+                result, calls = self.run_update(
+                    answers, turns=turns, profiles="COMPOSE_PROFILES=webchat"
+                )
+                assert result.returncode == 0, result.stderr
+                assert "docker compose up -d" not in calls
+                assert GATEWAY_CALL not in calls
+                assert GATEWAY_HEADING not in result.stdout
+
+    def test_gateway_failure_still_shows_status_and_exits_one(self):
+        result, calls = self.run_update("y\n", profiles="COMPOSE_PROFILES=webchat", gateway_exit=3)
+        assert result.returncode == 1
+        assert calls[-3:] == ["docker compose up -d", GATEWAY_CALL, "docker compose ps"]
+        assert GATEWAY_FAILED in result.stderr
+        assert "=== Status ===" in result.stdout
 
     def test_turn_arriving_during_build_decline_keeps_container(self):
         result, calls = self.run_update("y\nn\n", turns=[{"chat_id": 1}])
