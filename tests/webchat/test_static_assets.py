@@ -849,6 +849,7 @@ class ThreadRow extends Element {
         }
       },
       insertAdjacentHTML(position,value){assert.equal(position,'beforeend');this.innerHTML+=value;},
+      querySelectorAll(){return [];},
     };
   }
 }
