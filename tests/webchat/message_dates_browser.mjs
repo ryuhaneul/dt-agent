@@ -801,10 +801,90 @@ async function telegramCodeBoundaries(browser) {
   }
 }
 
+async function userLineBreaks(browser) {
+  const text = 'First line\nSecond line\nThird line';
+  const code = 'one  two\n  three';
+  const display = text + '\n\n- List first\n  List second\n\n```text\n' + code + '\n```';
+  const entries = [
+    { ...messages[194], seq: 1, role: 'user', source: 'web', text },
+    { ...messages[195], seq: 2, role: 'bot', text },
+    { ...messages[196], seq: 3, role: 'user', source: 'telegram', text, display_markdown: display },
+  ];
+  const lineCount = locator => locator.evaluate(node => {
+    const lines = new Set(), walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    const range = document.createRange();
+    while (walker.nextNode()) {
+      range.selectNodeContents(walker.currentNode);
+      for (const rect of range.getClientRects()) {
+        if (rect.width) lines.add(Math.round(rect.top));
+      }
+    }
+    return lines.size;
+  });
+
+  for (const width of [1280, 768, 375]) {
+    const context = await browser.newContext({
+      viewport: { width, height: 812 }, colorScheme: 'light',
+    });
+    try {
+      const page = await context.newPage();
+      await page.addInitScript(() => localStorage.setItem('dtw-web-language', 'en'));
+      let socket;
+      await mockChat(page, entries, topic, route => { socket = route; });
+      await page.goto(origin);
+      const message = seq => page.locator('#thread [data-entry-seq="' + seq + '"] .bubble');
+      const checkMessages = async () => {
+        await message(3).locator('pre code').waitFor();
+        assert.equal(await lineCount(message(1).locator('p')), 3);
+        assert.equal(await lineCount(message(2).locator('p')), 1);
+        assert.equal(await lineCount(message(3).locator('p')), 3);
+        assert.equal(await lineCount(message(3).locator('li')), 2);
+        assert.equal(await message(3).locator('pre code').textContent(), code + '\n');
+      };
+      await page.evaluate(() => document.fonts.ready);
+      await checkMessages();
+      await page.screenshot({ path: path.join(config.shots, 'user-line-breaks-' + width + '.png') });
+
+      const next = { ...topic, tid: '1.3', topic_id: 3, name: 'Second topic', count: 1 };
+      await page.route('**/api/topics', route => route.fulfill({ json: { topics: [next] } }));
+      await page.route(/\/api\/topics\/1\.3\/messages\?/, route =>
+        route.fulfill({ json: { entries: [messages[4]], has_more: false } }));
+      socket.send(JSON.stringify({ type: 'topics' }));
+      await message(5).waitFor();
+
+      let releaseHistory;
+      const historyGate = new Promise(resolve => { releaseHistory = resolve; });
+      const historyUrl = /\/api\/topics\/1\.2\/messages\?/;
+      await page.route(historyUrl, async route => {
+        if (route.request().method() === 'GET') await historyGate;
+        await route.fallback();
+      });
+      await page.route('**/api/topics', route => route.fulfill({ json: { topics: [topic] } }));
+      const historyRequest = page.waitForRequest(historyUrl);
+      socket.send(JSON.stringify({ type: 'topics' }));
+      await historyRequest;
+      try {
+        await checkMessages();
+      } finally {
+        releaseHistory();
+      }
+
+      await page.locator('#msgIn').fill(text);
+      const submission = page.waitForRequest(request =>
+        new URL(request.url()).pathname === '/api/topics/1.2/messages' && request.method() === 'POST');
+      await page.locator('#sendBtn').click();
+      assert.equal((await submission).postDataJSON().text, text);
+      assert.equal(await lineCount(page.locator('#thread [data-queue-turn="test-turn"] p')), 3);
+    } finally {
+      await context.close();
+    }
+  }
+}
+
 const browser = await chromium.launch();
 try {
   await fs.mkdir(config.shots, { recursive: true });
-  const scenarios = { dates: messageDates, window: preserveOldestGroup, focus: chatFocus, 'code-copy': codeCopy, 'telegram-code': telegramCode, 'telegram-code-boundaries': telegramCodeBoundaries };
+  const scenarios = { dates: messageDates, window: preserveOldestGroup, focus: chatFocus, 'code-copy': codeCopy, 'telegram-code': telegramCode, 'telegram-code-boundaries': telegramCodeBoundaries, 'user-line-breaks': userLineBreaks };
   const scenario = process.argv[3] ?? 'dates';
   if (scenario.startsWith('overflow-')) await documentOverflow(browser, scenario);
   else await scenarios[scenario](browser);

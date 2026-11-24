@@ -160,7 +160,7 @@ function addCodeCopy(root) {
   }
 }
 function queuedMarkup(turn) {
-  return `<div class="msg me" data-queue-turn="${esc(turn.id)}"><div class="meta"><span class="tag">${esc(t('tag.web'))}</span>${messageTime(turn.received)}${turn.userText ? copyButton() : ''}</div><div class="bubble md">${md(turn.userText)}</div>${queueStatus(turn.id)}</div>`;
+  return `<div class="msg me" data-queue-turn="${esc(turn.id)}"><div class="meta"><span class="tag">${esc(t('tag.web'))}</span>${messageTime(turn.received)}${turn.userText ? copyButton() : ''}</div><div class="bubble md">${md(turn.userText, { preserveLineBreaks: true })}</div>${queueStatus(turn.id)}</div>`;
 }
 async function cancelQueued(turnId) {
   const turn = turns.get(turnId), generation = epoch;
