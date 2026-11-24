@@ -49,6 +49,7 @@ def code_entities_to_markdown(text: str, entities: Sequence[MessageEntity] | Non
 
     raw = text.encode("utf-16-le")
     parts: list[str] = []
+    outside = ""
     cursor = 0
     for entity in spans:
         start = entity.offset * 2
@@ -59,10 +60,10 @@ def code_entities_to_markdown(text: str, entities: Sequence[MessageEntity] | Non
             return None
         try:
             before = raw[cursor:start].decode("utf-16-le")
-            prefix = raw[:start].decode("utf-16-le")
             content = raw[start:end].decode("utf-16-le")
         except UnicodeDecodeError:
             continue
+        prefix = outside + before
         if (
             "`" in before
             or before.endswith("\\")
@@ -73,6 +74,7 @@ def code_entities_to_markdown(text: str, entities: Sequence[MessageEntity] | Non
             return None
         if entity.type == "code" and ("\n" in content or "\r" in content):
             return None
+        outside = prefix
         parts.extend((before, _wrap_code_entity(content, entity)))
         cursor = end
     after = raw[cursor:].decode("utf-16-le")

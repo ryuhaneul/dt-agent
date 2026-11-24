@@ -84,6 +84,36 @@ def test_full_url_or_html_tag_is_code(content: str) -> None:
     assert code_entities_to_markdown(f"{content} call", [entity]) == f"`{content}` call"
 
 
+def test_less_than_in_code_block_keeps_later_inline_code() -> None:
+    block = "for (i = 0; i < n; i++) { step(); }"
+    text = f"{block}\nchange n here"
+    entities = [
+        MessageEntity(type="pre", offset=0, length=len(block)),
+        MessageEntity(type="code", offset=text.index("n here"), length=1),
+    ]
+    assert code_entities_to_markdown(text, entities) == (
+        f"\n\n```\n{block}\n```\n\n\nchange `n` here"
+    )
+
+
+def test_angle_brackets_in_two_inline_code_entities() -> None:
+    text = "a < b instead of b > a"
+    entities = [
+        MessageEntity(type="code", offset=0, length=5),
+        MessageEntity(type="code", offset=text.index("b > a"), length=5),
+    ]
+    assert code_entities_to_markdown(text, entities) == "`a < b` instead of `b > a`"
+
+
+def test_html_tag_crossing_two_code_entities_falls_back() -> None:
+    text = '<div class="a b">'
+    entities = [
+        MessageEntity(type="code", offset=text.index('"a') + 1, length=1),
+        MessageEntity(type="code", offset=text.index('b"'), length=1),
+    ]
+    assert code_entities_to_markdown(text, entities) is None
+
+
 def test_indented_backtick_before_pre() -> None:
     text = "Before\n\n    `value"
     entity = MessageEntity(type="pre", offset=13, length=5)

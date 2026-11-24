@@ -191,7 +191,9 @@ Webchat displays code blocks and inline code from new Telegram text messages.
 Webchat shows the original message when a backtick appears outside Telegram
 code, including in a reply quote, when code entities touch or overlap, when
 inline code contains a line break, when a backslash immediately precedes a code
-entity, or when Telegram code formatting covers only part of a URL or HTML tag.
+entity, when Telegram code formatting covers only part of a URL, or when the
+text outside code has an unmatched opening angle bracket before a code entity,
+as in an HTML tag or a comparison such as `a < b`.
 Copying the whole message uses the original recorded text.
 
 `GET /outbox` returns `{ "items": [...] }` containing web mirrors and buffered
