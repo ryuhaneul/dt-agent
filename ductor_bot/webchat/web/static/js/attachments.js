@@ -19,10 +19,30 @@ const bytes = size => size >= 1024 ** 2 ? `${(size / 1024 ** 2).toFixed(1)} MiB`
 const failure = (key, values = {}) => Object.assign(new Error(key), { attachmentKey: key, attachmentValues: values });
 function raster(type) { return type.startsWith('image/') && !type.startsWith('image/svg'); }
 
+async function smallerLosslessWebP(canvas, maxSize) {
+  try {
+    const candidate = await new Promise(resolve => canvas.toBlob(resolve, 'image/webp', 1));
+    if (candidate?.type !== 'image/webp' || candidate.size >= maxSize) return null;
+    const buffer = await candidate.arrayBuffer();
+    const data = new DataView(buffer);
+    const tag = offset => String.fromCharCode(...new Uint8Array(buffer, offset, 4));
+    if (data.byteLength < 12 || tag(0) !== 'RIFF' || tag(8) !== 'WEBP') return null;
+    for (let offset = 12; offset + 8 <= data.byteLength;) {
+      const length = data.getUint32(offset + 4, true);
+      if (offset + 8 + length > data.byteLength) break;
+      if (tag(offset) === 'VP8L') return candidate;
+      offset += 8 + length + length % 2;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 export async function processImage(file, options, onDimensions) {
   const original = options.mode === 'original';
   if (original && !onDimensions) return file;
-  let image;
+  let image, source, displayed;
   try {
     if (file.size > ENCODE_LIMIT) throw failure('attach.processing_limit');
     image = await createImageBitmap(file);
@@ -31,8 +51,7 @@ export async function processImage(file, options, onDimensions) {
     const ratio = shrinking ? Math.min(1, options.scale / 100) : 1;
     const width = Math.max(1, Math.round(image.width * ratio));
     const height = Math.max(1, Math.round(image.height * ratio));
-    const source = `${image.width}×${image.height}`;
-    onDimensions?.(shrinking ? `${source} → ${width}×${height}` : source, source);
+    source = `${image.width}×${image.height}`;
     if (original) return file;
     const canvas = document.createElement('canvas');
     canvas.width = width;
@@ -43,15 +62,27 @@ export async function processImage(file, options, onDimensions) {
     const compress = options.mode !== 'resize';
     const type = compress ? 'image/webp' : ['image/jpeg','image/png','image/webp'].includes(file.type) ? file.type : 'image/png';
     const quality = compress ? options.quality / 100 : 0.92;
-    const blob = await new Promise(resolve => canvas.toBlob(resolve, type, quality));
-    canvas.width = canvas.height = 0;
-    if (!blob || blob.type !== type) throw failure('attach.processing_failed');
-    const extension = { 'image/jpeg':'jpg', 'image/png':'png', 'image/webp':'webp' }[type];
-    return new File([blob], file.name.replace(/\.[^.]*$/, '') + '.' + extension, { type, lastModified: file.lastModified });
+    let blob;
+    try {
+      blob = await new Promise(resolve => canvas.toBlob(resolve, type, quality));
+      if (!blob || blob.type !== type) throw failure('attach.processing_failed');
+      if (!compress) blob = await smallerLosslessWebP(canvas, Math.min(blob.size, file.size)) ?? blob;
+    } finally {
+      canvas.width = canvas.height = 0;
+    }
+    if (blob.size >= file.size) return file;
+    displayed = shrinking ? `${source} → ${width}×${height}` : source;
+    const extension = { 'image/jpeg':'jpg', 'image/png':'png', 'image/webp':'webp' }[blob.type];
+    return new File([blob], file.name.replace(/\.[^.]*$/, '') + '.' + extension, {
+      type: blob.type, lastModified: file.lastModified,
+    });
   } catch (error) {
     if (original) return file;
     throw error;
-  } finally { image?.close(); }
+  } finally {
+    image?.close();
+    if (source) onDimensions?.(displayed ?? source, source);
+  }
 }
 
 export function initAttachments({ getTopic, changed, resume }) {
@@ -180,6 +211,8 @@ export function initAttachments({ getTopic, changed, resume }) {
     panel.querySelector('output').textContent = snapshot.options.quality;
     const estimate = panel.querySelector('[data-estimate-text]');
     const dimensions = panel.querySelector('[data-dimensions]');
+    const keptOriginal = panel.querySelector('[data-kept-original]');
+    keptOriginal.hidden = true;
     estimate.textContent = t('attach.calculating');
     dimensions.textContent = '';
     clearTimeout(timer);
@@ -205,6 +238,7 @@ export function initAttachments({ getTopic, changed, resume }) {
           snapshot.result = result;
           estimate.textContent = t('attach.estimate',{size:bytes(result.size)}) + ' · ' + (result.type || 'FILE');
           dimensions.textContent = size ?? '';
+          keptOriginal.hidden = options.mode === 'original' || result !== item.original;
           panel.querySelector('[data-apply]').disabled = false;
         } catch (error) {
           if (menu===snapshot && revision===snapshot.revision) estimate.textContent=t(error.attachmentKey || 'attach.processing_failed');
@@ -220,7 +254,7 @@ export function initAttachments({ getTopic, changed, resume }) {
     panel.innerHTML = `<h3>${esc(t('attach.processing'))}</h3><div class="attach-modes" role="group" aria-label="${esc(t('attach.processing'))}">${modes.map(mode=>`<button type="button" data-mode="${mode}" aria-pressed="${mode===item.options.mode}">${esc(t('attach.'+mode))}</button>`).join('')}</div>
       <label data-scale-row>${esc(t('attach.scale'))}<select data-scale aria-label="${esc(t('attach.scale'))}">${scales.map(scale=>`<option value="${scale}"${scale===item.options.scale?' selected':''}>${scale}%</option>`).join('')}</select></label>
       <label data-quality-row>WebP · ${esc(t('attach.quality'))}<input data-quality type="range" min="10" max="100" value="${item.options.quality}" aria-label="${esc(t('attach.quality'))}"><output>${item.options.quality}</output></label>
-      ${item.original.type==='image/gif'?`<p class="attach-note">${esc(t('attach.gif_note'))}</p>`:''}<p data-estimate role="status"><span data-estimate-text></span><span data-dimensions></span></p><div class="attach-actions"><button type="button" class="btn btn-sm" data-cancel>${esc(t('common.cancel'))}</button><button type="button" class="btn btn-primary btn-sm" data-apply>${esc(t('attach.apply'))}</button></div>`;
+      ${item.original.type==='image/gif'?`<p class="attach-note">${esc(t('attach.gif_note'))}</p>`:''}<p data-estimate role="status"><span data-estimate-text></span><span data-dimensions></span><span data-kept-original hidden>${esc(t('attach.kept_original'))}</span></p><div class="attach-actions"><button type="button" class="btn btn-sm" data-cancel>${esc(t('common.cancel'))}</button><button type="button" class="btn btn-primary btn-sm" data-apply>${esc(t('attach.apply'))}</button></div>`;
     panel.hidden = false;
     tray.querySelector(`[data-options="${item.id}"]`).setAttribute('aria-expanded','true');
     optionsChanged(); panel.querySelector(`[data-mode="${item.options.mode}"]`).focus();
