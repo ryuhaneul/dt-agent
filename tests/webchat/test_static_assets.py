@@ -2360,6 +2360,58 @@ if(scenario==='unread'){
  document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));await topics.refreshTopics();
  assert.ok(!get('tlist').innerHTML.includes('unread'));
 }
+if(scenario==='unread-partial-failure'||scenario==='unread-delayed-history'){
+ const rows=['1.2','1.3'].map(tid=>({tid,name:'Topic '+tid,group:'telegram',seen:1}));
+ const entries=new Map(rows.map(row=>[row.tid,[{seq:1}]]));
+ const gates=[],notices=[];
+ let failHistory=false,delayHistory=false;
+ const api=async url=>{
+  if(url==='/topics')return {topics:rows.map(row=>({...row,count:entries.get(row.tid).length}))};
+  const tid=url.split('/')[2];
+  if(failHistory&&tid==='1.2')throw {status:503,code:'history_busy'};
+  const snapshot={entries:[...entries.get(tid)],has_more:false};
+  if(delayHistory&&tid==='1.2')await new Promise(resolve=>gates.push(resolve));
+  return snapshot;
+ };
+ const topics=await load('topics.js',{'./api.js':{api},'./i18n.js':{t:(key,args)=>key==='topic.unread'?`${args.n} unread`:key},'./router.js':{renderRoute:()=>{},go:()=>{}},'./auth.js':{notify:key=>notices.push(key)},'./md.js':{esc:value=>String(value)}});
+ topics.initTopics();document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));
+ const badge=tid=>get('tlist').innerHTML.split(`data-tid="${tid}"`)[1].split('</button>')[0].match(/aria-label="(\d+) unread"/)?.[1]??null;
+ if(scenario==='unread-partial-failure'){
+  entries.get('1.2').push({seq:2});
+  await topics.refreshTopics();
+  assert.equal(badge('1.2'),'1');
+  assert.equal(badge('1.3'),null);
+  entries.get('1.2').push({seq:3});
+  entries.get('1.3').push({seq:2},{seq:3});
+  failHistory=true;
+  await assert.rejects(topics.refreshTopics(),{status:503,code:'history_busy'});
+  assert.equal(badge('1.2'),'1','a failed topic keeps its previous badge');
+  assert.equal(badge('1.3'),'2','a healthy topic reflects the refreshed count');
+ }else{
+  await topics.refreshTopics();
+  assert.equal(badge('1.2'),null);
+  delayHistory=true;
+  const refresh=topics.refreshTopics();
+  await new Promise(setImmediate);
+  assert.equal(gates.length,1);
+  entries.get('1.2').push({seq:2},{seq:3});
+  topics.noteEntry('1.2',{seq:2,text:'new'});
+  assert.equal(badge('1.2'),'1');
+  gates[0]();
+  await new Promise(setImmediate);
+  assert.equal(badge('1.2'),'1','a stale response never clears the live badge');
+  assert.equal(gates.length,2,'only the changed topic is counted again');
+  entries.get('1.2').push({seq:4});
+  topics.noteEntry('1.2',{seq:4,text:'new during recount'});
+  assert.equal(badge('1.2'),'2');
+  delayHistory=false;
+  gates[1]();
+  await refresh;
+  assert.equal(gates.length,2);
+  assert.equal(badge('1.2'),'3','recount includes unseen history and live entries once each');
+  assert.deepEqual(notices,[]);
+ }
+}
 if(scenario==='migration-failure'){
  const rows=Array.from({length:9},(_,i)=>({tid:String(i),topic_id:null,name:i===0?null:'Topic '+i,name_key:i===0?'topic.general':null,group:'telegram',count:2,seen:null}));
  const gates=[],cursors=new Map(),notices=[];let inFlight=0,maxFlight=0,updates=0;
@@ -2440,6 +2492,8 @@ console.log(`Header contract passed: ${scenario}`);
         "rename-stale",
         "topic-labels",
         "unread",
+        "unread-partial-failure",
+        "unread-delayed-history",
         "migration-failure",
         "rollback-forward",
         "rollback-reverse",

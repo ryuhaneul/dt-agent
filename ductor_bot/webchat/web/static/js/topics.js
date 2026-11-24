@@ -8,6 +8,7 @@ let topics = [], selected = null, hits = [], query = '', searchTimer, revision =
 let active = false, request = 0, readEpoch = 0, markingAll = false, migrationEpoch = null;
 let renaming = null, renameBusy = false, renameEpoch = 0;
 const unread = new Map(), seen = new Map(), confirmed = new Map(), latest = new Map(), migrated = new Set();
+const unreadReaders = new WeakMap();
 export function getTopics() { return topics; }
 export function getTopic() { return topics.find(topic => topic.tid === selected) || null; }
 export function formatTime(value, date = false) {
@@ -102,18 +103,34 @@ export function renderTopics() {
     cell.dataset.tid === focusedTid && cell.dataset.seq === focusedSeq)?.focus();
 }
 async function countUnread(topic, generation) {
-  const last = storedSeen(topic.tid);
-  if (last === null) { unread.set(topic.tid, topic.count); return; }
-  let before = '', count = 0;
-  while (active && generation === revision) {
-    const data = await api(`/topics/${encodeURIComponent(topic.tid)}/messages?limit=100${before}`);
-    if (!active || generation !== revision) return;
-    if (data.entries.length) latest.set(topic.tid, Math.max(latest.get(topic.tid) ?? -Infinity, data.entries.at(-1).seq));
-    count += data.entries.filter(entry => entry.seq > last).length;
-    if (!data.has_more || !data.entries.length || data.entries[0].seq <= last) break;
-    before = `&before=${data.entries[0].seq}`;
+  const { tid } = topic, last = storedSeen(tid);
+  if (last === null) { unread.set(tid, topic.count); return; }
+  const readers = unreadReaders.get(topic) ?? new Set(), arrived = new Set();
+  unreadReaders.set(topic, readers);
+  readers.add(arrived);
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const sequences = new Set();
+      let before = '';
+      while (active && generation === revision) {
+        const data = await api(`/topics/${encodeURIComponent(tid)}/messages?limit=100${before}`);
+        if (!active || generation !== revision) return;
+        if (data.entries.length) latest.set(tid, Math.max(latest.get(tid) ?? -Infinity, data.entries.at(-1).seq));
+        for (const entry of data.entries) if (entry.seq > last) sequences.add(entry.seq);
+        if (!data.has_more || !data.entries.length || data.entries[0].seq <= last) break;
+        before = `&before=${data.entries[0].seq}`;
+      }
+      if (!active || generation !== revision || storedSeen(tid) !== last) return;
+      // Recount once, then merge live entries by sequence so busy topics can finish.
+      if (attempt === 0 && arrived.size) continue;
+      for (const seq of arrived) if (seq > last) sequences.add(seq);
+      unread.set(tid, sequences.size);
+      return;
+    }
+  } finally {
+    readers.delete(arrived);
+    if (!readers.size) unreadReaders.delete(topic);
   }
-  if (storedSeen(topic.tid) === last) unread.set(topic.tid, count);
 }
 async function migrateSeen() {
   const epoch = readEpoch;
@@ -162,12 +179,19 @@ export async function refreshTopics() {
   else document.dispatchEvent(new CustomEvent('topic-updated', { detail: getTopic() }));
   renderTopics();
   document.dispatchEvent(new CustomEvent('topics-updated', { detail: topics }));
-  await Promise.all(topics.map(topic => countUnread(topic, generation)));
-  if (active && generation === revision) { renderTopics(); void migrateSeen(); }
+  const counts = await Promise.allSettled(topics.map(topic => countUnread(topic, generation)));
+  if (active && generation === revision) {
+    renderTopics();
+    // Apply the successful counts before forwarding an error to the caller.
+    const failure = counts.find(result => result.status === 'rejected');
+    if (failure) throw failure.reason;
+    void migrateSeen();
+  }
 }
 export function noteEntry(tid, entry) {
   const topic = topics.find(item => item.tid === tid);
   if (!topic) return;
+  for (const arrived of unreadReaders.get(topic) ?? []) arrived.add(entry.seq);
   topic.last_ts = entry.ts; topic.preview = entry.text; topic.count++;
   latest.set(tid, Math.max(latest.get(tid) ?? -Infinity, entry.seq));
   if (entry.imported) topic.imported_count++;
