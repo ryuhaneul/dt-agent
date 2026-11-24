@@ -288,6 +288,12 @@ async function checkOriginalDimensionsCache() {
     await reset();
     await page.evaluate(() => {
       const decode = window.createImageBitmap.bind(window);
+      const encode = HTMLCanvasElement.prototype.toBlob;
+      window.encodedTypes = [];
+      HTMLCanvasElement.prototype.toBlob = function (callback, type, quality) {
+        window.encodedTypes.push(type);
+        return encode.call(this, callback, type, quality);
+      };
       window.bitmapCalls = 0;
       window.createImageBitmap = (...args) => {
         window.bitmapCalls++;
@@ -326,6 +332,8 @@ async function checkOriginalDimensionsCache() {
       return [image.naturalWidth, image.naturalHeight];
     });
     assert.deepEqual(size, [160, 320]);
+    assert((await page.locator('.attach-sub').textContent()).endsWith(' · image/jpeg'));
+    assert.deepEqual(await page.evaluate(() => window.encodedTypes), ['image/jpeg', 'image/jpeg']);
   }
 }
 
@@ -493,6 +501,7 @@ try{
   },other);
   for(const item of results.formatMatrix){
     assert(item.originalSame);
+    if(item.source==='image/jpeg') assert.equal(item.type,'image/jpeg');
     if(item.kept){
       assert.deepEqual([item.width,item.height,item.type,item.size],[48,36,item.source,item.inputSize]);
     } else {

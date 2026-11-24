@@ -66,7 +66,9 @@ export async function processImage(file, options, onDimensions) {
     try {
       blob = await new Promise(resolve => canvas.toBlob(resolve, type, quality));
       if (!blob || blob.type !== type) throw failure('attach.processing_failed');
-      if (!compress) blob = await smallerLosslessWebP(canvas, Math.min(blob.size, file.size)) ?? blob;
+      if (!compress && file.type !== 'image/jpeg') {
+        blob = await smallerLosslessWebP(canvas, Math.min(blob.size, file.size)) ?? blob;
+      }
     } finally {
       canvas.width = canvas.height = 0;
     }
