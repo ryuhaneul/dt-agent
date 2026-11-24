@@ -11,6 +11,20 @@ if TYPE_CHECKING:
     from aiogram.types import MessageEntity
 
 
+def _escape_leading_backticks(text: str) -> str:
+    rest = text.lstrip("`")
+    return "&#96;" * (len(text) - len(rest)) + rest
+
+
+def _escape_trailing_backticks(text: str) -> str:
+    prefix = text.rstrip("`")
+    if len(prefix) == len(text):
+        return text
+    # Encode preceding backslashes so they cannot escape the first reference.
+    boundary = len(prefix.rstrip("\\"))
+    return text[:boundary] + text[boundary:].replace("\\", "&#92;").replace("`", "&#96;")
+
+
 def code_entities_to_markdown(text: str, entities: Sequence[MessageEntity] | None) -> str | None:
     """Wrap only code entities, using Telegram's UTF-16 offsets."""
     spans = sorted(
@@ -50,9 +64,11 @@ def code_entities_to_markdown(text: str, entities: Sequence[MessageEntity] | Non
             ):
                 content = f" {content} "
             wrapped = f"{fence}{content}{fence}"
-        parts.extend((before, wrapped))
+        if parts:
+            before = _escape_leading_backticks(before)
+        parts.extend((_escape_trailing_backticks(before), wrapped))
         cursor = end
     if not parts:
         return None
-    parts.append(raw[cursor:].decode("utf-16-le"))
+    parts.append(_escape_leading_backticks(raw[cursor:].decode("utf-16-le")))
     return "".join(parts)

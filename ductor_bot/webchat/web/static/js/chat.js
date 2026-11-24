@@ -230,7 +230,8 @@ function streamContent(turn, live) {
 
 function entryMarkup(entry) {
   const text=attachmentView?.text(getTopic().tid,entry)??entry.text;
-  const displayText = entry.role === 'user' ? entry.display_markdown ?? text : text;
+  const hasDisplayMarkdown = entry.role === 'user' && typeof entry.display_markdown === 'string';
+  const displayText = hasDisplayMarkdown ? entry.display_markdown : text;
   const attachmentCards=attachmentView?.markup(getTopic().tid,entry)||'';
   const copy = text ? copyButton({ entryId: entry.id }) : '';
   const time = messageTime(entry.ts);
@@ -243,7 +244,7 @@ function entryMarkup(entry) {
   }
   const turn = turns.get(entry.turn_id);
   const stopped = entry.status === 'aborted' || (entry.role === 'bot' && turn?.phase === 'aborted');
-  return `<div class="msg ${entry.role === 'user' ? 'me' : 'bot'}${entry.imported ? ' old' : ''}${entry.kind === 'command' ? ' command-message' : ''}" data-entry-seq="${entry.seq}"><div class="meta">${sourceTag(entry)}${delegated ? `<span class="tag">${esc(t('chat.delegated_response'))}</span>` : ''}${time}${delegated && entry.title ? `<span>${esc(entry.title)}</span>` : ''}${copy}</div><div class="bubble md">${entry.role === 'bot' ? activitySummary(turn) : ''}${entry.kind === 'command' ? esc(entry.text || '') : history(getTopic().tid).markdown({ ...entry, text: displayText })}${attachmentCards}${responseButtons(entry)}</div>${entry.role === 'user' ? queueStatus(entry.turn_id, entry.status) : ''}${stopped ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : ''}${mirror(entry)}</div>`;
+  return `<div class="msg ${entry.role === 'user' ? 'me' : 'bot'}${entry.imported ? ' old' : ''}${entry.kind === 'command' ? ' command-message' : ''}" data-entry-seq="${entry.seq}"><div class="meta">${sourceTag(entry)}${delegated ? `<span class="tag">${esc(t('chat.delegated_response'))}</span>` : ''}${time}${delegated && entry.title ? `<span>${esc(entry.title)}</span>` : ''}${copy}</div><div class="bubble md"${hasDisplayMarkdown ? ' data-display-markdown' : ''}>${entry.role === 'bot' ? activitySummary(turn) : ''}${entry.kind === 'command' ? esc(entry.text || '') : history(getTopic().tid).markdown({ ...entry, text: displayText })}${attachmentCards}${responseButtons(entry)}</div>${entry.role === 'user' ? queueStatus(entry.turn_id, entry.status) : ''}${stopped ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : ''}${mirror(entry)}</div>`;
 }
 function streamMarkup(turn) {
   const live = ['queued', 'started'].includes(turn.phase);
@@ -551,11 +552,6 @@ function patchThread(thread, groups, changes) {
         template.innerHTML = itemMarkup(item);
         const replacement = template.content.firstElementChild;
         addCodeCopy(replacement);
-        if (entry?.role === 'user' && entry.display_markdown !== undefined) {
-          for (const code of replacement.querySelectorAll('.md code:not(pre code)')) {
-            code.style.whiteSpace = 'break-spaces';
-          }
-        }
         if (!node?.isEqualNode(replacement)) {
           if (node) node.replaceWith(replacement);
           node = replacement;

@@ -41,6 +41,30 @@ def test_inline_code(text: str, wrapped: str) -> None:
     assert code_entities_to_markdown(text, [entity]) == wrapped
 
 
+@pytest.mark.parametrize(
+    ("prefix", "suffix", "escaped"),
+    [
+        ("literal`", "", ("literal&#96;", "")),
+        ("", "` literal", ("", "&#96; literal")),
+        ("```", "```", ("&#96;" * 3, "&#96;" * 3)),
+        ("literal\\`", "", ("literal&#92;&#96;", "")),
+    ],
+    ids=["before", "after", "both-triples", "escaped-prefix"],
+)
+@pytest.mark.parametrize(
+    ("kind", "wrapped"),
+    [("code", "`value`"), ("pre", "\n\n```\nvalue\n```\n\n")],
+)
+def test_literal_backticks_at_code_boundaries(
+    prefix: str, suffix: str, escaped: tuple[str, str], kind: str, wrapped: str
+) -> None:
+    escaped_prefix, escaped_suffix = escaped
+    entity = MessageEntity(type=kind, offset=len(prefix), length=len("value"))
+    assert code_entities_to_markdown(f"{prefix}value{suffix}", [entity]) == (
+        f"{escaped_prefix}{wrapped}{escaped_suffix}"
+    )
+
+
 def test_utf16_offsets_and_unmodified_other_entities() -> None:
     emoji = chr(0x1F642)
     text = f"raw {emoji}a{emoji}b{emoji}z"

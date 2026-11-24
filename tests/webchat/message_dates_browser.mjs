@@ -593,6 +593,54 @@ async function telegramCode(browser) {
     assert.equal(await live.locator('.response-button-row').count(), 0);
     await live.locator('[data-copy-message]').click();
     assert.equal(await page.evaluate(() => navigator.clipboard.readText()), text);
+
+    const next = { ...topic, tid: '1.3', topic_id: 3, name: 'Second topic', count: 1 };
+    await page.route('**/api/topics', route => route.fulfill({ json: { topics: [topic, next] } }));
+    await page.route(/\/api\/topics\/1\.3\/messages\?/, route =>
+      route.fulfill({ json: { entries: [messages[4]], has_more: false } }));
+    socket.send(JSON.stringify({ type: 'topics' }));
+    await page.locator('#tlist [data-tid="1.3"]').click();
+    await page.locator('#thread [data-entry-seq="5"]').waitFor();
+
+    await page.route(/\/api\/topics\/1\.2\/messages\?/, route => route.fulfill({ status: 503 }));
+    await page.route('**/api/topics', route => route.fulfill({ json: { topics: [topic] } }));
+    const historyError = page.waitForResponse(response =>
+      new URL(response.url()).pathname === '/api/topics/1.2/messages' && response.status() === 503);
+    socket.send(JSON.stringify({ type: 'topics' }));
+    await historyError;
+    await span.waitFor();
+    assert.equal(await span.innerText(), inline, 'cached topic keeps inline code whitespace');
+    assert.equal(await span.evaluate(node => getComputedStyle(node).whiteSpace), 'break-spaces');
+  } finally {
+    await context.close();
+  }
+}
+
+async function telegramCodeBoundaries(browser) {
+  const cases = config.telegramCodeBoundaries;
+  const entries = cases.map(({ text, display }, index) => ({
+    ...messages[194 + index], seq: index + 1, role: 'user', source: 'telegram', text,
+    display_markdown: display,
+  }));
+  const context = await browser.newContext({ permissions: ['clipboard-read', 'clipboard-write'] });
+  try {
+    const page = await context.newPage();
+    await mockChat(page, entries);
+    await page.goto(origin);
+    for (const [index, { text, block, prefix, suffix }] of cases.entries()) {
+      const row = page.locator('#thread [data-entry-seq="' + (index + 1) + '"]');
+      await row.waitFor();
+      const bubble = row.locator('.md');
+      const code = bubble.locator('code');
+      assert.equal(await code.count(), 1, text);
+      assert.equal(await bubble.locator('pre').count(), Number(block), text);
+      assert.equal(await code.textContent(), block ? 'value\n' : 'value', text);
+      const expected = block ? [prefix.trim(), 'value', suffix.trim()].filter(Boolean).join('\n')
+        : text;
+      assert.equal((await bubble.innerText()).replace(/\n+/g, '\n').trim(), expected, text);
+      await row.locator('[data-copy-message]').click();
+      assert.equal(await page.evaluate(() => navigator.clipboard.readText()), text);
+    }
   } finally {
     await context.close();
   }
@@ -601,7 +649,7 @@ async function telegramCode(browser) {
 const browser = await chromium.launch();
 try {
   await fs.mkdir(config.shots, { recursive: true });
-  const scenarios = { dates: messageDates, window: preserveOldestGroup, focus: chatFocus, 'code-copy': codeCopy, 'telegram-code': telegramCode };
+  const scenarios = { dates: messageDates, window: preserveOldestGroup, focus: chatFocus, 'code-copy': codeCopy, 'telegram-code': telegramCode, 'telegram-code-boundaries': telegramCodeBoundaries };
   const scenario = process.argv[3] ?? 'dates';
   if (scenario.startsWith('overflow-')) await documentOverflow(browser, scenario);
   else await scenarios[scenario](browser);

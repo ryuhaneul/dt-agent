@@ -2813,12 +2813,12 @@ def test_autocompact_dialog_has_labeled_scopes_and_bounded_token_inputs(markup):
     "scenario",
     [
         "dates", "window", "focus", "overflow-footnote", "overflow-activity", "code-copy",
-        "telegram-code",
+        "telegram-code", "telegram-code-boundaries",
     ],
 )
 def test_message_dates_browser(tmp_path: Path, scenario: str) -> None:
     config = tmp_path / "dates.json"
-    settings = {
+    settings: dict[str, object] = {
         "static": str(STATIC),
         "csp": CSP,
         "starflowCsp": STARFLOW_CSP,
@@ -2843,6 +2843,30 @@ def test_message_dates_browser(tmp_path: Path, scenario: str) -> None:
             "block": block,
             "inline": inline,
         }
+    if scenario == "telegram-code-boundaries":
+        from aiogram.types import MessageEntity
+
+        from ductor_bot.messenger.telegram.code_entities import code_entities_to_markdown
+
+        settings["telegramCodeBoundaries"] = [
+            {
+                "text": f"{prefix}value{suffix}",
+                "display": code_entities_to_markdown(
+                    f"{prefix}value{suffix}",
+                    [MessageEntity(type=kind, offset=len(prefix), length=5)],
+                ),
+                "block": kind == "pre",
+                "prefix": prefix,
+                "suffix": suffix,
+            }
+            for kind in ("code", "pre")
+            for prefix, suffix in [
+                ("literal`", ""),
+                ("", "` literal"),
+                ("```", "```"),
+                ("literal\\`", ""),
+            ]
+        ]
     config.write_text(json.dumps(settings))
     result = subprocess.run(
         ["node", "tests/webchat/message_dates_browser.mjs", str(config), scenario],
