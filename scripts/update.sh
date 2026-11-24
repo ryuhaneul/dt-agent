@@ -46,6 +46,8 @@ update_text_en() {
         aborted_built) printf '%s' $'The new image is built and the running container is unchanged. Run docker compose up -d later to swap.' ;;
         h_building) printf '%s' $'=== Building new image ===' ;;
         h_swapping) printf '%s' $'=== Swapping container ===' ;;
+        h_gateway) printf '%s' $'=== Updating web chat gateway ===' ;;
+        gateway_failed) printf '%s' $'The web chat gateway was not updated. Run python3 scripts/webchat.py up to retry.' ;;
         h_status) printf '%s' $'=== Status ===' ;;
     esac
 }
@@ -66,6 +68,8 @@ update_text_de() {
         aborted_built) printf '%s' $'Das neue Image ist gebaut und der laufende Container bleibt unverändert. Tausche ihn später mit docker compose up -d aus.' ;;
         h_building) printf '%s' $'=== Neues Image wird gebaut ===' ;;
         h_swapping) printf '%s' $'=== Container wird ausgetauscht ===' ;;
+        h_gateway) printf '%s' $'=== Webchat-Gateway wird aktualisiert ===' ;;
+        gateway_failed) printf '%s' $'Das Webchat-Gateway konnte nicht aktualisiert werden. Führe python3 scripts/webchat.py up erneut aus.' ;;
         h_status) printf '%s' $'=== Status ===' ;;
     esac
 }
@@ -86,6 +90,8 @@ update_text_es() {
         aborted_built) printf '%s' $'La imagen nueva está construida y el contenedor en ejecución sigue igual. Ejecuta docker compose up -d más tarde para sustituirlo.' ;;
         h_building) printf '%s' $'=== Construyendo la imagen nueva ===' ;;
         h_swapping) printf '%s' $'=== Sustituyendo el contenedor ===' ;;
+        h_gateway) printf '%s' $'=== Actualizando la pasarela del chat web ===' ;;
+        gateway_failed) printf '%s' $'No se pudo actualizar la pasarela del chat web. Ejecuta python3 scripts/webchat.py up para reintentar.' ;;
         h_status) printf '%s' $'=== Estado ===' ;;
     esac
 }
@@ -106,6 +112,8 @@ update_text_fr() {
         aborted_built) printf '%s' $'La nouvelle image est construite et le conteneur en cours reste inchangé. Lance docker compose up -d plus tard pour le remplacer.' ;;
         h_building) printf '%s' $'=== Construction de la nouvelle image ===' ;;
         h_swapping) printf '%s' $'=== Remplacement du conteneur ===' ;;
+        h_gateway) printf '%s' $'=== Mise à jour de la passerelle du chat web ===' ;;
+        gateway_failed) printf '%s' $'La passerelle du chat web n’a pas été mise à jour. Relance python3 scripts/webchat.py up.' ;;
         h_status) printf '%s' $'=== État ===' ;;
     esac
 }
@@ -126,6 +134,8 @@ update_text_id() {
         aborted_built) printf '%s' $'Image baru sudah dibangun dan kontainer yang berjalan tetap seperti semula. Jalankan docker compose up -d nanti untuk menggantinya.' ;;
         h_building) printf '%s' $'=== Membangun image baru ===' ;;
         h_swapping) printf '%s' $'=== Mengganti kontainer ===' ;;
+        h_gateway) printf '%s' $'=== Memperbarui gateway chat web ===' ;;
+        gateway_failed) printf '%s' $'Gateway chat web tidak berhasil diperbarui. Jalankan kembali python3 scripts/webchat.py up.' ;;
         h_status) printf '%s' $'=== Status ===' ;;
     esac
 }
@@ -146,6 +156,8 @@ update_text_nl() {
         aborted_built) printf '%s' $'Het nieuwe image is gebouwd en de draaiende container blijft ongewijzigd. Voer later docker compose up -d uit om hem te vervangen.' ;;
         h_building) printf '%s' $'=== Nieuw image bouwen ===' ;;
         h_swapping) printf '%s' $'=== Container vervangen ===' ;;
+        h_gateway) printf '%s' $'=== Webchatgateway bijwerken ===' ;;
+        gateway_failed) printf '%s' $'De webchatgateway kon niet worden bijgewerkt. Voer python3 scripts/webchat.py up opnieuw uit.' ;;
         h_status) printf '%s' $'=== Status ===' ;;
     esac
 }
@@ -166,6 +178,8 @@ update_text_pt() {
         aborted_built) printf '%s' $'A nova imagem está construída e o contêiner em execução permanece igual. Execute docker compose up -d mais tarde para trocá-lo.' ;;
         h_building) printf '%s' $'=== Construindo a nova imagem ===' ;;
         h_swapping) printf '%s' $'=== Trocando o contêiner ===' ;;
+        h_gateway) printf '%s' $'=== Atualizando o gateway do chat web ===' ;;
+        gateway_failed) printf '%s' $'O gateway do chat web não foi atualizado. Execute python3 scripts/webchat.py up para tentar novamente.' ;;
         h_status) printf '%s' $'=== Estado ===' ;;
     esac
 }
@@ -186,6 +200,8 @@ update_text_ru() {
         aborted_built) printf '%s' $'Новый образ собран, а работающий контейнер остаётся прежним. Позже выполни docker compose up -d для замены.' ;;
         h_building) printf '%s' $'=== Сборка нового образа ===' ;;
         h_swapping) printf '%s' $'=== Замена контейнера ===' ;;
+        h_gateway) printf '%s' $'=== Обновление шлюза веб-чата ===' ;;
+        gateway_failed) printf '%s' $'Не удалось обновить шлюз веб-чата. Повтори команду python3 scripts/webchat.py up.' ;;
         h_status) printf '%s' $'=== Состояние ===' ;;
     esac
 }
@@ -208,6 +224,8 @@ update_text_ko() {
         aborted_built) printf '%s' $'새 이미지는 빌드됐고 실행 중인 컨테이너는 그대로예요. 나중에 docker compose up -d 로 교체하세요.' ;;
         h_building) printf '%s' $'=== 새 이미지 빌드 중 ===' ;;
         h_swapping) printf '%s' $'=== 컨테이너 교체 중 ===' ;;
+        h_gateway) printf '%s' $'=== 웹챗 게이트웨이 갱신 중 ===' ;;
+        gateway_failed) printf '%s' $'웹챗 게이트웨이를 갱신하지 못했어요. python3 scripts/webchat.py up 을 다시 실행하세요.' ;;
         h_status) printf '%s' $'=== 상태 ===' ;;
     esac
 }
@@ -240,6 +258,32 @@ try:
 except Exception:
     print(0)
 PY
+}
+
+webchat_profile_enabled() {
+    [[ -f .env ]] || return 1
+    awk -v apostrophe="'" '
+        /^[[:space:]]*(export[[:space:]]+)?COMPOSE_PROFILES[[:space:]]*=/ {
+            sub(/^[^=]*=[[:space:]]*/, "")
+            quote = substr($0, 1, 1)
+            if (quote == "\"" || quote == apostrophe) {
+                value = substr($0, 2)
+                end = index(value, quote)
+                profiles = end && substr(value, end + 1) ~ /^[[:space:]]*(#.*)?$/ \
+                    ? substr(value, 1, end - 1) : ""
+            } else {
+                sub(/[[:space:]]+#.*$/, "")
+                profiles = $0
+            }
+        }
+        END {
+            count = split(profiles, items, ",")
+            for (i = 1; i <= count; i++) {
+                if (items[i] ~ /^[[:space:]]*webchat[[:space:]]*$/) exit 0
+            }
+            exit 1
+        }
+    ' .env
 }
 
 # 1. Check clean working tree
@@ -319,6 +363,21 @@ echo ""
 say h_swapping
 docker compose up -d
 
+gateway_failed=0
+if webchat_profile_enabled; then
+    echo ""
+    say h_gateway
+    if ! python3 scripts/webchat.py up </dev/null; then
+        say_err gateway_failed
+        gateway_failed=1
+    fi
+fi
+
 echo ""
 say h_status
-docker compose ps
+status=0
+docker compose ps || status=$?
+if ((gateway_failed)); then
+    exit 1
+fi
+exit "$status"

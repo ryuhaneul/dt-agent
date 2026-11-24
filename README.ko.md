@@ -191,7 +191,7 @@ docker compose up -d --build
 
 ## 4. 조작 스크립트와 provider 슬롯
 
-아래는 호스트 스크립트입니다. 저장소 루트에서 실행하십시오. `login.sh`는 Compose 서비스명을, `logout.sh`·`status.sh`는 `DUCTOR_CONTAINER`(기본 `ductor-bot`)를 사용합니다. `update.sh`의 이름은 `ductor-bot`으로 고정되어 있습니다. login·logout·update의 호스트 home 우선순위는 비어 있지 않은 환경변수 `DUCTOR_HOME` → 스크립트 위치 기준 저장소 루트 `.env`의 해당 키(따옴표 처리) → `~/.ductor`입니다. 해당 키만 읽고 env 파일을 source하지 않습니다. `_home.sh`는 내부 공통 헬퍼이며 조작 명령이 아닙니다. 인자 파서가 없는 status·rebuild·update에는 동작하는 `--help`가 없으며 추가 인자를 주어도 평소 동작을 실행합니다.
+아래는 호스트 스크립트입니다. 저장소 루트에서 실행하십시오. `login.sh`는 Compose 서비스명을, `logout.sh`·`status.sh`는 `DUCTOR_CONTAINER`(기본 `ductor-bot`)를 사용합니다. `update.sh`의 이름은 `ductor-bot`으로 고정되어 있습니다. login·logout·update의 호스트 home 우선순위는 비어 있지 않은 환경변수 `DUCTOR_HOME` → 스크립트 위치 기준 저장소 루트 `.env`의 해당 키(따옴표 처리) → `~/.ductor`입니다. home 을 정할 때는 해당 키만 읽고 env 파일을 source하지 않습니다. `_home.sh`는 내부 공통 헬퍼이며 조작 명령이 아닙니다. 인자 파서가 없는 status·rebuild·update에는 동작하는 `--help`가 없으며 추가 인자를 주어도 평소 동작을 실행합니다.
 
 | 스크립트 / 인터페이스 | 동작과 예시 |
 | --- | --- |
@@ -202,7 +202,7 @@ docker compose up -d --build
 | `logout.sh [provider]` | 인자 없음은 전체 로그아웃. claude/codex/gemini/grok, -h/--help 지원. Claude --list(인증·우선순위·남은 쿨다운, 컨테이너 없이 조회), --prefer SLOT, --priority A,B,..., --clear-cooldown SLOT 또는 all(변경은 실행 중인 컨테이너 필요), --disable SLOT(OAuth는 config만, API 키는 슬롯 설정도 보존), --remove SLOT 또는 SLOT(config와 자격·슬롯 설정 파일 이름 변경). 예: `./scripts/logout.sh claude --disable alt`. Codex는 저장 인증 파일을 제거하고 Gemini는 `oauth_creds.json`을 제거하고 키 삭제·재시작 안내를 출력합니다. |
 | `status.sh` | 파싱하는 옵션 없음. 컨테이너·CLI 인증 탐침. 예: `./scripts/status.sh`. Gemini는 API 키 환경 또는 OAuth 자격증명 파일을 확인합니다. |
 | `rebuild.sh` | 파싱하는 옵션 없음. CACHEBUST와 --pull로 빌드 후 up -d·ps. 소스 pull 없음. 예: `./scripts/rebuild.sh`. 컨테이너 교체와 가변 CLI 버전 갱신을 수행합니다. |
-| `update.sh` | 파싱하는 옵션 없음. 추적 파일 변경 검사·origin fetch·추적 브랜치 ff-only pull·확인 질문·재빌드·교체. 예: `./scripts/update.sh`. 교체를 거부하면 새 소스와 기존 실행 이미지가 공존할 수 있으며 자동 롤백은 없습니다. 턴이나 작업이 실행 중이면 교체 직전에 다시 묻고, 거부하면 새 이미지는 빌드된 채 기존 컨테이너가 계속 실행됩니다. |
+| `update.sh` | 파싱하는 옵션 없음. 추적 파일 변경 검사·origin fetch·추적 브랜치 ff-only pull·확인 질문·재빌드·교체. 예: `./scripts/update.sh`. 교체를 거부하면 새 소스와 기존 실행 이미지가 공존할 수 있으며 자동 롤백은 없습니다. 턴이나 작업이 실행 중이면 교체 직전에 다시 묻고, 거부하면 새 이미지는 빌드된 채 기존 컨테이너가 계속 실행됩니다. 교체에 성공한 뒤 저장소 `.env`에 `webchat` Compose 프로필이 켜져 있으면 `python3 scripts/webchat.py up`을 실행합니다. |
 
 필요한 provider만 개별 인증하십시오. Gemini는 대화형 CLI를 시작하며 컨테이너에 `GEMINI_API_KEY` 또는 `GOOGLE_API_KEY`가 있으면 OAuth 파일 확인을 건너뜁니다. 원격 서버에서 Google OAuth를 쓰면 해당 CLI 안내에 따른 SSH loopback 포워딩이 필요할 수 있습니다. Grok은 device 인증, Codex 스크립트는 `codex login --device-auth`를 사용합니다. Claude 대체 슬롯은 기본 슬롯과 프로젝트 세션·비자격 설정을 공유하지만 자격 파일은 별도입니다. 로그인 성공 후 인증된 Claude 슬롯이 둘 이상이면 스크립트가 `["claude", "claude-alt"]`처럼 순서 있는 `claude_accounts` 목록을 제안합니다. 등록 질문은 기본 Y입니다. 빈 입력·y/yes·비TTY 실행은 새로 인증된 슬롯을 저장 시점의 최신 config.json 목록에 병합하고, n/no는 등록하지 않습니다. 다른 설정과 기존 파일 권한은 보존합니다. 갱신 실패 시 0이 아닌 종료 코드로 끝나며 Updated 안내를 출력하지 않습니다. 우선순위는 main에 몇 초 안에, 하위 에이전트는 다음 기동 때 반영됩니다. 쿨다운 해제는 모두 다음 호출부터 반영됩니다. `--disable`·`--remove`는 원자적으로 목록을 수정하고 이후 호출은 목록을 다시 읽으며 이미 진행 중인 호출은 기존 슬롯 목록을 유지합니다.
 

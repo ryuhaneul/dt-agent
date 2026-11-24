@@ -30,7 +30,7 @@ Every onboarding option is listed in [Onboarding options](#onboarding-options) b
    ./scripts/onboard.sh --no-prompt --telegram-token-file /path/to/token-file --allowed-users 123456789
    ```
 
-   Use `--home DIR` to choose another host home. Login/logout/update automatically read the repository-root `.env` DUCTOR_HOME key; no export is needed. Nonempty environment DUCTOR_HOME overrides that saved key, then the fallback is ~/.ductor. Only that key is parsed, with quotes handled; the env file is never sourced. Timezone precedence is `--tz` → `ONBOARD_TZ` → saved `user_timezone` on reruns → detected host timezone → `UTC`; system detection tries a ZoneInfo-valid `TZ`, `/etc/timezone`, then the `/etc/localtime` symlink path after `zoneinfo/`. The interactive question displays the selected default. Language precedence is `--language` → `ONBOARD_LANGUAGE` → saved `language` on reruns → supported host locale → `en`. First installation starts from the example; reruns use saved config as the basis and add missing defaults recursively. `--api` and `--webhook`
+   Use `--home DIR` to choose another host home. Login/logout/update automatically read the repository-root `.env` DUCTOR_HOME key; no export is needed. Nonempty environment DUCTOR_HOME overrides that saved key, then the fallback is ~/.ductor. For the home, only that key is parsed, with quotes handled; `update.sh` also reads `COMPOSE_PROFILES`. The env file is never sourced. Timezone precedence is `--tz` → `ONBOARD_TZ` → saved `user_timezone` on reruns → detected host timezone → `UTC`; system detection tries a ZoneInfo-valid `TZ`, `/etc/timezone`, then the `/etc/localtime` symlink path after `zoneinfo/`. The interactive question displays the selected default. Language precedence is `--language` → `ONBOARD_LANGUAGE` → saved `language` on reruns → supported host locale → `en`. First installation starts from the example; reruns use saved config as the basis and add missing defaults recursively. `--api` and `--webhook`
    enable those listeners; `--bind ADDR` chooses their host bind address
    (default `127.0.0.1`). Onboarding publishes ports only for enabled
    **main-agent** listeners in the ignored `compose.override.yml`.
@@ -174,6 +174,13 @@ is retained. For a source update, inspect the upstream changes, then rebuild
 and restart the stack. `scripts/update.sh` and `scripts/rebuild.sh` are
 available for their documented maintenance flows; review their effects
 before using them with active work. Rebuild/update recreate services and can interrupt running work. Keep a reviewed ref and home backup for rollback.
+
+After a successful container swap, `scripts/update.sh` runs
+`python3 scripts/webchat.py up` when the repository's `.env` lists `webchat` in
+`COMPOSE_PROFILES`. For the first upgrade with `update.sh` from a version that
+predates this step, rerun `python3 scripts/webchat.py up` manually after upgrading.
+The older script running that upgrade lacks the gateway refresh step. Also rerun
+the command manually after upgrading without `update.sh`.
 
 ## Troubleshooting
 

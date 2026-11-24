@@ -47,10 +47,14 @@ On the configured web chat domain, a binary upload chunk PUT skips the
 CrowdSec AppSec check only when the original request URI matches the upload
 chunk path exactly, with no query string. The IP allowlist, CrowdSec IP
 decisions and the app's session and CSRF checks still apply. Upload creation,
-status, deletion and completion continue through AppSec. On existing gateway
-installations, rerun
-`python3 scripts/webchat.py up` after upgrading to apply the updated gateway
-configuration.
+status, deletion and completion continue through AppSec.
+
+After a successful container swap, `scripts/update.sh` runs
+`python3 scripts/webchat.py up` when the repository's `.env` lists `webchat` in
+`COMPOSE_PROFILES`. Rerun that command manually on the first upgrade with
+`update.sh` from a version that predates this step, because the older script
+running that upgrade lacks the gateway refresh step. Also rerun it manually
+after upgrading without `update.sh`.
 
 After sign-in, the chat header displays the installed release version (hidden at widths of 760px and below; use `/version` there).
 The header globe selects one of nine web display languages, applied immediately and saved
