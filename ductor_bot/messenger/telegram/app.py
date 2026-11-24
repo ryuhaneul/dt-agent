@@ -2063,13 +2063,14 @@ class TelegramBot:
         if not message.text:
             return None
         text = strip_mention(message.text, self._bot_username)
-        if text == message.text:
-            display = code_entities_to_markdown(message.text, message.entities)
+        prompt = build_reply_prompt(message, text)
+        if text == message.text and "`" not in prompt.removesuffix(text):
+            display = code_entities_to_markdown(text, message.entities)
             if display is not None:
                 from ductor_bot.chat_log.recorder import received_display_markdown
 
                 received_display_markdown.set(build_reply_prompt(message, display))
-        return build_reply_prompt(message, text)
+        return prompt
 
     async def _handle_streaming(
         self,

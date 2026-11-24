@@ -438,20 +438,21 @@ class TestOnMessage:
         orch.handle_message_streaming.assert_not_called()
 
     @pytest.mark.parametrize(
-        ("text", "entity_type", "reply", "expected_raw", "expected_display"),
+        ("text", "entity_type", "quoted", "expected_raw", "expected_display"),
         [
-            ("echo hi", "pre", False, "echo hi", "\n\n```sh\necho hi\n```\n\n"),
-            ("echo hi", "pre", True, "echo hi", "\n\n```sh\necho hi\n```\n\n"),
-            ("echo hi", "code", False, "echo hi", "`echo hi`"),
-            ("echo hi", "bold", False, "echo hi", None),
-            ("@testbot echo hi", "code", False, "echo hi", None),
+            ("echo hi", "pre", None, "echo hi", "\n\n```sh\necho hi\n```\n\n"),
+            ("echo hi", "pre", "Quoted line", "echo hi", "\n\n```sh\necho hi\n```\n\n"),
+            ("echo hi", "code", None, "echo hi", "`echo hi`"),
+            ("echo hi", "code", "Press the ` key", "echo hi", None),
+            ("echo hi", "bold", None, "echo hi", None),
+            ("@testbot echo hi", "code", None, "echo hi", None),
         ],
     )
     async def test_passes_raw_text_with_optional_code_display(
         self,
         text: str,
         entity_type: str,
-        reply: bool,
+        quoted: str | None,
         expected_raw: str,
         expected_display: str | None,
     ) -> None:
@@ -467,8 +468,8 @@ class TestOnMessage:
                 language="sh" if entity_type == "pre" else None,
             )
         ]
-        if reply:
-            msg.reply_to_message = _make_message(text="Quoted line")
+        if quoted is not None:
+            msg.reply_to_message = _make_message(text=quoted)
         display = (
             build_reply_prompt(msg, expected_display) if expected_display is not None else None
         )

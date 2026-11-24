@@ -188,9 +188,10 @@ older than 30 days. Real imported topics remain usable and manageable.
 **Unknown topic** is a read-only history group.
 
 Webchat displays code blocks and inline code from new Telegram text messages.
-If Telegram-formatted code is immediately preceded by a literal backtick or
-backslash, or immediately followed by a literal backtick, Webchat displays the
-original message without adding Telegram code formatting.
+Webchat shows the original message when a backtick appears outside Telegram
+code, including in a reply quote, when code entities touch or overlap, when
+inline code contains a line break, or when a backslash immediately precedes a
+code entity.
 Copying the whole message uses the original recorded text.
 
 `GET /outbox` returns `{ "items": [...] }` containing web mirrors and buffered

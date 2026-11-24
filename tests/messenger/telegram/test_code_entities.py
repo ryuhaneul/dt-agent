@@ -42,14 +42,21 @@ def test_inline_code(text: str, wrapped: str) -> None:
 
 
 @pytest.mark.parametrize(
-    ("prefix", "suffix"),
-    [("literal`", ""), ("", "` literal"), ("```", "```"), ("literal\\`", ""), ("literal\\", "")],
-    ids=["before", "after", "both-triples", "escaped-prefix", "backslash-before"],
+    ("prefix", "content", "suffix"),
+    [
+        ("literal`", "value", ""),
+        ("", "value", "` literal"),
+        ("` press the key, then run ", "foo", " now"),
+        ("a `` b ", "x`y", " end"),
+        ("", "value", " with a ` later"),
+        ("literal\\", "value", ""),
+    ],
+    ids=["before", "after", "distant-before", "mixed-runs", "distant-after", "backslash-before"],
 )
 @pytest.mark.parametrize("kind", ["code", "pre"])
-def test_literal_backticks_at_code_boundaries(prefix: str, suffix: str, kind: str) -> None:
-    entity = MessageEntity(type=kind, offset=len(prefix), length=5)
-    assert code_entities_to_markdown(f"{prefix}value{suffix}", [entity]) is None
+def test_unsafe_punctuation_outside_code(prefix: str, content: str, suffix: str, kind: str) -> None:
+    entity = MessageEntity(type=kind, offset=len(prefix), length=len(content))
+    assert code_entities_to_markdown(f"{prefix}{content}{suffix}", [entity]) is None
 
 
 def test_indented_backtick_before_pre() -> None:
@@ -66,14 +73,20 @@ def test_boundary_disables_display_markdown_for_entire_message() -> None:
     assert code_entities_to_markdown("safe `value", entities) is None
 
 
-def test_touching_entities_do_not_treat_code_content_as_literal() -> None:
+@pytest.mark.parametrize("second_offset", [2, 1], ids=["touching", "overlapping"])
+def test_code_entities_without_gap(second_offset: int) -> None:
     entities = [
-        MessageEntity(type="pre", offset=0, length=5),
-        MessageEntity(type="code", offset=5, length=6),
+        MessageEntity(type="code", offset=0, length=2),
+        MessageEntity(type="code", offset=second_offset, length=2),
     ]
-    assert code_entities_to_markdown("left``right", entities) == (
-        "\n\n```\nleft`\n```\n\n`` `right ``"
-    )
+    assert code_entities_to_markdown("aabb", entities) is None
+
+
+@pytest.mark.parametrize("line_break", ["\n\n", "\n", "\r"], ids=["blank-line", "lf", "cr"])
+def test_multiline_inline_code(line_break: str) -> None:
+    text = f"a = 1{line_break}b = 2"
+    entity = MessageEntity(type="code", offset=0, length=len(text))
+    assert code_entities_to_markdown(text, [entity]) is None
 
 
 def test_utf16_offsets_and_unmodified_other_entities() -> None:
