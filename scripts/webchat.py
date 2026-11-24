@@ -152,11 +152,14 @@ def render_nginx_config(source: str, config: dict[str, Any]) -> str:
     host = re.escape(config["domain"])
     # Match uploads.py's _ID, using PCRE's strict end-of-string anchor.
     upload_path = r"/api/topics/-?[0-9]+(?:\.[0-9]+)?/uploads/[a-f0-9]{32}\z"
+    topic_path = r"/api/topics/-?[0-9]+(?:\.[0-9]+)?"
     return stripped.replace(
         "  map $host $crowdsec_disable_appsec {\n    default 0;\n  }",
         '  map "$host:$request_method:$request_uri" $dtw_upload_disable_appsec {\n'
         "    default 0;\n"
         f'    "~^{host}:PUT:{upload_path}" 1;\n'
+        f'    "~^{host}:POST:{topic_path}/messages\\z" 1;\n'
+        f'    "~^{host}:POST:{topic_path}/buttons\\z" 1;\n'
         "  }\n"
         '  map "$server_addr:$server_port" $crowdsec_disable_appsec {\n'
         "    default $dtw_upload_disable_appsec;\n"
