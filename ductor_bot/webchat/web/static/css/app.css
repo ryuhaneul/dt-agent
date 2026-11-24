@@ -404,7 +404,7 @@ dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(2px)}
 #thread .md pre:has(> [data-copy-code]){position:relative;overflow:visible;padding:0}
 #thread .md pre > [data-copy-code]{position:absolute;inset-block-start:4px;inset-inline-end:4px;width:36px;padding:0}
 #thread .md pre > [data-copy-code]:not(:hover){background:var(--bg)}
-#thread .md pre > [data-copy-code] + code{display:block;overflow-x:auto;padding:12px;border-radius:inherit}
+#thread .md pre > [data-copy-code] + code{display:block;overflow-x:auto;padding:12px;padding-inline-end:48px;border-radius:inherit}
 #thread .md pre:has(> code:focus-visible){outline:2px solid var(--accent);outline-offset:2px}
 
 .md .align-left{text-align:left}.md .align-center{text-align:center}.md .align-right{text-align:right}

@@ -481,11 +481,24 @@ async function codeCopy(browser) {
           code.scrollLeft = code.scrollWidth;
           const after = button.getBoundingClientRect();
           const scrolled = code.scrollLeft;
+          const text = document.createRange();
+          text.selectNodeContents(code);
+          const endGap = after.left - text.getBoundingClientRect().right;
           code.scrollLeft = 0;
-          return { scrolled, buttonFixed: before.x === after.x && before.y === after.y };
+          return { scrolled, buttonFixed: before.x === after.x && before.y === after.y, endGap };
         });
         assert(layout.scrolled > 0, JSON.stringify(layout));
         assert(layout.buttonFixed, JSON.stringify(layout));
+        assert(layout.endGap > 0, JSON.stringify(layout));
+        const short = await user.locator('pre').evaluate(pre => {
+          const code = pre.querySelector('code');
+          const text = document.createRange();
+          text.selectNodeContents(code);
+          const button = pre.querySelector('[data-copy-code]').getBoundingClientRect();
+          return { overflow: code.scrollWidth - code.clientWidth, endGap: button.left - text.getBoundingClientRect().right };
+        });
+        assert.equal(short.overflow, 0, JSON.stringify(short));
+        assert(short.endGap > 0, JSON.stringify(short));
         const compact = await bot.locator('pre').last().evaluate(pre => {
           const button = pre.querySelector('[data-copy-code]');
           const block = pre.getBoundingClientRect();
@@ -502,7 +515,7 @@ async function codeCopy(browser) {
         });
         assert.equal(compact.paddingTop, '12px');
         assert(compact.buttonFits && compact.matchingBackground, JSON.stringify(compact));
-        measurements.push({ width, colorScheme, ...compact });
+        measurements.push({ width, colorScheme, ...compact, shortEndGap: short.endGap, longEndGap: layout.endGap });
         await checkDocument();
         await page.locator('#msgIn').focus();
         await bot.scrollIntoViewIfNeeded();
