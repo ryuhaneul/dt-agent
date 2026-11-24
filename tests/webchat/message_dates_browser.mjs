@@ -452,6 +452,7 @@ async function copyOpenBlockWithMouse(page, event) {
     }).observe(toasts, { childList: true });
     document.addEventListener('pointerdown', event => {
       window.pressedCopyButton = event.target.closest('[data-copy-code]');
+      window.pressedCopyTurn = window.pressedCopyButton?.closest('[data-turn]');
     }, true);
     document.addEventListener('pointerup', event => {
       const button = event.target.closest('[data-copy-code]');
@@ -460,19 +461,33 @@ async function copyOpenBlockWithMouse(page, event) {
     }, true);
   });
 
+  async function copyAfterUpdate(update) {
+    const before = await page.evaluate(async () => {
+      await navigator.clipboard.writeText('Waiting for copy');
+      document.querySelector('#toasts').replaceChildren();
+      return window.copyToasts;
+    });
+    const bounds = await button.boundingBox();
+    await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+    await page.mouse.down();
+    await update();
+    await page.mouse.up();
+    assert(await page.evaluate(() => window.releasedCode), 'mouse release lands on a code button');
+    const replaced = await page.evaluate(() => window.copyButtonReplaced);
+    await page.waitForFunction(async () => {
+      return window.releasedCode && (await navigator.clipboard.readText()) === window.releasedCode;
+    }, null, { timeout: 2000 });
+    await page.waitForFunction(count => window.copyToasts > count, before, { timeout: 2000 });
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(await page.evaluate(() => window.copyToasts), before + 1, 'one toast per click');
+    return replaced;
+  }
+
   const results = [];
   for (const interval of [30, 100, 250]) {
     let copied = 0, replaced = 0;
     for (let attempt = 0; attempt < 10; attempt++) {
-      const before = await page.evaluate(async () => {
-        await navigator.clipboard.writeText('Waiting for copy');
-        document.querySelector('#toasts').replaceChildren();
-        return window.copyToasts;
-      });
-      const bounds = await button.boundingBox();
-      await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
-      await page.mouse.down();
-      await page.evaluate(async ({ turnId, interval, phase }) => {
+      const updated = await copyAfterUpdate(() => page.evaluate(async ({ turnId, interval, phase }) => {
         const { handleEvent } = await import('/static/js/chat.js');
         const append = () => handleEvent({ tid: '1.2', turn_id: turnId, type: 'delta', text: ' more' });
         let updates;
@@ -483,21 +498,57 @@ async function copyOpenBlockWithMouse(page, event) {
         await new Promise(resolve => setTimeout(resolve, 80));
         clearTimeout(first);
         clearInterval(updates);
-      }, { turnId, interval, phase: attempt * interval / 10 });
-      await page.mouse.up();
-      if (await page.evaluate(() => window.copyButtonReplaced)) replaced++;
-      await page.waitForFunction(async () => {
-        return window.releasedCode && (await navigator.clipboard.readText()) === window.releasedCode;
-      }, null, { timeout: 2000 });
-      await page.waitForFunction(count => window.copyToasts > count, before, { timeout: 2000 });
-      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-      assert.equal(await page.evaluate(() => window.copyToasts), before + 1, 'one toast per click');
+      }, { turnId, interval, phase: attempt * interval / 10 }));
+      if (updated) replaced++;
       copied++;
     }
     assert(replaced > 0, `a render replaces the pressed button at ${interval}ms`);
     results.push({ interval, copied, replaced });
   }
+
+  const replacedByTool = await copyAfterUpdate(async () => {
+    const thread = page.locator('#thread');
+    const top = await thread.evaluate(node => node.scrollTop);
+    await event({ type: 'delta', turn_id: turnId, text: ' after delta' });
+    await event({ type: 'tool', turn_id: turnId, name: 'Read' });
+    await page.waitForFunction(() => {
+      const pressedRow = window.pressedCopyTurn;
+      const row = document.querySelector('[data-turn="pointer-copy"]');
+      return pressedRow && !pressedRow.isConnected && row?.querySelector('.activity-line')?.textContent.includes('Read');
+    });
+    // Restore the scroll position so the release hits the new button at the original coordinates.
+    await thread.evaluate((node, top) => { node.scrollTop = top; }, top);
+  });
+  assert(replacedByTool, 'a tool event replaces the pressed button and its turn row');
+  assert(await page.evaluate(() => window.releasedCode.endsWith(' after delta')));
   return results;
+}
+
+async function copyFromCachedTopic(page, event) {
+  const other = { ...topic, tid: '1.3', topic_id: 3, name: 'Other conversation', count: 1 };
+  const original = { ...topic, name: 'Code examples', count: 2 };
+  let topics = [original, other];
+  await page.route('**/api/topics', route => route.fulfill({ json: { topics } }));
+  await page.route(/\/api\/topics\/1\.3\/messages\?/, route => route.fulfill({
+    json: { entries: [{ ...messages[0], seq: 42, text: 'Other conversation history' }], has_more: false },
+  }));
+  await event({ type: 'topics' });
+  await page.locator('#tlist [data-tid="1.3"]').click();
+  await page.locator('#thread [data-entry-seq="42"]').waitFor();
+
+  // Fail the history reload and let the separate unread-count request reach the fixture.
+  await page.route(/\/api\/topics\/1\.2\/messages\?/, route =>
+    route.fulfill({ status: 503, json: {} }), { times: 1 });
+  const unavailable = page.waitForResponse(response =>
+    new URL(response.url()).pathname === '/api/topics/1.2/messages' && response.status() === 503);
+  topics = [original];
+  await event({ type: 'topics' });
+  await unavailable;
+  assert.equal(await page.locator('#tlist [data-tid="1.3"]').count(), 0);
+  const counts = seq => page.locator(`#thread [data-entry-seq="${seq}"] .md pre`).evaluateAll(blocks =>
+    blocks.map(block => block.querySelectorAll(':scope > [data-copy-code]').length));
+  assert.deepEqual(await counts(1), [1], 'cached user code block');
+  assert.deepEqual(await counts(2), [1, 1], 'cached assistant code blocks');
 }
 
 async function codeCopy(browser) {
@@ -628,6 +679,7 @@ async function codeCopy(browser) {
         await readClipboard('first line\n  second line  ');
         await checkDocument();
         if (width === 1280 && colorScheme === 'light') {
+          await copyFromCachedTopic(page, event);
           console.log(JSON.stringify(await copyOpenBlockWithMouse(page, event)));
         }
       } finally {

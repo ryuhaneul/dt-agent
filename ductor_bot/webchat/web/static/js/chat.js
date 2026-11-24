@@ -756,7 +756,10 @@ export function renderThread({
   const showBusy = !state.range.newer && (busy.get(topic.tid) ?? topic.busy) && !liveTurns.length;
   const mounted = mountedRows(rows, start, end, showBusy), groups = threadGroups(mounted);
   if (changes || sameTopic) patchThread(thread, groups, changes);
-  else thread.innerHTML = groups.map(group => groupStart(group) + group.rows.map(itemMarkup).join('') + '</div>').join('');
+  else {
+    thread.innerHTML = groups.map(group => groupStart(group) + group.rows.map(itemMarkup).join('') + '</div>').join('');
+    addCodeCopy(thread);
+  }
   loadWindowAttachments(topic.tid, mounted);
   const pinned = !move && (bottom || followLatest) && !state.range.newer;
   if (seq !== null) {
@@ -1221,16 +1224,14 @@ export function initChat() {
     if (event.pointerType !== 'mouse' || event.button !== 0) return;
     const button = event.target.closest('[data-stream-tail] [data-copy-code]');
     if (!button) return;
-    const row = button.closest('[data-turn]');
-    const index = [...row.querySelectorAll('[data-copy-code]')].indexOf(button);
-    pressedCode = { button, row, index };
+    pressedCode = { button, turnId: button.closest('[data-turn]').dataset.turn };
   });
   document.addEventListener('pointerup', event => {
     if (event.pointerType !== 'mouse' || event.button !== 0) return;
     const pressed = pressedCode, released = event.target.closest('[data-copy-code]');
     pressedCode = null;
     if (pressed && released && !pressed.button.isConnected &&
-        pressed.row.querySelectorAll('[data-copy-code]')[pressed.index] === released) {
+        released.closest('[data-turn]')?.dataset.turn === pressed.turnId) {
       recoveredCode = released;
       void copyCode(released);
     }
