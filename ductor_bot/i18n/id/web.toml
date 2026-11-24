@@ -81,6 +81,7 @@ last_active = "Terakhir aktif: {time}"
 
 [chat]
 copy_message = "Salin pesan"
+copy_code = "Salin kode"
 activity = "Detail aktivitas"
 queued = "Dalam antrean"
 cancelled = "Dibatalkan"

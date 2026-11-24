@@ -66,7 +66,7 @@ async function open(kind,width,entries,secondEntries=entries) {
     else if(url.pathname==='/api/masterkey/status')result={state:'unconfigured',ttl_seconds:0};
     else if(url.pathname==='/api/files')result={files:[{name:'PERSONA.md'}]};
     else if(url.pathname==='/api/files/PERSONA.md' && cfg.mode==='preview-overflow')result={
-      name:'PERSONA.md',content:'A paragraph in a long file.\n\n'.repeat(300)+'Citation[^ref].\n\n[^ref]: Example source.',
+      name:'PERSONA.md',content:'A paragraph in a long file.\n\n'.repeat(300)+'    file preview code\n\nCitation[^ref].\n\n[^ref]: Example source.',
       sha256:'fake-sha',
     };
     else if(url.pathname==='/api/files/PERSONA.md')result={name:'PERSONA.md',content:'# Preview\n\n**bold** [link](https://example.test/preview)\n\nA[^1]\n\n[^1]: preview note\n\n<script>attack()</script>',sha256:'fake-sha'};
@@ -175,6 +175,8 @@ async function previewOverflow() {
     await page.waitForFunction(()=>!document.querySelector('#ed').disabled);
     await page.locator('#tPrev').click();
     await page.locator('#prev .footnotes > h2.sr-only').waitFor({state:'attached'});
+    assert.equal(await page.locator('#prev pre code').textContent(),'file preview code\n');
+    assert.equal(await page.locator('#prev [data-copy-code]').count(),0);
     const {height,viewport}=await page.evaluate(()=>({
       height:document.scrollingElement.scrollHeight,
       viewport:window.innerHeight,

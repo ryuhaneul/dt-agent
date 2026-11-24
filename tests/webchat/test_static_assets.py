@@ -2809,7 +2809,7 @@ def test_autocompact_dialog_has_labeled_scopes_and_bounded_token_inputs(markup):
     reason="Set DTW_PLAYWRIGHT_MODULE for message date browser checks",
 )
 @pytest.mark.parametrize(
-    "scenario", ["dates", "window", "focus", "overflow-footnote", "overflow-activity"]
+    "scenario", ["dates", "window", "focus", "overflow-footnote", "overflow-activity", "code-copy"]
 )
 def test_message_dates_browser(tmp_path, scenario):
     config = tmp_path / "dates.json"

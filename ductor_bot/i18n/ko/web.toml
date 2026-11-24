@@ -81,6 +81,7 @@ last_active = "마지막 활동 {time}"
 
 [chat]
 copy_message = "메시지 복사"
+copy_code = "코드 복사"
 activity = "활동 상세"
 queued = "대기 중"
 cancelled = "취소됨"
