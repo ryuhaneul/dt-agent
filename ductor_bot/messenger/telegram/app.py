@@ -57,6 +57,7 @@ from ductor_bot.messenger.telegram.callbacks import (
     selector_rows,
 )
 from ductor_bot.messenger.telegram.chat_tracker import ChatRecord, ChatTracker
+from ductor_bot.messenger.telegram.code_entities import code_entities_to_markdown
 from ductor_bot.messenger.telegram.file_browser import (
     file_browser_start,
     is_file_browser_callback,
@@ -2000,8 +2001,9 @@ class TelegramBot:
             self._get_topic_namer().on_user_message(get_session_key(message), text)
 
     async def _on_message(self, message: Message, topic_naming_started: bool = False) -> None:
-        from ductor_bot.chat_log.recorder import received_file
+        from ductor_bot.chat_log.recorder import received_display_markdown, received_file
 
+        received_display_markdown.set(None)
         received_file.set(None)
         try:
             if not topic_naming_started:
@@ -2024,6 +2026,7 @@ class TelegramBot:
             else:
                 await self._handle_non_streaming(message, key, text, thread_id=thread_id)
         finally:
+            received_display_markdown.set(None)
             received_file.set(None)
 
     async def _set_seen_reaction(self, message: Message) -> None:
@@ -2060,7 +2063,14 @@ class TelegramBot:
         if not message.text:
             return None
         text = strip_mention(message.text, self._bot_username)
-        return build_reply_prompt(message, text)
+        prompt = build_reply_prompt(message, text)
+        if text == message.text and "`" not in prompt.removesuffix(text):
+            display = code_entities_to_markdown(text, message.entities)
+            if display is not None:
+                from ductor_bot.chat_log.recorder import received_display_markdown
+
+                received_display_markdown.set(build_reply_prompt(message, display))
+        return prompt
 
     async def _handle_streaming(
         self,

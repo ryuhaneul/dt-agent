@@ -31,6 +31,9 @@ class ChatLogTurn(TypedDict):
 
 
 received_file: ContextVar[Path | None] = ContextVar("received_file", default=None)
+received_display_markdown: ContextVar[str | None] = ContextVar(
+    "received_display_markdown", default=None
+)
 logger = logging.getLogger(__name__)
 
 chat_log_source: ContextVar[ChatLogSource | None] = ContextVar("chat_log_source", default=None)
@@ -79,6 +82,8 @@ class HistoryRecorder:
     async def begin(self, dispatch: _MessageDispatch) -> None:
         incoming = received_file.get()
         received_file.set(None)
+        display_markdown = received_display_markdown.get()
+        received_display_markdown.set(None)
         if dispatch.key.transport != "tg":
             return
         self._busy(dispatch, busy=True)
@@ -105,6 +110,10 @@ class HistoryRecorder:
                 turn_id=turn["turn_id"] if turn else None,
             ),
         )
+        if source == "telegram" and display_markdown:
+            await self._history.record_display_markdown(
+                to_tid(dispatch.key), entry_id, display_markdown
+            )
 
     async def finish(
         self,

@@ -20,7 +20,12 @@ from ductor_bot.bus.envelope import DeliveryMode, Envelope, Origin
 from ductor_bot.chat_log.events import EventHub
 from ductor_bot.chat_log.history import HistoryStore
 from ductor_bot.chat_log.outbox import Outbox
-from ductor_bot.chat_log.recorder import HistoryRecorder, chat_log_source, chat_log_turn
+from ductor_bot.chat_log.recorder import (
+    HistoryRecorder,
+    chat_log_source,
+    chat_log_turn,
+    received_display_markdown,
+)
 from ductor_bot.config import AgentConfig
 from ductor_bot.heartbeat.models import HeartbeatOutcome, HeartbeatStatus
 from ductor_bot.i18n import t
@@ -77,6 +82,7 @@ async def test_conversation_sources_ids_and_events(
     queue = hub.subscribe()
     orch.set_history_recorder(recorder)
     source_token = chat_log_source.set(source)
+    display_token = received_display_markdown.set("`hello`")
     turn_token = chat_log_turn.set(
         {"turn_id": "turn", "user_entry_id": "123456abcdef", "reply_entry_id": "abcdef123456"}
     )
@@ -84,7 +90,12 @@ async def test_conversation_sources_ids_and_events(
         await orch.handle_message_streaming(
             SessionKey.telegram(-123, 7), "hello", request_transport=override
         )
+        assert received_display_markdown.get() is None
+        route_message = orch._route_message
+        assert isinstance(route_message, AsyncMock)
+        assert route_message.call_args.args[0].text == "hello"
     finally:
+        received_display_markdown.reset(display_token)
         chat_log_turn.reset(turn_token)
         chat_log_source.reset(source_token)
     rows = await store.read("-123.7")
@@ -99,7 +110,14 @@ async def test_conversation_sources_ids_and_events(
     else:
         assert all(row.turn_id is None and row.status is None for row in rows)
     recorded = events(queue)
-    assert [event["type"] for event in recorded] == ["busy", "entry", "entry", "busy"]
+    event_types = ["busy", "entry", "entry", "busy"]
+    metadata = await store.metadata("-123.7")
+    if expected == "telegram":
+        event_types.insert(2, "entry_meta")
+        assert metadata[rows[0].id]["display_markdown"] == "`hello`"
+    else:
+        assert metadata == {}
+    assert [event["type"] for event in recorded] == event_types
     assert recorded[0] == {"type": "busy", "tid": "-123.7", "busy": True, "source": expected}
     assert recorded[-1] == {**recorded[0], "busy": False}
 

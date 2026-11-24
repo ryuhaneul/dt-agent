@@ -2810,21 +2810,59 @@ def test_autocompact_dialog_has_labeled_scopes_and_bounded_token_inputs(markup):
     reason="Set DTW_PLAYWRIGHT_MODULE for message date browser checks",
 )
 @pytest.mark.parametrize(
-    "scenario", ["dates", "window", "focus", "overflow-footnote", "overflow-activity", "code-copy"]
+    "scenario",
+    [
+        "dates", "window", "focus", "overflow-footnote", "overflow-activity", "code-copy",
+        "telegram-code", "telegram-code-boundaries",
+    ],
 )
-def test_message_dates_browser(tmp_path, scenario):
+def test_message_dates_browser(tmp_path: Path, scenario: str) -> None:
     config = tmp_path / "dates.json"
-    config.write_text(
-        json.dumps(
+    settings: dict[str, object] = {
+        "static": str(STATIC),
+        "csp": CSP,
+        "starflowCsp": STARFLOW_CSP,
+        "shots": os.environ.get("DTW_DATES_SHOTS", str(tmp_path / "shots")),
+        "locales": {locale: load_web_strings(locale) for locale in ("en", "de", "ko")},
+    }
+    if scenario == "telegram-code":
+        from aiogram.types import MessageEntity
+
+        from ductor_bot.messenger.telegram.code_entities import code_entities_to_markdown
+
+        block = "echo hi"
+        inline = "  a`b "
+        text = f"{block}\nInline: {inline}."
+        entities = [
+            MessageEntity(type="pre", offset=0, length=len(block), language="sh"),
+            MessageEntity(type="code", offset=text.index(inline), length=len(inline)),
+        ]
+        settings["telegramCode"] = {
+            "text": text,
+            "display": code_entities_to_markdown(text, entities),
+            "block": block,
+            "inline": inline,
+        }
+    if scenario == "telegram-code-boundaries":
+        from aiogram.types import MessageEntity
+
+        from ductor_bot.messenger.telegram.code_entities import code_entities_to_markdown
+
+        settings["telegramCodeBoundaries"] = [
             {
-                "static": str(STATIC),
-                "csp": CSP,
-                "starflowCsp": STARFLOW_CSP,
-                "shots": os.environ.get("DTW_DATES_SHOTS", str(tmp_path / "shots")),
-                "locales": {locale: load_web_strings(locale) for locale in ("en", "de", "ko")},
+                "text": text,
+                "display": code_entities_to_markdown(
+                    text, [MessageEntity(type=kind, offset=offset, length=5)]
+                ),
+                "visible": visible,
             }
-        )
-    )
+            for text, kind, offset, visible in [
+                ("Before\n\n    `value", "pre", 13, "Before\n`value"),
+                ("literal`value", "code", 8, "literal`value"),
+                ("literal\\value", "code", 8, "literal\\value"),
+            ]
+        ]
+    config.write_text(json.dumps(settings))
     result = subprocess.run(
         ["node", "tests/webchat/message_dates_browser.mjs", str(config), scenario],
         capture_output=True,

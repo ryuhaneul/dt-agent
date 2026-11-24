@@ -187,6 +187,15 @@ The **Imported history** group covers topics with zero live entries and activity
 older than 30 days. Real imported topics remain usable and manageable.
 **Unknown topic** is a read-only history group.
 
+Webchat displays code blocks and inline code from new Telegram text messages.
+Webchat shows the original message when a backtick appears outside Telegram
+code, including in a reply quote, when code entities touch or overlap, when
+inline code contains a line break, when a backslash immediately precedes a code
+entity, when Telegram code formatting covers only part of a URL, or when the
+text outside code has an unmatched opening angle bracket before a code entity,
+as in an HTML tag or a comparison such as `a < b`.
+Copying the whole message uses the original recorded text.
+
 `GET /outbox` returns `{ "items": [...] }` containing web mirrors and buffered
 bus deliveries, including public origin/title metadata. See
 [recording and recovery](chat_log.md) for ordering, chunk splitting and the

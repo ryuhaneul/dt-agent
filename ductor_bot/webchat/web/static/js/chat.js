@@ -68,6 +68,7 @@ function mergeButtonMeta(state, entryId, incoming) {
     }
   }
   if (typeof incoming.answered === 'string') meta.answered = incoming.answered;
+  if (typeof incoming.display_markdown === 'string') meta.display_markdown = incoming.display_markdown;
   state.meta.set(entryId, meta);
   return meta;
 }
@@ -228,9 +229,11 @@ function streamContent(turn, live) {
 }
 
 function entryMarkup(entry) {
-  const displayText=attachmentView?.text(getTopic().tid,entry)??entry.text;
+  const text=attachmentView?.text(getTopic().tid,entry)??entry.text;
+  const hasDisplayMarkdown = entry.role === 'user' && typeof entry.display_markdown === 'string';
+  const displayText = hasDisplayMarkdown ? entry.display_markdown : text;
   const attachmentCards=attachmentView?.markup(getTopic().tid,entry)||'';
-  const copy = displayText ? copyButton({ entryId: entry.id }) : '';
+  const copy = text ? copyButton({ entryId: entry.id }) : '';
   const time = messageTime(entry.ts);
   const delegated = entry.role === 'event' && entry.kind === 'interagent';
   if (entry.role === 'event' && !delegated) {
@@ -241,7 +244,7 @@ function entryMarkup(entry) {
   }
   const turn = turns.get(entry.turn_id);
   const stopped = entry.status === 'aborted' || (entry.role === 'bot' && turn?.phase === 'aborted');
-  return `<div class="msg ${entry.role === 'user' ? 'me' : 'bot'}${entry.imported ? ' old' : ''}${entry.kind === 'command' ? ' command-message' : ''}" data-entry-seq="${entry.seq}"><div class="meta">${sourceTag(entry)}${delegated ? `<span class="tag">${esc(t('chat.delegated_response'))}</span>` : ''}${time}${delegated && entry.title ? `<span>${esc(entry.title)}</span>` : ''}${copy}</div><div class="bubble md">${entry.role === 'bot' ? activitySummary(turn) : ''}${entry.kind === 'command' ? esc(entry.text || '') : history(getTopic().tid).markdown({ ...entry, text: displayText })}${attachmentCards}${responseButtons(entry)}</div>${entry.role === 'user' ? queueStatus(entry.turn_id, entry.status) : ''}${stopped ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : ''}${mirror(entry)}</div>`;
+  return `<div class="msg ${entry.role === 'user' ? 'me' : 'bot'}${entry.imported ? ' old' : ''}${entry.kind === 'command' ? ' command-message' : ''}" data-entry-seq="${entry.seq}"><div class="meta">${sourceTag(entry)}${delegated ? `<span class="tag">${esc(t('chat.delegated_response'))}</span>` : ''}${time}${delegated && entry.title ? `<span>${esc(entry.title)}</span>` : ''}${copy}</div><div class="bubble md"${hasDisplayMarkdown ? ' data-display-markdown' : ''}>${entry.role === 'bot' ? activitySummary(turn) : ''}${entry.kind === 'command' ? esc(entry.text || '') : history(getTopic().tid).markdown({ ...entry, text: displayText })}${attachmentCards}${responseButtons(entry)}</div>${entry.role === 'user' ? queueStatus(entry.turn_id, entry.status) : ''}${stopped ? `<div class="stopped">${esc(t('chat.stopped'))}</div>` : ''}${mirror(entry)}</div>`;
 }
 function streamMarkup(turn) {
   const live = ['queued', 'started'].includes(turn.phase);
@@ -988,10 +991,10 @@ export async function handleEvent(event) {
     }
     case 'entry_meta': {
       const state = history(tid);
-      mergeButtonMeta(state, event.entry_id, event.meta || {});
+      const meta = mergeButtonMeta(state, event.entry_id, event.meta || {});
       const entry = state.entries.get(event.entry_id);
       if (entry) {
-        mergeHistory(state, [entry]);
+        mergeHistory(state, [{ ...entry, display_markdown: meta.display_markdown }]);
         updateEntries(tid, [entry.id]);
       }
       return;
