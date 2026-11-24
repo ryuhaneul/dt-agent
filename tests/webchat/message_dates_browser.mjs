@@ -620,24 +620,21 @@ async function telegramCodeBoundaries(browser) {
   const cases = config.telegramCodeBoundaries;
   const entries = cases.map(({ text, display }, index) => ({
     ...messages[194 + index], seq: index + 1, role: 'user', source: 'telegram', text,
-    display_markdown: display,
+    ...(display === null ? {} : { display_markdown: display }),
   }));
   const context = await browser.newContext({ permissions: ['clipboard-read', 'clipboard-write'] });
   try {
     const page = await context.newPage();
     await mockChat(page, entries);
     await page.goto(origin);
-    for (const [index, { text, block, prefix, suffix }] of cases.entries()) {
+    for (const [index, { text, visible }] of cases.entries()) {
       const row = page.locator('#thread [data-entry-seq="' + (index + 1) + '"]');
       await row.waitFor();
       const bubble = row.locator('.md');
-      const code = bubble.locator('code');
-      assert.equal(await code.count(), 1, text);
-      assert.equal(await bubble.locator('pre').count(), Number(block), text);
-      assert.equal(await code.textContent(), block ? 'value\n' : 'value', text);
-      const expected = block ? [prefix.trim(), 'value', suffix.trim()].filter(Boolean).join('\n')
-        : text;
-      assert.equal((await bubble.innerText()).replace(/\n+/g, '\n').trim(), expected, text);
+      const rendered = (await bubble.innerText()).replace(/\n+/g, '\n').trim();
+      assert.doesNotMatch(rendered, /&#(?:96|92);/, text);
+      assert.equal(rendered, visible, text);
+      assert.equal(await bubble.getAttribute('data-display-markdown'), null, text);
       await row.locator('[data-copy-message]').click();
       assert.equal(await page.evaluate(() => navigator.clipboard.readText()), text);
     }

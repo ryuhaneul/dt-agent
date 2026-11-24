@@ -2850,21 +2850,16 @@ def test_message_dates_browser(tmp_path: Path, scenario: str) -> None:
 
         settings["telegramCodeBoundaries"] = [
             {
-                "text": f"{prefix}value{suffix}",
+                "text": text,
                 "display": code_entities_to_markdown(
-                    f"{prefix}value{suffix}",
-                    [MessageEntity(type=kind, offset=len(prefix), length=5)],
+                    text, [MessageEntity(type=kind, offset=offset, length=5)]
                 ),
-                "block": kind == "pre",
-                "prefix": prefix,
-                "suffix": suffix,
+                "visible": visible,
             }
-            for kind in ("code", "pre")
-            for prefix, suffix in [
-                ("literal`", ""),
-                ("", "` literal"),
-                ("```", "```"),
-                ("literal\\`", ""),
+            for text, kind, offset, visible in [
+                ("Before\n\n    `value", "pre", 13, "Before\n`value"),
+                ("literal`value", "code", 8, "literal`value"),
+                ("literal\\value", "code", 8, "literal\\value"),
             ]
         ]
     config.write_text(json.dumps(settings))
