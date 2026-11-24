@@ -50,13 +50,38 @@ def test_inline_code(text: str, wrapped: str) -> None:
         ("a `` b ", "x`y", " end"),
         ("", "value", " with a ` later"),
         ("literal\\", "value", ""),
+        ("https://example.com/", "api", " call"),
+        ("<https://example.com/", "api", "> call"),
+        ('<div class="', "main", '"> edit'),
+        ("<!-- ", "TODO", " --> check"),
+        ("", "api", "www.example.com call"),
+        ("<", "br", "> tag"),
     ],
-    ids=["before", "after", "distant-before", "mixed-runs", "distant-after", "backslash-before"],
+    ids=[
+        "before",
+        "after",
+        "distant-before",
+        "mixed-runs",
+        "distant-after",
+        "backslash-before",
+        "url",
+        "autolink",
+        "html-tag",
+        "html-comment",
+        "www-suffix",
+        "tag-name",
+    ],
 )
 @pytest.mark.parametrize("kind", ["code", "pre"])
 def test_unsafe_punctuation_outside_code(prefix: str, content: str, suffix: str, kind: str) -> None:
     entity = MessageEntity(type=kind, offset=len(prefix), length=len(content))
     assert code_entities_to_markdown(f"{prefix}{content}{suffix}", [entity]) is None
+
+
+@pytest.mark.parametrize("content", ["https://example.com/api", '<div class="main">'])
+def test_full_url_or_html_tag_is_code(content: str) -> None:
+    entity = MessageEntity(type="code", offset=0, length=len(content))
+    assert code_entities_to_markdown(f"{content} call", [entity]) == f"`{content}` call"
 
 
 def test_indented_backtick_before_pre() -> None:

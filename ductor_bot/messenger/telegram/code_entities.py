@@ -31,6 +31,13 @@ def _wrap_code_entity(content: str, entity: MessageEntity) -> str:
     return f"{fence}{content}{fence}"
 
 
+def _has_touching_url(text: str, *, leading: bool) -> bool:
+    if not text or (text[0] if leading else text[-1]).isspace():
+        return False
+    token = text.split(maxsplit=1)[0] if leading else text.rsplit(maxsplit=1)[-1]
+    return "://" in token or "www." in token
+
+
 def code_entities_to_markdown(text: str, entities: Sequence[MessageEntity] | None) -> str | None:
     """Wrap only code entities, using Telegram's UTF-16 offsets."""
     spans = sorted(
@@ -52,17 +59,24 @@ def code_entities_to_markdown(text: str, entities: Sequence[MessageEntity] | Non
             return None
         try:
             before = raw[cursor:start].decode("utf-16-le")
+            prefix = raw[:start].decode("utf-16-le")
             content = raw[start:end].decode("utf-16-le")
         except UnicodeDecodeError:
             continue
-        if "`" in before or before.endswith("\\"):
+        if (
+            "`" in before
+            or before.endswith("\\")
+            or prefix.rfind("<") > prefix.rfind(">")
+            or _has_touching_url(before, leading=False)
+            or (parts and _has_touching_url(before, leading=True))
+        ):
             return None
         if entity.type == "code" and ("\n" in content or "\r" in content):
             return None
         parts.extend((before, _wrap_code_entity(content, entity)))
         cursor = end
     after = raw[cursor:].decode("utf-16-le")
-    if not parts or "`" in after:
+    if not parts or "`" in after or _has_touching_url(after, leading=True):
         return None
     parts.append(after)
     return "".join(parts)

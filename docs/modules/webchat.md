@@ -190,8 +190,8 @@ older than 30 days. Real imported topics remain usable and manageable.
 Webchat displays code blocks and inline code from new Telegram text messages.
 Webchat shows the original message when a backtick appears outside Telegram
 code, including in a reply quote, when code entities touch or overlap, when
-inline code contains a line break, or when a backslash immediately precedes a
-code entity.
+inline code contains a line break, when a backslash immediately precedes a code
+entity, or when Telegram code formatting covers only part of a URL or HTML tag.
 Copying the whole message uses the original recorded text.
 
 `GET /outbox` returns `{ "items": [...] }` containing web mirrors and buffered
