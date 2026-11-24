@@ -188,6 +188,8 @@ def render_http_top(config: dict[str, Any]) -> str:
 def render_crs_after(config: dict[str, Any]) -> str:
     host = re.escape(config["domain"])
     rules = (
+        # The nginx map skips AppSec for message posts without a query string,
+        # so this rule only applies to message posts that carry one.
         (
             9600100,
             "POST",
