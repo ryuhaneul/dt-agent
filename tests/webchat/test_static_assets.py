@@ -2412,7 +2412,7 @@ if(scenario==='unread-partial-failure'||scenario==='unread-delayed-history'){
   assert.deepEqual(notices,[]);
  }
 }
-if(['unread-seen-partial','unread-mark-all-once','unread-first-entry','unread-late-duplicate'].includes(scenario)){
+if(['unread-seen-partial','unread-mark-all-once','unread-first-entry','unread-late-duplicate','unread-late-entry-preview'].includes(scenario)){
  const rows=['1.2','1.3'].map(tid=>({tid,name:'Topic '+tid,group:'telegram',seen:1}));
  const entries=new Map(rows.map(row=>[row.tid,[{seq:1}]]));
  const reads=[],notices=[];
@@ -2423,6 +2423,7 @@ if(['unread-seen-partial','unread-mark-all-once','unread-first-entry','unread-la
  const api=async url=>{
   if(url==='/topics'){
    const snapshot=rows.map(row=>({...row,count:entries.get(row.tid).length}));
+   if(scenario==='unread-late-entry-preview')entries.get('1.3').push({seq:4});
    if(holdTopics)await holdTopics;
    return {topics:snapshot};
   }
@@ -2478,6 +2479,19 @@ if(['unread-seen-partial','unread-mark-all-once','unread-first-entry','unread-la
   release();
   await refresh;
   assert.equal(badge('1.2'),'1','an older topic snapshot does not clear the first badge');
+ }else if(scenario==='unread-late-entry-preview'){
+  Object.assign(rows[0],{last_ts:'2026-01-03T00:00:00Z',preview:'other message'});
+  Object.assign(rows[1],{last_ts:'2026-01-01T00:00:00Z',preview:'message 1'});
+  const sidebar=()=>get('tlist').innerHTML;
+  const order=()=>Array.from(sidebar().matchAll(/data-tid="([^"]+)"/g), match=>match[1]);
+  await topics.refreshTopics();
+  assert.equal(badge('1.3'),'1','history already counted message 4');
+  assert.ok(sidebar().includes('message 1'));
+  assert.deepEqual(order(),['1.2','1.3']);
+  topics.noteEntry('1.3',{seq:4,text:'message 4',ts:'2026-01-04T00:00:00Z'});
+  assert.equal(badge('1.3'),'1');
+  assert.ok(sidebar().includes('message 4'),'the sidebar shows the latest message');
+  assert.deepEqual(order(),['1.3','1.2'],'the updated topic moves to the top');
  }else{
   entries.get('1.2').push({seq:2});
   await topics.refreshTopics();
@@ -2574,6 +2588,7 @@ console.log(`Header contract passed: ${scenario}`);
         "unread-mark-all-once",
         "unread-first-entry",
         "unread-late-duplicate",
+        "unread-late-entry-preview",
         "migration-failure",
         "rollback-forward",
         "rollback-reverse",
