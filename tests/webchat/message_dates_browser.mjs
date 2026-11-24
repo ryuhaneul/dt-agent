@@ -803,12 +803,15 @@ async function telegramCodeBoundaries(browser) {
 
 async function userLineBreaks(browser) {
   const text = 'First line\nSecond line\nThird line';
+  const xml = '<config>\n  <a>1</a>\n</config>';
   const code = 'one  two\n  three';
   const display = text + '\n\n- List first\n  List second\n\n```text\n' + code + '\n```';
   const entries = [
     { ...messages[194], seq: 1, role: 'user', source: 'web', text },
     { ...messages[195], seq: 2, role: 'bot', text },
     { ...messages[196], seq: 3, role: 'user', source: 'telegram', text, display_markdown: display },
+    { ...messages[197], seq: 4, role: 'user', source: 'web', text: xml },
+    { ...messages[198], seq: 5, role: 'bot', text: xml },
   ];
   const lineCount = locator => locator.evaluate(node => {
     const lines = new Set(), walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
@@ -840,6 +843,12 @@ async function userLineBreaks(browser) {
         assert.equal(await lineCount(message(3).locator('p')), 3);
         assert.equal(await lineCount(message(3).locator('li')), 2);
         assert.equal(await message(3).locator('pre code').textContent(), code + '\n');
+        assert.equal(await lineCount(message(4)), 3);
+        assert.equal(await lineCount(message(5)), 1);
+        for (const seq of [4, 5]) {
+          assert.equal(await message(seq).textContent(), xml);
+          assert.equal(await message(seq).locator('config, a').count(), 0);
+        }
       };
       await page.evaluate(() => document.fonts.ready);
       await checkMessages();
@@ -848,9 +857,9 @@ async function userLineBreaks(browser) {
       const next = { ...topic, tid: '1.3', topic_id: 3, name: 'Second topic', count: 1 };
       await page.route('**/api/topics', route => route.fulfill({ json: { topics: [next] } }));
       await page.route(/\/api\/topics\/1\.3\/messages\?/, route =>
-        route.fulfill({ json: { entries: [messages[4]], has_more: false } }));
+        route.fulfill({ json: { entries: [messages[5]], has_more: false } }));
       socket.send(JSON.stringify({ type: 'topics' }));
-      await message(5).waitFor();
+      await message(6).waitFor();
 
       let releaseHistory;
       const historyGate = new Promise(resolve => { releaseHistory = resolve; });

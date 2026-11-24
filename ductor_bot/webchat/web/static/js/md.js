@@ -172,14 +172,19 @@ function displayHtml(prefix, scoped, orderedStart, preserveLineBreaks) {
     exit[token] = function () { if (!inImage()) this.tag(`</${tag}>`); };
   }
   if (preserveLineBreaks) {
-    let inSetextHeading = false;
+    let inSetextHeading = false, inHtml = false;
+    enter.htmlFlowData = enter.htmlTextData = () => { inHtml = true; };
+    exit.htmlFlow = exit.htmlText = function () {
+      inHtml = false;
+      this.setData('ignoreEncode');
+    };
     enter.setextHeadingText = () => { inSetextHeading = true; };
     exit.setextHeadingText = function () {
       inSetextHeading = false;
       this.setData('slurpAllLineEndings', true);
     };
     enter.lineEnding = function (token) {
-      if (token.userLineEnding && !inSetextHeading && !inImage()) this.tag('<br />');
+      if ((token.userLineEnding || inHtml) && !inSetextHeading && !inImage()) this.tag('<br />');
     };
   }
   return [base, { enter, exit }];

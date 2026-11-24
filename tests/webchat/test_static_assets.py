@@ -1970,6 +1970,28 @@ for(const text of ['a  \nb','a\\\nb','a\n\nb','a\nb\n---','`a\nb`','```\na  b\n 
  'a | b\n--- | ---\nc | d','![a\nb](https://example.com)']){
  assert.equal(userMarkdown(text),md(text),text);
 }
+const escapedHtmlCases=[
+ ['<config>\n  <a>1</a>\n</config>',
+  '&lt;config&gt;\n  &lt;a&gt;1&lt;/a&gt;\n&lt;/config&gt;',
+  '&lt;config&gt;<br />\n  &lt;a&gt;1&lt;/a&gt;<br />\n&lt;/config&gt;'],
+ ['<div>\n</div>\ntext\n\nnext',
+  '&lt;div&gt;\n&lt;/div&gt;\ntext\n<p>next</p>',
+  '&lt;div&gt;<br />\n&lt;/div&gt;<br />\ntext\n<p>next</p>'],
+ ['see <b\nc> tag\nnext',
+  '<p>see &lt;b\nc&gt; tag\nnext</p>',
+  '<p>see &lt;b<br />\nc&gt; tag<br />\nnext</p>'],
+ ['<script>\n  noop()\n</script>',
+  '&lt;script&gt;\n  noop()\n&lt;/script&gt;',
+  '&lt;script&gt;<br />\n  noop()<br />\n&lt;/script&gt;'],
+ ['<img\n  src="x" onerror="noop()">',
+  '<p>&lt;img\nsrc=&quot;x&quot; onerror=&quot;noop()&quot;&gt;</p>',
+  '<p>&lt;img<br />\nsrc=&quot;x&quot; onerror=&quot;noop()&quot;&gt;</p>'],
+];
+for(const [input,standard,preserved] of escapedHtmlCases){
+ assert.equal(md(input),standard,input);
+ assert.equal(userMarkdown(input),preserved,input);
+}
+assert.equal(userMarkdown('see <b\nc> tag\n---'),md('see <b\nc> tag\n---'));
 const cache=createMarkdownCache('test');
 const entry={seq:1,text:'a\nb',role:'user'};
 assert.equal(cache(entry),userMarkdown(entry.text));
