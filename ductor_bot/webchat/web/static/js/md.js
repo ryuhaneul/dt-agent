@@ -9,9 +9,33 @@ const hrefProtocols = /^(https?|ircs?|mailto|xmpp)$/i;
 const imageProtocols = /^https?$/i;
 function linked(href) { return /^(?:[a-z][a-z\d+.-]*:|#)/i.test(href); }
 
+const userLineEnding = {
+  tokenize(effects, ok, nok) {
+    return code => {
+      const construct = this.parser.constructs.text[code].find(item => item.name === 'lineEnding');
+      return effects.attempt(construct, ok, nok)(code);
+    };
+  },
+  resolve(events) {
+    events[0][1].userLineEnding = true;
+    return events;
+  },
+  resolveAll(events) {
+    for (let index = 1; index < events.length; index++) {
+      const [phase, token] = events[index];
+      const previous = events[index - 1][1].type;
+      if (phase === 'enter' && token.userLineEnding && previous.startsWith('hardBreak')) {
+        token.userLineEnding = false;
+      }
+    }
+    return events;
+  },
+};
+const userLineBreaks = { text: { [-5]: userLineEnding, [-4]: userLineEnding, [-3]: userLineEnding } };
+
 // Compose nested media from tokens, before emitting HTML. No generated attributes
 // are parsed again, and images never become browser image elements.
-function displayHtml(prefix, scoped, orderedStart = null) {
+function displayHtml(prefix, scoped, orderedStart, preserveLineBreaks) {
   const stack = [];
   const base = gfmHtml({ clobberPrefix: prefix });
   const labelId = scoped ? `${prefix}footnote-label` : 'footnote-label';
@@ -147,14 +171,32 @@ function displayHtml(prefix, scoped, orderedStart = null) {
     enter[token] = function () { if (!inImage()) this.tag(`<${tag}>`); };
     exit[token] = function () { if (!inImage()) this.tag(`</${tag}>`); };
   }
+  if (preserveLineBreaks) {
+    let inSetextHeading = false, inHtml = false;
+    enter.htmlFlowData = enter.htmlTextData = () => { inHtml = true; };
+    exit.htmlFlow = exit.htmlText = function () {
+      inHtml = false;
+      this.setData('ignoreEncode');
+    };
+    enter.setextHeadingText = () => { inSetextHeading = true; };
+    exit.setextHeadingText = function () {
+      inSetextHeading = false;
+      this.setData('slurpAllLineEndings', true);
+    };
+    enter.lineEnding = function (token) {
+      if ((token.userLineEnding || inHtml) && !inSetextHeading && !inImage()) this.tag('<br />');
+    };
+  }
   return [base, { enter, exit }];
 }
 
-export function md(text, { scope = null, orderedStart = null } = {}) {
+export function md(text, { scope = null, orderedStart = null, preserveLineBreaks = false } = {}) {
   const prefix = scope === null ? 'user-content-' : `dtw-${encodeURIComponent(scope)}-`;
+  const extensions = [gfm(), { disable: { null: ['strikethrough'] } }];
+  if (preserveLineBreaks) extensions.push(userLineBreaks);
   return micromark(String(text), {
-    extensions: [gfm(), { disable: { null: ['strikethrough'] } }],
-    htmlExtensions: displayHtml(prefix, scope !== null, orderedStart),
+    extensions,
+    htmlExtensions: displayHtml(prefix, scope !== null, orderedStart, preserveLineBreaks),
   });
 }
 
@@ -164,12 +206,13 @@ export function createMarkdownCache(scope) {
   const entries = new Map();
   return entry => {
     const text = String(entry.text || '');
+    const preserveLineBreaks = entry.role === 'user';
     let hash = 2166136261;
     for (let index = 0; index < text.length; index++) hash = Math.imul(hash ^ text.charCodeAt(index), 16777619);
     const cached = entries.get(entry.seq);
-    if (cached?.hash === hash && cached.text === text) return cached.html;
-    const html = md(text, { scope: `${scope}:${entry.seq}` });
-    entries.set(entry.seq, { hash, text, html });
+    if (cached?.hash === hash && cached.text === text && cached.preserveLineBreaks === preserveLineBreaks) return cached.html;
+    const html = md(text, { scope: `${scope}:${entry.seq}`, preserveLineBreaks });
+    entries.set(entry.seq, { hash, text, preserveLineBreaks, html });
     return html;
   };
 }

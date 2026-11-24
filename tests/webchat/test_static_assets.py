@@ -1961,8 +1961,42 @@ MARKDOWN_RENDER_TESTS = r"""
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {pathToFileURL} from 'node:url';
-const {md}=await import(pathToFileURL(fs.readFileSync(0,'utf8')));
+const {md,createMarkdownCache}=await import(pathToFileURL(fs.readFileSync(0,'utf8')));
 const compact=text=>text.replace(/>\n(?=<)/g,'>');
+const userMarkdown=text=>md(text,{preserveLineBreaks:true});
+assert.equal(userMarkdown('a  b \n  c\r\nd\re'),'<p>a  b<br />\nc<br />\r\nd<br />\re</p>');
+assert.equal(userMarkdown('- a\n  b\n  - c\n- d'),'<ul>\n<li>a<br />\nb\n<ul>\n<li>c</li>\n</ul>\n</li>\n<li>d</li>\n</ul>');
+for(const text of ['a  \nb','a\\\nb','a\n\nb','a\nb\n---','`a\nb`','```\na  b\n c\n```',
+ 'a | b\n--- | ---\nc | d','![a\nb](https://example.com)']){
+ assert.equal(userMarkdown(text),md(text),text);
+}
+const escapedHtmlCases=[
+ ['<config>\n  <a>1</a>\n</config>',
+  '&lt;config&gt;\n  &lt;a&gt;1&lt;/a&gt;\n&lt;/config&gt;',
+  '&lt;config&gt;<br />\n  &lt;a&gt;1&lt;/a&gt;<br />\n&lt;/config&gt;'],
+ ['<div>\n</div>\ntext\n\nnext',
+  '&lt;div&gt;\n&lt;/div&gt;\ntext\n<p>next</p>',
+  '&lt;div&gt;<br />\n&lt;/div&gt;<br />\ntext\n<p>next</p>'],
+ ['see <b\nc> tag\nnext',
+  '<p>see &lt;b\nc&gt; tag\nnext</p>',
+  '<p>see &lt;b<br />\nc&gt; tag<br />\nnext</p>'],
+ ['<script>\n  noop()\n</script>',
+  '&lt;script&gt;\n  noop()\n&lt;/script&gt;',
+  '&lt;script&gt;<br />\n  noop()<br />\n&lt;/script&gt;'],
+ ['<img\n  src="x" onerror="noop()">',
+  '<p>&lt;img\nsrc=&quot;x&quot; onerror=&quot;noop()&quot;&gt;</p>',
+  '<p>&lt;img<br />\nsrc=&quot;x&quot; onerror=&quot;noop()&quot;&gt;</p>'],
+];
+for(const [input,standard,preserved] of escapedHtmlCases){
+ assert.equal(md(input),standard,input);
+ assert.equal(userMarkdown(input),preserved,input);
+}
+assert.equal(userMarkdown('see <b\nc> tag\n---'),md('see <b\nc> tag\n---'));
+const cache=createMarkdownCache('test');
+const entry={seq:1,text:'a\nb',role:'user'};
+assert.equal(cache(entry),userMarkdown(entry.text));
+assert.equal(cache({...entry,role:'bot'}),md(entry.text));
+
 assert.equal(md('# Title\n## Sub\n- **bold**\n- `code`\n[x](https://example.com)'),
  '<h1>Title</h1>\n<h2>Sub</h2>\n<ul>\n<li><strong>bold</strong></li>\n<li><code>code</code>\n<a href="https://example.com" target="_blank" rel="noopener noreferrer">x</a></li>\n</ul>');
 const table=md('| Left | Center | Right |\n| :--- | :---: | ---: |\n| **A** | `B` | <img onerror="x"> |');
@@ -2813,7 +2847,7 @@ def test_autocompact_dialog_has_labeled_scopes_and_bounded_token_inputs(markup):
     "scenario",
     [
         "dates", "window", "focus", "overflow-footnote", "overflow-activity", "code-copy",
-        "telegram-code", "telegram-code-boundaries",
+        "telegram-code", "telegram-code-boundaries", "user-line-breaks",
     ],
 )
 def test_message_dates_browser(tmp_path: Path, scenario: str) -> None:

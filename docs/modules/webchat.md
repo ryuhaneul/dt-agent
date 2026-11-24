@@ -187,6 +187,8 @@ The **Imported history** group covers topics with zero live entries and activity
 older than 30 days. Real imported topics remain usable and manageable.
 **Unknown topic** is a read-only history group.
 
+Webchat preserves line breaks inside paragraphs, list items, and escaped HTML
+text in user messages.
 Webchat displays code blocks and inline code from new Telegram text messages.
 Webchat shows the original message when a backtick appears outside Telegram
 code, including in a reply quote, when code entities touch or overlap, when
