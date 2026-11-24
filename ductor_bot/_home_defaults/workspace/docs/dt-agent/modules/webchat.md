@@ -282,12 +282,15 @@ Each image has its own processing menu. **Original** is the default and uploads
 the selected file's bytes unchanged. Processing happens in the browser only when
 selected. The options show the estimated output file size and, for supported
 images within the processing limits, the original pixel dimensions. Resize
-modes also show the resulting pixel dimensions.
+modes also show the resulting pixel dimensions when a smaller file is produced.
+If processing yields a file as large as or larger than the original, the options
+show the original size and dimensions with a notice. The original is sent
+unchanged.
 
 | Choice | Uploaded result |
 |---|---|
 | Original | Original bytes, format and resolution |
-| Resize | Scale both dimensions to 80% (default), 50%, or 25%; JPEG/PNG/WebP retain their format, other decoded formats become PNG |
+| Resize | Scale both dimensions to 80% (default), 50%, or 25%. Encode JPEG inputs only as JPEG. For other inputs, keep the smaller of the original format (PNG for formats other than PNG or WebP) and lossless WebP if supported |
 | Compress | Convert to WebP at the selected quality, retaining the dimensions |
 | Resize + compress | Apply both the selected scale and WebP quality |
 
