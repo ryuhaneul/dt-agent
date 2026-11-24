@@ -433,6 +433,73 @@ async function documentOverflow(browser, scenario) {
   }
 }
 
+async function copyOpenBlockWithMouse(page, event) {
+  const turnId = 'pointer-copy';
+  await event({ type: 'delta', turn_id: turnId, text: '~~~text\nStreaming code' });
+  const button = page.locator('[data-turn="pointer-copy"] [data-copy-code]');
+  await button.waitFor();
+  await button.scrollIntoViewIfNeeded();
+  await page.evaluate(() => {
+    window.copyToasts = 0;
+    const toasts = document.querySelector('#toasts');
+    toasts.replaceChildren();
+    new MutationObserver(records => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (node.querySelector?.('[data-i18n="common.copied"]')) window.copyToasts++;
+        }
+      }
+    }).observe(toasts, { childList: true });
+    document.addEventListener('pointerdown', event => {
+      window.pressedCopyButton = event.target.closest('[data-copy-code]');
+    }, true);
+    document.addEventListener('pointerup', event => {
+      const button = event.target.closest('[data-copy-code]');
+      window.copyButtonReplaced = Boolean(window.pressedCopyButton && !window.pressedCopyButton.isConnected);
+      window.releasedCode = button?.nextElementSibling.textContent.replace(/\r?\n$/, '');
+    }, true);
+  });
+
+  const results = [];
+  for (const interval of [30, 100, 250]) {
+    let copied = 0, replaced = 0;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const before = await page.evaluate(async () => {
+        await navigator.clipboard.writeText('Waiting for copy');
+        document.querySelector('#toasts').replaceChildren();
+        return window.copyToasts;
+      });
+      const bounds = await button.boundingBox();
+      await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+      await page.mouse.down();
+      await page.evaluate(async ({ turnId, interval, phase }) => {
+        const { handleEvent } = await import('/static/js/chat.js');
+        const append = () => handleEvent({ tid: '1.2', turn_id: turnId, type: 'delta', text: ' more' });
+        let updates;
+        const first = setTimeout(() => {
+          void append();
+          updates = setInterval(append, interval);
+        }, phase);
+        await new Promise(resolve => setTimeout(resolve, 80));
+        clearTimeout(first);
+        clearInterval(updates);
+      }, { turnId, interval, phase: attempt * interval / 10 });
+      await page.mouse.up();
+      if (await page.evaluate(() => window.copyButtonReplaced)) replaced++;
+      await page.waitForFunction(async () => {
+        return window.releasedCode && (await navigator.clipboard.readText()) === window.releasedCode;
+      }, null, { timeout: 2000 });
+      await page.waitForFunction(count => window.copyToasts > count, before, { timeout: 2000 });
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      assert.equal(await page.evaluate(() => window.copyToasts), before + 1, 'one toast per click');
+      copied++;
+    }
+    assert(replaced > 0, `a render replaces the pressed button at ${interval}ms`);
+    results.push({ interval, copied, replaced });
+  }
+  return results;
+}
+
 async function codeCopy(browser) {
   const measurements = [];
   const fence = '`';
@@ -560,6 +627,9 @@ async function codeCopy(browser) {
         await finished.click();
         await readClipboard('first line\n  second line  ');
         await checkDocument();
+        if (width === 1280 && colorScheme === 'light') {
+          console.log(JSON.stringify(await copyOpenBlockWithMouse(page, event)));
+        }
       } finally {
         await context.close();
       }
