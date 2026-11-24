@@ -8,7 +8,7 @@ let topics = [], selected = null, hits = [], query = '', searchTimer, revision =
 let active = false, request = 0, readEpoch = 0, markingAll = false, migrationEpoch = null;
 let renaming = null, renameBusy = false, renameEpoch = 0;
 const unread = new Map(), seen = new Map(), confirmed = new Map(), latest = new Map(), migrated = new Set();
-const unreadReaders = new WeakMap();
+const unreadReaders = new WeakMap(), unreadSequences = new Map(), syncedAll = new Map();
 export function getTopics() { return topics; }
 export function getTopic() { return topics.find(topic => topic.tid === selected) || null; }
 export function formatTime(value, date = false) {
@@ -24,17 +24,33 @@ function mergeSeen(tid, seq) {
   const previous = storedSeen(tid);
   seen.set(tid, previous === null ? seq : Math.max(previous, seq));
 }
+function renderUnreadCounts(results, generation) {
+  if (!active || generation !== revision) return false;
+  renderTopics();
+  const failure = results.find(result => result.status === 'rejected');
+  if (failure) throw failure.reason;
+  return true;
+}
+async function syncTopicSeen(topic, seq, all, generation) {
+  const { tid } = topic;
+  mergeSeen(tid, seq);
+  if ((all && !latest.has(tid)) || latest.get(tid) <= storedSeen(tid)) {
+    unread.set(tid, 0);
+  } else await countUnread(topic, generation);
+}
 async function syncSeen(cursors, all = false) {
   const generation = revision;
-  await Promise.all(topics.map(async topic => {
-    const seq = cursors[topic.tid];
+  const results = await Promise.allSettled(topics.map(topic => {
+    const { tid } = topic, seq = cursors[tid];
     if (!Number.isInteger(seq)) return;
-    mergeSeen(topic.tid, seq);
-    if ((all && !latest.has(topic.tid)) || latest.get(topic.tid) <= storedSeen(topic.tid)) {
-      unread.set(topic.tid, 0);
-    } else await countUnread(topic, generation);
+    const previous = all ? syncedAll.get(tid) : null;
+    if (previous && previous.seq >= seq) return previous.task;
+    const task = syncTopicSeen(topic, seq, all, generation);
+    // The same mark-all update can arrive over both HTTP and the socket.
+    if (all) syncedAll.set(tid, { seq, task: task.catch(() => {}) });
+    return task;
   }));
-  if (active && generation === revision) renderTopics();
+  renderUnreadCounts(results, generation);
 }
 export function markSeen(tid, seq) {
   if (!active || !Number.isInteger(seq)) return;
@@ -59,6 +75,7 @@ async function markAllSeen() {
   if (!active || markingAll) return;
   const epoch = readEpoch, button = document.querySelector('#markAllRead');
   markingAll = true; button.disabled = true;
+  syncedAll.clear();
   try {
     const data = await api('/topics/seen-all', { method: 'POST' });
     if (active && epoch === readEpoch) await syncSeen(data.seen, true);
@@ -102,9 +119,10 @@ export function renderTopics() {
   if (focusedTid) [...list.querySelectorAll('.cell')].find(cell =>
     cell.dataset.tid === focusedTid && cell.dataset.seq === focusedSeq)?.focus();
 }
-async function countUnread(topic, generation) {
+async function countUnread(topic, generation, liveDuringRefresh = false) {
   const { tid } = topic, last = storedSeen(tid);
-  if (last === null) { unread.set(tid, topic.count); return; }
+  if (last === null && !liveDuringRefresh) { unread.set(tid, topic.count); return; }
+  const threshold = last ?? -Infinity;
   const readers = unreadReaders.get(topic) ?? new Set(), arrived = new Set();
   unreadReaders.set(topic, readers);
   readers.add(arrived);
@@ -116,14 +134,15 @@ async function countUnread(topic, generation) {
         const data = await api(`/topics/${encodeURIComponent(tid)}/messages?limit=100${before}`);
         if (!active || generation !== revision) return;
         if (data.entries.length) latest.set(tid, Math.max(latest.get(tid) ?? -Infinity, data.entries.at(-1).seq));
-        for (const entry of data.entries) if (entry.seq > last) sequences.add(entry.seq);
-        if (!data.has_more || !data.entries.length || data.entries[0].seq <= last) break;
+        for (const entry of data.entries) if (entry.seq > threshold) sequences.add(entry.seq);
+        if (!data.has_more || !data.entries.length || data.entries[0].seq <= threshold) break;
         before = `&before=${data.entries[0].seq}`;
       }
       if (!active || generation !== revision || storedSeen(tid) !== last) return;
       // Recount once, then merge live entries by sequence so busy topics can finish.
       if (attempt === 0 && arrived.size) continue;
-      for (const seq of arrived) if (seq > last) sequences.add(seq);
+      for (const seq of arrived) if (seq > threshold) sequences.add(seq);
+      unreadSequences.set(tid, sequences);
       unread.set(tid, sequences.size);
       return;
     }
@@ -165,8 +184,11 @@ async function migrateSeen() {
 }
 export async function refreshTopics() {
   const generation = ++revision;
+  const previousCounts = new Map(topics.map(topic => [topic.tid, topic.count]));
   const data = await api('/topics');
   if (!active || generation !== revision) return;
+  // A topic snapshot has no sequence cursor for counts from unread-only history.
+  const liveTopics = new Set(topics.filter(topic => topic.count !== previousCounts.get(topic.tid)).map(topic => topic.tid));
   topics = data.topics;
   for (const topic of topics) mergeSeen(topic.tid, topic.seen);
   for (const topic of topics) {
@@ -179,23 +201,24 @@ export async function refreshTopics() {
   else document.dispatchEvent(new CustomEvent('topic-updated', { detail: getTopic() }));
   renderTopics();
   document.dispatchEvent(new CustomEvent('topics-updated', { detail: topics }));
-  const counts = await Promise.allSettled(topics.map(topic => countUnread(topic, generation)));
-  if (active && generation === revision) {
-    renderTopics();
-    // Apply the successful counts before forwarding an error to the caller.
-    const failure = counts.find(result => result.status === 'rejected');
-    if (failure) throw failure.reason;
-    void migrateSeen();
-  }
+  const counts = await Promise.allSettled(topics.map(topic => countUnread(topic, generation, liveTopics.has(topic.tid))));
+  if (renderUnreadCounts(counts, generation)) void migrateSeen();
 }
 export function noteEntry(tid, entry) {
   const topic = topics.find(item => item.tid === tid);
   if (!topic) return;
+  const counted = unreadSequences.get(tid);
+  if (counted?.has(entry.seq)) return;
   for (const arrived of unreadReaders.get(topic) ?? []) arrived.add(entry.seq);
   topic.last_ts = entry.ts; topic.preview = entry.text; topic.count++;
   latest.set(tid, Math.max(latest.get(tid) ?? -Infinity, entry.seq));
   if (entry.imported) topic.imported_count++;
-  if (storedSeen(tid) === null || entry.seq > storedSeen(tid)) unread.set(tid, (unread.get(tid) || 0) + 1);
+  if (storedSeen(tid) === null || entry.seq > storedSeen(tid)) {
+    const sequences = counted ?? new Set();
+    sequences.add(entry.seq);
+    unreadSequences.set(tid, sequences);
+    unread.set(tid, (unread.get(tid) || 0) + 1);
+  }
   topics.sort((a, b) => (b.last_ts || '').localeCompare(a.last_ts || ''));
   renderTopics();
 }
@@ -282,6 +305,7 @@ export function initTopics() {
       form.querySelectorAll('input, button').forEach(element => { element.disabled = false; });
       document.querySelector('#renameClose').disabled = false;
       ++revision; ++request; clearTimeout(searchTimer); topics = []; selected = null; hits = [];
+      unreadSequences.clear(); syncedAll.clear();
       query = ''; unread.clear(); seen.clear(); confirmed.clear(); latest.clear(); migrated.clear(); document.querySelector('#q').value = ''; renderTopics();
     }
   });
