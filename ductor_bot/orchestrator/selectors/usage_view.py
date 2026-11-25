@@ -135,7 +135,8 @@ def render_usage(
     if codex is None:
         lines.append("Codex  " + t("usage.loading"))
     elif codex.error is not None:
-        lines.append("Codex  " + t("usage.failed", reason=t(f"usage.{codex.error}")))
+        reason = "invalid_response" if codex.error == "chatgpt_auth_required" else codex.error
+        lines.append("Codex  " + t("usage.failed", reason=t(f"usage.{reason}")))
     else:
         title = "Codex"
         if codex.captured_at is not None:

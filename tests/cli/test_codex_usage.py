@@ -17,6 +17,15 @@ from ductor_bot.cli.auth import AuthResult, AuthStatus
 from ductor_bot.cli import codex_usage
 from ductor_bot.cli.codex_usage import query_codex_usage, parse_codex_usage
 
+CHATGPT_AUTH_ERROR = (
+    '{"error":{"code":-32600,"message":"chatgpt authentication required to read rate limits"},"id":2}'
+)
+CODEX_ACCOUNT_AUTH_ERROR = (
+    '{"error":{"code":-32600,'
+    '"message":"codex account authentication required to read rate limits"},"id":2}'
+)
+
+
 RESPONSE = {
     "id": 2,
     "result": {
@@ -60,10 +69,23 @@ def isolate_query_state(monkeypatch):
     monkeypatch.setattr(codex_usage, "_completed_at", None)
     monkeypatch.setattr(codex_usage, "_last_successful", None)
     monkeypatch.setattr(codex_usage, "_logged_refresh_errors", set())
+    monkeypatch.setattr(codex_usage, "_turn_auth_rejection", None)
 
 
 @pytest.fixture
-def server(tmp_path, monkeypatch):
+def usage_auth_file(tmp_path, monkeypatch):
+    from ductor_bot.cli.auth import check_codex_auth
+
+    monkeypatch.setenv("OPENAI_API_KEY", "fixture-api-key")
+    monkeypatch.setattr(codex_usage, "check_codex_auth", check_codex_auth)
+    auth_file = tmp_path / "codex" / "auth.json"
+    auth_file.parent.mkdir()
+    return auth_file
+
+
+@pytest.fixture
+def server(tmp_path, monkeypatch, usage_auth_file):
+    monkeypatch.setenv("CODEX_HOME", str(usage_auth_file.parent))
     pid_file = tmp_path / "pids"
     script = tmp_path / "fake-server"
 
@@ -72,17 +94,16 @@ def server(tmp_path, monkeypatch):
             "#!"
             + sys.executable
             + "\n"
-            + 'import json, os, sys, time\nfrom pathlib import Path\nwith Path(PID_LITERAL).open("a") as log:\n    log.write(str(os.getpid()) + chr(10))\nmode = MODE_LITERAL\nif mode == "exit":\n    sys.exit(7)\ninit = json.loads(input())\nassert init["id"] == 1 and init["method"] == "initialize"\nassert set(init["params"]["clientInfo"]) == {"name", "version"}\nprint(json.dumps({"id": 1, "result": {"codexHome": "fixture-home", "platformFamily": "unix", "platformOs": "linux", "userAgent": "fixture-agent"}}), flush=True)\nassert json.loads(input()) == {"method": "initialized"}\nrequest = json.loads(input())\nassert request == {"id": 2, "method": "account/rateLimits/read", "params": {"excludeResetCreditDetails": True}}\nfor method in ("configWarning", "remoteControl/status/changed", "account/updated"):\n    print(json.dumps({"method": method, "params": {}}), flush=True)\nif mode == "timeout":\n    time.sleep(16)\nif mode == "brief-delay":\n    time.sleep(0.1)\nresponse = RESPONSE_LITERAL\nif mode == "deep-json":\n    print("[" * 2000 + "0" + "]" * 2000, flush=True)\nelif mode == "bad-json":\n    print("not-json", flush=True)\nelif mode == "rpc-error":\n    print(json.dumps({"id": 2, "error": {"message": "fixture-account"}}), flush=True)\nelse:\n    if mode == "missing-limits":\n        del response["result"]["rateLimits"]\n    if mode == "bad-window":\n        response["result"]["rateLimits"]["primary"]["usedPercent"] = "16"\n    print(json.dumps(response), flush=True)\nsys.stdin.read()\n'.replace(
+            + 'import json, os, sys, time\nfrom pathlib import Path\nwith Path(PID_LITERAL).open("a") as log:\n    log.write(str(os.getpid()) + chr(10))\nmode = MODE_LITERAL\nif mode == "exit":\n    sys.exit(7)\ninit = json.loads(input())\nassert init["id"] == 1 and init["method"] == "initialize"\nassert set(init["params"]["clientInfo"]) == {"name", "version"}\nprint(json.dumps({"id": 1, "result": {"codexHome": "fixture-home", "platformFamily": "unix", "platformOs": "linux", "userAgent": "fixture-agent"}}), flush=True)\nassert json.loads(input()) == {"method": "initialized"}\nrequest = json.loads(input())\nassert request == {"id": 2, "method": "account/rateLimits/read", "params": {"excludeResetCreditDetails": True}}\nfor method in ("configWarning", "remoteControl/status/changed", "account/updated"):\n    print(json.dumps({"method": method, "params": {}}), flush=True)\nif mode == "timeout":\n    time.sleep(16)\nif mode == "brief-delay":\n    time.sleep(0.1)\nresponse = RESPONSE_LITERAL\nif mode == "deep-json":\n    print("[" * 2000 + "0" + "]" * 2000, flush=True)\nelif mode == "bad-json":\n    print("not-json", flush=True)\nelif mode == "rpc-error":\n    print(json.dumps({"id": 2, "error": {"code": -32600, "message": "fixture-account"}}), flush=True)\nelif mode == "chatgpt-auth-required":\n    print(CHATGPT_AUTH_ERROR_LITERAL, flush=True)\nelif mode == "codex-account-auth-required":\n    print(CODEX_ACCOUNT_AUTH_ERROR_LITERAL, flush=True)\nelse:\n    if mode == "missing-limits":\n        del response["result"]["rateLimits"]\n    if mode == "bad-window":\n        response["result"]["rateLimits"]["primary"]["usedPercent"] = "16"\n    print(json.dumps(response), flush=True)\nsys.stdin.read()\n'.replace(
                 "MODE_LITERAL", repr(mode)
             )
             .replace("PID_LITERAL", repr(str(pid_file)))
             .replace("RESPONSE_LITERAL", repr(RESPONSE))
+            .replace("CHATGPT_AUTH_ERROR_LITERAL", repr(CHATGPT_AUTH_ERROR))
+            .replace("CODEX_ACCOUNT_AUTH_ERROR_LITERAL", repr(CODEX_ACCOUNT_AUTH_ERROR))
         )
         script.chmod(0o700)
         monkeypatch.setattr(codex_usage, "which", lambda name: str(script))
-        monkeypatch.setattr(
-            codex_usage, "check_codex_auth", lambda: AuthResult("codex", AuthStatus.AUTHENTICATED)
-        )
         return pid_file
 
     yield setup
@@ -523,6 +544,105 @@ async def test_turn_usage_refresh_logs_failure_once(monkeypatch, caplog):
         (codex_usage.__name__, level, "Codex usage refresh failed: timeout")
         for level in (logging.WARNING, logging.DEBUG, logging.DEBUG)
     ]
+
+
+async def _complete_usage_refresh():
+    codex_usage.schedule_codex_usage_refresh()
+    await asyncio.gather(*codex_usage._turn_refreshes)
+
+
+async def test_chatgpt_required_skips_next_turn(server, usage_auth_file, caplog):
+    caplog.set_level(logging.DEBUG, logger=codex_usage.__name__)
+    usage_auth_file.write_text('{"OPENAI_API_KEY":"fixture-api-key"}')
+    pids = server("chatgpt-auth-required")
+    await _complete_usage_refresh()
+    await _complete_usage_refresh()
+
+    assert len(pids.read_text().splitlines()) == 1
+    stat = usage_auth_file.stat()
+    os.utime(usage_auth_file, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    await _complete_usage_refresh()
+    assert [
+        level for _, level, message in caplog.record_tuples
+        if message == "Codex usage refresh failed: chatgpt_auth_required"
+    ] == [logging.WARNING, logging.DEBUG]
+
+
+@pytest.mark.parametrize("existing_file", [True, False])
+async def test_auth_file_timestamp_change_resumes_turn_usage(server, usage_auth_file, existing_file):
+    if existing_file:
+        usage_auth_file.write_text('{"OPENAI_API_KEY":"fixture-api-key"}')
+    pids = server("chatgpt-auth-required" if existing_file else "codex-account-auth-required")
+    await _complete_usage_refresh()
+    await _complete_usage_refresh()
+    assert len(pids.read_text().splitlines()) == 1
+
+    if existing_file:
+        stat = usage_auth_file.stat()
+        os.utime(usage_auth_file, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    else:
+        usage_auth_file.write_text("{}")
+    server()
+    await _complete_usage_refresh()
+    assert len(pids.read_text().splitlines()) == 2
+    assert codex_usage.last_codex_usage() is not None
+
+
+async def test_auth_file_one_nanosecond_change_resumes_turn_usage(server, usage_auth_file):
+    initial_mtime = 1_793_000_000_000_000_000
+    usage_auth_file.write_text('{"OPENAI_API_KEY":"fixture-api-key"}')
+    os.utime(usage_auth_file, ns=(initial_mtime, initial_mtime))
+    pids = server("chatgpt-auth-required")
+    await _complete_usage_refresh()
+    assert len(pids.read_text().splitlines()) == 1
+    await _complete_usage_refresh()
+    assert len(pids.read_text().splitlines()) == 1
+
+    observed_initial_mtime = usage_auth_file.stat().st_mtime_ns
+    replacement = usage_auth_file.with_suffix(".next.json")
+    replacement.write_text('{"auth_mode":"chatgpt","tokens":{"access_token":"fixture-token"}}')
+    os.utime(replacement, ns=(initial_mtime, initial_mtime + 1))
+    replacement.replace(usage_auth_file)
+    if usage_auth_file.stat().st_mtime_ns != observed_initial_mtime + 1:
+        pytest.skip("Filesystem does not preserve a one-nanosecond timestamp change")
+
+    server()
+    await _complete_usage_refresh()
+    assert len(pids.read_text().splitlines()) == 2
+    assert codex_usage.last_codex_usage() is not None
+
+
+async def test_manual_usage_query_bypasses_turn_skip(server):
+    from ductor_bot.config import AgentConfig
+    from ductor_bot.orchestrator.selectors.usage_view import render_usage
+
+    pids = server("codex-account-auth-required")
+    await _complete_usage_refresh()
+    await _complete_usage_refresh()
+    assert len(pids.read_text().splitlines()) == 1
+
+    result = await query_codex_usage(reuse_completed=False)
+    assert result.error == "chatgpt_auth_required"
+    cfg = AgentConfig()
+    assert render_usage(cfg, {}, result) == render_usage(
+        cfg, {}, codex_usage.CodexUsage(error="invalid_response")
+    )
+    assert len(pids.read_text().splitlines()) == 2
+    await _complete_usage_refresh()
+    assert len(pids.read_text().splitlines()) == 2
+
+
+@pytest.mark.parametrize("mode", ["rpc-error", "timeout"])
+async def test_transient_usage_failure_retries_next_turn(server, monkeypatch, mode):
+    monkeypatch.setattr(codex_usage, "QUERY_TIMEOUT", 1)
+    pids = server(mode)
+    await _complete_usage_refresh()
+    assert (await query_codex_usage()).error == {"rpc-error": "invalid_response", "timeout": "timeout"}[mode]
+    server()
+    await _complete_usage_refresh()
+
+    assert len(pids.read_text().splitlines()) == 2
+    assert codex_usage.last_codex_usage() is not None
 
 
 def test_event_loop_shutdown_reaps_turn_usage_query(server, caplog):
