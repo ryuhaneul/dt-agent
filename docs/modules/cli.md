@@ -110,6 +110,13 @@ Normalized events in `stream_events.py` include:
 - `SystemInitEvent`
 - `ResultEvent`
 
+`ToolUseEvent.kind` is optional and can be `shell`, `file`, `search` or `web`.
+Claude sets it for known built-ins, covering Bash, Read, Write, Edit,
+NotebookEdit, Grep, Glob, WebFetch and WebSearch. Codex sets it for
+`command_execution`, `file_change` and `web_search` and captures a string
+`query` on web search items. A Codex file change with only a list of changes
+has no file detail. MCP, Gemini, Grok and unclassified tools leave `kind` unset.
+
 `CLIService.execute_streaming()` behavior:
 
 - routes deltas/events to callbacks,

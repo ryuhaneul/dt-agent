@@ -5,6 +5,7 @@ Shared user-facing response text helpers used across bot and orchestrator layers
 ## Files
 
 - `text/response_format.py`: formatter helpers, status/error text builders, startup/recovery text
+- `text/tool_detail.py` extracts and redacts detail text for web tool activity.
 
 ## Public API (`response_format.py`)
 
@@ -25,6 +26,22 @@ Shared user-facing response text helpers used across bot and orchestrator layers
 - `startup_notification_text(kind)`
 - `recovery_notification_text(kind, prompt_preview, session_name="")`
 
+## Public API (`tool_detail.py`)
+
+- `tool_detail(event)` reads the first allowed key present for the event kind.
+  Shell uses `command` or `cmd`, file uses `file_path`, `path` or
+  `notebook_path`, search uses `pattern` or `query`, and web uses `url` or
+  `query`. Missing or non-string values produce no detail.
+- `strip_controls(text)` removes ANSI escapes and C0/C1 controls, preserving
+  newlines and tabs.
+- `build_detail(event, vault)` masks the original, JSON-escaped and
+  control-stripped forms of registered values. It also masks recognized GitHub,
+  OpenAI, Slack and AWS tokens, Bearer credentials and PEM private key blocks.
+  It returns `{kind, text, truncated}` after cutting the masked text to 2,000
+  characters. Vault errors and a match for a registered form shorter than
+  four characters leave no detail. An unconfigured plaintext vault reads the
+  store on each redaction.
+
 ## Integration points
 
 - `messenger/telegram/handlers.py`: `/new`, `/stop`
@@ -37,6 +54,7 @@ Shared user-facing response text helpers used across bot and orchestrator layers
 - `messenger/matrix/bot.py`: appends technical footer for Matrix responses
 - `messenger/telegram/edit_streaming.py`, `messenger/telegram/streaming.py`, `messenger/matrix/streaming.py`: use `normalize_tool_name()` for tool activity rendering
 - `api/server.py`: uses `normalize_tool_name()` for `tool_activity` WebSocket events
+- `webchat/turns.py` uses `build_detail()` for supported built-in tool calls.
 
 ## Behavior notes
 

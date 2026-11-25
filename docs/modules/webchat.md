@@ -203,6 +203,46 @@ bus deliveries, including public origin/title metadata. See
 [recording and recovery](chat_log.md) for ordering, chunk splitting and the
 possible duplicate chunk after an interrupted Telegram response.
 
+### Tool activity
+
+Web chat shows tool names for turns sent from the browser. Supported Claude and
+Codex built-in tools can show one expandable detail per call. Gemini, Grok, MCP
+and unclassified tools show names only.
+
+The bridge masks registered secret values and recognized token patterns before
+cutting details to 2,000 characters. This applies to values typed directly into
+a command as well. Other unregistered values can remain visible. A locked or
+unavailable vault, a vault read failure, or a matching registered value shorter
+than four characters leaves only the tool name. The short-value check runs
+before masking. A registered value made entirely of asterisks can coincide
+with the `***` mask.
+
+- WebSocket `tool` events carry `tid`, `turn_id`, `seq`, `name` and an optional
+  `detail` object with `kind`, `text` and `truncated`. The original tool
+  parameters stay on the server.
+- `GET /topics` includes `activities` on each turn snapshot alongside the
+  existing `activity` indicator. Each list item contains `type`, `name`, `seq`,
+  `offset` and optional `detail`. The offset counts Unicode code points in the
+  streamed answer when the call occurred.
+
+Each turn retains up to 200 activity items and 64 KiB of serialized activity.
+When a limit is exceeded, the bridge removes older details first, then older
+items as needed. Live events still go out in full, and a tab keeps the activity
+it has already received when it reconnects.
+
+At turn completion, retained activity is saved with the recorded reply.
+`GET /topics/{tid}/messages` includes it as `activity` on that reply. A turn
+without tool calls or a recorded reply has no activity to save. Dropped items
+are absent from the saved history. See [recording and recovery](chat_log.md#runtime-and-storage)
+for sidecar and rollback behavior.
+
+Reloading during a turn restores the activity list from the snapshot. Because
+the browser lacks the previously streamed answer text, restored rows appear
+before newly received text. Once the completed reply is available in history,
+the browser uses the saved offsets with the full reply to restore activity in
+the completion summary. A completed summary restored from history omits the
+elapsed time.
+
 ## Web commands
 
 The web bridge supports the same 31 command names as the main Telegram bot.

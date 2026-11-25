@@ -23,6 +23,21 @@ The optional `display_markdown` field is for display. The original message
 remains in `Entry.text`. Old readers can still construct `Entry(**json)` from
 every history line. Deleting a topic also deletes its entry metadata.
 
+Completed web turns with a recorded reply and retained tool calls store the
+activity list in the same sidecar under `activity`. The reader accepts list
+values and ignores other types. The bridge includes saved activity only in
+message history responses. Activity-only rows contain the entry ID and
+`activity`. Button and mirror lookups keep their existing defaults, and later
+metadata updates and compaction preserve the list. Retention and topic deletion
+remove activity with the other entry metadata. Imported entries are outside
+the activity recording path.
+
+On rollback, the previous reader skips activity-only rows and logs
+`Skipping corrupt history metadata` for each such row it reads. A metadata
+update for the same reply supersedes its saved activity. Compaction by that
+reader removes the activity from the rewritten sidecar. The reply body and
+existing button metadata remain readable.
+
 `outbox.py` persists pending items and completed/failed delivery state under
 `$DUCTOR_HOME/chat_log/outbox/`. `link.py` probes Telegram every 30 seconds,
 keeps a 30-minute status strip and drains pending deliveries in creation order.
