@@ -656,7 +656,7 @@ async function check(browser, width, height, theme) {
       if (endpoint === '/api/topics') {
         return reply({ topics: [{
           tid: '1.2', chat_id: 1, topic_id: 2, name: 'General', group: 'telegram',
-          count: 2, seen: 2, renamable: true, deletable: true, read_only: false, busy: false,
+          count: 2, seen: 2, unread: 0, renamable: true, deletable: true, read_only: false, busy: false,
           preview: 'The deployment looks healthy.', created_at: null, last_ts: null, imported_count: 0,
         }] });
       }

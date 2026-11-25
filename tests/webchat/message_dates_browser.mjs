@@ -27,7 +27,7 @@ const afterMidnight = '2025-12-31T15:00:00.000Z';
 const today = '2026-01-01T15:01:00.000Z';
 const topic = {
   tid: '1.2', chat_id: 1, topic_id: 2, name: 'Message dates', group: 'telegram',
-  count: 240, imported_count: 0, created_at: beforeMidnight, last_ts: today,
+  count: 240, unread: 240, imported_count: 0, created_at: beforeMidnight, last_ts: today,
   preview: 'Please compare current messages with earlier messages.',
   read_only: false, renamable: true, deletable: true, busy: false,
 };
@@ -41,7 +41,7 @@ const messages = Array.from({ length: topic.count }, (_, index) => ({
 messages[74].role = 'event';
 messages[74].kind = 'background';
 async function mockChat(page, entries = messages, fixture = topic, onSocket = () => {}) {
-  const fixtureTopic = { ...fixture, count: entries.length, last_ts: entries.at(-1).ts };
+  const fixtureTopic = { ...fixture, count: entries.length, unread: entries.length, last_ts: entries.at(-1).ts };
   await page.routeWebSocket('**/api/ws', onSocket);
   await page.route('**/api/**', async route => {
     const request = route.request(), url = new URL(request.url());
@@ -59,7 +59,11 @@ async function mockChat(page, entries = messages, fixture = topic, onSocket = ()
       case '/api/commands': return fulfill({ commands: [] });
       case '/api/files': return fulfill({ files: [] });
       case '/api/masterkey/status': return fulfill({ state: 'unconfigured', remaining_seconds: null });
-      case '/api/topics/1.2/seen': return fulfill({ seen: request.postDataJSON().seq });
+      case '/api/topics/1.2/seen': {
+        fixtureTopic.seen = Math.max(fixtureTopic.seen ?? -Infinity, request.postDataJSON().seq);
+        fixtureTopic.unread = entries.filter(entry => entry.seq > fixtureTopic.seen).length;
+        return fulfill({ seen: fixtureTopic.seen });
+      }
       case '/api/topics/1.2/messages': {
         if (request.method() === 'POST') return fulfill({ turn_id: 'test-turn', phase: 'queued' });
         const before = Number(url.searchParams.get('before') ?? Infinity);
@@ -216,14 +220,17 @@ async function chatFocus(browser) {
     assert.ok(afterSelection, `${width}px topic selection focuses the expected element`);
     if (readOnly) {
       const delayedTopic = { ...topic, tid: '1.3', topic_id: 3, name: 'Delayed topic', read_only: true };
-      const unreadTopic = { ...delayedTopic, tid: '1.4', topic_id: 4, name: 'Unread topic', count: 1 };
+      const unreadTopic = { ...delayedTopic, tid: '1.4', topic_id: 4, name: 'Unread topic', count: 1, unread: 1 };
       await page.route('**/api/topics', route => route.fulfill({
         json: { topics: [{ ...topic, read_only: true }, delayedTopic, unreadTopic] },
       }));
       await page.route(/\/api\/topics\/1\.4\/messages\?/, route =>
         route.fulfill({ json: { entries: [messages[6]], has_more: false } }));
-      await page.route('**/api/topics/1.4/seen', route =>
-        route.fulfill({ json: { seen: route.request().postDataJSON().seq } }));
+      await page.route('**/api/topics/1.4/seen', route => {
+        unreadTopic.seen = route.request().postDataJSON().seq;
+        unreadTopic.unread = 0;
+        return route.fulfill({ json: { seen: unreadTopic.seen } });
+      });
       await page.evaluate(async () => (await import('/static/js/topics.js')).refreshTopics());
 
       const unreadCell = page.locator('#tlist [data-tid="1.4"]');
@@ -548,8 +555,8 @@ async function copyOpenBlockWithMouse(page, event) {
 }
 
 async function copyFromCachedTopic(page, event) {
-  const other = { ...topic, tid: '1.3', topic_id: 3, name: 'Other conversation', count: 1 };
-  const original = { ...topic, name: 'Code examples', count: 2 };
+  const other = { ...topic, tid: '1.3', topic_id: 3, name: 'Other conversation', count: 1, unread: 1 };
+  const original = { ...topic, name: 'Code examples', count: 2, unread: 2 };
   let topics = [original, other];
   await page.route('**/api/topics', route => route.fulfill({ json: { topics } }));
   await page.route(/\/api\/topics\/1\.3\/messages\?/, route => route.fulfill({
@@ -559,7 +566,7 @@ async function copyFromCachedTopic(page, event) {
   await page.locator('#tlist [data-tid="1.3"]').click();
   await page.locator('#thread [data-entry-seq="42"]').waitFor();
 
-  // Fail the history reload and let the separate unread-count request reach the fixture.
+  // Fail the selected topic's history reload while removing the other topic.
   await page.route(/\/api\/topics\/1\.2\/messages\?/, route =>
     route.fulfill({ status: 503, json: {} }), { times: 1 });
   const unavailable = page.waitForResponse(response =>
@@ -752,7 +759,7 @@ async function telegramCode(browser) {
     await live.locator('[data-copy-message]').click();
     assert.equal(await page.evaluate(() => navigator.clipboard.readText()), text);
 
-    const next = { ...topic, tid: '1.3', topic_id: 3, name: 'Second topic', count: 1 };
+    const next = { ...topic, tid: '1.3', topic_id: 3, name: 'Second topic', count: 1, unread: 1 };
     await page.route('**/api/topics', route => route.fulfill({ json: { topics: [topic, next] } }));
     await page.route(/\/api\/topics\/1\.3\/messages\?/, route =>
       route.fulfill({ json: { entries: [messages[4]], has_more: false } }));
@@ -854,7 +861,7 @@ async function userLineBreaks(browser) {
       await checkMessages();
       await page.screenshot({ path: path.join(config.shots, 'user-line-breaks-' + width + '.png') });
 
-      const next = { ...topic, tid: '1.3', topic_id: 3, name: 'Second topic', count: 1 };
+      const next = { ...topic, tid: '1.3', topic_id: 3, name: 'Second topic', count: 1, unread: 1 };
       await page.route('**/api/topics', route => route.fulfill({ json: { topics: [next] } }));
       await page.route(/\/api\/topics\/1\.3\/messages\?/, route =>
         route.fulfill({ json: { entries: [messages[5]], has_more: false } }));
@@ -890,10 +897,55 @@ async function userLineBreaks(browser) {
   }
 }
 
+async function unreadBadges(browser) {
+  const page = await browser.newPage();
+  try {
+    const entries = messages.slice(0, 2);
+    const current = { ...topic, read_only: true, seen: 1, unread: 1, count: 2 };
+    const other = { ...current, tid: '1.3', topic_id: 3, name: 'Other topic', seen: null, unread: 0, count: 0 };
+    let socket;
+    await mockChat(page, entries, current, connection => { socket = connection; });
+    await page.route('**/api/topics', route => route.fulfill({ json: { topics: [current, other] } }));
+    const requests = [];
+    page.on('request', request => {
+      const { pathname } = new URL(request.url());
+      if (pathname.startsWith('/api/topics')) requests.push(pathname);
+    });
+    await page.goto(origin);
+    await page.locator('#thread [data-entry-seq="2"]').waitFor();
+    assert.ok(socket);
+    const badge = tid => page.locator(`#tlist [data-tid="${tid}"] .unread`);
+    assert.equal(await badge(current.tid).textContent(), '1');
+    const initialHistory = requests.filter(path => path.endsWith('/messages')).length;
+    const duplicate = { type: 'entry', tid: current.tid, entry: entries[1] };
+    const response = () => page.waitForResponse(reply => new URL(reply.url()).pathname === '/api/topics');
+    for (const unread of [2, 2]) {
+      const updated = response();
+      current.unread = unread;
+      socket.send(JSON.stringify(duplicate));
+      await updated;
+      await page.waitForFunction(({ tid, unread }) =>
+        document.querySelector(`#tlist [data-tid="${tid}"] .unread`)?.textContent === String(unread),
+      { tid: current.tid, unread });
+    }
+    const updated = response();
+    other.unread = 1;
+    socket.send(JSON.stringify({ type: 'entry', tid: other.tid, entry: entries[0] }));
+    await updated;
+    await badge(other.tid).waitFor();
+    assert.equal(await badge(other.tid).textContent(), '1');
+    assert.equal(await page.locator('#thread [data-entry-seq="2"]').count(), 1);
+    assert.ok(!requests.includes('/api/topics/1.3/messages'));
+    assert.equal(requests.filter(path => path.endsWith('/messages')).length, initialHistory);
+  } finally {
+    await page.close();
+  }
+}
+
 const browser = await chromium.launch();
 try {
   await fs.mkdir(config.shots, { recursive: true });
-  const scenarios = { dates: messageDates, window: preserveOldestGroup, focus: chatFocus, 'code-copy': codeCopy, 'telegram-code': telegramCode, 'telegram-code-boundaries': telegramCodeBoundaries, 'user-line-breaks': userLineBreaks };
+  const scenarios = { dates: messageDates, window: preserveOldestGroup, focus: chatFocus, 'code-copy': codeCopy, 'telegram-code': telegramCode, 'telegram-code-boundaries': telegramCodeBoundaries, 'user-line-breaks': userLineBreaks, 'unread-badges': unreadBadges };
   const scenario = process.argv[3] ?? 'dates';
   if (scenario.startsWith('overflow-')) await documentOverflow(browser, scenario);
   else await scenarios[scenario](browser);

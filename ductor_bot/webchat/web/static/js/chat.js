@@ -10,7 +10,10 @@ import { t } from './i18n.js';
 import { notify } from './auth.js';
 import { connectEvents } from './ws.js';
 import { md, esc, createMarkdownCache, createMarkdownStream, initMarkdownLinks } from './md.js';
-import { getTopic, getTopics, selectTopic, refreshTopics, noteEntry, markSeen, formatTime } from './topics.js';
+import {
+  getTopic, getTopics, selectTopic, refreshTopics, resyncTopics, scheduleBadgeRefresh,
+  noteEntry, markSeen, formatTime,
+} from './topics.js';
 
 const histories = new Map(), turns = new Map(), busy = new Map(), drafts = new Map(), topicVersions = new Map(), busyVersions = new Map();
 let active = false, epoch = 0, stopEvents = null, telegram = { state: 'unknown' };
@@ -892,13 +895,14 @@ async function refreshOutbox() {
   if (!active || epoch !== generation) return;
   outbox = data.items; renderOutboxStatus();
 }
-async function resync({ preserveReading = false } = {}) {
+async function resync({ preserveReading = false, initial = false } = {}) {
   attachmentView?.markStale();
   for (const state of histories.values()) state.loaded = false;
   const generation = epoch, versions = new Map(topicVersions), busySnapshot = new Map(busyVersions);
   try {
-    await Promise.all([refreshTopics(), refreshState(), refreshOutbox()]);
-    if (!active || generation !== epoch) return;
+    const topicSnapshot = initial ? refreshTopics().then(() => true) : resyncTopics();
+    const [refreshed] = await Promise.all([topicSnapshot, refreshState(), refreshOutbox()]);
+    if (!refreshed || !active || generation !== epoch) return;
     for (const item of getTopics()) {
       if (busySnapshot.get(item.tid) === busyVersions.get(item.tid)) busy.set(item.tid, item.busy);
       const stable = versions.get(item.tid) === topicVersions.get(item.tid);
@@ -967,12 +971,12 @@ export async function handleEvent(event) {
       else void refreshState();
       return;
     case 'entry': {
+      scheduleBadgeRefresh();
       const state = history(tid), entry = event.entry;
       if (!state.entries.has(entry.id)) noteEntry(tid, entry);
       mergeHistory(state, [entry]);
       const turn = turns.get(entry.turn_id);
       if (turn && entry.role === 'user' && entry.status === 'cancelled') turn.phase = 'cancelled';
-      if (!getTopics().some(item => item.tid === tid)) await refreshTopics();
       if (!active || generation !== epoch || tid !== getTopic()?.tid) return;
       attachmentView?.load(tid, [state.entries.get(entry.id)]);
       const entries = new Set([entry.id]);
@@ -1337,10 +1341,12 @@ export function initChat() {
     renderVersion();
     pending = 0; outbox = []; renderStatus(); renderHeader(); resizeComposer();
     if (!active) { thread.replaceChildren(); updateThreadNavigation(); return; }
+    let connected = false;
     stopEvents = connectEvents(event => { void handleEvent(event).catch(errorNotice); }, up => {
-      if (!up) { botUp = false; renderStatus(); }
-      if (up) void resync();
+      if (!up) { botUp = false; renderStatus(); return; }
+      void resync({ initial: !connected });
+      connected = true;
     });
-    void resync();
+    void resync({ initial: true });
   });
 }

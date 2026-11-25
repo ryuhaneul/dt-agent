@@ -82,7 +82,7 @@ async function run(browser, origin, width, theme) {
       if (endpoint === '/api/auth/state') return reply({ authenticated: true, csrf: 'fixture-csrf', bridge_up: true });
       if (endpoint === '/api/topics') return reply({ topics: [{
         tid: '1.2', chat_id: 1, topic_id: 2, name: 'Markdown fixture', group: 'telegram',
-        count: 1, seen: 1, renamable: true, deletable: true, read_only: false, busy: false,
+        count: 1, seen: 1, unread: 0, renamable: true, deletable: true, read_only: false, busy: false,
         preview: '~~literal~~ and bold', created_at: null, last_ts: null, imported_count: 0,
       }] });
       if (endpoint === '/api/masterkey/status') return reply({ state: 'unconfigured' });

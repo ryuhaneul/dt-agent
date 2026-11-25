@@ -187,6 +187,22 @@ The **Imported history** group covers topics with zero live entries and activity
 older than 30 days. Real imported topics remain usable and manageable.
 **Unknown topic** is a read-only history group.
 
+The topic sidebar uses the unread counts returned by `GET /topics`. With a
+saved read cursor, the count includes each sequence after that cursor once.
+Without a saved cursor, it includes every history row. Read cursors are shared
+across web clients. Reading a topic or marking all topics as read hides the
+affected badges immediately while the read state is saved. If the server cannot
+confirm a count after saving, the browser shows the last confirmed count and retries.
+
+Badge updates normally start within 150 ms of a change, plus the request time.
+A continuous stream can delay the start up to one second when no read write or
+list request is in progress. If new changes keep arriving faster than responses,
+the badges may only catch up when the stream settles. A history lock on one topic
+can delay updates for the entire list. The browser retries failed updates up to
+four times at intervals of 1, 2, 4, and 8 seconds (15 seconds total in retry
+delays, plus request time). When those retries run out, the last confirmed
+counts remain until the next change, reconnect, or return to the tab.
+
 Webchat preserves line breaks inside paragraphs, list items, and escaped HTML
 text in user messages.
 Webchat displays code blocks and inline code from new Telegram text messages.
@@ -483,6 +499,7 @@ The browser app relays bridge JSON statuses and error codes. Bridge routes use
 | Read state (`GET /state`) | 200 with `telegram`, `outbox`, `claude` (`{next, slots}` or `null`), and `codex` (`{captured_at, windows}` or `null`). The browser relay adds `bot`, `web_sessions`, and `version`. |
 | Delete topic while its session lock remains held beyond 30 seconds | 409 `topic_busy`; retry after the topic finishes stopping |
 | Send to or abort Unknown topic | 409 `read_only`; select a real topic |
+| List topics (`GET /topics`) | 200 with `topics`, including each topic’s `seen` cursor and `unread` count. If the stored read state cannot be read, both fields are `null`. A history lock timeout returns 503 `history_busy`. |
 | List commands (`GET /commands`, optional allowed `lang`) | 200 `{ "commands": [...] }`; invalid language: 400 `bad_request` |
 | Execute a supported command | 200 `{ "text": "...", "buttons": [...] }` (`buttons` may be null) |
 | Send a normal message | 202 `{ "turn_id": "..." }` |

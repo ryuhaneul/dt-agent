@@ -550,7 +550,7 @@ try {
     } else if (url.pathname==='/api/auth/totp') {
       assert.equal(body.code,'123456');authenticated=true;
     } else if(url.pathname==='/api/state') result={telegram:{state:'down',down_since:null,last_check:null,interval_s:30,strip:Array(30).fill('none'),strip_end:null},outbox:{pending:1},bot:{up:true},web_sessions:1};
-    else if(url.pathname==='/api/topics') result={topics:archiveDeleted?[topic]:[topic,archive]};
+    else if(url.pathname==='/api/topics') result={topics:(archiveDeleted?[topic]:[topic,archive]).map(row=>({...row,unread:row.seen==null?row.count:Math.max(0,205-row.seen)}))};
     else if(url.pathname==='/api/topics/seen-all') {topic.seen=205;archive.seen=205;result={seen:{'1.2':205,'1.3':205}};}
     else if(url.pathname.endsWith('/seen')) {const row=url.pathname.includes('1.2')?topic:archive;row.seen=Math.max(row.seen??-Infinity,body.seq);result={seen:row.seen};}
     else if(url.pathname==='/api/topics/1.2'&&request.method()==='PATCH') {assert.equal(request.headers()['x-dtw-csrf'],'fake-csrf');topic.name=body.name;result={topic};}
@@ -958,7 +958,14 @@ async function fetch(url,options={}){
       const topic={...topicRows[0],tid:'1.4',topic_id:4,name:body.name,count:0};topicRows.push(topic);return response(201,{topic});
     }
   }
-  if(parsed.pathname==='/api/topics'){const snapshot=structuredClone(topicRows);if(topicsHold)await topicsHold;return response(200,{topics:snapshot});}
+  if(parsed.pathname==='/api/topics'){
+    const snapshot=topicRows.map(row=>{
+      const rows=row.tid==='1.2'?historyA:row.tid==='1.3'?historyB:row.tid==='unknown'?historyUnknown:[];
+      const unread=row.seen==null?rows.length:new Set(rows.filter(entry=>entry.seq>row.seen).map(entry=>entry.seq)).size;
+      return {...row,unread};
+    });
+    if(topicsHold)await topicsHold;return response(200,{topics:snapshot});
+  }
   if(parsed.pathname==='/api/search')return response(200,{hits:[{tid:'1.2',seq:2,ts:null,role:'bot',snippet:'Found <script>x</script>'}]});
   if(parsed.pathname==='/api/state')return response(200,{telegram:{state:'down',down_since:'2025-01-01T00:00:00Z',last_check:null,interval_s:30,strip:['ok','mixed','down',...Array(27).fill('none')],strip_end:null},outbox:{pending:3},bot:{up:true},web_sessions:2});
   if(parsed.pathname==='/api/outbox')return response(200,{items:queue});
@@ -971,13 +978,17 @@ async function fetch(url,options={}){
   throw Error(`Unexpected API: ${url}`);
 }
 const context=vm.createContext({document,window:document,CustomEvent,WebSocket,fetch,URL,TextEncoder,TextDecoder,AbortController,localStorage,console,
- getComputedStyle:()=>({paddingTop:'0px'}),
+ performance:{now:()=>0},getComputedStyle:()=>({paddingTop:'0px'}),
   requestAnimationFrame:callback=>{frames.set(++frameId,callback);return frameId},
   cancelAnimationFrame:id=>frames.delete(id),
   ResizeObserver:class {observe(){}},
   requestIdleCallback:callback=>setImmediate(callback),cancelIdleCallback:clearImmediate,
   location:{href:'https://chat.example.com/#list',hash:'#list'},
-  setTimeout:(callback,delay)=>{const id=++timerId;timers.set(id,{callback,delay});return id},
+  setTimeout:(callback,delay)=>{
+    const id=++timerId;timers.set(id,{callback,delay});
+    if(delay<=150)setImmediate(()=>{if(timers.delete(id))callback()});
+    return id;
+  },
   clearTimeout:id=>timers.delete(id),
   matchMedia:()=>({matches:!coarse}),CSS:{escape:String},crypto:{randomUUID:()=>`client-${calls.length}`}});
 const modules=new Map();
@@ -1242,7 +1253,9 @@ const countDisabled=callbackCalls().length;clickSelector('e219','server:opaque')
 // Hidden views keep unseen entries unread. Local storage denial never breaks selection.
 q.value='';q.emit('input');
 context.location.hash='#files';document.emit('route-change',{detail:{route:'files',view:'files'}});
-await chat.namespace.handleEvent({type:'entry',tid:'1.3',entry:makeEntry(1,{text:'new'})});assert.ok(list.innerHTML.includes('1 unread'));
+const unseen=makeEntry(1,{text:'new'});historyB.push(unseen);
+await chat.namespace.handleEvent({type:'entry',tid:'1.3',entry:unseen});await flush();
+assert.ok(list.innerHTML.split('data-tid="1.3"')[1].split('</button>')[0].includes('1 unread'));
 blockedStorage=true;topics.selectTopic('1.3');await flush();blockedStorage=false;
 // Topic creation hands off the created row for the next management chunk.
 document.querySelector('.tfoot button').emit('click');await flush();assert.equal(routes.at(-1),'manage');assert.equal(topics.getTopic().tid,'1.4');
@@ -2241,7 +2254,7 @@ document.querySelectorAll=()=>[];
 document.dispatchEvent=event=>{for(const fn of document.listeners[event.type]||[])fn(event)};
 class CustomEvent {constructor(type,options={}){this.type=type;this.detail=options.detail}}
 const storage=new Map(),fetches=[],windowEvents={};let blocked=false;
-const context=vm.createContext({document,CustomEvent,Node:Element,innerHeight:600,console,setTimeout,clearTimeout,
+const context=vm.createContext({document,CustomEvent,Node:Element,innerHeight:600,console,setTimeout,clearTimeout,performance,
  localStorage:{getItem:key=>{if(blocked)throw Error('blocked');return storage.get(key)||null},setItem:(key,v)=>{if(blocked)throw Error('blocked');storage.set(key,v)},removeItem:key=>storage.delete(key)},
  matchMedia:()=>({matches:false,addEventListener(){}}),addEventListener:(key,fn)=>{windowEvents[key]=fn},
  ResizeObserver:class {observe(){}},requestAnimationFrame:fn=>fn(),fetch:async url=>{fetches.push(url);const lang=new URL(url,'https://chat.example').searchParams.get('lang')||'ko';return {ok:true,json:async()=>({lang,strings:translations[lang]})}}});
@@ -2344,106 +2357,187 @@ if(scenario==='rename'||scenario==='rename-stale'){
  assert.equal(requests.filter(r=>r.method==='PATCH').at(-1).url,'/topics/-123.4');
  await get('headerRename').emit('click');assert.equal(input.value,'New name');const before=requests.length;await get('renameCancel').emit('click');assert.equal(requests.length,before);assert.equal(document.activeElement,get('headerRename'));
 }
+const flushTopics=()=>new Promise(setImmediate);
+let topicClock=0, topicTimer=0;
+const topicTimers=new Map();
+function useTopicClock(){
+ context.setTimeout=(fn,delay)=>{topicTimers.set(++topicTimer,{fn,at:topicClock+delay});return topicTimer};
+ context.clearTimeout=id=>topicTimers.delete(id);
+ context.performance={now:()=>topicClock};
+}
+async function advanceTopics(ms){
+ const end=topicClock+ms;
+ while(true){
+  const next=[...topicTimers].sort(([,a],[,b])=>a.at-b.at)[0];
+  if(!next||next[1].at>end)break;
+  const [id,{fn,at}]=next;
+  topicClock=at;topicTimers.delete(id);fn();await flushTopics();
+ }
+ topicClock=end;await flushTopics();
+}
 if(scenario==='unread'){
+ useTopicClock();
  const rows=Array.from({length:9},(_,i)=>({tid:String(i),name:'Topic '+i,group:'telegram',count:2}));
- const entries=new Map(rows.map((row,i)=>[row.tid,[{seq:-5},{seq:i===0?100:i===8?-2:2}]]));
- const cursors=new Map(),requests=[];let release=null;
+ const entries=new Map(rows.map((row,i)=>[row.tid,[-5,i===0?100:i===8?-2:2]]));
+ const cursors=new Map(),requests=[];let releaseAll;
  const api=async(url,options={})=>{
   requests.push({url,...options});
-  if(url==='/topics')return {topics:rows.map(row=>({...row,seen:cursors.get(row.tid)??null}))};
-  if(release)await release;
+  if(url==='/topics')return {topics:rows.map(row=>{
+   const seen=cursors.get(row.tid)??null, values=entries.get(row.tid);
+   return {...row,seen,unread:seen===null?values.length:new Set(values.filter(seq=>seq>seen)).size};
+  })};
   if(url==='/topics/seen-all'){
-   for(const row of rows){const seq=entries.get(row.tid).at(-1).seq;cursors.set(row.tid,Math.max(cursors.get(row.tid)??-Infinity,seq));}
+   await new Promise(resolve=>{releaseAll=resolve});
+   for(const row of rows)cursors.set(row.tid,entries.get(row.tid).at(-1));
    return {seen:Object.fromEntries(cursors)};
   }
-  const tid=url.split('/')[2];
-  if(url.endsWith('/seen')){
-   assert.equal(options.method,'PUT');const seq=Math.min(options.body.seq,entries.get(tid).at(-1).seq);
-   cursors.set(tid,Math.max(cursors.get(tid)??-Infinity,seq));return {seen:cursors.get(tid)};
-  }
-  const limit=Number(new URL(url,'https://test').searchParams.get('limit'));
-  return {entries:entries.get(tid).slice(-limit),has_more:false};
+  if(url.startsWith('/search?'))return {hits:[]};
+  assert.equal(options.method,'PUT');
+  const tid=url.split('/')[2],seq=Math.min(options.body.seq,entries.get(tid).at(-1));
+  cursors.set(tid,Math.max(cursors.get(tid)??-Infinity,seq));return {seen:cursors.get(tid)};
  };
  const topics=await load('topics.js',{'./api.js':{api},'./i18n.js':{t:(key,args)=>key==='topic.unread'?`${args.n} unread`:key},'./router.js':{renderRoute:()=>{},go:()=>{}},'./auth.js':{notify:()=>{throw Error('unexpected notice')}},'./md.js':{esc:value=>String(value)}});
  storage.set('dtw-seen:0','999');storage.set('dtw-seen:8','-5');
  topics.initTopics();document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));await topics.refreshTopics();
- for(let i=0;i<4;i++)await new Promise(setImmediate);
+ await flushTopics();await advanceTopics(150);
  assert.equal(cursors.get('0'),100,'legacy state is capped by the server');assert.equal(cursors.get('8'),-5);
  assert.equal(storage.has('dtw-seen:0'),false);assert.equal(storage.has('dtw-seen:8'),false);
  assert.ok(get('tlist').innerHTML.includes('2 unread'));
  topics.markSeen('0',3);assert.equal(cursors.get('0'),100,'stale readers cannot lower the cursor');
- topics.markSeen('8',-2);await new Promise(setImmediate);topics.markSeen('8',-9);assert.equal(cursors.get('8'),-2);
- // A different browser's cursor arrives over the existing websocket event path.
+ topics.markSeen('8',-2);await flushTopics();topics.markSeen('8',-9);assert.equal(cursors.get('8'),-2);
  cursors.set('1',2);document.dispatchEvent(new CustomEvent('read-state',{detail:{seen:{'1':2}}}));
- for(let i=0;i<3;i++)await new Promise(setImmediate);
+ await advanceTopics(150);
  assert.ok(!get('tlist').innerHTML.split('data-tid="1"')[1].split('</button>')[0].includes('unread'));
  await topics.refreshTopics();assert.equal(requests.filter(request=>request.method==='PUT').length,3,'legacy migration runs once');
- // Storage denial does not affect server cursors or mark-all, including filtered topics.
  blocked=true;
- for(const row of rows){entries.get(row.tid).push({seq:101});topics.noteEntry(row.tid,{seq:101,text:'new'});}
+ for(const row of rows)entries.get(row.tid).push(101);
+ await topics.refreshTopics();
  get('q').value='Topic 0';await get('q').emit('input');
- let unblock;release=new Promise(resolve=>{unblock=resolve});const before=requests.length;
+ const before=requests.length;
  await get('markAllRead').emit('click');assert.equal(get('markAllRead').disabled,true);
- unblock();release=null;for(let i=0;i<10;i++)await new Promise(setImmediate);
- assert.equal(get('markAllRead').disabled,false);assert.equal(requests.length-before,1);
- assert.equal(requests.at(-1).url,'/topics/seen-all');assert.equal(requests.at(-1).method,'POST');
- for(const row of rows)assert.equal(cursors.get(row.tid),101);
  assert.ok(!get('tlist').innerHTML.includes('unread'));
- topics.noteEntry('0',{seq:102,text:'later'});assert.ok(get('tlist').innerHTML.includes('1 unread'));
+ releaseAll();await flushTopics();await advanceTopics(150);
+ assert.equal(get('markAllRead').disabled,false);
+ assert.deepEqual(requests.slice(before).map(item=>[item.url,item.method]),[['/topics/seen-all','POST'],['/topics',undefined]]);
+ for(const row of rows)assert.equal(cursors.get(row.tid),101);
+ entries.get('0').push(102);topics.noteEntry('0',{seq:102,text:'later'});topics.scheduleBadgeRefresh();
+ await advanceTopics(150);assert.ok(get('tlist').innerHTML.includes('1 unread'));
  blocked=false;document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:false}}));
- document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));await topics.refreshTopics();
+ assert.equal(get('tlist').innerHTML,'');
+ cursors.set('0',102);document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));
+ await topics.refreshTopics();
  assert.ok(!get('tlist').innerHTML.includes('unread'));
 }
-if(scenario==='unread-partial-failure'||scenario==='unread-delayed-history'){
- const rows=['1.2','1.3'].map(tid=>({tid,name:'Topic '+tid,group:'telegram',seen:1}));
- const entries=new Map(rows.map(row=>[row.tid,[{seq:1}]]));
- const gates=[],notices=[];
- let failHistory=false,delayHistory=false;
- const api=async url=>{
-  if(url==='/topics')return {topics:rows.map(row=>({...row,count:entries.get(row.tid).length}))};
-  const tid=url.split('/')[2];
-  if(failHistory&&tid==='1.2')throw {status:503,code:'history_busy'};
-  const snapshot={entries:[...entries.get(tid)],has_more:false};
-  if(delayHistory&&tid==='1.2')await new Promise(resolve=>gates.push(resolve));
-  return snapshot;
+if(scenario.startsWith('badge-')){
+ useTopicClock();
+ const row={tid:'1.2',name:'One',group:'telegram',seen:1,unread:3,count:4,preview:'old'};
+ const other={tid:'1.3',name:'Two',group:'telegram',seen:null,unread:1,count:1};
+ const pending=[],notices=[],calls=[];
+ const busy={status:503,code:'history_busy'};
+ let auto=true;
+ const snapshot=()=>({topics:[{...row},{...other}]});
+ const api=async(url,options={})=>{
+  calls.push({url,method:options.method,at:topicClock});
+  assert.ok(!url.includes('/messages'),'badges never load message history');
+  if(url==='/topics'&&auto)return snapshot();
+  return await new Promise((resolve,reject)=>pending.push({url,resolve,reject}));
  };
  const topics=await load('topics.js',{'./api.js':{api},'./i18n.js':{t:(key,args)=>key==='topic.unread'?`${args.n} unread`:key},'./router.js':{renderRoute:()=>{},go:()=>{}},'./auth.js':{notify:key=>notices.push(key)},'./md.js':{esc:value=>String(value)}});
+ const badge=(tid=row.tid)=>Number(get('tlist').innerHTML.split(`data-tid="${tid}"`)[1].split('</button>')[0].match(/aria-label="(\d+) unread"/)?.[1]??0);
+ const seen=(seq=2)=>document.dispatchEvent(new CustomEvent('read-state',{detail:{seen:{[row.tid]:seq}}}));
+ const next=async(url='/topics')=>{await flushTopics();assert.equal(pending[0]?.url,url);return pending.shift()};
+ const reply=async data=>{(await next()).resolve(data??snapshot());await flushTopics()};
+ const reject=async()=>{(await next()).reject(busy);await flushTopics()};
+ const tick=()=>advanceTopics(150);
  topics.initTopics();document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));
- const badge=tid=>get('tlist').innerHTML.split(`data-tid="${tid}"`)[1].split('</button>')[0].match(/aria-label="(\d+) unread"/)?.[1]??null;
- if(scenario==='unread-partial-failure'){
-  entries.get('1.2').push({seq:2});
-  await topics.refreshTopics();
-  assert.equal(badge('1.2'),'1');
-  assert.equal(badge('1.3'),null);
-  entries.get('1.2').push({seq:3});
-  entries.get('1.3').push({seq:2},{seq:3});
-  failHistory=true;
-  await assert.rejects(topics.refreshTopics(),{status:503,code:'history_busy'});
-  assert.equal(badge('1.2'),'1','a failed topic keeps its previous badge');
-  assert.equal(badge('1.3'),'2','a healthy topic reflects the refreshed count');
- }else{
-  await topics.refreshTopics();
-  assert.equal(badge('1.2'),null);
-  delayHistory=true;
-  const refresh=topics.refreshTopics();
-  await new Promise(setImmediate);
-  assert.equal(gates.length,1);
-  entries.get('1.2').push({seq:2},{seq:3});
-  topics.noteEntry('1.2',{seq:2,text:'new'});
-  assert.equal(badge('1.2'),'1');
-  gates[0]();
-  await new Promise(setImmediate);
-  assert.equal(badge('1.2'),'1','a stale response never clears the live badge');
-  assert.equal(gates.length,2,'only the changed topic is counted again');
-  entries.get('1.2').push({seq:4});
-  topics.noteEntry('1.2',{seq:4,text:'new during recount'});
-  assert.equal(badge('1.2'),'2');
-  delayHistory=false;
-  gates[1]();
-  await refresh;
-  assert.equal(gates.length,2);
-  assert.equal(badge('1.2'),'3','recount includes unseen history and live entries once each');
-  assert.deepEqual(notices,[]);
+ await topics.refreshTopics();
+ assert.equal(badge(),3);assert.equal(badge(other.tid),1);
+ auto=false;
+ if(scenario==='badge-stale'){
+  const initial=topics.refreshTopics(), old=await next();
+  topics.noteEntry(row.tid,{seq:5,ts:'2026-11-25T00:00:00Z',text:'new'});
+  topics.scheduleBadgeRefresh();
+  row.unread=0;row.preview='snapshot metadata';old.resolve(snapshot());await initial;
+  assert.equal(badge(),3);assert.match(get('tlist').innerHTML,/snapshot metadata/);
+  row.unread=4;await tick();await reply();assert.equal(badge(),4);
+  row.unread=null;other.unread=2;seen();await tick();await reply();
+  assert.equal(badge(),4);assert.equal(badge(other.tid),2);
+ }
+ if(scenario==='badge-retry'){
+  row.unread=0;seen();await tick();await reject();
+  await advanceTopics(999);assert.equal(pending.length,0);
+  await advanceTopics(1);await reject();
+  await advanceTopics(2000);await reply();assert.equal(badge(),0);
+  assert.deepEqual(notices,['error.generic']);
+  other.unread=5;seen(3);await tick();await reject();
+  for(const ms of [1000,2000,4000,8000]){await advanceTopics(ms);await reject()}
+  const total=calls.length;await advanceTopics(16000);assert.equal(calls.length,total);
+  assert.deepEqual(notices,['error.generic','error.generic']);assert.equal(badge(other.tid),1);
+  seen(4);await tick();await reply();assert.equal(badge(other.tid),5);
+  seen(5);await tick();await reject();seen(6);await tick();await reject();
+  await advanceTopics(999);assert.equal(pending.length,0);
+  await advanceTopics(1);await reply();assert.equal(notices.length,3);
+ }
+ if(scenario==='badge-write-failed'||scenario==='badge-write-null'||scenario==='badge-write-same'){
+  topics.markSeen(row.tid,1);assert.equal(badge(),3);assert.equal(pending.length,0);
+  topics.markSeen(row.tid,4);assert.equal(badge(),0);
+  const write=await next('/topics/1.2/seen');seen(4);
+  await advanceTopics(1500);assert.equal(pending.length,0);
+  if(scenario==='badge-write-failed'){
+   write.reject(busy);await flushTopics();assert.equal(badge(),3);
+   await tick();await reject();assert.equal(badge(),3);
+   row.unread=null;await advanceTopics(1000);await reply();assert.equal(badge(),3);
+  }else{
+   write.resolve({seen:4});await flushTopics();assert.equal(badge(),0);
+   row.unread=scenario==='badge-write-null'?null:2;
+   await tick();await reply();assert.equal(badge(),row.unread??3);
+   if(row.unread===null){
+    await advanceTopics(999);assert.equal(pending.length,0);
+    row.unread=0;await advanceTopics(1);await reply();assert.equal(badge(),0);
+   }
+  }
+ }
+ if(['badge-all-before','badge-all-after','badge-all-failed','badge-all-skipped'].includes(scenario)){
+  const total=calls.length;
+  await get('markAllRead').emit('click');
+  const write=await next('/topics/seen-all');
+  assert.equal(badge(),0);assert.equal(badge(other.tid),0);
+  if(scenario==='badge-all-before'){
+   seen();await advanceTopics(2000);assert.equal(pending.length,0);
+  }
+  write.resolve({seen:{[row.tid]:4,...(scenario==='badge-all-skipped'?{}:{[other.tid]:1})}});await flushTopics();await tick();
+  if(['badge-all-after','badge-all-failed'].includes(scenario))seen(4);
+  row.unread=0;other.unread=scenario==='badge-all-skipped'?2:0;
+  if(scenario==='badge-all-failed'){
+   await reject();await tick();await reject();
+   for(const ms of [1000,2000,4000,8000]){await advanceTopics(ms);await reject()}
+   assert.deepEqual(notices,['error.generic']);assert.equal(badge(),3);assert.equal(badge(other.tid),1);
+  }else{
+   await reply();
+   if(scenario==='badge-all-after'){await tick();await reply()}
+   assert.equal(badge(),0);assert.equal(badge(other.tid),other.unread);
+   assert.ok(calls.slice(total).filter(call=>call.url==='/topics').length<=2);
+  }
+  assert.equal(calls.slice(total).filter(call=>call.method==='POST').length,1);
+ }
+ if(scenario==='badge-all-write-failed'){
+  await get('markAllRead').emit('click');
+  const write=await next('/topics/seen-all');
+  assert.equal(badge(),0);assert.equal(badge(other.tid),0);
+  write.reject(busy);await flushTopics();
+  assert.equal(badge(),3);assert.equal(badge(other.tid),1);
+  await tick();await reply();
+  assert.deepEqual(notices,['error.generic']);
+ }
+ if(scenario==='badge-burst'){
+  auto=true;
+  const started=topicClock, total=calls.length;
+  for(let i=0;i<50;i++){topics.scheduleBadgeRefresh();await advanceTopics(20)}
+  assert.ok(calls.length-total>=1,'continuous arrival starts a request within a second');
+  assert.ok(calls.length-total<=2);
+  await tick();
+  assert.ok(calls.slice(total).filter(call=>call.at>started+1000).length<=1);
+  assert.equal(pending.length,0);
  }
 }
 if(scenario==='migration-failure'){
@@ -2452,7 +2546,7 @@ if(scenario==='migration-failure'){
  const flush=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate)};
  document.addEventListener('topics-updated',()=>updates++);
  const api=async(url,options={})=>{
-  if(url==='/topics')return {topics:rows.map(row=>({...row,seen:cursors.get(row.tid)??null}))};
+  if(url==='/topics')return {topics:rows.map(row=>({...row,seen:cursors.get(row.tid)??null,unread:cursors.has(row.tid)?1:2}))};
   if(options.method==='PUT'){
    assert.ok(updates>0,'migration starts after topics-updated');assert.ok(get('tlist').innerHTML.includes('topic.general'));
    const tid=url.split('/')[2];inFlight++;maxFlight=Math.max(maxFlight,inFlight);
@@ -2483,7 +2577,7 @@ if(scenario==='rollback-forward'||scenario==='rollback-reverse'){
  const pending=[],notices=[];let saved=-9;
  const row={tid:'1.2',name:'Topic',group:'telegram',count:3};
  const api=async(url,options={})=>{
-  if(url==='/topics')return {topics:[{...row,seen:saved}]};
+  if(url==='/topics')return {topics:[{...row,seen:saved,unread:saved===null?3:saved===-9?2:0}]};
   if(options.method==='PUT')return await new Promise((resolve,reject)=>pending.push({resolve,reject}));
   return {entries:[{seq:-9},{seq:-5},{seq:-2}],has_more:false};
  };
@@ -2526,8 +2620,17 @@ console.log(`Header contract passed: ${scenario}`);
         "rename-stale",
         "topic-labels",
         "unread",
-        "unread-partial-failure",
-        "unread-delayed-history",
+        "badge-stale",
+        "badge-retry",
+        "badge-write-failed",
+        "badge-write-null",
+        "badge-write-same",
+        "badge-all-before",
+        "badge-all-after",
+        "badge-all-failed",
+        "badge-all-skipped",
+        "badge-all-write-failed",
+        "badge-burst",
         "migration-failure",
         "rollback-forward",
         "rollback-reverse",
@@ -2797,7 +2900,10 @@ try {
    else if(url.pathname==='/api/commands')result={commands};
    else if(url.pathname==='/api/state')result={telegram:{state:'ok',strip:[]},outbox:{pending:0},bot:{up:true},web_sessions:2};
    else if(url.pathname==='/api/outbox')result={items:[]};
-   else if(url.pathname==='/api/topics')result={topics:rows.map(row=>({...row,seen:cursors.get(row.tid)??null}))};
+   else if(url.pathname==='/api/topics')result={topics:rows.map(row=>{
+    const seen=cursors.get(row.tid)??null,seqs=entries.get(row.tid);
+    return {...row,seen,unread:seen===null?seqs.length:new Set(seqs.filter(seq=>seq>seen)).size};
+   })};
    else if(url.pathname==='/api/topics/seen-all'){
     assert.equal(request.method(),'POST');assert.equal(request.headers()['x-dtw-csrf'],'fake-csrf');
     for(const [tid,seqs] of entries)if(seqs.length)cursors.set(tid,Math.max(cursors.get(tid)??-Infinity,seqs.at(-1)));
@@ -2901,7 +3007,7 @@ def test_autocompact_dialog_has_labeled_scopes_and_bounded_token_inputs(markup):
     "scenario",
     [
         "dates", "window", "focus", "overflow-footnote", "overflow-activity", "code-copy",
-        "telegram-code", "telegram-code-boundaries", "user-line-breaks",
+        "telegram-code", "telegram-code-boundaries", "user-line-breaks", "unread-badges",
     ],
 )
 def test_message_dates_browser(tmp_path: Path, scenario: str) -> None:
