@@ -15,7 +15,7 @@ from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from ductor_bot.chat_log.events import EventHub
-from ductor_bot.chat_log.history import HistoryStore
+from ductor_bot.chat_log.history import Entry, HistoryStore
 from ductor_bot.chat_log.outbox import Outbox
 from ductor_bot.cli.auth import AuthResult, AuthStatus
 from ductor_bot.cli.codex_usage import CodexUsage
@@ -611,6 +611,151 @@ async def test_running_web_turn_new_conflict_and_stop_are_immediate(conversation
     assert response.status == 202
     assert await response.json() == {"killed": 1}
     h.bot._orch._process_registry.kill_by_chat_topic.assert_awaited_once_with(-123, 7)
+
+
+async def test_web_quick_command_preserves_aborted_event(conversation, monkeypatch):
+    from ductor_bot.cli.process_registry import ProcessRegistry
+    from ductor_bot.orchestrator.commands import cmd_version
+    from tests.cli.test_process_registry import _mock_process
+
+    h = conversation
+    orch = h.bot._orch
+    registry = ProcessRegistry()
+    orch._process_registry = registry
+    orch._inflight_tracker = SimpleNamespace(shutting_down=False)
+    orch._observers = SimpleNamespace(heartbeat=SimpleNamespace(notify_activity=MagicMock()))
+    orch._command_registry = CommandRegistry()
+    orch._command_registry.register_async("/version", cmd_version)
+    orch.active_provider_name = "Claude Code"
+    monkeypatch.setattr(
+        "ductor_bot.cli.process_registry._kill_processes", AsyncMock(return_value=1)
+    )
+    started, release = asyncio.Event(), asyncio.Event()
+    original = orch.handle_message_streaming.side_effect
+
+    async def running(key, text, **callbacks):
+        registry.register(key.chat_id, _mock_process(), "main", topic_id=key.topic_id)
+        started.set()
+        await release.wait()
+        return await original(key, text, **callbacks)
+
+    orch.handle_message_streaming.side_effect = running
+    async with h.client.ws_connect("/webchat/v1/events", headers=headers()) as ws:
+        response = await post_message(h)
+        assert response.status == 202
+        turn_id = (await response.json())["turn_id"]
+        try:
+            await asyncio.wait_for(started.wait(), 2)
+            stopped = await post_message(h, text="/stop")
+            assert stopped.status == 202
+            assert await stopped.json() == {"killed": 1}
+            version = await asyncio.wait_for(post_message(h, text="/version"), 2)
+            assert version.status == 200
+            assert (await version.json())["text"]
+        finally:
+            release.set()
+
+        events = await receive_until(
+            ws,
+            lambda event: (
+                event.get("turn_id") == turn_id
+                and event.get("phase") in {"aborted", "done", "error"}
+            ),
+        )
+        assert events[-1]["phase"] == "aborted"
+
+
+@pytest.mark.parametrize("quick_command", [None, "/status", "/version"])
+async def test_web_named_button_starts_fresh_after_stop(
+    conversation, orch, monkeypatch, quick_command
+):
+    from ductor_bot.cli.types import AgentResponse
+    from tests.cli.test_process_registry import _mock_process
+
+    h = conversation
+    orch._sessions = h.bot._orch._sessions
+    orch._lock_pool = h.pool
+    orch.set_history_recorder(h.recorder)
+    h.bot._orch = orch
+    h.bot.bot_instance = SimpleNamespace()
+    registry = orch._process_registry
+    session = orch._named_sessions.create(h.key.chat_id, "claude", "opus", "setup", key=h.key)
+    orch._named_sessions.update_after_response(h.key.chat_id, session.name, "existing-session")
+    entry = await h.runtime.history.append(
+        h.key,
+        Entry("bot", "web", "Named"),
+        buttons=[[{"text": "Yes", "callback_data": f"ns:{session.name}:Yes"}]],
+    )
+    monkeypatch.setattr(
+        "ductor_bot.cli.process_registry._kill_processes", AsyncMock(return_value=1)
+    )
+    monkeypatch.setattr(
+        "ductor_bot.orchestrator.flows._user_auth_warning", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr("ductor_bot.orchestrator.commands.check_all_auth", dict)
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def execute(request, **_callbacks):
+        if request.session_kind != "named":
+            registry.register(h.key.chat_id, _mock_process(), "main", topic_id=h.key.topic_id)
+            started.set()
+            await release.wait()
+            return AgentResponse(result="Stopped reply")
+        return AgentResponse(result="Named reply", session_id="continued-session")
+
+    orch._cli_service.execute_streaming.side_effect = execute
+
+    async def press_named_button():
+        return await h.client.post(
+            "/webchat/v1/topics/-123.7/buttons",
+            json={"entry_id": entry.id, "label": "Yes"},
+            headers=headers(),
+        )
+
+    async def terminal_phase(ws, response):
+        turn_id = (await response.json())["turn_id"]
+        events = await receive_until(
+            ws,
+            lambda event: (
+                event.get("turn_id") == turn_id
+                and event.get("phase") in {"aborted", "done", "error"}
+            ),
+        )
+        return turn_id, events[-1]["phase"]
+
+    async with h.client.ws_connect("/webchat/v1/events", headers=headers()) as ws:
+        first = await post_message(h)
+        assert first.status == 202
+        try:
+            await asyncio.wait_for(started.wait(), 2)
+            stopped = await post_message(h, text="/stop")
+            assert stopped.status == 202
+            assert await stopped.json() == {"killed": 1}
+            if quick_command is not None:
+                assert (await post_message(h, text=quick_command)).status == 200
+            busy = await press_named_button()
+            assert busy.status == 409
+            assert await busy.json() == {"error": "web_turn_running"}
+            assert not await h.runtime.history.is_answered("-123.7", entry.id)
+            assert registry.was_aborted_topic(h.key.chat_id, h.key.topic_id)
+            assert orch._cli_service.execute_streaming.await_count == 1
+        finally:
+            release.set()
+
+        _, first_phase = await terminal_phase(ws, first)
+        assert first_phase == "aborted"
+        followup = await press_named_button()
+        assert followup.status == 202
+        turn_id, named_phase = await terminal_phase(ws, followup)
+        assert named_phase == "done"
+    replies = [
+        item
+        for item in await h.runtime.history.read("-123.7")
+        if item.role == "bot" and item.turn_id == turn_id
+    ]
+    assert len(replies) == 1
+    assert replies[0].status == "ok"
+    assert replies[0].text == f"**[{session.name} | claude]**\nNamed reply"
 
 
 async def test_zero_source_message_id_reaches_sender_without_reply_quote(commands):

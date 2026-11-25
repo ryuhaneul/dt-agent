@@ -338,8 +338,9 @@ class WebCommandDispatcher:
         if orch._inflight_tracker.shutting_down:
             return _response(t("error.shutting_down"))
         orch._observers.heartbeat.notify_activity(key)
-        orch._process_registry.clear_abort(key.chat_id)
-        orch._process_registry.clear_topic_abort(key.chat_id, key.topic_id)
+        if name not in _IMMEDIATE_COMMANDS:
+            orch._process_registry.clear_abort(key.chat_id)
+            orch._process_registry.clear_topic_abort(key.chat_id, key.topic_id)
         handler = orch._command_registry.resolve(text.strip().lower())
         if handler is None:
             # Main's multi-agent registry is absent when no supervisor is configured.
