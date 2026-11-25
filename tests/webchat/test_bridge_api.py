@@ -45,6 +45,7 @@ from ductor_bot.cli.slot_rotation import fallback_slot
 from ductor_bot.cli.stream_events import AssistantTextDelta, ResultEvent, ToolUseEvent
 from ductor_bot.config import AgentConfig, ChatLogConfig, WebchatConfig
 from ductor_bot.infra.input_context import current_input_timestamp
+from ductor_bot.infra.secret_runtime import start_secret_runtime, stop_secret_runtime
 from ductor_bot.infra.secret_store import set_secret
 from ductor_bot.messenger.telegram.topic import TopicNameCache
 from ductor_bot.messenger.telegram.transport import TelegramTransport
@@ -5207,10 +5208,24 @@ async def test_queue_admission_journal_failure_rejects_before_202(conversation, 
     assert await h.runtime.outbox.pending() == []
 
 
-async def test_activity_payload_is_indicator_only_and_snapshot_is_current(conversation):
+@pytest.fixture
+async def activity_vault(conversation):
+    runtime = start_secret_runtime(conversation.paths.ductor_home)
+    try:
+        yield runtime.vault
+    finally:
+        await stop_secret_runtime(runtime)
+
+
+async def test_activity_payload_and_snapshot_only_expose_redacted_details(
+    conversation,
+    activity_vault,
+):
     h = conversation
     tool_ready, text_ready, release_tool, release_text = (asyncio.Event() for _ in range(4))
     canary = "private-activity-input-canary"
+    await activity_vault.set("TOKEN", canary)
+    await activity_vault.setup("synthetic-activity-master-key")
 
     async def handle(key, text, **callbacks):
         dispatch = SimpleNamespace(
@@ -5224,12 +5239,19 @@ async def test_activity_payload_is_indicator_only_and_snapshot_is_current(conver
         await callbacks["on_reasoning_delta"]("  ")
         await callbacks["on_reasoning_delta"](canary)
         await callbacks["on_reasoning_delta"](canary)
+        await callbacks["on_text_delta"]("safe ")
         await callbacks["on_tool_activity"](
             ToolUseEvent(type="tool_use", tool_name="bash", parameters={"command": canary})
         )
+        builtin = ToolUseEvent(
+            type="tool_use", tool_name="bash", kind="shell", parameters={"command": f"cmd {canary}"}
+        )
+        await callbacks["on_tool_activity"](builtin)
+        await activity_vault.lock()
+        await callbacks["on_tool_activity"](builtin)
         tool_ready.set()
         await release_tool.wait()
-        await callbacks["on_text_delta"]("safe answer")
+        await callbacks["on_text_delta"]("answer")
         text_ready.set()
         await release_text.wait()
         result = OrchestratorResult(text="safe answer")
@@ -5241,24 +5263,45 @@ async def test_activity_payload_is_indicator_only_and_snapshot_is_current(conver
     try:
         turn_id = (await (await post_message(h)).json())["turn_id"]
         await asyncio.wait_for(tool_ready.wait(), 3)
-        events = await receive_until(ws, lambda event: event.get("type") == "tool")
-        tool = events[-1]
-        assert set(tool) == {"type", "tid", "turn_id", "seq", "name"}
-        assert tool["name"] == "Shell"
+        events = []
+        for _ in range(3):
+            events.extend(await receive_until(ws, lambda event: event.get("type") == "tool"))
+        tools = [event for event in events if event["type"] == "tool"]
+        event_keys = {"type", "tid", "turn_id", "seq", "name"}
+        detail = {"kind": "shell", "text": "cmd ***", "truncated": False}
+        assert [set(tool) for tool in tools] == [event_keys, event_keys | {"detail"}, event_keys]
+        assert tools[1]["detail"] == detail
+        assert all(tool["name"] == "Shell" for tool in tools)
         assert [event["status"] for event in events if event["type"] == "system_status"] == [
-            "thinking", "compacting", None, "thinking"
+            "thinking",
+            "compacting",
+            None,
+            "thinking",
         ]
         response = await h.client.get(f"{_PREFIX}/topics", headers=headers())
         topic = (await response.json())["topics"][0]
         state = next(row for row in topic["turns"] if row["turn_id"] == turn_id)
         assert state["started_at"]
-        assert state["activity"] == {"type": "tool", "seq": tool["seq"], "name": "Shell"}
+        last_tool = {"type": "tool", "seq": tools[2]["seq"], "name": "Shell"}
+        assert state["activity"] == last_tool
+        assert state["activities"] == [
+            {"type": "tool", "seq": tools[0]["seq"], "name": "Shell", "offset": 5},
+            {
+                "type": "tool",
+                "seq": tools[1]["seq"],
+                "name": "Shell",
+                "offset": 5,
+                "detail": detail,
+            },
+            {**last_tool, "offset": 5},
+        ]
         assert canary not in json.dumps([events, topic])
         release_tool.set()
         await asyncio.wait_for(text_ready.wait(), 3)
         response = await h.client.get(f"{_PREFIX}/topics", headers=headers())
         topic = (await response.json())["topics"][0]
         assert topic["turns"][0]["activity"] is None
+        assert topic["turns"][0]["activities"] == state["activities"]
         release_text.set()
         await receive_until(ws, lambda event: event.get("phase") == "done")
         entries = await h.runtime.history.read("-123.7")
@@ -5267,6 +5310,148 @@ async def test_activity_payload_is_indicator_only_and_snapshot_is_current(conver
         release_tool.set()
         release_text.set()
         await ws.close()
+
+
+@pytest.mark.parametrize(("count", "detail_length"), [(201, 0), (201, 6), (40, 2000)])
+async def test_activity_snapshot_enforces_count_and_byte_limits(
+    conversation,
+    activity_vault,
+    count,
+    detail_length,
+):
+    h = conversation
+    ready = asyncio.Event()
+    release = asyncio.Event()
+    tool = ToolUseEvent(
+        type="tool_use",
+        tool_name="Read",
+        kind="file" if detail_length else None,
+        parameters={"path": "x" * detail_length},
+    )
+
+    async def handle(_key, _text, **callbacks):
+        for _ in range(count):
+            await callbacks["on_tool_activity"](tool)
+        ready.set()
+        await release.wait()
+        return OrchestratorResult(text="")
+
+    h.bot._orch.handle_message_streaming.side_effect = handle
+    ws = await h.client.ws_connect(f"{_PREFIX}/events", headers=headers())
+    try:
+        assert (await post_message(h)).status == 202
+        await asyncio.wait_for(ready.wait(), 3)
+        events = await receive_until(
+            ws, lambda event: event["type"] == "tool" and event["seq"] == count
+        )
+        tools = [event for event in events if event["type"] == "tool"]
+        assert len(tools) == count
+        assert all(("detail" in event) == bool(detail_length) for event in tools)
+        response = await h.client.get(f"{_PREFIX}/topics", headers=headers())
+        state = (await response.json())["topics"][0]["turns"][0]
+        activities = state["activities"]
+        assert [activity["seq"] for activity in activities] == list(
+            range(max(1, count - 199), count + 1)
+        )
+        assert len(json.dumps(activities).encode("utf-8")) <= 64 * 1024
+        if count > 200:
+            assert all("detail" not in activity for activity in activities)
+        else:
+            kept = [activity["seq"] for activity in activities if "detail" in activity]
+            assert kept
+            assert kept[0] > 1
+            assert kept == list(range(kept[0], count + 1))
+            first_kept = kept[0] - 1
+            previous = activities[first_kept - 1]
+            restored = list(activities)
+            restored[first_kept - 1] = {**previous, "detail": tools[first_kept - 1]["detail"]}
+            assert len(json.dumps(restored).encode("utf-8")) > 64 * 1024
+    finally:
+        release.set()
+        await ws.close()
+
+
+@pytest.mark.parametrize("reply_text", ["answer [button:Next]", "answer", ""])
+async def test_web_turn_activity_metadata_follows_reply(conversation, activity_vault, reply_text):
+    h = conversation
+    tid = "-123.7"
+    canary = "private-history-activity-canary"
+    await activity_vault.set("TOKEN", canary)
+
+    async def handle(key, text, **callbacks):
+        dispatch = SimpleNamespace(
+            key=key, text=text, transport_override=None, counts_as_activity=True
+        )
+        await h.recorder.begin(dispatch)
+        await callbacks["on_tool_activity"](
+            ToolUseEvent(
+                type="tool_use",
+                tool_name="Bash",
+                kind="shell",
+                parameters={"command": f"cmd {canary}"},
+            )
+        )
+        result = OrchestratorResult(text=reply_text)
+        await h.recorder.finish(dispatch, result, status="ok")
+        return result
+
+    h.bot._orch.handle_message_streaming.side_effect = handle
+    ws = await h.client.ws_connect(f"{_PREFIX}/events", headers=headers())
+    try:
+        response = await post_message(h)
+        assert response.status == 202
+        turn_id = (await response.json())["turn_id"]
+        await receive_until(
+            ws, lambda event: event.get("turn_id") == turn_id and event.get("phase") == "done"
+        )
+    finally:
+        await ws.close()
+
+    response = await h.client.get(f"{_PREFIX}/topics/{tid}/messages", headers=headers())
+    assert response.status == 200
+    entries = (await response.json())["entries"]
+    sidecar = h.runtime.history.directory / f"{tid}.meta.jsonl"
+    if not reply_text:
+        assert [entry["role"] for entry in entries] == ["user"]
+        assert "activity" not in entries[0]
+        assert not sidecar.exists()
+        return
+
+    user, reply = entries
+    assert "activity" not in user
+    assert reply["role"] == "bot"
+    records = [
+        {
+            "type": "tool",
+            "name": "Shell",
+            "seq": 1,
+            "offset": 0,
+            "detail": {"kind": "shell", "text": "cmd ***", "truncated": False},
+        },
+    ]
+    assert reply["activity"] == records
+    buttons = [[{"text": "Next", "callback_data": "Next"}]]
+    legacy_metadata = await h.runtime.history.metadata(tid)
+    if "[button:Next]" in reply_text:
+        assert reply["buttons"] == buttons
+        assert legacy_metadata == {reply["id"]: {"buttons": buttons}}
+    else:
+        assert "buttons" not in reply
+        assert legacy_metadata == {}
+        await h.runtime.history.record_buttons(tid, reply["id"], buttons, only_if_missing=True)
+        response = await h.client.get(f"{_PREFIX}/topics/{tid}/messages", headers=headers())
+        assert response.status == 200
+        reply = (await response.json())["entries"][-1]
+        assert reply["buttons"] == buttons
+        assert reply["activity"] == records
+    assert canary not in sidecar.read_text()
+    assert canary not in json.dumps(entries)
+    topic = (await (await h.client.get(f"{_PREFIX}/topics", headers=headers())).json())["topics"][0]
+    response = await h.client.delete(
+        f"{_PREFIX}/topics/{tid}", json={"confirm_name": topic["name"]}, headers=headers()
+    )
+    assert response.status == 200
+    assert not sidecar.exists()
 
 
 async def test_admission_fsync_is_off_loop_and_precedes_202(conversation, monkeypatch):
