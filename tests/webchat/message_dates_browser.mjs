@@ -897,13 +897,18 @@ async function busyIndicator(browser, scenario) {
     await page.clock.install({ time: new Date(today) });
     const tid = topic.tid;
     const turn = { turn_id: 'active', phase: 'started', text: 'Prompt', received: today };
-    const row = { ...topic, busy: scenario !== 'busy-reconnect', turns: scenario === 'busy-terminal' ? [turn] : [] };
-    let failOutbox = false, holdTopics, topicsReads = 0;
+    const terminal = scenario.startsWith('busy-terminal');
+    if (/-(cancelled|entry)$/.test(scenario)) turn.phase = 'queued';
+    const row = { ...topic, busy: !scenario.startsWith('busy-reconnect'), turns: terminal ? [turn] : [] };
+    let failOutbox = false, holdTopics, onHeldTopics, topicsReads = 0;
     await mockChat(page, messages.slice(0, 2), row);
     await page.route('**/api/topics', async route => {
       topicsReads++;
       const snapshot = structuredClone(row);
-      if (holdTopics) await holdTopics;
+      if (holdTopics) {
+        onHeldTopics?.();
+        await holdTopics;
+      }
       await route.fulfill({ json: { topics: [snapshot] } });
     });
     await page.route('**/api/outbox', route => failOutbox
@@ -952,6 +957,31 @@ async function busyIndicator(browser, scenario) {
       const idleReads = topicsReads;
       await page.clock.runFor(40000);
       assert.equal(topicsReads, idleReads, 'idle chat should have no recheck timer');
+    } else if (scenario.startsWith('busy-terminal-held-')) {
+      const queued = turn.phase === 'queued';
+      const indicator = queued ? page.locator('[data-queue-turn="active"] [data-cancel-turn]') : live;
+      await expectActivity(indicator, true, 'the web turn should start with its own indicator');
+      row.busy = false;
+      row.turns = [];
+      let release;
+      holdTopics = new Promise(resolve => { release = resolve; });
+      const requested = page.waitForRequest(request => new URL(request.url()).pathname === '/api/topics');
+      try {
+        if (scenario.endsWith('-entry')) {
+          await event('entry', { entry: {
+            id: 'cancelled', seq: 3, ts: today, role: 'user', source: 'web',
+            text: turn.text, turn_id: turn.turn_id, status: 'cancelled',
+          } });
+        } else {
+          await event('turn', { turn_id: turn.turn_id, phase: queued ? 'cancelled' : 'done' });
+        }
+        await requested;
+        await expectActivity(indicator, false, 'the original indicator should end');
+        assert.equal(await busy.isVisible(), false, 'the old busy snapshot must not flash while the response is held');
+      } finally {
+        release();
+      }
+      await expectActivity(busy, false, 'the fresh idle snapshot should leave the indicator hidden');
     } else if (scenario === 'busy-terminal') {
       await expectActivity(live, true, 'the active web turn should display its live reply');
       row.busy = false;
@@ -974,6 +1004,33 @@ async function busyIndicator(browser, scenario) {
       row.turns = [];
       await event('turn', { turn_id: 'last', phase: 'cancelled' });
       await expectActivity(busy, false, 'cancelling the last queued turn should refresh the idle topic');
+    } else if (scenario.startsWith('busy-reconnect-overlap-')) {
+      await event('bridge', { up: true });
+      await event('turn', { turn_id: turn.turn_id, phase: 'started' });
+      await expectActivity(live, true, 'the test should start with a live reply');
+      failOutbox = scenario.endsWith('503');
+      await event('bridge', { up: false });
+      row.busy = true;
+      row.turns = [turn];
+      let release;
+      holdTopics = new Promise(resolve => { release = resolve; });
+      const requested = new Promise(resolve => { onHeldTopics = resolve; });
+      const reconnect = event('bridge', { up: true });
+      try {
+        await requested;
+        holdTopics = null;
+        row.busy = false;
+        row.turns = [];
+        await event('topics');
+        await expectActivity(live, false, 'the newer response should settle the turn before the older request returns');
+        assert.equal(await page.locator('#stopBtn').isVisible(), false);
+      } finally {
+        release();
+        await reconnect;
+      }
+      await page.clock.fastForward(45000);
+      assert.equal(await live.isVisible(), false, 'the newest idle response should settle the recovered turn');
+      assert.equal(await page.locator('#stopBtn').isVisible(), false, 'the newest idle response should also hide Stop');
     } else {
       await event('busy', { busy: true });
       await event('turn', { turn_id: turn.turn_id, phase: 'started' });
@@ -989,12 +1046,47 @@ async function busyIndicator(browser, scenario) {
   }
 }
 
+async function busyResumeScroll(browser, width) {
+  const context = await browser.newContext({ viewport: { width, height: 667 } });
+  try {
+    const page = await context.newPage();
+    const entries = messages.slice(0, 40);
+    const row = { ...topic, busy: false, turns: [] };
+    await mockChat(page, entries, row);
+    await page.route('**/api/topics', route => route.fulfill({ json: { topics: [{ ...row, count: entries.length }] } }));
+    await page.goto(origin);
+    await page.waitForFunction(() => document.querySelectorAll('[data-entry-seq]').length === 40);
+    await page.evaluate(() => document.fonts.ready);
+    const before = await scrollPosition(page, 64);
+    assert.equal(before.gap, 64);
+    async function setHidden(hidden) {
+      await page.evaluate(value => {
+        Object.defineProperty(document, 'hidden', { configurable: true, value });
+        document.dispatchEvent(new Event('visibilitychange'));
+      }, hidden);
+    }
+    await setHidden(true);
+    row.busy = true;
+    const history = page.waitForResponse(response =>
+      response.request().method() === 'GET' && new URL(response.url()).pathname.endsWith('/messages'));
+    await setHidden(false);
+    await (await history).finished();
+    await page.locator('[data-thread-key="busy"]').waitFor();
+    const after = await scrollPosition(page);
+    assert.equal(after.seq, before.seq, 'tab resume should keep the same message visible');
+    assert.equal(after.y, before.y, 'tab resume should preserve the message screen position');
+  } finally {
+    await context.close();
+  }
+}
+
 const browser = await chromium.launch();
 try {
   await fs.mkdir(config.shots, { recursive: true });
   const scenarios = { dates: messageDates, window: preserveOldestGroup, focus: chatFocus, 'code-copy': codeCopy, 'telegram-code': telegramCode, 'telegram-code-boundaries': telegramCodeBoundaries, 'user-line-breaks': userLineBreaks };
   const scenario = process.argv[3] ?? 'dates';
   if (scenario.startsWith('overflow-')) await documentOverflow(browser, scenario);
+  else if (scenario.startsWith('busy-resume-scroll-')) await busyResumeScroll(browser, Number(scenario.split('-').at(-1)));
   else if (scenario.startsWith('busy-')) await busyIndicator(browser, scenario);
   else await scenarios[scenario](browser);
 } finally {

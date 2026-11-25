@@ -39,9 +39,10 @@ function hasTurnEntry(turn, role) {
 }
 function isLiveTurn(turn) { return turn.phase === 'queued' || turn.phase === 'started'; }
 function refreshAfterLastTurn(tid) {
-  if (![...turns.values()].some(turn => turn.tid === tid && isLiveTurn(turn))) {
-    void refreshTopics().catch(errorNotice);
-  }
+  if ([...turns.values()].some(turn => turn.tid === tid && isLiveTurn(turn))) return;
+  const topic = getTopics().find(item => item.tid === tid);
+  if (topic?.busyFromSnapshot) topic.busy = false;
+  void refreshTopics().catch(errorNotice);
 }
 function started(tid) {
   return [...turns.values()].find(turn => turn.tid === tid && turn.phase === 'started');
@@ -933,6 +934,7 @@ async function resync({ preserveReading = false } = {}) {
   try {
     await refreshTopics(items => {
       if (!active || generation !== epoch) return;
+      const selected = getTopic()?.tid, changed = new Set();
       for (const item of items) {
         const stable = versions.get(item.tid) === topicVersions.get(item.tid);
         const snapshot = item.turns ?? (item.turn_id ? [{ turn_id: item.turn_id, phase: 'started' }] : []);
@@ -941,6 +943,7 @@ async function resync({ preserveReading = false } = {}) {
           for (const turn of turns.values()) {
             if (turn.tid === item.tid && isLiveTurn(turn) && !ids.has(turn.id)) {
               turn.phase = 'done'; turn.finished = null;
+              if (item.tid === selected) changed.add(turn.id);
             }
           }
         }
@@ -955,8 +958,10 @@ async function resync({ preserveReading = false } = {}) {
           turn.startedAt = state.started_at ?? turn.startedAt;
           if (stable && state.activity) addActivity(turn, state.activity);
           turns.set(turn.id, turn);
+          if (item.tid === selected) changed.add(turn.id);
         }
       }
+      if (changed.size) renderThread({ changes: { turns: changed }, preserveReading: true });
     });
     if (!active || generation !== epoch) return;
     const topic = getTopic();
@@ -1007,7 +1012,10 @@ export async function handleEvent(event) {
       if (!state.entries.has(entry.id)) noteEntry(tid, entry);
       mergeHistory(state, [entry]);
       const turn = turns.get(entry.turn_id);
-      if (turn && entry.role === 'user' && entry.status === 'cancelled') turn.phase = 'cancelled';
+      if (turn && entry.role === 'user' && entry.status === 'cancelled' && turn.phase !== 'cancelled') {
+        turn.phase = 'cancelled';
+        refreshAfterLastTurn(tid);
+      }
       if (!getTopics().some(item => item.tid === tid)) await refreshTopics();
       if (!active || generation !== epoch || tid !== getTopic()?.tid) return;
       attachmentView?.load(tid, [state.entries.get(entry.id)]);
@@ -1041,6 +1049,7 @@ export async function handleEvent(event) {
     case 'turn': {
       const turn = turns.get(event.turn_id) || { id: event.turn_id, tid, text: '' };
       const phaseChanged = turn.lastEventPhase !== event.phase;
+      const wasCancelled = turn.phase === 'cancelled';
       turn.lastEventPhase = event.phase;
       turn.phase = event.phase;
       turn.startedAt = event.started_at ?? turn.startedAt;
@@ -1061,7 +1070,7 @@ export async function handleEvent(event) {
         turn.finished = new Date().toISOString();
         if (phaseChanged) {
           void refreshState();
-          refreshAfterLastTurn(tid);
+          if (!(wasCancelled && event.phase === 'cancelled')) refreshAfterLastTurn(tid);
         }
       }
       updateTurn(turn);
@@ -1347,7 +1356,7 @@ export function initChat() {
     } catch (error) { if (active && generation === epoch) errorNotice(error); }
   });
   document.addEventListener('topic-updated', () => renderHeader());
-  document.addEventListener('topic-busy-updated', () => renderThread({ changes: {} }));
+  document.addEventListener('topic-busy-updated', () => renderThread({ changes: {}, preserveReading: true }));
   document.addEventListener('route-change', event => {
     view = event.detail.view;
     if (active && event.detail.route === 'chat') { renderThread(); resizeComposer(); }

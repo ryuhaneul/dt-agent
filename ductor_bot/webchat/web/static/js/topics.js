@@ -9,6 +9,7 @@ let active = false, request = 0, readEpoch = 0, markingAll = false, migrationEpo
 let renaming = null, renameBusy = false, renameEpoch = 0;
 const unread = new Map(), seen = new Map(), confirmed = new Map(), latest = new Map(), migrated = new Set();
 const unreadReaders = new WeakMap(), busyEvents = new Map();
+let pendingSnapshot = null;
 export function getTopics() { return topics; }
 export function getTopic() { return topics.find(topic => topic.tid === selected) || null; }
 export function noteTopicBusy(tid, value) {
@@ -174,6 +175,7 @@ async function migrateSeen() {
   }
 }
 export async function refreshTopics(onSnapshot) {
+  if (onSnapshot) pendingSnapshot = onSnapshot;
   // Each busy event has a new identity, even if its value did not change.
   const generation = ++revision, observedBusy = new Map(busyEvents);
   const data = await api('/topics');
@@ -191,7 +193,10 @@ export async function refreshTopics(onSnapshot) {
       ? t('topic.general') : `Topic #${topic.topic_id}`;
     if (topic.group === 'imported') topic.preview = t('topic.imported_preview', { n: topic.count });
   }
-  onSnapshot?.(topics);
+  // A newer topic request may supersede the request that started turn recovery.
+  const applySnapshot = pendingSnapshot;
+  pendingSnapshot = null;
+  applySnapshot?.(topics);
   const current = getTopic();
   if (!current) selectTopic(topics[0]?.tid, null, false);
   else {
@@ -305,6 +310,7 @@ export function initTopics() {
       form.querySelectorAll('input, button').forEach(element => { element.disabled = false; });
       document.querySelector('#renameClose').disabled = false;
       ++revision; ++request; clearTimeout(searchTimer); topics = []; selected = null; hits = [];
+      pendingSnapshot = null;
       query = ''; unread.clear(); seen.clear(); confirmed.clear(); latest.clear(); migrated.clear(); busyEvents.clear(); document.querySelector('#q').value = ''; renderTopics();
     }
   });

@@ -2903,6 +2903,9 @@ def test_autocompact_dialog_has_labeled_scopes_and_bounded_token_inputs(markup):
         "dates", "window", "focus", "overflow-footnote", "overflow-activity", "code-copy",
         "telegram-code", "telegram-code-boundaries", "user-line-breaks",
         "busy-refresh", "busy-recheck", "busy-terminal", "busy-reconnect",
+        "busy-terminal-held-done", "busy-terminal-held-cancelled", "busy-terminal-held-entry",
+        "busy-reconnect-overlap-200", "busy-reconnect-overlap-503",
+        "busy-resume-scroll-1280", "busy-resume-scroll-375",
     ],
 )
 def test_message_dates_browser(tmp_path: Path, scenario: str) -> None:
