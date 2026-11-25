@@ -199,7 +199,8 @@ across web clients. Reading a topic or marking all topics as read hides the
 affected badges immediately while the read state is saved. If the server cannot
 provide an unread count, the browser shows the last confirmed count and retries.
 
-Badge updates normally start within 150 ms of a change, plus the request time.
+Badge refreshes after new entries or read-state changes normally start within
+150 ms. Reconnects and topic-list events request the list immediately.
 A continuous stream can delay the start up to one second when no read write or
 list request is in progress. If new changes keep arriving faster than responses,
 the badges may only catch up when the stream settles. A history lock on one topic

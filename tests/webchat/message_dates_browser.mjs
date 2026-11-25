@@ -1014,10 +1014,9 @@ async function unreadRecovery(browser, scenario) {
           await (await import('/static/js/topics.js')).refreshTopics().catch(() => {});
         });
       } else {
+        const failed = waitForList();
         socket.send(JSON.stringify({ type: 'topics' }));
-        socket.send(JSON.stringify({ type: 'telegram', state: 'down' }));
-        await page.locator('#telegramBadge.badge-down').waitFor();
-        assert.equal(listCalls, 1, 'the topic event does not start a parallel list request');
+        assert.equal((await failed).status(), 503, 'the topic event request fails while the first list is held');
       }
       releaseList.resolve();
       await waitForBadge('2');
@@ -1072,8 +1071,8 @@ async function busyIndicator(browser, scenario) {
     const terminal = scenario.startsWith('busy-terminal');
     if (/-(cancelled|entry)$/.test(scenario)) turn.phase = 'queued';
     const row = { ...topic, busy: !scenario.startsWith('busy-reconnect'), turns: terminal ? [turn] : [] };
-    let failOutbox = false, holdTopics, onHeldTopics, topicsReads = 0;
-    await mockChat(page, messages.slice(0, 2), row);
+    let failOutbox = false, holdTopics, onHeldTopics, topicsReads = 0, socket;
+    await mockChat(page, messages.slice(0, 2), row, peer => { socket = peer; });
     await page.route('**/api/topics', async route => {
       topicsReads++;
       const snapshot = structuredClone(row);
@@ -1176,6 +1175,38 @@ async function busyIndicator(browser, scenario) {
       row.turns = [];
       await event('turn', { turn_id: 'last', phase: 'cancelled' });
       await expectActivity(busy, false, 'cancelling the last queued turn should refresh the idle topic');
+    } else if (scenario === 'busy-reconnect-held-list') {
+      const stop = page.locator('#stopBtn');
+      socket.send(JSON.stringify({ type: 'turn', tid, turn_id: turn.turn_id, phase: 'started' }));
+      await expectActivity(live, true, 'the test should start with a live reply');
+      await expectActivity(stop, true, 'the running reply should show Stop');
+      row.busy = true;
+      row.turns = [turn];
+      const held = Promise.withResolvers(), release = Promise.withResolvers();
+      holdTopics = release.promise;
+      onHeldTopics = held.resolve;
+      const refreshing = page.evaluate(async () => (await import('/static/js/topics.js')).refreshTopics());
+      try {
+        await held.promise;
+        holdTopics = null;
+        row.busy = false;
+        row.turns = [];
+        let replies = 0;
+        const recovered = page.waitForResponse(reply =>
+          new URL(reply.url()).pathname === '/api/topics' && reply.ok() && ++replies === 2,
+        { timeout: 3000 });
+        socket.send(JSON.stringify({ type: 'bridge', up: false }));
+        socket.send(JSON.stringify({ type: 'bridge', up: true }));
+        socket.send(JSON.stringify({ type: 'topics' }));
+        await recovered.catch(() => assert.fail(`expected two new list responses while the old list was held, got ${replies}`));
+        await expectActivity(live, false, 'the recovery should hide the finished reply before the old list returns');
+        await expectActivity(stop, false, 'the recovery should hide Stop before the old list returns');
+      } finally {
+        release.resolve();
+        await refreshing;
+      }
+      assert.equal(await live.isVisible(), false, 'the old list must not restore the reply');
+      assert.equal(await stop.isVisible(), false, 'the old list must not restore Stop');
     } else if (scenario.startsWith('busy-reconnect-overlap-')) {
       await event('bridge', { up: true });
       await event('turn', { turn_id: turn.turn_id, phase: 'started' });

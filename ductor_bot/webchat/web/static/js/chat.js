@@ -11,7 +11,7 @@ import { notify } from './auth.js';
 import { connectEvents } from './ws.js';
 import { md, esc, createMarkdownCache, createMarkdownStream, initMarkdownLinks } from './md.js';
 import {
-  getTopic, getTopics, selectTopic, refreshTopics, resyncTopics, scheduleBadgeRefresh,
+  getTopic, getTopics, selectTopic, refreshTopics, scheduleBadgeRefresh,
   noteEntry, noteTopicBusy, markSeen, formatTime,
 } from './topics.js';
 
@@ -927,7 +927,7 @@ async function refreshOutbox() {
   if (!active || epoch !== generation) return;
   outbox = data.items; renderOutboxStatus();
 }
-async function resync({ preserveReading = false, initial = false } = {}) {
+async function resync({ preserveReading = false } = {}) {
   attachmentView?.markStale();
   for (const state of histories.values()) state.loaded = false;
   const generation = epoch, versions = new Map(topicVersions);
@@ -935,7 +935,7 @@ async function resync({ preserveReading = false, initial = false } = {}) {
     if (active && generation === epoch) errorNotice(error);
   });
   try {
-    const applySnapshot = items => {
+    await refreshTopics({ onSnapshot: items => {
       if (!active || generation !== epoch) return;
       const selected = getTopic()?.tid, changed = new Set();
       for (const item of items) {
@@ -965,9 +965,7 @@ async function resync({ preserveReading = false, initial = false } = {}) {
         }
       }
       if (changed.size) renderThread({ changes: { turns: changed }, preserveReading: true });
-    };
-    if (initial) await refreshTopics({ onSnapshot: applySnapshot });
-    else if (!await resyncTopics(applySnapshot)) return;
+    } });
     if (!active || generation !== epoch) return;
     const topic = getTopic();
     if (topic) {
@@ -1107,7 +1105,7 @@ export async function handleEvent(event) {
       botUp = event.up; renderStatus();
       if (event.up) await resync();
       return;
-    case 'topics': await resyncTopics(); return;
+    case 'topics': await refreshTopics(); return;
     case 'outbox': {
       pending = event.pending;
       if (event.item) {
@@ -1390,12 +1388,10 @@ export function initChat() {
     renderVersion();
     pending = 0; outbox = []; renderStatus(); renderHeader(); resizeComposer();
     if (!active) { thread.replaceChildren(); updateThreadNavigation(); return; }
-    let connected = false;
     stopEvents = connectEvents(event => { void handleEvent(event).catch(errorNotice); }, up => {
-      if (!up) { botUp = false; renderStatus(); return; }
-      void resync({ initial: !connected });
-      connected = true;
+      if (!up) { botUp = false; renderStatus(); }
+      if (up) void resync();
     });
-    void resync({ initial: true });
+    void resync();
   });
 }

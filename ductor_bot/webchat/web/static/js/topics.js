@@ -11,7 +11,7 @@ const serverUnread = new Map(), pendingRead = new Map(), awaitingUnread = new Se
 const seen = new Map(), confirmed = new Map(), migrated = new Set();
 const BADGE_DELAY = 150, BADGE_MAX_WAIT = 1000, BADGE_RETRIES = [1000, 2000, 4000, 8000];
 let badgeEpoch = 0, badgeTimer, badgeDue = null, badgeDeadline = null, badgeRetries = 0;
-let topicsInFlight = 0, readWrites = 0, badgeNotified = false, badgeWaiters = [];
+let topicsInFlight = 0, readWrites = 0, badgeNotified = false;
 const busyEvents = new Map();
 let pendingSnapshot = null;
 export function getTopics() { return topics; }
@@ -47,13 +47,8 @@ function armBadgeRefresh() {
   if (!active || readWrites || topicsInFlight || badgeDue === null) return;
   badgeTimer = setTimeout(async () => {
     badgeDue = badgeDeadline = null;
-    const waiters = badgeWaiters;
-    badgeWaiters = [];
-    const onSnapshot = waiters.findLast(waiter => waiter.onSnapshot)?.onSnapshot;
-    let refreshed = false;
-    try { await refreshTopics({ badgeRequest: true, onSnapshot }); refreshed = true; }
+    try { await refreshTopics({ badgeRequest: true }); }
     catch { /* refreshTopics handles badge failures and retries. */ }
-    for (const { resolve } of waiters) resolve(refreshed);
   }, Math.max(0, badgeDue - performance.now()));
 }
 export function scheduleBadgeRefresh() {
@@ -64,17 +59,6 @@ export function scheduleBadgeRefresh() {
   badgeDeadline ??= now + BADGE_MAX_WAIT;
   badgeDue = Math.min(now + BADGE_DELAY, badgeDeadline);
   armBadgeRefresh();
-}
-export function resyncTopics(onSnapshot) {
-  if (!active) return Promise.resolve(false);
-  if (!onSnapshot && pendingSnapshot && topicsInFlight && !readWrites) {
-    // A topic event can settle a reconnect snapshot before the older request returns.
-    return refreshTopics();
-  }
-  return new Promise(resolve => {
-    badgeWaiters.push({ resolve, onSnapshot });
-    scheduleBadgeRefresh();
-  });
 }
 function noteBadgeFailure(error, key = 'error.generic', report = true) {
   if (badgeNotified || error?.code === 'auth_required') return;
@@ -391,8 +375,6 @@ export function initTopics() {
     topicsInFlight = readWrites = badgeRetries = 0;
     badgeNotified = false;
     pendingRead.clear(); awaitingUnread.clear();
-    for (const { resolve } of badgeWaiters) resolve(false);
-    badgeWaiters = [];
     document.querySelector('#markAllRead').disabled = false;
     if (!active) {
       ++renameEpoch; renaming = null; renameBusy = false; dialog.close(); clearRenameError();
