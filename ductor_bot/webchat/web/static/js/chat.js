@@ -19,6 +19,7 @@ const histories = new Map(), turns = new Map(), drafts = new Map(), topicVersion
 let active = false, epoch = 0, stopEvents = null, telegram = { state: 'unknown' };
 let botUp = false, webSessions = null, releaseVersion = '', pending = 0, outbox = [], sending = false;
 let slots = null, stateRequest = null;
+let pendingHistoryRecovery = null, resumedHistoryRecovery = null;
 let view = 'chat', selection = 0, commandMenu = null, secretDialog = null, autocompactDialog = null, cronDialog = null;
 let streamFrame = null, historyRender = null, composerFiles = null, attachmentView = null;
 const streamUpdates = new Set();
@@ -932,10 +933,24 @@ async function refreshOutbox() {
   if (!active || epoch !== generation) return;
   outbox = data.items; renderOutboxStatus();
 }
+async function reloadSelectedHistory(generation, preserveReading) {
+  if (!active || generation !== epoch) return;
+  const topic = getTopic();
+  if (!topic) return;
+  const entries = history(topic.tid).entries;
+  const previousCount = entries.size;
+  await loadHistory(topic.tid);
+  if (active && generation === epoch && getTopic()?.tid === topic.tid) {
+    renderThread({ preserveReading: preserveReading && entries.size === previousCount });
+  }
+}
 async function resync({ preserveReading = false } = {}) {
   attachmentView?.markStale();
   for (const state of histories.values()) state.loaded = false;
   const generation = epoch, versions = new Map(topicVersions);
+  const previousRecovery = resumedHistoryRecovery;
+  if (preserveReading && pendingHistoryRecovery) pendingHistoryRecovery.preserveReading = true;
+  let waitingForTopics = true;
   const auxiliary = Promise.all([refreshState(), refreshOutbox()]).catch(error => {
     if (active && generation === epoch) errorNotice(error);
   });
@@ -971,18 +986,19 @@ async function resync({ preserveReading = false } = {}) {
       }
       if (changed.size) renderThread({ changes: { turns: changed }, preserveReading: true });
     } });
+    waitingForTopics = false;
     if (!active || generation !== epoch) return;
-    const topic = getTopic();
-    if (topic) {
-      const entries = history(topic.tid).entries;
-      const previousCount = entries.size;
-      await loadHistory(topic.tid);
-      if (active && generation === epoch && getTopic()?.tid === topic.tid) {
-        renderThread({ preserveReading: preserveReading && entries.size === previousCount });
+    // The successful list may already have resumed a deferred recovery.
+    if (resumedHistoryRecovery !== previousRecovery) await resumedHistoryRecovery;
+    else if (!pendingHistoryRecovery) await reloadSelectedHistory(generation, preserveReading);
+  } catch (error) {
+    if (active && generation === epoch) {
+      if (waitingForTopics && resumedHistoryRecovery === previousRecovery) {
+        pendingHistoryRecovery ??= { preserveReading };
       }
+      errorNotice(error);
     }
-  } catch (error) { if (active && generation === epoch) errorNotice(error); }
-  finally { await auxiliary; }
+  } finally { await auxiliary; }
 }
 function updateMirror(item, historyId, status) {
   if (!item || !historyId) return;
@@ -1363,6 +1379,14 @@ export function initChat() {
       }
     } catch (error) { if (active && generation === epoch) errorNotice(error); }
   });
+  document.addEventListener('topics-updated', () => {
+    if (!active || !pendingHistoryRecovery) return;
+    const { preserveReading } = pendingHistoryRecovery, generation = epoch;
+    pendingHistoryRecovery = null;
+    resumedHistoryRecovery = reloadSelectedHistory(generation, preserveReading).catch(error => {
+      if (active && generation === epoch) errorNotice(error);
+    });
+  });
   document.addEventListener('topic-updated', () => renderHeader());
   document.addEventListener('topic-busy-updated', () => renderThread({ changes: {}, preserveReading: true }));
   document.addEventListener('route-change', event => {
@@ -1379,6 +1403,7 @@ export function initChat() {
   document.addEventListener('auth-change', event => {
     cancelTop();
     active = event.detail.authenticated; ++epoch;
+    pendingHistoryRecovery = resumedHistoryRecovery = null;
     clearTimeout(stateRequest?.timeout);
     stateRequest?.controller.abort();
     stateRequest = null;
