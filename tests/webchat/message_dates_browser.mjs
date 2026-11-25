@@ -1062,18 +1062,23 @@ async function unreadRecovery(browser, scenario) {
 }
 
 async function reconnectHistory(browser, scenario) {
-  const context = await browser.newContext({ viewport: { width: 375, height: 667 } });
+  const visibility = scenario.startsWith('reconnect-history-visibility-');
+  const width = visibility ? Number(scenario.split('-').at(-1)) : 375;
+  const context = await browser.newContext({ viewport: { width, height: 667 } });
   try {
     const page = await context.newPage();
     await page.clock.install({ time: new Date(today) });
     const entries = messages.slice(0, 120);
-    let socket, failTopics = false, historyReads = 0;
+    let socket, failTopics = false, historyReads = 0, holdTopics = false;
+    const visibilityGate = visibility ? Promise.withResolvers() : null;
     await mockChat(page, entries, topic, peer => { socket = peer; });
-    await page.route('**/api/topics', route => {
+    await page.route('**/api/topics', async route => {
       if (failTopics) {
         failTopics = false;
+        holdTopics = visibility;
         return route.fulfill({ status: 503, json: { error: 'bot_unreachable' } });
       }
+      if (holdTopics) await visibilityGate.promise;
       return route.fulfill({ json: { topics: [{ ...topic, count: entries.length }] } });
     });
     page.on('request', request => {
@@ -1087,9 +1092,15 @@ async function reconnectHistory(browser, scenario) {
     // Settle the read cursor and its topic badge update before disconnecting.
     await topicsResponse(200);
 
+    if (visibility) {
+      await page.waitForFunction(() => document.querySelectorAll('#thread [data-entry-seq]').length === 100);
+      await page.evaluate(() => document.fonts.ready);
+    }
+    const readingPosition = visibility ? await scrollPosition(page, 64) : null;
+    if (visibility) assert.equal(readingPosition.gap, 64);
     const beforeReconnect = historyReads;
     const missing = { ...messages[120], text: 'Message received while disconnected' };
-    entries.push(missing);
+    if (!visibility) entries.push(missing);
     const succeeds = scenario === 'reconnect-history-success';
     failTopics = !succeeds;
     const first = topicsResponse(succeeds ? 200 : 503);
@@ -1111,11 +1122,54 @@ async function reconnectHistory(browser, scenario) {
         assert.equal(await page.locator('[data-entry-seq="121"]').count(), 0);
         return;
       }
-      const retried = topicsResponse(200);
-      if (scenario === 'reconnect-history-topics-event') socket.send(JSON.stringify({ type: 'topics' }));
-      else if (scenario === 'reconnect-history-next-resync') socket.send(JSON.stringify({ type: 'bridge', up: true }));
-      else await page.clock.runFor(1000);
-      await retried;
+      if (visibility) {
+        assert.deepEqual(await scrollPosition(page), readingPosition);
+        const refreshed = page.waitForResponse(response => response.request().method() === 'GET'
+          && new URL(response.url()).pathname.endsWith('/messages'), { timeout: 4000 });
+        try {
+          holdTopics = false;
+          await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+          await (await refreshed).finished();
+        } finally {
+          visibilityGate.resolve();
+        }
+        assert.deepEqual(await scrollPosition(page), readingPosition, 'tab resume should preserve the reading position');
+        assert.equal(await page.locator('#toasts .toast-error').count(), 1);
+        return;
+      }
+      if (scenario === 'reconnect-history-overlap') {
+        const reading = Promise.withResolvers(), release = Promise.withResolvers();
+        let latestReads = 0;
+        await page.route('**/api/topics/*/messages?*', async route => {
+          const request = route.request(), url = new URL(request.url());
+          if (request.method() === 'GET' && !url.searchParams.has('before')) {
+            latestReads++;
+            reading.resolve();
+            await release.promise;
+          }
+          await route.fallback();
+        });
+        socket.send(JSON.stringify({ type: 'topics' }));
+        try {
+          await reading.promise;
+          const reconnected = topicsResponse(200);
+          await socket.close();
+          await page.clock.fastForward(2000);
+          await reconnected;
+          // Let the new resync process its list while the recovery read is pending.
+          await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        } finally {
+          release.resolve();
+        }
+        await page.locator('[data-entry-seq="121"]').waitFor({ timeout: 2500 });
+        assert.equal(latestReads, 1, 'overlapping resyncs should share the latest history request');
+      } else {
+        const retried = topicsResponse(200);
+        if (scenario === 'reconnect-history-topics-event') socket.send(JSON.stringify({ type: 'topics' }));
+        else if (scenario === 'reconnect-history-next-resync') socket.send(JSON.stringify({ type: 'bridge', up: true }));
+        else await page.clock.runFor(1000);
+        await retried;
+      }
     }
     await page.locator('[data-entry-seq="121"]').waitFor({ timeout: 2500 })
       .catch(() => assert.fail(`history was not restored after reconnect (${historyReads - beforeReconnect} reads)`));
