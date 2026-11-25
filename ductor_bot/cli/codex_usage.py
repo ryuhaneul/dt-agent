@@ -9,7 +9,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from shutil import which
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -17,9 +17,17 @@ from ductor_bot.cli.auth import AuthStatus, check_codex_auth
 from ductor_bot.infra.platform import CREATION_FLAGS
 from ductor_bot.infra.process_tree import force_kill_process_tree
 
+if TYPE_CHECKING:
+    from datetime import datetime
+    from pathlib import Path
+
 logger = logging.getLogger(__name__)
 QUERY_TIMEOUT = 15.0
-UsageError = Literal["login_required", "timeout", "invalid_response"]
+UsageError = Literal["login_required", "chatgpt_auth_required", "timeout", "invalid_response"]
+
+
+class _ChatGPTAuthRequiredError(ValueError):
+    """The rate limits endpoint rejected the current authentication method."""
 
 
 class CodexWindow(BaseModel):
@@ -46,6 +54,7 @@ _last_successful: CodexUsage | None = None
 _turn_refreshes: set[asyncio.Task[None]] = set()
 _usage_listeners: set[Callable[[], None]] = set()
 _logged_refresh_errors: set[str] = set()
+_turn_auth_rejection: tuple[Path | None, datetime | None] | None = None
 
 
 def parse_codex_usage(result: object) -> CodexUsage:
@@ -80,7 +89,13 @@ def schedule_codex_usage_refresh() -> None:
 
 
 async def _refresh_after_turn() -> None:
+    global _turn_auth_rejection  # noqa: PLW0603
     try:
+        if _turn_auth_rejection is not None:
+            auth = check_codex_auth()
+            if (auth.auth_file, auth.auth_age) == _turn_auth_rejection:
+                return
+            _turn_auth_rejection = None
         reason: str | None = (await query_codex_usage(reuse_completed=False)).error
     except Exception as exc:
         reason = type(exc).__name__
@@ -138,6 +153,14 @@ async def _read_result(process: asyncio.subprocess.Process, request_id: int) -> 
             raise TypeError("Invalid RPC message")
         if message.get("id") != request_id:
             continue
+        error = message.get("error")
+        if (
+            request_id == 2
+            and isinstance(error, dict)
+            and error.get("code") == -32600
+            and error.get("message") == "chatgpt authentication required to read rate limits"
+        ):
+            raise _ChatGPTAuthRequiredError
         if "error" in message or not isinstance(message.get("result"), dict):
             raise ValueError("Invalid RPC response")
         return message["result"]
@@ -145,10 +168,11 @@ async def _read_result(process: asyncio.subprocess.Process, request_id: int) -> 
 
 
 async def _query() -> CodexUsage:
+    global _turn_auth_rejection  # noqa: PLW0603
     process: asyncio.subprocess.Process | None = None
     try:
         codex_path = which("codex")
-        if not codex_path or check_codex_auth().status != AuthStatus.AUTHENTICATED:
+        if not codex_path or (auth := check_codex_auth()).status != AuthStatus.AUTHENTICATED:
             return CodexUsage(error="login_required")
         async with asyncio.timeout(QUERY_TIMEOUT):
             process = await asyncio.create_subprocess_exec(
@@ -177,7 +201,11 @@ async def _query() -> CodexUsage:
                     "params": {"excludeResetCreditDetails": True},
                 },
             )
-            result = parse_codex_usage(await _read_result(process, 2))
+            try:
+                result = parse_codex_usage(await _read_result(process, 2))
+            except _ChatGPTAuthRequiredError:
+                _turn_auth_rejection = auth.auth_file, auth.auth_age
+                return CodexUsage(error="chatgpt_auth_required")
             if process.returncode not in (None, 0):
                 return CodexUsage(error="invalid_response")
             return result
