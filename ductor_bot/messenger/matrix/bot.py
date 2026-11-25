@@ -1052,9 +1052,6 @@ class MatrixBot:
     async def _ns_callback_with_lock(self, room_id: str, key: SessionKey, data: str) -> None:
         lock = self._lock_pool.get(key.lock_key)
         async with input_lock(lock):
-            task = asyncio.current_task()
-            if task is not None:
-                self._message_queue.untrack(chat_id=key.chat_id, task=task)
             registry = self._orch._process_registry
             registry.clear_abort(key.chat_id)
             registry.clear_topic_abort(key.chat_id, key.topic_id)
@@ -1073,14 +1070,21 @@ class MatrixBot:
         if not orch:
             return
 
-        if self._config.streaming.enabled:
-            from ductor_bot.orchestrator.flows import named_session_streaming
+        try:
+            if self._config.streaming.enabled:
+                from ductor_bot.orchestrator.flows import named_session_streaming
 
-            result = await named_session_streaming(orch, key, session_name, label)
-        else:
-            from ductor_bot.orchestrator.flows import named_session_flow
+                result = await named_session_streaming(orch, key, session_name, label)
+            else:
+                from ductor_bot.orchestrator.flows import named_session_flow
 
-            result = await named_session_flow(orch, key, session_name, label)
+                result = await named_session_flow(orch, key, session_name, label)
+        except asyncio.CancelledError:
+            # Cancellation can bypass the flow's in-memory abort cleanup.
+            session = orch.named_sessions.get(key.chat_id, session_name)
+            if session is not None and session.status == "running":
+                session.status = "idle"
+            raise
 
         if result.text:
             await self._send_rich(room_id, result.text)
