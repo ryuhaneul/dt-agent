@@ -890,10 +890,180 @@ async function userLineBreaks(browser) {
   }
 }
 
+async function toolActivity(browser) {
+  const longCommand = ('folio-preview render --proof \\\n  --key "***" --tag "<x&y>" \\\n  --output ' + 'folio-previews/gridfolio-cover-proof-'.repeat(16)).slice(0, 532);
+  const previewCommand = longCommand.slice(0, 108);
+  assert.equal(longCommand.length, 532);
+  const detail = (kind, text, truncated = false) => ({ kind, text, truncated });
+  for (const width of [1280, 768, 375]) {
+    for (const theme of ['light', 'dark']) {
+      const context = await browser.newContext({
+        viewport: { width, height: width === 1280 ? 800 : 812 }, colorScheme: theme,
+      });
+      try {
+        const page = await context.newPage();
+        const errors = [];
+        page.on('pageerror', error => errors.push(error.message));
+        await page.addInitScript(() => localStorage.setItem('dtw-web-language', 'en'));
+        await page.clock.setFixedTime(new Date(today));
+        const startedAt = new Date(Date.parse(today) - 12800).toISOString();
+        const turns = [], entries = [{
+          ...messages[0], ts: startedAt, source: 'web', text: 'Check the cover and make a preview.', turn_id: 'activity-turn',
+        }];
+        let socket;
+        await mockChat(page, entries, { ...topic, name: 'Cover preview', turns }, route => { socket = route; });
+        await page.goto(origin);
+        await page.locator('[data-entry-seq="1"]').waitFor();
+        assert.equal(await page.locator('html').getAttribute('data-theme'), theme);
+        const send = (event, turnId = 'activity-turn') => socket.send(JSON.stringify({
+          tid: topic.tid, turn_id: turnId, ...event,
+        }));
+        const main = page.locator('#thread');
+        const live = main.locator('[data-turn="activity-turn"]');
+        const current = live.locator('.activity-disclosure');
+        const activity = (seq, name, offset, value) => ({
+          type: 'tool', seq, name, offset, ...(value && { detail: value }),
+        });
+        const emojiPrefix = String.fromCodePoint(0x1F600) + ' Cover checked.';
+        const prefixLength = [...emojiPrefix].length;
+        const records = [
+          activity(2, 'Shell', 0, detail('shell', longCommand, true)),
+          activity(3, 'Read', prefixLength, detail('file', 'preview.md')),
+          activity(4, 'MCP', prefixLength),
+          activity(5, 'MCP', prefixLength),
+          activity(6, 'Shell', prefixLength, detail('shell', previewCommand, true)),
+          activity(7, 'Shell', prefixLength, detail('shell', 'echo second')),
+        ];
+        const sendTool = ({ offset, ...record }) => send(record);
+        send({ type: 'turn', phase: 'started', started_at: startedAt });
+        send({ type: 'system_status', status: 'thinking', seq: 1 });
+        sendTool(records[0]);
+        send({ type: 'delta', text: emojiPrefix });
+        for (const record of records.slice(2, 5)) sendTool(record);
+        await current.nth(1).waitFor();
+        turns.push({ turn_id: 'activity-turn', phase: 'started', started_at: startedAt, activities: [records[1]] });
+        socket.close({ code: 1012 });
+        await current.nth(2).waitFor();
+        assert.equal(await current.nth(1).evaluate(node => node.previousElementSibling.textContent), emojiPrefix);
+        assert.equal(await current.count(), 3);
+        assert.equal(await live.locator('.activity-no-detail').textContent(), 'TOOL: MCP x2');
+        assert.equal(await live.locator('.activity-no-detail').evaluate(node => node.tabIndex), -1);
+        const longRow = current.nth(0);
+        const longSummary = longRow.locator('summary');
+        await longSummary.press('Enter');
+        assert(await longRow.evaluate(node => node.open));
+        const command = longRow.locator('.activity-command');
+        assert.equal(await command.textContent(), longCommand);
+        assert.equal(await command.locator('*').count(), 0);
+        const layout = await command.evaluate(node => ({
+          height: node.getBoundingClientRect().height, line: parseFloat(getComputedStyle(node).lineHeight),
+          fits: node.scrollWidth <= node.clientWidth,
+          viewportFits: document.documentElement.scrollWidth <= innerWidth,
+          wraps: getComputedStyle(node).whiteSpace === 'pre-wrap',
+        }));
+        assert(layout.height > layout.line * 3 && layout.fits && layout.viewportFits && layout.wraps);
+        await longSummary.press('Space');
+        assert(!(await longRow.evaluate(node => node.open)));
+        const disclosure = current.nth(2);
+        await disclosure.scrollIntoViewIfNeeded();
+        const rowBounds = await disclosure.boundingBox();
+        await page.mouse.click(rowBounds.x - 2, rowBounds.y + rowBounds.height / 2);
+        assert(await disclosure.evaluate(node => node.open), 'the timeline guide toggles the disclosure');
+        assert.equal(await disclosure.locator('.activity-truncated').textContent(), String.fromCodePoint(0x2026) + ' ' + config.locales.en['chat.activity_truncated']);
+        await page.evaluate(() => document.activeElement.blur());
+        await page.screenshot({ path: path.join(config.shots, 'activity-live-' + width + '-' + theme + '.png') });
+
+        const reply = {
+          ...messages[1], ts: today, source: 'web', turn_id: 'activity-turn', text: 'Cover preview is ready.',
+        };
+        send({ type: 'entry', entry: reply });
+        sendTool(records[5]);
+        await current.nth(3).waitFor();
+        assert.equal(await disclosure.evaluate(node => node.open), true, 'new events retain the open tool row');
+        await page.evaluate(async () => {
+          const { renderThread } = await import('/static/js/chat.js');
+          renderThread();
+        });
+        assert.equal(await disclosure.evaluate(node => node.open), true, 'full rerenders retain the open tool row');
+        assert.deepEqual(await current.locator('.activity-command').allTextContents(),
+          [longCommand, 'preview.md', previewCommand, 'echo second']);
+
+        entries.push({ ...reply, activity: records });
+        turns.length = 0;
+        send({ type: 'turn', phase: 'done' });
+        const trace = main.locator('[data-entry-seq="2"] .activity-trace');
+        const traceSummary = trace.locator(':scope > summary');
+        await trace.waitFor();
+        assert(!(await trace.evaluate(node => node.open)));
+        assert((await traceSummary.boundingBox()).height >= 24);
+        assert((await traceSummary.textContent()).startsWith(config.locales.en['stream.done'].replace('{secs}', '12.8')));
+        await page.screenshot({ path: path.join(config.shots, 'activity-closed-' + width + '-' + theme + '.png') });
+        await traceSummary.press('Enter');
+        assert(await trace.evaluate(node => node.open));
+        assert(await trace.locator('.activity-disclosure').nth(2).evaluate(node => node.open));
+        await page.evaluate(() => document.activeElement.blur());
+        await page.screenshot({ path: path.join(config.shots, 'activity-open-' + width + '-' + theme + '.png') });
+
+        const web = activity(1, 'Web', prefixLength, detail('web', 'https://folio-preview.invalid/check'));
+        const search = activity(2, 'Search', prefixLength, detail('search', '<preview>'));
+        turns.push({
+          turn_id: 'resume-activity', phase: 'started', text: 'Check the preview.', received: today,
+          started_at: today, activities: [web], activity: { type: 'tool', name: 'Web', seq: 1 },
+        });
+        await page.reload();
+        const resumed = main.locator('[data-turn="resume-activity"]');
+        await resumed.locator('.activity-disclosure').waitFor();
+        assert.equal(await resumed.locator('.activity-disclosure').count(), 1, 'snapshot and legacy indicator do not duplicate a row');
+        await trace.waitFor();
+        assert((await traceSummary.textContent()).startsWith(config.locales.en['chat.activity_done']));
+        assert(!await trace.evaluate(node => node.open), 'stored activity starts collapsed');
+        await traceSummary.press('Space');
+        assert.equal(await trace.locator('.activity-disclosure').count(), 4);
+        await resumed.locator('summary').press('Enter');
+        turns[0].activities = [{ ...web, detail: undefined }, search];
+        socket.close({ code: 1012 });
+        const resumedRows = resumed.locator('.activity-disclosure');
+        await resumedRows.nth(1).waitFor();
+        assert.equal(await resumedRows.count(), 2);
+        assert(await resumedRows.nth(0).evaluate(node => node.open), 'reconnect keeps expanded rows');
+        assert.equal(await resumedRows.nth(0).locator('code').textContent(), web.detail.text);
+        send({ type: 'delta', text: 'Answer after reconnect.' }, 'resume-activity');
+        await resumed.getByText('Answer after reconnect.').waitFor();
+        assert(await resumed.evaluate(node => {
+          const last = [...node.querySelectorAll('.activity-disclosure')].at(-1);
+          return !!(last.compareDocumentPosition(node.querySelector('[data-stream-tail]')) & Node.DOCUMENT_POSITION_FOLLOWING);
+        }));
+        await page.screenshot({ path: path.join(config.shots, 'activity-resumed-' + width + '-' + theme + '.png') });
+        if (width === 1280 && theme === 'light') {
+          const indicators = [activity(3, 'MCP', 50), activity(4, 'MCP', 54)];
+          turns[0].activities.push(...indicators);
+          socket.close({ code: 1012 });
+          await resumed.getByText('TOOL: MCP x2', { exact: true }).waitFor();
+
+          entries.push({
+            ...reply, id: 'entry-3', seq: 3, turn_id: 'resume-activity',
+            text: 'Completed response with the previously missed text. '.repeat(2),
+            activity: [web, search, ...indicators],
+          });
+          turns.length = 0;
+          socket.close({ code: 1012 });
+          const completedTrace = main.locator('[data-entry-seq="3"] .activity-trace');
+          await completedTrace.locator(':scope > summary').press('Enter');
+          assert.deepEqual(await completedTrace.locator('.activity-no-detail').allTextContents(),
+            ['TOOL: MCP', 'TOOL: MCP'], 'completed history uses the exact stored offsets');
+        }
+        assert.deepEqual(errors, []);
+      } finally {
+        await context.close();
+      }
+    }
+  }
+}
+
 const browser = await chromium.launch();
 try {
   await fs.mkdir(config.shots, { recursive: true });
-  const scenarios = { dates: messageDates, window: preserveOldestGroup, focus: chatFocus, 'code-copy': codeCopy, 'telegram-code': telegramCode, 'telegram-code-boundaries': telegramCodeBoundaries, 'user-line-breaks': userLineBreaks };
+  const scenarios = { dates: messageDates, window: preserveOldestGroup, focus: chatFocus, 'code-copy': codeCopy, 'telegram-code': telegramCode, 'telegram-code-boundaries': telegramCodeBoundaries, 'user-line-breaks': userLineBreaks, 'tool-activity': toolActivity };
   const scenario = process.argv[3] ?? 'dates';
   if (scenario.startsWith('overflow-')) await documentOverflow(browser, scenario);
   else await scenarios[scenario](browser);

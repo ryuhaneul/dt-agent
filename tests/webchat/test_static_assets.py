@@ -1079,7 +1079,7 @@ assert.equal(thread.innerHTML.split('<div class="msg bot" id="streamMsg"')[0],hi
 assert.ok(thread.innerHTML.includes('<strong>Hello</strong> &lt;img&gt;'));assert.ok(thread.innerHTML.includes('Read &lt;script&gt;'));
 assert.ok(thread.innerHTML.includes(`[${strings['stream.label_thinking']}] x2`));
 assert.ok(thread.innerHTML.indexOf(strings['stream.label_thinking'])<thread.innerHTML.indexOf('<strong>Hello</strong>'));
-assert.ok(thread.innerHTML.indexOf('<strong>Hello</strong>')<thread.innerHTML.indexOf('[TOOL: Read &lt;script&gt;]'));
+assert.ok(thread.innerHTML.indexOf('<strong>Hello</strong>')<thread.innerHTML.indexOf('TOOL: Read &lt;script&gt;'));
 for(let i=0;i<100;i++)await chat.namespace.handleEvent({type:'delta',tid:'1.2',turn_id:'turn1',text:' x'});
 assert.equal(frames.size,1,'a delta burst queues only one frame');
 chat.namespace.renderThread();assert.equal(frames.size,0,'a full render cancels pending stream work');
@@ -2901,7 +2901,7 @@ def test_autocompact_dialog_has_labeled_scopes_and_bounded_token_inputs(markup):
     "scenario",
     [
         "dates", "window", "focus", "overflow-footnote", "overflow-activity", "code-copy",
-        "telegram-code", "telegram-code-boundaries", "user-line-breaks",
+        "telegram-code", "telegram-code-boundaries", "user-line-breaks", "tool-activity",
     ],
 )
 def test_message_dates_browser(tmp_path: Path, scenario: str) -> None:
