@@ -2589,7 +2589,7 @@ if(scenario==='rollback-forward'||scenario==='rollback-reverse'){
   topics.markSeen('1.2',-5);topics.markSeen('1.2',-2);assert.equal(pending.length,2);
   const order=scenario==='rollback-forward'?[0,1]:[1,0];
   for(const index of order){pending[index].reject({code:'bot_unreachable'});await flush()}
-  assert.equal(notices.length,2);
+  assert.equal(notices.length,1);
   assert.ok(get('tlist').innerHTML.includes(`${confirmed===null?3:2} unread`),'both failures restore the confirmed cursor, including unset');
   topics.markSeen('1.2',-2);assert.equal(pending.length,3,'the failed optimistic cursor is retried');
   pending[2].resolve({seen:-2});await flush();
@@ -3008,6 +3008,8 @@ def test_autocompact_dialog_has_labeled_scopes_and_bounded_token_inputs(markup):
     [
         "dates", "window", "focus", "overflow-footnote", "overflow-activity", "code-copy",
         "telegram-code", "telegram-code-boundaries", "user-line-breaks", "unread-badges",
+        "unread-topics-overlap", "unread-direct-overlap", "unread-overlapping-puts", "unread-remote-null",
+        "unread-post-notice", "unread-put-notice",
     ],
 )
 def test_message_dates_browser(tmp_path: Path, scenario: str) -> None:

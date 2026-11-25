@@ -59,18 +59,20 @@ export function resyncTopics() {
     scheduleBadgeRefresh();
   });
 }
-function badgeRefreshFailed(error, retry = true) {
-  if (!badgeNotified && error?.code !== 'auth_required') {
-    notify(error?.code === 'bot_unreachable' ? 'error.bot_unreachable' : 'error.generic');
-    badgeNotified = true;
-  }
+function noteBadgeFailure(error, key = 'error.generic', report = true) {
+  if (badgeNotified || error?.code === 'auth_required') return;
+  if (report) notify(key);
+  badgeNotified = true;
+}
+function badgeRefreshFailed(error, retry = true, report = true) {
+  noteBadgeFailure(error, error?.code === 'bot_unreachable' ? 'error.bot_unreachable' : 'error.generic', report);
   if (!retry) return;
   if (badgeRetries < BADGE_RETRIES.length) {
     badgeDeadline = null;
     badgeDue = performance.now() + BADGE_RETRIES[badgeRetries++];
   } else {
-    for (const [tid, write] of pendingRead) {
-      if (!write.done) continue;
+    for (const [tid, pending] of pendingRead) {
+      if (pending.inFlight) continue;
       pendingRead.delete(tid);
       awaitingUnread.add(tid);
     }
@@ -78,42 +80,49 @@ function badgeRefreshFailed(error, retry = true) {
   }
 }
 function beginRead(tids = []) {
-  const write = { tids, done: false };
   if (!readWrites++) badgeDeadline = null;
-  for (const tid of tids) pendingRead.set(tid, write);
+  for (const tid of tids) {
+    const pending = pendingRead.get(tid) ?? { inFlight: 0, succeeded: false };
+    ++pending.inFlight;
+    pendingRead.set(tid, pending);
+  }
   armBadgeRefresh();
   if (tids.length) renderTopics();
-  return write;
+  return tids;
 }
-function finishRead(write, succeeded) {
+function finishRead(tids, succeeded) {
   --readWrites;
-  write.done = true;
-  if (!succeeded) {
-    for (const tid of write.tids) if (pendingRead.get(tid) === write) pendingRead.delete(tid);
-    if (write.tids.length) renderTopics();
+  for (const tid of tids) {
+    const pending = pendingRead.get(tid);
+    --pending.inFlight;
+    pending.succeeded ||= succeeded;
+    if (!pending.inFlight && !pending.succeeded) pendingRead.delete(tid);
   }
+  if (!succeeded && tids.length) renderTopics();
   if (!readWrites) badgeDeadline = null;
   scheduleBadgeRefresh();
 }
 function applyBadges() {
   const listed = new Set();
+  let unconfirmed = false;
   for (const topic of topics) {
     const { tid, unread } = topic;
     listed.add(tid);
     const pending = pendingRead.get(tid);
-    if (pending && !pending.done) continue;
+    if (pending?.inFlight) continue;
     pendingRead.delete(tid);
     if (Number.isInteger(unread)) {
       serverUnread.set(tid, unread);
       awaitingUnread.delete(tid);
-    } else if (pending) {
-      awaitingUnread.add(tid);
+    } else {
+      if (pending) awaitingUnread.add(tid);
+      unconfirmed ||= awaitingUnread.has(tid);
     }
   }
-  for (const [tid, write] of pendingRead) if (write.done && !listed.has(tid)) pendingRead.delete(tid);
+  for (const [tid, pending] of pendingRead) if (!pending.inFlight && !listed.has(tid)) pendingRead.delete(tid);
   for (const tid of awaitingUnread) if (!listed.has(tid)) awaitingUnread.delete(tid);
-  if (awaitingUnread.size) badgeRefreshFailed();
-  else {
+  if (unconfirmed) badgeRefreshFailed();
+  else if (!awaitingUnread.size) {
     badgeRetries = 0;
     badgeNotified = false;
   }
@@ -132,7 +141,7 @@ export function markSeen(tid, seq) {
   }, error => {
     if (!active || epoch !== readEpoch) return;
     if (storedSeen(tid) === value) seen.set(tid, confirmed.get(tid) ?? null);
-    if (error.code !== 'auth_required') notify('error.generic');
+    noteBadgeFailure(error);
     finishRead(write, false);
   });
 }
@@ -146,7 +155,7 @@ async function markAllSeen() {
     const data = await api('/topics/seen-all', { method: 'POST' });
     if (active && epoch === readEpoch) { syncSeen(data.seen); succeeded = true; }
   } catch (error) {
-    if (active && epoch === readEpoch && error.code !== 'auth_required') notify('error.generic');
+    if (active && epoch === readEpoch) noteBadgeFailure(error);
   } finally {
     if (epoch === readEpoch) {
       markingAll = false; button.disabled = false;
@@ -244,8 +253,9 @@ export async function refreshTopics({ badgeRequest = false } = {}) {
     document.dispatchEvent(new CustomEvent('topics-updated', { detail: topics }));
     void migrateSeen();
   } catch (error) {
-    if (badgeRequest && active && generation === revision) {
-      badgeRefreshFailed(error, requestedBadgeEpoch === badgeEpoch);
+    if (active && generation === revision) {
+      // Direct callers report their own failures, but follow the same retry schedule.
+      badgeRefreshFailed(error, requestedBadgeEpoch === badgeEpoch, badgeRequest);
     }
     throw error;
   } finally {
@@ -310,6 +320,9 @@ export function initTopics() {
   document.addEventListener('read-state', event => {
     if (!active) return;
     syncSeen(event.detail.seen);
+    for (const [tid, cursor] of Object.entries(event.detail.seen)) {
+      if (Number.isInteger(cursor)) awaitingUnread.add(tid);
+    }
     scheduleBadgeRefresh();
   });
   const dialog = document.querySelector('#renameDlg'), form = document.querySelector('#renameForm');

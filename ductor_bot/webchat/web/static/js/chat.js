@@ -1061,7 +1061,7 @@ export async function handleEvent(event) {
       botUp = event.up; renderStatus();
       if (event.up) await resync();
       return;
-    case 'topics': await refreshTopics(); return;
+    case 'topics': await resyncTopics(); return;
     case 'outbox': {
       pending = event.pending;
       if (event.item) {

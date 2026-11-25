@@ -942,12 +942,120 @@ async function unreadBadges(browser) {
   }
 }
 
+async function unreadRecovery(browser, scenario) {
+  const page = await browser.newPage();
+  const row = { ...topic, seen: 2, unread: 3, count: 5 };
+  const firstList = Promise.withResolvers(), releaseList = Promise.withResolvers();
+  const writes = [];
+  let socket, nextWrite, started = false, listCalls = 0;
+  const busy = { status: 503, json: { error: 'history_busy' } };
+  const failedWrite = scenario.endsWith('-notice'), overlap = scenario.endsWith('-overlap');
+  try {
+    await mockChat(page, messages.slice(0, 2), row, peer => { socket = peer; });
+    await page.route('**/api/topics', async route => {
+      if (!started) return route.fulfill({ json: { topics: [row] } });
+      const call = ++listCalls;
+      if (call === 1) {
+        firstList.resolve();
+        if (overlap) await releaseList.promise;
+      }
+      if ((overlap && call <= 2) || (failedWrite && call === 1)) {
+        return route.fulfill(busy);
+      }
+      const unread = call === 1 ? null : scenario === 'unread-remote-null' ? 0 : 2;
+      return route.fulfill({ json: { topics: [{ ...row, unread, preview: 'Updated topic' }] } });
+    });
+    for (const path of ['**/api/topics/1.2/seen', '**/api/topics/seen-all']) {
+      await page.route(path, async route => {
+        const gate = Promise.withResolvers();
+        writes.push(gate);
+        nextWrite?.(gate);
+        await route.fulfill(await gate.promise);
+      });
+    }
+    await page.goto(origin);
+    await page.locator('#thread [data-entry-seq="2"]').waitFor();
+    await page.evaluate(async () => (await import('/static/js/topics.js')).refreshTopics());
+    assert.ok(socket);
+    const badge = page.locator('#tlist [data-tid="1.2"] .unread');
+    assert.equal(await badge.textContent(), '3');
+    await page.evaluate(() => {
+      window.unreadNotices = 0;
+      new MutationObserver(records => {
+        for (const record of records) for (const node of record.addedNodes) {
+          if (node.matches?.('.toast-error')) window.unreadNotices++;
+        }
+      }).observe(document.querySelector('#toasts'), { childList: true });
+    });
+    const write = seq => page.evaluate(async value => {
+      (await import('/static/js/topics.js')).markSeen('1.2', value);
+    }, seq);
+    const waitForList = () => page.waitForResponse(reply => new URL(reply.url()).pathname === '/api/topics');
+    const captureWrite = async trigger => {
+      const gate = Promise.withResolvers();
+      nextWrite = gate.resolve;
+      await trigger();
+      return gate.promise;
+    };
+    const put = seq => captureWrite(() => write(seq));
+    const waitForBadge = expected => page.waitForFunction(value =>
+      (document.querySelector('#tlist [data-tid="1.2"] .unread')?.textContent ?? '0') === value,
+    expected, { timeout: 5500 });
+    started = true;
+    if (overlap) {
+      (await put(3)).resolve({ json: { seen: 3 } });
+      await firstList.promise;
+      if (scenario === 'unread-direct-overlap') {
+        await page.evaluate(async () => {
+          await (await import('/static/js/topics.js')).refreshTopics().catch(() => {});
+        });
+      } else {
+        socket.send(JSON.stringify({ type: 'topics' }));
+        socket.send(JSON.stringify({ type: 'telegram', state: 'down' }));
+        await page.locator('#telegramBadge.badge-down').waitFor();
+        assert.equal(listCalls, 1, 'the topic event does not start a parallel list request');
+      }
+      releaseList.resolve();
+      await waitForBadge('2');
+      assert.equal(listCalls, 3);
+      assert.match(await page.locator('#tlist').textContent(), /Updated topic/);
+    } else if (scenario === 'unread-overlapping-puts') {
+      const first = await put(3), second = await put(4);
+      const saved = page.waitForResponse(reply =>
+        new URL(reply.url()).pathname === '/api/topics/1.2/seen' && reply.ok());
+      first.resolve({ json: { seen: 3 } });
+      await saved;
+      second.resolve(busy);
+      await waitForBadge('2');
+      assert.equal(listCalls, 2, 'an earlier successful write still requires confirmation');
+    } else if (scenario === 'unread-remote-null') {
+      socket.send(JSON.stringify({ type: 'seen', seen: { '1.2': 5 } }));
+      await waitForBadge('0');
+      assert.equal(listCalls, 2, 'a remote seen event retries an unknown count');
+      assert.equal(writes.length, 0);
+    } else {
+      const read = scenario === 'unread-post-notice'
+        ? await captureWrite(() => page.locator('#markAllRead').click()) : await put(3);
+      const failed = waitForList();
+      read.resolve(busy);
+      assert.equal((await failed).status(), 503);
+      await waitForBadge('2');
+      assert.equal(await page.evaluate(() => window.unreadNotices), 1);
+    }
+  } finally {
+    releaseList.resolve();
+    for (const write of writes) write.resolve(busy);
+    await page.close();
+  }
+}
+
 const browser = await chromium.launch();
 try {
   await fs.mkdir(config.shots, { recursive: true });
   const scenarios = { dates: messageDates, window: preserveOldestGroup, focus: chatFocus, 'code-copy': codeCopy, 'telegram-code': telegramCode, 'telegram-code-boundaries': telegramCodeBoundaries, 'user-line-breaks': userLineBreaks, 'unread-badges': unreadBadges };
   const scenario = process.argv[3] ?? 'dates';
   if (scenario.startsWith('overflow-')) await documentOverflow(browser, scenario);
+  else if (scenario.startsWith('unread-') && scenario !== 'unread-badges') await unreadRecovery(browser, scenario);
   else await scenarios[scenario](browser);
 } finally {
   await browser.close();
