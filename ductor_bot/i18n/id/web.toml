@@ -560,6 +560,8 @@ unavailable = "Gambar tidak tersedia."
 open_original = "Lihat asli"
 
 [slots]
+move_up = "Pindahkan {name} ke atas"
+move_down = "Pindahkan {name} ke bawah"
 title = "Slot Claude"
 usage_title = "Penggunaan Claude dan Codex"
 show_all_usage = "Lihat semua entri penggunaan ({n})"

@@ -560,6 +560,8 @@ unavailable = "Image indisponible."
 open_original = "Voir l’original"
 
 [slots]
+move_up = "Monter {name}"
+move_down = "Descendre {name}"
 title = "Emplacements Claude"
 usage_title = "Utilisation de Claude et de Codex"
 show_all_usage = "Afficher toutes les entrées d’utilisation ({n})"

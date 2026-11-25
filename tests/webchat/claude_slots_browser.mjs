@@ -1194,6 +1194,214 @@ async function checkUsageRegressions(browser) {
 }
 
 
+async function checkUsageSlotOrder(browser, width, lifecycle) {
+  const page = await browser.newPage({ viewport: { width, height: lifecycle === 'scroll' ? 667 : 812 } });
+  page.setDefaultTimeout(3500);
+  try {
+    const long = 'claude-long-research-account-with-a-descriptive-name';
+    const slots = lifecycle === 'scroll'
+      ? Array.from({ length: 14 }, (_, index) => slot(`claude-slot-${index}`, 'oauth', 'ok'))
+      : [slot('claude', 'oauth', 'ok'), slot(long, 'oauth', 'ok'), slot('claude-backup', 'oauth', 'ok')];
+    let singleton = false, rejectSwap = false, release, swapStarted, authenticated = true, session = 1;
+    let stateReads = 0, stateUnavailable = false, staleView = false;
+    const calls = [];
+    await page.routeWebSocket('**/api/ws', () => {});
+    await page.route('**/api/**', async route => {
+      const request = route.request();
+      const endpoint = new URL(request.url()).pathname;
+      if (endpoint === '/api/i18n') return route.fulfill({ json: { lang: 'en', strings: config.locales.en } });
+      if (endpoint === '/api/auth/state') return route.fulfill({ json: {
+        authenticated, csrf: authenticated ? `fixture-${session}` : null, bridge_up: true, totp_configured: true,
+      } });
+      if (endpoint === '/api/auth/password') return route.fulfill({ json: { next: 'totp' } });
+      if (endpoint === '/api/auth/totp') {
+        authenticated = true; session++;
+        return route.fulfill({ json: { ok: true } });
+      }
+      if (endpoint === '/api/masterkey/status') return route.fulfill({ json: { state: 'unconfigured' } });
+      if (endpoint === '/api/state') {
+        stateReads++;
+        if (!authenticated) return route.fulfill({ status: 403, json: { error: 'auth_required' } });
+        return route.fulfill({ json: {
+          telegram: { state: 'up' }, bot: { up: true }, outbox: { pending: 0 },
+          claude: stateUnavailable ? null : { next: slots[0].name, slots: singleton ? slots.slice(0, 1) : slots },
+          codex: { captured_at: now, windows: [] },
+        } });
+      }
+      if (endpoint.includes('/swap/')) {
+        assert.equal(request.method(), 'POST');
+        const expected = staleView ? ['claude', long, 'claude-backup'] : slots.map(slot => slot.name);
+        assert.deepEqual(request.postDataJSON(), { view: 'usage', expected });
+        const [name, other] = endpoint.split('/').slice(-3).filter(part => part !== 'swap');
+        calls.push([name, other]);
+        if (staleView) return route.fulfill({ status: 409, json: { error: 'slot_order_changed' } });
+        if (rejectSwap) return route.fulfill({ status: 500, json: { error: 'slot_move_error' } });
+        const requestSession = session;
+        await new Promise(resolve => { release = resolve; swapStarted(); });
+        if (requestSession === session) {
+          const a = slots.findIndex(item => item.name === name), b = slots.findIndex(item => item.name === other);
+          [slots[a], slots[b]] = [slots[b], slots[a]];
+        }
+        return route.fulfill({ json: { ok: true } });
+      }
+      return route.fulfill({ json: { topics: [], commands: [], items: [], keys: [], files: [] } });
+    });
+
+    await page.goto(origin);
+    await page.locator('#claudeSlots [data-primary]').click();
+    const popover = page.locator('#claudeSlotPopover');
+    const row = name => popover.locator(`.slot-row[data-slot="${name}"]`);
+    const button = (name, direction) => row(name).locator(`[data-slot-order="${direction}"]`);
+    if (lifecycle === 'scroll') {
+      const moving = 'claude-slot-8';
+      const target = button(moving, 'down');
+      await target.evaluate(element => {
+        const scroller = element.closest('.slot-list');
+        scroller.scrollTop += element.getBoundingClientRect().bottom
+          - scroller.getBoundingClientRect().bottom + 2;
+        element.focus({ preventScroll: true });
+      });
+      const started = new Promise(resolve => { swapStarted = resolve; });
+      await page.keyboard.press('Enter');
+      await started;
+      release();
+      await page.waitForFunction(name => document.activeElement.matches(
+        `.slot-row[data-slot="${name}"] [data-slot-order="down"]:not(:disabled)`), moving);
+      const outside = await target.evaluate(element => {
+        const button = element.getBoundingClientRect();
+        const pane = element.closest('.slot-list').getBoundingClientRect();
+        return Math.max(pane.top - button.top, button.bottom - pane.bottom, 0);
+      });
+      assert.ok(outside <= 0.5, `restored usage slot button is clipped by ${outside}px`);
+      return;
+    }
+
+    if (lifecycle === 'session') {
+      const started = new Promise(resolve => { swapStarted = resolve; });
+      await button(long, 'up').click();
+      await started;
+      authenticated = false;
+      await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+      await page.locator('#pw').fill('fixture-password');
+      await page.locator('#pwForm button[type=submit]').click();
+      await page.locator('#otp input').first().waitFor();
+      for (let index = 0; index < 6; index++) await page.locator('#otp input').nth(index).fill('1');
+      await page.locator('#claudeSlots [data-primary]').click();
+      await row(long).waitFor();
+      const refresh = popover.locator('.slot-popover-head [data-slot-refresh]');
+      const enabledBeforeCompletion = await refresh.isEnabled();
+      await popover.focus();
+      const reads = stateReads;
+      const response = page.waitForResponse(result => result.url().includes('/swap/'));
+      release();
+      const completed = await response;
+      assert.equal(completed.status(), 200);
+      await completed.finished();
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      assert.deepEqual({
+        enabledBeforeCompletion,
+        enabledAfterCompletion: await refresh.isEnabled(),
+        focus: await popover.evaluate(panel => panel === document.activeElement),
+        stateReads: stateReads - reads,
+      }, { enabledBeforeCompletion: true, enabledAfterCompletion: true, focus: true, stateReads: 0 });
+      return;
+    }
+
+    if (lifecycle === 'unavailable') {
+      const started = new Promise(resolve => { swapStarted = resolve; });
+      await button(long, 'up').click();
+      await started;
+      const complete = release;
+      const refresh = () => page.evaluate(() =>
+        document.dispatchEvent(new Event('claude-slot-order-changed')));
+      stateUnavailable = true;
+      await refresh();
+      await row(long).waitFor({ state: 'detached' });
+      stateUnavailable = false;
+      await refresh();
+      await row(long).waitFor();
+      const disabledDuringSwap = await button(long, 'up').isDisabled();
+      await button(long, 'up').evaluate(element => element.click());
+      complete();
+      assert.equal(disabledDuringSwap, true, 'order controls enabled while swap is pending');
+      await page.waitForFunction(name => document.activeElement.matches(
+        `.slot-row[data-slot="${name}"] [data-slot-order="down"]:not(:disabled)`), long);
+      assert.deepEqual(calls, [[long, 'claude']]);
+      return;
+    }
+
+    if (lifecycle === 'conflict') {
+      // The server changed the order without the browser receiving another state snapshot.
+      [slots[0], slots[2]] = [slots[2], slots[0]];
+      staleView = true;
+      const response = page.waitForResponse(result => result.url().includes('/swap/'));
+      await button(long, 'up').click();
+      assert.equal((await response).status(), 409);
+      await page.waitForFunction(() => document.querySelector(
+        '#claudeSlotPopover .slot-row[data-slot]')?.dataset.slot === 'claude-backup');
+      assert.deepEqual(calls, [[long, 'claude']]);
+      const refresh = popover.locator('.slot-popover-head [data-slot-refresh]:enabled');
+      await refresh.waitFor();
+      assert.equal(await button(long, 'up').isEnabled(), true);
+      assert.equal(await refresh.getAttribute('data-failed'), null, 'the order refresh succeeded');
+      return;
+    }
+
+    await button(long, 'up').waitFor();
+    assert.equal(await popover.locator('.slot-order-button').count(), 6);
+    assert.equal(await popover.locator('.slot-row').last().locator('.slot-order-button').count(), 0);
+    assert.equal(await button('claude', 'up').isDisabled(), true);
+    assert.equal(await button('claude-backup', 'down').isDisabled(), true);
+    assert.equal(await button(long, 'up').getAttribute('aria-label'),
+      config.locales.en['slots.move_up'].replace('{name}', long));
+
+    assert.deepEqual(await popover.evaluate(panel => {
+      const issues = [];
+      for (const row of panel.querySelectorAll('.slot-row')) {
+        const bounds = row.getBoundingClientRect();
+        const info = row.querySelector('.slot-name').getBoundingClientRect();
+        for (const button of row.querySelectorAll('.slot-order-button')) {
+          const rect = button.getBoundingClientRect();
+          if (rect.width < 44 || rect.height < 44 || rect.right > bounds.right || info.right > rect.left) {
+            issues.push(row.dataset.slot);
+          }
+        }
+      }
+      return [panel.scrollWidth > panel.clientWidth, ...issues];
+    }), [false]);
+
+    async function move(direction, other, focused) {
+      const started = new Promise(resolve => { swapStarted = resolve; });
+      await button(long, direction).click();
+      await started;
+      assert.equal(await button(long, direction).isDisabled(), true);
+      assert.equal(await popover.locator('.slot-order-button:not(:disabled)').count(), 0);
+      assert.deepEqual(calls.at(-1), [long, other]);
+      release();
+      await page.waitForFunction(({ long, focused }) => document.activeElement.matches(
+        `.slot-row[data-slot="${long}"] [data-slot-order="${focused}"]:not(:disabled)`), { long, focused });
+      assert.deepEqual(await popover.locator('.slot-row-top .slot-name').allTextContents(),
+        [...slots.map(item => item.name), 'Codex']);
+    }
+    await move('up', 'claude', 'down');
+    await move('down', 'claude', 'down');
+
+    rejectSwap = true;
+    await button(long, 'up').click();
+    await popover.locator('.slot-popover-head [data-slot-refresh][data-failed]').waitFor();
+    assert.equal(await button(long, 'up').isEnabled(), true);
+    assert.deepEqual(await popover.locator('.slot-row-top .slot-name').allTextContents(),
+      ['claude', long, 'claude-backup', 'Codex']);
+
+    singleton = true;
+    await popover.locator('.slot-popover-head [data-slot-refresh]').click();
+    await row(long).waitFor({ state: 'detached' });
+    assert.equal(await popover.locator('.slot-order-button').count(), 0);
+  } finally {
+    await page.close();
+  }
+}
+
 async function checkSlotInteractions(browser) {
   await checkUsageRegressions(browser);
   for (const [width, height, theme] of [
@@ -1210,9 +1418,16 @@ try {
       { language: 'de', count: 2 },
       { language: 'fr', count: 4 },
     ];
-    const [longestLocale, , ...cooldownFailures] = await Promise.all([
+    const [longestLocale, , , ...cooldownFailures] = await Promise.all([
       checkHeaderMatrix(browser),
       checkSlotInteractions(browser),
+      Promise.all([
+        ...[1280, 375].map(width => checkUsageSlotOrder(browser, width)),
+        checkUsageSlotOrder(browser, 375, 'scroll'),
+        checkUsageSlotOrder(browser, 1280, 'session'),
+        checkUsageSlotOrder(browser, 1280, 'unavailable'),
+        checkUsageSlotOrder(browser, 1280, 'conflict'),
+      ]),
       ...cooldownTransitions.map(scenario => checkHeaderMatrix(browser, scenario)),
     ]);
     assert.deepEqual(cooldownFailures.flat(), []);

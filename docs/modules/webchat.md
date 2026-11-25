@@ -162,6 +162,15 @@ any chip or the overflow button to see every available window with its usage,
 reset time and capture time. API-key slots have no OAuth usage data. The header
 hides OAuth slots without credentials and slots with disconnected API keys.
 
+Use the up and down buttons in the CLI login dialog or the header usage popover
+to swap a ranked Claude slot with the adjacent ranked slot you can see. In the
+usage popover, a slot hidden between two visible slots keeps its position, while
+a one-step move in `/accounts` swaps with the hidden slot. If the order changed since
+the dialog or popover last loaded it, the browser reloads the order so you can
+retry the swap. If that reload fails after a 409 conflict, the screen keeps
+showing the old order, the server rejects another swap from that order, and
+the new order appears once a reload succeeds.
+
 The popover shows when the browser last fetched state and when each usage
 snapshot was captured. State refreshes on login, reconnect, when the page
 becomes visible again, when a web turn ends, and when a new Codex usage
@@ -486,6 +495,7 @@ The browser app relays bridge JSON statuses and error codes. Bridge routes use
 | Operation | Status and response |
 |---|---|
 | Read state (`GET /state`) | 200 with `telegram`, `outbox`, `claude` (`{next, slots}` or `null`), and `codex` (`{captured_at, windows}` or `null`). The browser relay adds `bot`, `web_sessions`, and `version`. |
+| Swap Claude slots (`POST /cli-login/slots/{slot}/swap/{other}`) | Send JSON with `view` (`login` or `usage`) and `expected` (the full ordered list of ranked Claude slots shown in that view). 200 `{"ok":true}`; 409 `slot_order_changed` if the order differs, including if a slot was deleted; 400 `invalid_swap` if the slots are not adjacent in the matching order; 400 `bad_request` for an invalid body. |
 | Delete topic while its session lock remains held beyond 30 seconds | 409 `topic_busy`; retry after the topic finishes stopping |
 | Send to or abort Unknown topic | 409 `read_only`; select a real topic |
 | List commands (`GET /commands`, optional allowed `lang`) | 200 `{ "commands": [...] }`; invalid language: 400 `bad_request` |

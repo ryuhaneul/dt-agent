@@ -560,6 +560,8 @@ unavailable = "이미지를 불러올 수 없습니다."
 open_original = "원본 보기"
 
 [slots]
+move_up = "{name} 위로 이동"
+move_down = "{name} 아래로 이동"
 title = "Claude 슬롯"
 usage_title = "Claude·Codex 사용량"
 show_all_usage = "사용량 {n}개 모두 보기"
