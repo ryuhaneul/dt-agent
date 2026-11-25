@@ -23,12 +23,12 @@ _ANSI = re.compile(
 )
 _CONTROLS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 _TOKEN = re.compile(
-    r"\b(?:gh[pousr]_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+"
-    r"|xox[baprs]-[A-Za-z0-9-]+|(?:AKIA|ASIA)[A-Z0-9]{16})"
+    r"(?:gh[pousr]_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]{20,}"
+    r"|xox[baprs]-[A-Za-z0-9-]+|(?:AKIA|ASIA)[A-Z0-9]{16,})"
     r"|-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----[\s\S]*?"
     r"-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----"
 )
-_BEARER = re.compile(r"""\b(Bearer[ \t]+)[^\s"'`;|&<>]+""", re.IGNORECASE)
+_BEARER = re.compile(r"""(Bearer[ \t]+)[^\s"'`;|&<>]+""", re.IGNORECASE)
 
 
 class ToolDetail(TypedDict):
@@ -53,6 +53,21 @@ def strip_controls(text: str) -> str:
     return _CONTROLS.sub("", _ANSI.sub("", text))
 
 
+def _mask_tokens(text: str) -> str:
+    return _BEARER.sub(r"\g<1>***", _TOKEN.sub("***", text))
+
+
+async def redact_tool_name(name: str, vault: SecretVault | None) -> str:
+    """Return a safe display name for web tool activity."""
+    if vault is None:
+        return _mask_tokens(name)
+    try:
+        redacted = await vault.redact(name, strip_controls)
+    except (VaultError, OSError):
+        return "tool"
+    return "tool" if redacted is None else _mask_tokens(redacted)
+
+
 async def build_detail(event: ToolUseEvent, vault: SecretVault) -> ToolDetail | None:
     """Build a redacted and length-limited detail for an eligible tool event."""
     text = tool_detail(event)
@@ -64,7 +79,7 @@ async def build_detail(event: ToolUseEvent, vault: SecretVault) -> ToolDetail | 
         return None
     if text is None:
         return None
-    text = _BEARER.sub(r"\g<1>***", _TOKEN.sub("***", text))
+    text = _mask_tokens(text)
     return {
         "kind": event.kind,
         "text": text[:_DETAIL_LIMIT],

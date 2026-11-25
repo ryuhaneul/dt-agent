@@ -26,7 +26,7 @@ from ductor_bot.infra.secret_runtime import get_secret_vault
 from ductor_bot.infra.secret_store import store_path
 from ductor_bot.infra.secret_vault import VaultError
 from ductor_bot.text.response_format import normalize_tool_name, system_status_label
-from ductor_bot.text.tool_detail import build_detail
+from ductor_bot.text.tool_detail import build_detail, redact_tool_name
 
 if TYPE_CHECKING:
     from ductor_bot.chat_log.recorder import TurnStatus
@@ -792,21 +792,16 @@ class WebTurns:
 
                 async def tool(event: ToolUseEvent) -> None:
                     offset = len(partial)
+                    name = "tool"
                     detail = None
-                    if event.kind is not None:
-                        try:
-                            vault = get_secret_vault(store_path(self.bot._orch.paths.ductor_home))
-                            if vault is not None:
-                                detail = await build_detail(event, vault)
-                        except (VaultError, OSError):
-                            pass
-                    self._activity(
-                        state,
-                        "tool",
-                        name=normalize_tool_name(event.tool_name),
-                        offset=offset,
-                        detail=detail,
-                    )
+                    try:
+                        vault = get_secret_vault(store_path(self.bot._orch.paths.ductor_home))
+                        name = await redact_tool_name(normalize_tool_name(event.tool_name), vault)
+                        if vault is not None and event.kind is not None:
+                            detail = await build_detail(event, vault)
+                    except (VaultError, OSError):
+                        pass
+                    self._activity(state, "tool", name=name, offset=offset, detail=detail)
 
                 async def system_status(value: str | None) -> None:
                     # Fixed status enums only: never stream arbitrary provider status values.

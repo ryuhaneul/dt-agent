@@ -36,11 +36,15 @@ Shared user-facing response text helpers used across bot and orchestrator layers
   newlines and tabs.
 - `build_detail(event, vault)` masks the original, JSON-escaped and
   control-stripped forms of registered values. It also masks recognized GitHub,
-  OpenAI, Slack and AWS tokens, Bearer credentials and PEM private key blocks.
-  It returns `{kind, text, truncated}` after cutting the masked text to 2,000
+  OpenAI, Slack and AWS tokens, Bearer credentials and PEM private key blocks,
+  including token shapes embedded in longer strings. It returns
+  `{kind, text, truncated}` after cutting the masked text to 2,000
   characters. Vault errors and a match for a registered form shorter than
   four characters leave no detail. An unconfigured plaintext vault reads the
   store on each redaction.
+- `redact_tool_name(name, vault)` applies the same value and token masking to
+  web tool names. An unsafe name falls back to `tool` on a short-value match or
+  a vault error. With no vault, it applies token masking alone.
 
 ## Integration points
 

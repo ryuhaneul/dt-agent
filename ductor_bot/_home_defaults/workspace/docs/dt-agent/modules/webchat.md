@@ -214,13 +214,15 @@ Web chat shows tool names for turns sent from the browser. Supported Claude and
 Codex built-in tools can show one expandable detail per call. Gemini, Grok, MCP
 and unclassified tools show names only.
 
-The bridge masks registered secret values and recognized token patterns before
-cutting details to 2,000 characters. This applies to values typed directly into
-a command as well. Other unregistered values can remain visible. A locked or
-unavailable vault, a vault read failure, or a matching registered value shorter
-than four characters leaves only the tool name. The short-value check runs
-before masking. A registered value made entirely of asterisks can coincide
-with the `***` mask.
+The bridge masks registered secret values and recognized token patterns in
+tool names and details, including tokens embedded in longer strings. It cuts
+details to 2,000 characters after masking. This applies to values typed directly
+into a command as well. Other unregistered values can remain visible. A vault
+error or a matching registered value shorter than four characters makes the
+affected name display as `tool` or omits the affected detail. If vault lookup
+returns no vault, names receive token-pattern masking and details are omitted.
+The short-value check runs before masking. A registered value made entirely of
+asterisks can coincide with the `***` mask.
 
 - WebSocket `tool` events carry `tid`, `turn_id`, `seq`, `name` and an optional
   `detail` object with `kind`, `text` and `truncated`. The original tool

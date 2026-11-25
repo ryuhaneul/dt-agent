@@ -5252,10 +5252,15 @@ async def activity_vault(conversation):
 async def test_activity_payload_and_snapshot_only_expose_redacted_details(
     conversation,
     activity_vault,
+    monkeypatch,
 ):
     h = conversation
     tool_ready, text_ready, release_tool, release_text = (asyncio.Event() for _ in range(4))
     canary = "private-activity-input-canary"
+    token = "ghp_" + "A" * 36
+    masked_name = "mcp__***_***"
+    lookup = MagicMock(return_value=activity_vault)
+    monkeypatch.setattr("ductor_bot.webchat.turns.get_secret_vault", lookup)
     await activity_vault.set("TOKEN", canary)
     await activity_vault.setup("synthetic-activity-master-key")
 
@@ -5273,10 +5278,17 @@ async def test_activity_payload_and_snapshot_only_expose_redacted_details(
         await callbacks["on_reasoning_delta"](canary)
         await callbacks["on_text_delta"]("safe ")
         await callbacks["on_tool_activity"](
-            ToolUseEvent(type="tool_use", tool_name="bash", parameters={"command": canary})
+            ToolUseEvent(
+                type="tool_use",
+                tool_name=f"mcp__{canary}_{token}",
+                parameters={"command": canary},
+            )
         )
         builtin = ToolUseEvent(
-            type="tool_use", tool_name="bash", kind="shell", parameters={"command": f"cmd {canary}"}
+            type="tool_use",
+            tool_name="bash",
+            kind="shell",
+            parameters={"command": f"cmd {canary} CACHE_KEY=archive_{token}"},
         )
         await callbacks["on_tool_activity"](builtin)
         await activity_vault.lock()
@@ -5300,10 +5312,11 @@ async def test_activity_payload_and_snapshot_only_expose_redacted_details(
             events.extend(await receive_until(ws, lambda event: event.get("type") == "tool"))
         tools = [event for event in events if event["type"] == "tool"]
         event_keys = {"type", "tid", "turn_id", "seq", "name"}
-        detail = {"kind": "shell", "text": "cmd ***", "truncated": False}
+        detail = {"kind": "shell", "text": "cmd *** CACHE_KEY=archive_***", "truncated": False}
         assert [set(tool) for tool in tools] == [event_keys, event_keys | {"detail"}, event_keys]
+        assert [tool["name"] for tool in tools] == [masked_name, "Shell", "tool"]
+        assert lookup.call_count == len(tools)
         assert tools[1]["detail"] == detail
-        assert all(tool["name"] == "Shell" for tool in tools)
         assert [event["status"] for event in events if event["type"] == "system_status"] == [
             "thinking",
             "compacting",
@@ -5314,10 +5327,10 @@ async def test_activity_payload_and_snapshot_only_expose_redacted_details(
         topic = (await response.json())["topics"][0]
         state = next(row for row in topic["turns"] if row["turn_id"] == turn_id)
         assert state["started_at"]
-        last_tool = {"type": "tool", "seq": tools[2]["seq"], "name": "Shell"}
+        last_tool = {"type": "tool", "seq": tools[2]["seq"], "name": "tool"}
         assert state["activity"] == last_tool
         assert state["activities"] == [
-            {"type": "tool", "seq": tools[0]["seq"], "name": "Shell", "offset": 5},
+            {"type": "tool", "seq": tools[0]["seq"], "name": masked_name, "offset": 5},
             {
                 "type": "tool",
                 "seq": tools[1]["seq"],
@@ -5328,6 +5341,7 @@ async def test_activity_payload_and_snapshot_only_expose_redacted_details(
             {**last_tool, "offset": 5},
         ]
         assert canary not in json.dumps([events, topic])
+        assert token not in json.dumps([events, topic])
         release_tool.set()
         await asyncio.wait_for(text_ready.wait(), 3)
         response = await h.client.get(f"{_PREFIX}/topics", headers=headers())
@@ -5338,6 +5352,14 @@ async def test_activity_payload_and_snapshot_only_expose_redacted_details(
         await receive_until(ws, lambda event: event.get("phase") == "done")
         entries = await h.runtime.history.read("-123.7")
         assert canary not in json.dumps([entry.text for entry in entries])
+        response = await h.client.get(f"{_PREFIX}/topics/-123.7/messages", headers=headers())
+        history = (await response.json())["entries"]
+        assert history[-1]["activity"] == state["activities"]
+        sidecar = h.runtime.history.directory / "-123.7.meta.jsonl"
+        stored = sidecar.read_text()
+        for value in (canary, token):
+            assert value not in json.dumps(history)
+            assert value not in stored
     finally:
         release_tool.set()
         release_text.set()

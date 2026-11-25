@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
 from ductor_bot.cli.stream_events import ToolUseEvent
 from ductor_bot.infra.secret_vault import SecretVault
-from ductor_bot.text.tool_detail import build_detail, strip_controls, tool_detail
+from ductor_bot.text.tool_detail import build_detail, redact_tool_name, strip_controls, tool_detail
 
 
 @pytest.mark.parametrize(
@@ -109,3 +110,47 @@ async def test_build_detail_masks_token_patterns(tmp_path: Path, text: str, expe
     vault = SecretVault(tmp_path / "secrets.env")
     detail = await build_detail(_shell_event(text), vault)
     assert detail == {"kind": "shell", "text": expected, "truncated": False}
+
+
+@pytest.mark.parametrize("prefix", ["archive_", "archive", "123", "archive-", "archive/"])
+@pytest.mark.parametrize(
+    ("token", "replacement"),
+    [
+        ("ghp_" + "A" * 36 + "XYZ", "***"),
+        ("github_pat_" + "A" * 36 + "_XYZ", "***"),
+        ("sk-proj-" + "A" * 36 + "_XYZ", "***"),
+        ("xoxb-" + "12345-" + "ABCDE-XYZ", "***"),
+        ("AKIA" + "A" * 16 + "XYZ", "***"),
+        ("ASIA" + "A" * 16 + "XYZ", "***"),
+        ("Bearer " + "sample.token" + "=XYZ", "Bearer ***"),
+        ("-----BEGIN " + "PRIVATE KEY-----\nsynthetic\n-----END " + "PRIVATE KEY-----", "***"),
+    ],
+    ids=["github", "github-pat", "openai", "slack", "aws", "aws-temporary", "bearer", "pem"],
+)
+async def test_activity_detail_masks_embedded_token_patterns(
+    tmp_path: Path, prefix: str, token: str, replacement: str
+) -> None:
+    vault = SecretVault(tmp_path / "secrets.env")
+    detail = await build_detail(_shell_event(f"key={prefix}{token};tail"), vault)
+    assert detail == {
+        "kind": "shell",
+        "text": f"key={prefix}{replacement};tail",
+        "truncated": False,
+    }
+
+
+async def test_redact_tool_name_masks_tokens_without_a_vault() -> None:
+    token = "ghp_" + "A" * 36
+    assert await redact_tool_name(f"mcp__{token}", None) == "mcp__***"
+
+
+async def test_redact_tool_name_uses_default_for_matching_short_value(tmp_path: Path) -> None:
+    vault = SecretVault(tmp_path / "secrets.env")
+    await vault.set("SHORT", "abc")
+    assert await redact_tool_name("mcp__abc", vault) == "tool"
+
+
+async def test_redact_tool_name_uses_default_on_io_error(tmp_path: Path, monkeypatch) -> None:
+    vault = SecretVault(tmp_path / "secrets.env")
+    monkeypatch.setattr(vault, "redact", AsyncMock(side_effect=OSError))
+    assert await redact_tool_name("mcp__synthetic_value", vault) == "tool"
