@@ -4459,6 +4459,27 @@ async def test_seen_rejects_non_integer_sequences(conversation, seq):
     assert await response.json() == {"error": "bad_request"}
 
 
+async def test_topics_unread_uses_the_returned_seen_cursor(conversation):
+    h = conversation
+    for tid in ("-123.7", "-123.8"):
+        for seq in (-2, -1, -1):
+            await h.runtime.history.append(
+                tid, Entry("event", "import", "log", kind="log", imported=True, seq=seq)
+            )
+    response = await h.client.put(
+        f"{_PREFIX}/topics/-123.7/seen", headers=headers(), json={"seq": -2}
+    )
+    assert response.status == 200
+    assert await response.json() == {"seen": -2}
+
+    response = await h.client.get(f"{_PREFIX}/topics", headers=headers())
+    assert response.status == 200
+    topics = {topic["tid"]: topic for topic in (await response.json())["topics"]}
+    seen, unseen = topics["-123.7"], topics["-123.8"]
+    assert (seen["seen"], seen["count"], seen["unread"]) == (-2, 3, 1)
+    assert (unseen["seen"], unseen["count"], unseen["unread"]) == (None, 3, 3)
+
+
 async def test_seen_signed_max_clamp_persistence_and_missing_topic(conversation):
     h = conversation
     for seq in [-9, -5, -2]:
@@ -4636,7 +4657,7 @@ async def test_seen_unreadable_file_preserves_topic_operations_and_stored_cursor
     if method == "GET":
         assert response.status == 200
         assert data["topics"]
-        assert all(topic["seen"] is None for topic in data["topics"])
+        assert all(topic["seen"] is None and topic["unread"] is None for topic in data["topics"])
         assert data["topics"][0]["tid"] == "-123.7"
         h.runtime.ops.delete_topic.assert_not_awaited()
     elif method == "DELETE":

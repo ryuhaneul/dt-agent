@@ -10,7 +10,10 @@ import { t } from './i18n.js';
 import { notify } from './auth.js';
 import { connectEvents } from './ws.js';
 import { md, esc, createMarkdownCache, createMarkdownStream, initMarkdownLinks } from './md.js';
-import { getTopic, getTopics, selectTopic, refreshTopics, noteEntry, noteTopicBusy, markSeen, formatTime } from './topics.js';
+import {
+  getTopic, getTopics, selectTopic, refreshTopics, scheduleBadgeRefresh,
+  noteEntry, noteTopicBusy, markSeen, formatTime,
+} from './topics.js';
 
 const histories = new Map(), turns = new Map(), drafts = new Map(), topicVersions = new Map();
 let active = false, epoch = 0, stopEvents = null, telegram = { state: 'unknown' };
@@ -937,7 +940,7 @@ async function resync({ preserveReading = false } = {}) {
     if (active && generation === epoch) errorNotice(error);
   });
   try {
-    await refreshTopics(items => {
+    await refreshTopics({ onSnapshot: items => {
       if (!active || generation !== epoch) return;
       const selected = getTopic()?.tid, changed = new Set();
       for (const item of items) {
@@ -967,7 +970,7 @@ async function resync({ preserveReading = false } = {}) {
         }
       }
       if (changed.size) renderThread({ changes: { turns: changed }, preserveReading: true });
-    });
+    } });
     if (!active || generation !== epoch) return;
     const topic = getTopic();
     if (topic) {
@@ -1012,6 +1015,7 @@ export async function handleEvent(event) {
       queueStateRefresh();
       return;
     case 'entry': {
+      scheduleBadgeRefresh();
       const state = history(tid), entry = event.entry;
       if (!state.entries.has(entry.id)) noteEntry(tid, entry);
       mergeHistory(state, [entry]);
@@ -1020,7 +1024,6 @@ export async function handleEvent(event) {
         turn.phase = 'cancelled';
         refreshAfterLastTurn(tid);
       }
-      if (!getTopics().some(item => item.tid === tid)) await refreshTopics();
       if (!active || generation !== epoch || tid !== getTopic()?.tid) return;
       attachmentView?.load(tid, [state.entries.get(entry.id)]);
       const entries = new Set([entry.id]);

@@ -50,7 +50,7 @@ async function openChat(page, images, { count = 32, delayed, previewDelay, filen
       case '/api/auth/state':
         return reply({ authenticated: true, csrf: 'fixture', bridge_up: true, totp_configured: true });
       case '/api/topics': {
-        const primary = { ...topic, count: entries.length, created_at: stamp, last_ts: stamp };
+        const primary = { ...topic, count: entries.length, unread: 0, created_at: stamp, last_ts: stamp };
         const other = { ...primary, tid: '1.3', topic_id: 3, name: 'Other images' };
         return reply({ topics: switchable ? [primary, other] : [primary] });
       }

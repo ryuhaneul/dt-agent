@@ -55,7 +55,7 @@ async function open(kind,width,entries,secondEntries=entries) {
     if(url.pathname==='/api/i18n')result={lang:'en',strings:cfg.strings};
     else if(url.pathname==='/api/auth/state')result={authenticated:true,csrf:'fake-csrf',bridge_up:true};
     else if(url.pathname==='/api/commands')result={commands:[]};
-    else if(url.pathname==='/api/topics')result={topics:[topic,{...secondTopic,count:secondEntries.length},...(cfg.mode==='navigation'?[{...topic,tid:'1.4',topic_id:4,name:'Third topic'}]:[])]};
+    else if(url.pathname==='/api/topics')result={topics:[{...topic,unread:0},{...secondTopic,count:secondEntries.length,unread:0},...(cfg.mode==='navigation'?[{...topic,tid:'1.4',topic_id:4,name:'Third topic',unread:0}]:[])]};
     else if(url.pathname==='/api/state')result={telegram:{state:'up',strip:Array(30).fill('ok')},outbox:{pending:0},bot:{up:true},web_sessions:1};
     else if(url.pathname==='/api/outbox')result={items:[]};
     else if(url.pathname.endsWith('/messages')){
