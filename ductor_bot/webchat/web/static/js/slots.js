@@ -163,6 +163,7 @@ export function initSlots(refresh) {
     const usage = primary.querySelector('.slot-usage');
     primary.style.removeProperty('max-width');
     primary.style.removeProperty('min-width');
+    primary.style.removeProperty('--slot-cooldown-width');
     // Keep the narrow fold in the DOM when the wide styles first take effect.
     buttons.forEach(button => { button.hidden = isNarrow && button !== primary; });
     setHiddenCount(buttons.length - 1);
@@ -190,8 +191,13 @@ export function initSlots(refresh) {
     if (isNarrow) return;
 
     const limitPrimary = limit => {
-      if (primary.dataset.status === 'cooldown') primary.setAttribute('data-wrap-cooldown', '');
-      primary.style.maxWidth = `${Math.max(0, limit)}px`;
+      const width = `${Math.max(0, limit)}px`;
+      if (primary.dataset.status === 'cooldown') {
+        primary.style.setProperty('--slot-cooldown-width', width);
+        primary.setAttribute('data-wrap-cooldown', '');
+      } else {
+        primary.style.maxWidth = width;
+      }
     };
     const sizes = widths();
     const fullWidth = groupWidth(sizes);

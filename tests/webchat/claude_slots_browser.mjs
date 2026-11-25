@@ -53,6 +53,20 @@ function initialState() {
   };
 }
 
+// Measured at 1181px on d8087fe. Each row lists 2, 5 and 12 slots
+// with no pending messages, then with three pending messages.
+const cooldownBadgeLeft = {
+  en: [249, 247, 243, 167, 165, 161],
+  de: [199, 197, 193, 154.08, 154.08, 154.08],
+  nl: [218, 216, 212, 154.08, 154.08, 154.08],
+  es: [186, 184, 180, 154.08, 154.08, 154.08],
+  fr: [239, 237, 233, 154.08, 154.08, 154.08],
+  id: [218, 216, 212, 154.08, 154.08, 154.08],
+  pt: [201, 199, 195, 154.08, 154.08, 154.08],
+  ru: [208, 206, 202, 154.08, 154.08, 154.08],
+  ko: [316, 259, 252, 243, 186, 179],
+};
+
 async function checkHeaderMatrix(browser) {
   const page = await browser.newPage({ viewport: { width: 844, height: 844 }, timezoneId: 'Asia/Seoul' });
   try {
@@ -120,6 +134,29 @@ async function checkHeaderMatrix(browser) {
       await page.locator('#vaultBadge').getByText(config.locales[locale]['vault.unconfigured'], { exact: true }).waitFor();
       await page.evaluate(() => document.fonts.ready);
     };
+    let loadedLocale;
+    const showHeaderFixture = async () => {
+      if (loadedLocale !== locale) {
+        await page.goto(origin);
+        loadedLocale = locale;
+      } else {
+        await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+      }
+      await page.waitForFunction(({ count, pending, status, language, vault }) =>
+        document.documentElement.lang === language
+          && document.querySelector('#appSubtitle').textContent === 'v9.8.7'
+          && document.querySelector('#vaultBadge span')?.textContent === vault
+          && !document.querySelector('#pendingBadge').hidden === pending
+          && document.querySelectorAll('.slot-row').length === count
+          && document.querySelector('.slot-chip[data-next]')?.dataset.status === status, {
+        count: state?.slots.length ?? 0,
+        pending: unsent !== 0,
+        status: state?.slots[0].state,
+        language: locale,
+        vault: config.locales[locale]['vault.unconfigured'],
+      });
+      await page.evaluate(() => document.fonts.ready);
+    };
     const screenshot = name =>
       page.screenshot({ path: path.join(config.shots, `fix3-${name}.png`), animations: 'disabled' });
     for (locale of Object.keys(config.locales)) {
@@ -131,8 +168,7 @@ async function checkHeaderMatrix(browser) {
           state.slots[0].cooldown_until = futureCooldown;
           state.slots[0].usage.windows.five_hour.resets_at = futureCooldown;
         }
-        await page.goto(origin);
-        await waitForHeader();
+        await showHeaderFixture();
         assert.equal(await page.locator('#pendingBadge').isVisible(), unsent !== 0);
         for (const width of widths) {
           await page.setViewportSize({ width, height: 844 });
@@ -206,10 +242,7 @@ async function checkHeaderMatrix(browser) {
     for (locale of Object.keys(config.locales)) {
       for (unsent of [0, 3]) {
         state = null;
-        await page.goto(origin);
-        await page.locator('#vaultBadge').getByText(config.locales[locale]['vault.unconfigured'], { exact: true }).waitFor();
-        await page.waitForFunction(() => document.querySelector('#appSubtitle').textContent === 'v9.8.7');
-        await page.evaluate(() => document.fonts.ready);
+        await showHeaderFixture();
         const baseline = {};
         for (const width of wideWidths) {
           await resize(width);
@@ -261,16 +294,25 @@ async function checkHeaderMatrix(browser) {
     }
     console.log(`Wide header layout: ${JSON.stringify(wide)}`);
 
-    const settle = () => page.evaluate(() => new Promise(resolve =>
-      requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const settle = () => page.evaluate(() => new Promise(resolve => {
+      const observer = new ResizeObserver(() => {
+        observer.disconnect();
+        resolve();
+      });
+      observer.observe(document.querySelector('.bar'));
+    }));
     let cooldownCases = 0;
     let cooldownOverflows = 0;
     let labelOverflows = 0;
     let maxLabelOverflow = 0;
+    let shiftedBadges = 0;
+    let maxBadgeShift = 0;
+    let wrappedCases = 0;
+    let maxGlyphClipping = 0;
     await page.setViewportSize({ width: 1181, height: 900 });
     for (locale of Object.keys(config.locales)) {
       for (unsent of [0, 3]) {
-        for (const count of [2, 5, 12]) {
+        for (const [index, count] of [2, 5, 12].entries()) {
           state = initialState();
           state.slots[0] = slot('claude', 'oauth', 'cooldown', futureCooldown,
             usage(1, futureCooldown, 0.41, futureCooldown));
@@ -278,14 +320,7 @@ async function checkHeaderMatrix(browser) {
           while (state.slots.length < count) {
             state.slots.push(slot(`claude-slot-${state.slots.length + 1}`, 'oauth', 'ok'));
           }
-          if (count === 2) {
-            await page.goto(origin);
-            await waitForHeader();
-          } else {
-            await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
-            await page.waitForFunction(count => document.querySelectorAll('.slot-row').length === count, count);
-          }
-          await settle();
+          await showHeaderFixture();
           const measure = await page.locator('.slot-chip[data-next]').evaluate(chip => {
             const box = chip.getBoundingClientRect();
             const name = chip.querySelector('.slot-name');
@@ -295,7 +330,45 @@ async function checkHeaderMatrix(browser) {
               range.selectNodeContents(element);
               return Math.max(0, ...[...range.getClientRects()].map(rect => rect.right - box.right));
             };
+            const wrapped = chip.hasAttribute('data-wrap-cooldown');
+            let glyphClipping = 0;
+            if (wrapped) {
+              // The next chip has a 1px inset outline inside its border.
+              const inner = chip.clientTop + 1;
+              const canvas = document.createElement('canvas').getContext('2d');
+              const range = document.createRange();
+              for (const row of [name, label]) {
+                const style = getComputedStyle(row);
+                const bounds = row.getBoundingClientRect();
+                const node = row.firstChild;
+                // A zero-height inline box locates the baseline without changing the text width.
+                const marker = document.createElement('span');
+                marker.style.cssText = 'display:inline-block;width:0;height:0;vertical-align:baseline';
+                row.append(marker);
+                const baseline = marker.getBoundingClientRect().bottom;
+                marker.remove();
+                canvas.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+                let offset = 0;
+                for (const glyph of node.data) {
+                  range.setStart(node, offset);
+                  offset += glyph.length;
+                  if (!glyph.trim()) continue;
+                  range.setEnd(node, offset);
+                  const x = range.getBoundingClientRect().left;
+                  const ink = canvas.measureText(glyph);
+                  glyphClipping = Math.max(glyphClipping,
+                    Math.max(bounds.top, box.top + inner) - (baseline - ink.actualBoundingBoxAscent),
+                    baseline + ink.actualBoundingBoxDescent - Math.min(bounds.bottom, box.bottom - inner),
+                    Math.max(bounds.left, box.left + inner) - (x - ink.actualBoundingBoxLeft),
+                    x + ink.actualBoundingBoxRight - Math.min(bounds.right, box.right - inner));
+                }
+              }
+            }
             return {
+              badgeLeft: document.querySelector('.stat').getBoundingClientRect().left,
+              headerHeight: document.querySelector('.bar').getBoundingClientRect().height,
+              chipHeight: box.height,
+              wrapped, glyphClipping,
               nameClipped: name.scrollWidth > name.clientWidth || textOverflow(name) > 0.5,
               labelClipped: label.scrollWidth > label.clientWidth,
               labelOverflow: textOverflow(label),
@@ -308,12 +381,24 @@ async function checkHeaderMatrix(browser) {
             cooldownOverflows++;
             failures.push({ cooldown: 'future', width: 1181, locale, unsent, count, ...measure });
           }
+          const baselineLeft = cooldownBadgeLeft[locale][index + (unsent ? 3 : 0)];
+          const shift = Math.abs(measure.badgeLeft - baselineLeft);
+          shiftedBadges += Number(shift > 0.5);
+          maxBadgeShift = Math.max(maxBadgeShift, shift);
+          wrappedCases += Number(measure.wrapped);
+          maxGlyphClipping = Math.max(maxGlyphClipping, measure.glyphClipping);
+          if (shift > 0.5 || measure.glyphClipping > 0.5
+              || measure.chipHeight !== 30 || measure.headerHeight !== 65) {
+            failures.push({ cooldown: 'geometry', width: 1181, locale, unsent, count, baselineLeft, ...measure });
+          }
           if (locale === 'de' && unsent === 3 && count === 2) await screenshot('issue87-de-1181');
         }
       }
     }
     console.log(`Issue 87 cooldown: ${cooldownOverflows}/${cooldownCases} overflowing cases (${labelOverflows} labels), max label overflow ${maxLabelOverflow.toFixed(1)}px`);
+    console.log(`Issue 87 cooldown geometry: ${shiftedBadges}/${cooldownCases} badge shifts, max ${maxBadgeShift.toFixed(2)}px; ${wrappedCases} wrapped chips, max glyph clipping ${maxGlyphClipping.toFixed(2)}px`);
     assert.equal(cooldownCases, 54);
+    assert.ok(wrappedCases > 0);
 
     async function checkBreakpoint(name) {
       for (const width of [1440, 1180, 1181]) {
@@ -1084,16 +1169,22 @@ async function checkUsageRegressions(browser) {
 }
 
 
+async function checkSlotInteractions(browser) {
+  await checkUsageRegressions(browser);
+  for (const [width, height, theme] of [
+    [1440, 900, 'light'], [1440, 900, 'dark'], [390, 844, 'light'],
+    [844, 390, 'light'], [1280, 900, 'light'], [768, 900, 'light'], [375, 844, 'light'],
+  ]) await check(browser, width, height, theme);
+}
+
 try {
   const browser = await chromium.launch({ headless: true });
   try {
-    const longestLocale = await checkHeaderMatrix(browser);
+    const [longestLocale] = await Promise.all([
+      checkHeaderMatrix(browser),
+      checkSlotInteractions(browser),
+    ]);
     await checkUsageDesign(browser, longestLocale);
-    await checkUsageRegressions(browser);
-    for (const [width, height, theme] of [
-      [1440, 900, 'light'], [1440, 900, 'dark'], [390, 844, 'light'],
-      [844, 390, 'light'], [1280, 900, 'light'], [768, 900, 'light'], [375, 844, 'light'],
-    ]) await check(browser, width, height, theme);
   } finally {
     await browser.close();
   }
