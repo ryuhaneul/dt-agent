@@ -34,19 +34,19 @@ Shared user-facing response text helpers used across bot and orchestrator layers
   `query`. Missing or non-string values produce no detail.
 - `strip_controls(text)` removes ANSI escapes and C0/C1 controls, preserving
   newlines and tabs.
-- `build_detail(event, vault)` masks the original, JSON-escaped and
-  control-stripped forms of registered values. It also masks recognized GitHub,
-  OpenAI, Slack and AWS tokens, Bearer credentials and PEM private key blocks,
-  including token shapes embedded in longer strings. It checks the original
-  input for short registered values and masks token shapes before and after
-  replacing registered values. It returns `{kind, text, truncated}` after
-  cutting the masked text to 2,000
-  characters. Vault errors and a match for a registered form shorter than
-  four characters leave no detail. An unconfigured plaintext vault reads the
-  store on each redaction.
-- `redact_tool_name(name, vault)` applies the same value and token masking to
-  web tool names. An unsafe name falls back to `tool` on a short-value match or
-  a vault error. With no vault, it applies token masking alone.
+- `build_detail(event, vault)` finds registered secret values and token shapes
+  independently in control-stripped text. The vault provides position ranges
+  for original, JSON-escaped and control-stripped forms of registered values.
+  The helper combines these with ranges for recognized GitHub, OpenAI, Slack
+  and AWS tokens, Bearer credentials and PEM private key blocks. Overlapping
+  or adjacent ranges share a single `***` mask. Unclosed private key blocks
+  are masked through the end of the text. It returns `{kind, text, truncated}`
+  after cutting the masked text to 2,000 characters. Empty details, vault
+  errors and a registered form shorter than four characters matching either
+  the original or control-stripped input leave no detail.
+- `redact_tool_name(name, vault)` applies the same range masking to
+  provider-supplied web tool names. A short-value match or vault error
+  falls back to `tool`. With no vault, it uses token ranges alone.
 
 ## Integration points
 

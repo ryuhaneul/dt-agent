@@ -5481,7 +5481,7 @@ async def test_activity_payload_and_snapshot_only_expose_redacted_details(
             "truncated": False,
         }
         assert [set(tool) for tool in tools] == [event_keys, event_keys | {"detail"}, event_keys]
-        assert [tool["name"] for tool in tools] == [masked_name, "Shell", "tool"]
+        assert [tool["name"] for tool in tools] == [masked_name, "Shell", "Shell"]
         assert lookup.call_count == len(tools)
         assert tools[1]["detail"] == detail
         assert [event["status"] for event in events if event["type"] == "system_status"] == [
@@ -5494,7 +5494,7 @@ async def test_activity_payload_and_snapshot_only_expose_redacted_details(
         topic = (await response.json())["topics"][0]
         state = next(row for row in topic["turns"] if row["turn_id"] == turn_id)
         assert state["started_at"]
-        last_tool = {"type": "tool", "seq": tools[2]["seq"], "name": "tool"}
+        last_tool = {"type": "tool", "seq": tools[2]["seq"], "name": "Shell"}
         assert state["activity"] == last_tool
         assert state["activities"] == [
             {"type": "tool", "seq": tools[0]["seq"], "name": masked_name, "offset": 5},
@@ -5530,6 +5530,48 @@ async def test_activity_payload_and_snapshot_only_expose_redacted_details(
     finally:
         release_tool.set()
         release_text.set()
+        await ws.close()
+
+
+@pytest.mark.parametrize(
+    ("locked", "tool_name", "kind", "expected"),
+    [
+        (True, "Bash", "shell", "Shell"),
+        (True, "Read", "file", "Read"),
+        (True, "WebSearch", "web", "Web search"),
+        (True, "mcp__github__get_me", None, "tool"),
+        (False, "Read", "file", "Read"),
+    ],
+)
+async def test_activity_fixed_names_survive_locked_vault_and_short_values(
+    conversation, activity_vault, locked, tool_name, kind, expected,
+):
+    if locked:
+        await activity_vault.setup("synthetic-activity-master-key")
+        await activity_vault.lock()
+    else:
+        await activity_vault.set("SHORT", "ea")
+
+    async def handle(_key, _text, **callbacks):
+        await callbacks["on_tool_activity"](
+            ToolUseEvent(
+                tool_name=tool_name,
+                type="tool_use",
+                kind=kind,
+                parameters={"command": "echo sample", "path": "sample.txt", "query": "sample"},
+            )
+        )
+        return OrchestratorResult(text="")
+
+    conversation.bot._orch.handle_message_streaming.side_effect = handle
+    ws = await conversation.client.ws_connect(f"{_PREFIX}/events", headers=headers())
+    try:
+        assert (await post_message(conversation)).status == 202
+        events = await receive_until(ws, lambda event: event.get("type") == "tool")
+        assert events[-1]["name"] == expected
+        if locked:
+            assert "detail" not in events[-1]
+    finally:
         await ws.close()
 
 

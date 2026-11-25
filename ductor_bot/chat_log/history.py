@@ -96,6 +96,7 @@ class HistoryStore:
         self._locks: dict[str, asyncio.Lock] = {}
         self._sequences: dict[str, tuple[int, int]] = {}
         self._indexes: dict[str, _HistoryIndex] = {}
+        self._metadata_compacted_sizes: dict[str, int] = {}
         self._selector_locks: dict[tuple[str, str], asyncio.Lock] = {}
 
     def _lock(self, tid: str) -> asyncio.Lock:
@@ -227,7 +228,8 @@ class HistoryStore:
                 metadata["selector_revision"] = (current or {}).get("selector_revision", 0) + 1
             self._write_metadata(path, entry_id, metadata)
             try:
-                if path.stat().st_size >= _METADATA_COMPACT_BYTES:
+                limit = max(_METADATA_COMPACT_BYTES, 2 * self._metadata_compacted_sizes.get(tid, 0))
+                if path.stat().st_size >= limit:
                     records[entry_id] = metadata
                     self._save_compacted_metadata(
                         path,
@@ -236,6 +238,7 @@ class HistoryStore:
                             for ident, record in records.items()
                         ),
                     )
+                    self._metadata_compacted_sizes[tid] = path.stat().st_size
             except OSError as exc:
                 logger.warning("History metadata compaction failed: %s", type(exc).__name__)
             # Keep the metadata returned to existing callers and event publishers unchanged.
@@ -688,6 +691,7 @@ class HistoryStore:
             self._sequence_path(tid).unlink(missing_ok=True)
             self._metadata_path(tid).unlink(missing_ok=True)
             self._sequences.pop(tid, None)
+            self._metadata_compacted_sizes.pop(tid, None)
             self._indexes.pop(tid, None)
             return count
 

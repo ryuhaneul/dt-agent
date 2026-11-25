@@ -794,12 +794,17 @@ class WebTurns:
 
                 async def tool(event: ToolUseEvent) -> None:
                     offset = len(partial)
-                    name = "tool"
+                    name = (
+                        normalize_tool_name(event.tool_name) if event.kind is not None else "tool"
+                    )
                     detail = None
                     try:
                         vault = get_secret_vault(store_path(self.bot._orch.paths.ductor_home))
-                        name = await redact_tool_name(normalize_tool_name(event.tool_name), vault)
-                        if vault is not None and event.kind is not None:
+                        if event.kind is None:
+                            name = await redact_tool_name(
+                                normalize_tool_name(event.tool_name), vault
+                            )
+                        elif vault is not None:
                             detail = await build_detail(event, vault)
                     except (VaultError, OSError):
                         pass

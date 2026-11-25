@@ -246,18 +246,23 @@ Web chat shows tool names for turns sent from the browser. Supported Claude and
 Codex built-in tools can show one expandable detail per call. Gemini, Grok, MCP
 and unclassified tools show names only.
 
-The bridge masks registered secret values and recognized token patterns in
-tool names and details, including tokens embedded in longer strings. It cuts
-details to 2,000 characters after masking. This applies to values typed directly
-into a command as well. Other unregistered values can remain visible. A vault
-error or a matching registered value shorter than four characters makes the
-affected name display as `tool` or omits the affected detail. If vault lookup
-returns no vault, names receive token-pattern masking and details are omitted.
-The short-value check runs before masking. A registered value made entirely of
-asterisks can coincide with the `***` mask.
-Masking covers a Slack token followed by a Bearer credential, but other
-combinations of adjacent token formats are best-effort and may leave some
-text visible.
+The bridge finds registered values and recognized token patterns in
+control-stripped text, merges overlapping or adjacent matches, and masks them
+before cutting details to 2,000 characters. This applies to values typed
+directly into a command as well. Empty masked details are omitted. A match
+for a registered value shorter than four characters suppresses the affected
+detail or replaces a tool name from the provider with `tool`. A vault error
+has the same effect. Fixed built-in tool names remain visible when the vault
+is locked or a registered value overlaps their spelling. If vault lookup
+returns no vault, provider-supplied names receive token-pattern masking and
+details are omitted. A stored value made entirely of asterisks can coincide
+with the `***` mask.
+
+Unregistered secrets outside the recognized patterns can remain visible.
+Classic GitHub token prefixes require at least 20 alphanumeric characters.
+An OpenAI-style `sk-` prefix immediately after an ASCII letter or digit is
+outside the token pattern. An unclosed PEM private key block is masked
+through the end of the text.
 
 - WebSocket `tool` events carry `tid`, `turn_id`, `seq`, `name` and an optional
   `detail` object with `kind`, `text` and `truncated`. The original tool

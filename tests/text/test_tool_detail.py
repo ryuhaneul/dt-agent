@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from time import perf_counter
 from unittest.mock import AsyncMock
 
 import pytest
@@ -93,10 +94,10 @@ async def test_build_detail_omits_detail_if_vault_is_locked(tmp_path: Path) -> N
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        ("key=ghp_" + "A" * 36, "key=***"),
+        ("key=ghp_" + "A" * 20, "key=***"),
         ("key=github_pat_" + "A" * 36 + "_" + "B" * 24, "key=***"),
-        ("key=sk-proj-" + "A" * 36 + "_" + "B" * 24, "key=***"),
-        ("key=xoxb-12345-ABCDE", "key=***"),
+        ("key=sk-" + "B" * 24, "key=***"),
+        ("key=xoxb-" + "1-" + "abc", "key=***"),
         ("key=AKIA" + "A" * 16, "key=***"),
         ("key=ASIA" + "A" * 16, "key=***"),
         ("authorization: Bearer sample.token=value", "authorization: Bearer ***"),
@@ -110,9 +111,12 @@ async def test_build_detail_masks_token_patterns(tmp_path: Path, text: str, expe
     vault = SecretVault(tmp_path / "secrets.env")
     detail = await build_detail(_shell_event(text), vault)
     assert detail == {"kind": "shell", "text": expected, "truncated": False}
+    assert await redact_tool_name(text, vault) == expected
 
 
-@pytest.mark.parametrize("prefix", ["archive_", "archive", "123", "archive-", "archive/"])
+@pytest.mark.parametrize(
+    "prefix", ["archive_", "archive", "123", "archive-", "archive/", "mcp__x_"]
+)
 @pytest.mark.parametrize(
     ("token", "replacement"),
     [
@@ -131,12 +135,13 @@ async def test_activity_detail_masks_embedded_token_patterns(
     tmp_path: Path, prefix: str, token: str, replacement: str
 ) -> None:
     vault = SecretVault(tmp_path / "secrets.env")
-    detail = await build_detail(_shell_event(f"key={prefix}{token};tail"), vault)
-    assert detail == {
-        "kind": "shell",
-        "text": f"key={prefix}{replacement};tail",
-        "truncated": False,
-    }
+    text = f"key={prefix}{token};tail"
+    if token.startswith("sk-") and prefix in {"archive", "123"}:
+        replacement = token
+    expected = f"key={prefix}{replacement};tail"
+    detail = await build_detail(_shell_event(text), vault)
+    assert detail == {"kind": "shell", "text": expected, "truncated": False}
+    assert await redact_tool_name(text, vault) == expected
 
 
 async def test_redact_tool_name_masks_tokens_without_a_vault() -> None:
@@ -152,21 +157,33 @@ async def test_redact_tool_name_uses_default_for_matching_short_value(tmp_path: 
 
 async def test_redact_tool_name_uses_default_on_io_error(tmp_path: Path, monkeypatch) -> None:
     vault = SecretVault(tmp_path / "secrets.env")
-    monkeypatch.setattr(vault, "redact", AsyncMock(side_effect=OSError))
+    monkeypatch.setattr(vault, "redaction_spans", AsyncMock(side_effect=OSError))
     assert await redact_tool_name("mcp__synthetic_value", vault) == "tool"
 
 
 @pytest.mark.parametrize(
     ("marker", "text", "expected"),
     [
-        ("Bearer", "auth=Bearer " + "synthetic" + ".credential", "auth=*** ***"),
+        (
+            "Bearer",
+            'curl -H "Authorization: Bearer ' + "abcDEF" + '123456"',
+            'curl -H "Authorization: *** ***"',
+        ),
+        ("Bearer", "auth=Bea\x00rer " + "synthetic" + ".credential", "auth=*** ***"),
         (
             "PRIVATE KEY",
             "-----BEGIN " + "PRIVATE KEY-----\nsynthetic-key-body\n-----END " + "PRIVATE KEY-----",
             "***",
         ),
+        (
+            "PRIVATE KEY",
+            "-----BEGIN "
+            + "PRIVATE\x1b[0m KEY-----\nsynthetic-key-body\n-----END "
+            + "PRIVATE KEY-----",
+            "***",
+        ),
     ],
-    ids=["bearer", "pem"],
+    ids=["bearer", "controlled-bearer", "pem", "controlled-pem"],
 )
 async def test_activity_masks_credentials_overlapping_registered_markers(
     tmp_path: Path, marker: str, text: str, expected: str
@@ -194,3 +211,74 @@ async def test_activity_checks_short_values_before_masking_token_shapes(tmp_path
     token = "sk-" + "A" * 20 + "abc"
     assert await build_detail(_shell_event(token), vault) is None
     assert await redact_tool_name(token, vault) == "tool"
+
+
+@pytest.mark.parametrize(
+    ("prefix", "value"),
+    [
+        ("export CREDS=", "AKIA" + "ABCDEFGHIJKLMNOP" + ":wJalrSYNTHETIC"),
+        ("git clone ", "https://oauth2:" + "ghp_" + "A" * 20 + "@git.example.test/team/repo"),
+        ("login --password ", "Hunter2Correct." + "sk-" + "B" * 24),
+        ("", "abcdefgh" * 2),
+    ],
+    ids=["aws-pair", "git-url", "password", "adjacent-values"],
+)
+async def test_activity_masks_whole_registered_values(
+    tmp_path: Path, prefix: str, value: str
+) -> None:
+    vault = SecretVault(tmp_path / "secrets.env")
+    await vault.set("VALUE", value if prefix else "abcdefgh")
+    text = prefix + value
+    expected = prefix + "***"
+    assert await build_detail(_shell_event(text), vault) == {
+        "kind": "shell",
+        "text": expected,
+        "truncated": False,
+    }
+    assert await redact_tool_name(text, vault) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("task-2026-11-25-refresh-topic-list", "task-2026-11-25-refresh-topic-list"),
+        ("risk-assessment-report-2026-final", "risk-assessment-report-2026-final"),
+        ("flask-application-factory-config", "flask-application-factory-config"),
+        ("desk-booking-service-backend", "desk-booking-service-backend"),
+        ("laughs_at_everything", "laughs_at_everything"),
+        ("coughs_loudly", "coughs_loudly"),
+        ("K=sk-" + "ant-api03-" + "abcDEF_1234567890", "K=***"),
+        ("archive_sk-" + "A" * 24, "archive_***"),
+        ("path/sk-" + "A" * 24, "path/***"),
+        ("-----BEGIN " + "PRIVATE KEY-----\nsynthetic-key-body", "***"),
+    ],
+)
+async def test_activity_token_boundaries_and_unclosed_key(
+    tmp_path: Path, text: str, expected: str
+) -> None:
+    vault = SecretVault(tmp_path / "secrets.env")
+    assert await build_detail(_shell_event(text), vault) == {
+        "kind": "shell",
+        "text": expected,
+        "truncated": False,
+    }
+    assert await redact_tool_name(text, vault) == expected
+
+
+async def test_activity_large_unclosed_key_input(tmp_path: Path) -> None:
+    vault = SecretVault(tmp_path / "secrets.env")
+    opening = "-----BEGIN " + "PRIVATE KEY-----\n"
+    text = opening * (1024 * 1024 // len(opening) + 1)
+    start = perf_counter()
+    assert await build_detail(_shell_event(text), vault) == {
+        "kind": "shell",
+        "text": "***",
+        "truncated": False,
+    }
+    assert perf_counter() - start < 2
+
+
+@pytest.mark.parametrize("text", ["", "\x1b[0m\x00", "  \n"])
+async def test_activity_omits_empty_details(tmp_path: Path, text: str) -> None:
+    vault = SecretVault(tmp_path / "secrets.env")
+    assert await build_detail(_shell_event(text), vault) is None

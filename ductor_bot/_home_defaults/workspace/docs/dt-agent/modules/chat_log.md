@@ -30,7 +30,9 @@ message history responses. Activity-only rows contain the entry ID and
 `activity`. Button and mirror lookups keep their existing defaults, and later
 metadata updates and compaction preserve the list. Retention and topic deletion
 remove activity with the other entry metadata. Imported entries are outside
-the activity recording path.
+the activity recording path. The first compaction after startup uses a
+256 KiB threshold. Later compactions wait until the file reaches the larger
+of 256 KiB and twice the size recorded after the last compaction of that topic.
 
 On rollback, the previous reader skips activity-only rows and logs
 `Skipping corrupt history metadata` for each such row it reads. A metadata

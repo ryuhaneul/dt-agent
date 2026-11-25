@@ -22,13 +22,16 @@ _ANSI = re.compile(
     r"|\x1b[ -/]*[0-~]"
 )
 _CONTROLS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
-_TOKEN = re.compile(
-    r"(?:gh[pousr]_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]{20,}"
-    r"|xox[baprs]-[A-Za-z0-9-]+|(?:AKIA|ASIA)[A-Z0-9]{16,})"
-    r"|-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----[\s\S]*?"
-    r"-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----"
+_TOKEN_PATTERNS = (
+    re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
+    re.compile(r"github_pat_[A-Za-z0-9_]+"),
+    re.compile(r"(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,}"),
+    re.compile(r"xox[baprs]-[A-Za-z0-9-]+"),
+    re.compile(r"(?:AKIA|ASIA)[A-Z0-9]{16,}"),
 )
 _BEARER = re.compile(r"""(Bearer[ \t]+)[^\s"'`;|&<>]+""", re.IGNORECASE)
+_PEM_BEGIN = re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----")
+_PEM_END = re.compile(r"-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----")
 
 
 class ToolDetail(TypedDict):
@@ -53,26 +56,50 @@ def strip_controls(text: str) -> str:
     return _CONTROLS.sub("", _ANSI.sub("", text))
 
 
-def _mask_tokens(text: str) -> str:
-    return _TOKEN.sub("***", _BEARER.sub(r"\g<1>***", text))
+def _pem_spans(text: str) -> list[tuple[int, int]]:
+    spans = []
+    cursor = 0
+    for opening in _PEM_BEGIN.finditer(text):
+        if opening.start() < cursor:
+            continue
+        closing = _PEM_END.search(text, opening.end())
+        cursor = closing.end() if closing else len(text)
+        spans.append((opening.start(), cursor))
+        if closing is None:
+            break
+    return spans
 
 
-async def _redact_activity(text: str, vault: SecretVault) -> str | None:
-    # Check the original input for short values before adding any masks.
-    redacted = await vault.redact(text, strip_controls)
-    if redacted is None:
+async def _redact_activity(text: str, vault: SecretVault | None) -> str | None:
+    normalized = strip_controls(text)
+    spans = [] if vault is None else await vault.redaction_spans(text, strip_controls)
+    if spans is None:
         return None
-    # Match token shapes before vault replacements can remove their markers.
-    masked = _mask_tokens(text)
-    if masked != text:
-        redacted = await vault.redact(masked, strip_controls)
-    return None if redacted is None else _mask_tokens(redacted)
+
+    for pattern in _TOKEN_PATTERNS:
+        spans.extend(match.span() for match in pattern.finditer(normalized))
+    spans.extend((match.end(1), match.end()) for match in _BEARER.finditer(normalized))
+    spans.extend(_pem_spans(normalized))
+
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            first, last = merged[-1]
+            merged[-1] = (first, max(last, end))
+        else:
+            merged.append((start, end))
+
+    parts: list[str] = []
+    cursor = 0
+    for start, end in merged:
+        parts.extend((normalized[cursor:start], "***"))
+        cursor = end
+    parts.append(normalized[cursor:])
+    return "".join(parts)
 
 
 async def redact_tool_name(name: str, vault: SecretVault | None) -> str:
     """Return a safe display name for web tool activity."""
-    if vault is None:
-        return _mask_tokens(name)
     try:
         redacted = await _redact_activity(name, vault)
     except (VaultError, OSError):
@@ -89,7 +116,7 @@ async def build_detail(event: ToolUseEvent, vault: SecretVault) -> ToolDetail | 
         text = await _redact_activity(text, vault)
     except VaultError:
         return None
-    if text is None:
+    if text is None or not text.strip():
         return None
     return {
         "kind": event.kind,

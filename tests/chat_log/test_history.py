@@ -721,6 +721,20 @@ async def test_metadata_compaction_preserves_latest_records_and_read_results(tmp
     assert path.stat().st_size < 256 * 1024
 
 
+async def test_large_metadata_sidecar_waits_for_growth_after_compaction(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    store = HistoryStore(tmp_path)
+    save = Mock(wraps=store._save_compacted_metadata)
+    monkeypatch.setattr(store, "_save_compacted_metadata", save)
+    await store.record_display_markdown("1", "large", "x" * (256 * 1024))
+    assert store._metadata_path("1").stat().st_size >= 256 * 1024
+    for revision in range(10):
+        await store.record_mirror_revision("1", "small", revision)
+    assert save.call_count <= 1
+    assert (await store.metadata("1"))["small"]["mirror_revision"] == 9
+
+
 @pytest.mark.parametrize("failure", ["temp_creation", "replace"])
 async def test_metadata_compaction_failure_preserves_appended_original(
     tmp_path, monkeypatch, caplog, failure
