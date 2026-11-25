@@ -207,6 +207,8 @@ Without a saved cursor, it includes every history row. Read cursors are shared
 across web clients. Reading a topic or marking all topics as read hides the
 affected badges immediately while the read state is saved. If the server cannot
 provide an unread count, the browser shows the last confirmed count and retries.
+If saving the read state fails and a topic-list event's request fails right
+after it, the error notice can appear twice.
 
 Badge refreshes after new entries or read-state changes normally start within
 150 ms. Reconnects and topic-list events request the list immediately.
