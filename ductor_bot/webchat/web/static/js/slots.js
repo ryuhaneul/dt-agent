@@ -157,6 +157,8 @@ export function initSlots(refresh) {
     };
 
     const isNarrow = narrow.matches;
+    // Let the cooldown chip shrink if the wide CSS applies before the next fit.
+    primary.toggleAttribute('data-narrow-cooldown', isNarrow && primary.dataset.status === 'cooldown');
     root.removeAttribute('data-compact');
     primary.removeAttribute('data-wrap-cooldown');
     const name = primary.querySelector('.slot-name');

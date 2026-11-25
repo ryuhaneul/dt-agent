@@ -67,7 +67,7 @@ const cooldownBadgeLeft = {
   ko: [316, 259, 252, 243, 186, 179],
 };
 
-async function checkHeaderMatrix(browser) {
+async function checkHeaderMatrix(browser, cooldownTransition) {
   const page = await browser.newPage({ viewport: { width: 844, height: 844 }, timezoneId: 'Asia/Seoul' });
   try {
     await page.clock.setFixedTime(new Date(now * 1000));
@@ -88,13 +88,16 @@ async function checkHeaderMatrix(browser) {
               || (child instanceof HTMLElement && child.scrollWidth > child.clientWidth));
         }).length;
         const primary = visible('[data-slot-toggle][data-primary]');
+        const overlaps = rectangles.flatMap((a, i) => rectangles.slice(i + 1)
+          .filter(b => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom)
+          .map(b => Math.min(a.right, b.right) - Math.max(a.left, b.left)));
         return {
           height: document.querySelector('.bar').getBoundingClientRect().height,
           neighborWidth: ['.stat', '.bar-acts'].reduce((sum, selector) =>
             sum + document.querySelector(selector).getBoundingClientRect().width, 0),
           document: document.documentElement.scrollWidth - innerWidth,
-          overlaps: rectangles.reduce((count, a, i) => count + rectangles.slice(i + 1)
-            .filter(b => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom).length, 0),
+          overlaps: overlaps.length,
+          maxOverlap: Math.max(0, ...overlaps),
           clipped,
           shown: visible('[data-slot-toggle]').length,
           primary: primary.length,
@@ -134,6 +137,26 @@ async function checkHeaderMatrix(browser) {
       await page.locator('#vaultBadge').getByText(config.locales[locale]['vault.unconfigured'], { exact: true }).waitFor();
       await page.evaluate(() => document.fonts.ready);
     };
+    const layout = () => page.evaluate(() => window.headerLayout());
+    const settle = () => page.evaluate(() => new Promise(resolve => {
+      const observer = new ResizeObserver(() => {
+        observer.disconnect();
+        resolve();
+      });
+      observer.observe(document.querySelector('.bar'));
+    }));
+    if (cooldownTransition) {
+      const { language, count } = cooldownTransition;
+      locale = language;
+      unsent = 3;
+      state.slots = state.slots.slice(0, count);
+      state.slots[0] = slot('claude', 'oauth', 'cooldown', futureCooldown,
+        usage(1, futureCooldown, 0.41, futureCooldown));
+      await page.goto(origin);
+      await waitForHeader();
+      await checkBreakpoint(`${locale} cooldown, ${count} slots`);
+      return failures;
+    }
     let loadedLocale;
     const showHeaderFixture = async () => {
       if (loadedLocale !== locale) {
@@ -223,7 +246,6 @@ async function checkHeaderMatrix(browser) {
     const wide = Object.fromEntries(wideWidths.map(width => [width, {
       height: 0, heightChange: 0, document: 0, overlaps: 0, clipped: 0, countErrors: 0, cases: 0,
     }]));
-    const layout = () => page.evaluate(() => window.headerLayout());
     let longestLocale = { locale: '', width: 0 };
     const resize = async width => {
       await page.evaluate(width => {
@@ -294,13 +316,6 @@ async function checkHeaderMatrix(browser) {
     }
     console.log(`Wide header layout: ${JSON.stringify(wide)}`);
 
-    const settle = () => page.evaluate(() => new Promise(resolve => {
-      const observer = new ResizeObserver(() => {
-        observer.disconnect();
-        resolve();
-      });
-      observer.observe(document.querySelector('.bar'));
-    }));
     let cooldownCases = 0;
     let cooldownOverflows = 0;
     let labelOverflows = 0;
@@ -426,7 +441,9 @@ async function checkHeaderMatrix(browser) {
                 const meterOverflow = [...primary.querySelectorAll('.slot-mini')]
                   .filter(meter => meter.getClientRects().length)
                   .some(meter => meter.getBoundingClientRect().right > chip.right + 0.5);
-                samples.push({ overlaps: layout.overlaps, meterOverflow, primaryWidth: layout.primaryWidth });
+                samples.push({
+                  overlaps: layout.overlaps, maxOverlap: layout.maxOverlap, meterOverflow, primaryWidth: layout.primaryWidth,
+                });
               }
               if (samples.length === 8) resolve(samples);
               else requestAnimationFrame(sample);
@@ -440,9 +457,10 @@ async function checkHeaderMatrix(browser) {
       const overlaps = frames.filter(frame => frame.overlaps).length;
       const meters = frames.filter(frame => frame.meterOverflow).length;
       const minWidth = Math.min(...frames.map(frame => frame.primaryWidth));
-      console.log(`Issue 87 ${name}: ${frames.length} frames, ${overlaps} with control overlap, ${meters} with meter overflow, min next chip at 1181px ${minWidth.toFixed(1)}px`);
+      const maxOverlap = Math.max(...frames.map(frame => frame.maxOverlap));
+      console.log(`Issue 87 ${name}: ${frames.length} frames, ${overlaps} with control overlap (max ${maxOverlap.toFixed(1)}px), ${meters} with meter overflow, min next chip at 1181px ${minWidth.toFixed(1)}px`);
       assert.equal(frames.length, 480);
-      if (overlaps || meters) failures.push({ transition: name, overlaps, meters, minWidth });
+      if (overlaps || meters) failures.push({ transition: name, overlaps, maxOverlap, meters, minWidth });
     }
 
     locale = 'fr';
@@ -1180,10 +1198,17 @@ async function checkSlotInteractions(browser) {
 try {
   const browser = await chromium.launch({ headless: true });
   try {
-    const [longestLocale] = await Promise.all([
+    const cooldownTransitions = [
+      { language: 'de', count: 4 },
+      { language: 'de', count: 2 },
+      { language: 'fr', count: 4 },
+    ];
+    const [longestLocale, , ...cooldownFailures] = await Promise.all([
       checkHeaderMatrix(browser),
       checkSlotInteractions(browser),
+      ...cooldownTransitions.map(scenario => checkHeaderMatrix(browser, scenario)),
     ]);
+    assert.deepEqual(cooldownFailures.flat(), []);
     await checkUsageDesign(browser, longestLocale);
   } finally {
     await browser.close();

@@ -624,7 +624,8 @@ dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(2px)}
 .slot-captured{margin-top:6px}
 @media(width > 1180px){
   .bar:has(.claude-slots:not([hidden])) > :is(.logo,.stat),
-  .slot-chip[data-primary],.slot-chip .slot-label{flex:none}
+  .slot-chip[data-primary]:not([data-narrow-cooldown]),.slot-chip .slot-label{flex:none}
+  .slot-chip[data-narrow-cooldown]{overflow:clip}
   .slot-chips{overflow:clip;overflow-clip-margin:4px}
   .slot-chip[data-primary] .slot-name{min-width:0}
   .slot-chip[data-primary][data-status="cooldown"] .slot-mini{flex-shrink:1;min-width:32px}
