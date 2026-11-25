@@ -33,7 +33,24 @@ class FakeTelegramApi:
     async def _handle(self, request: web.Request) -> web.Response:
         method = request.match_info["method"]
         if method == "getMe":
-            me = {"id": 123, "is_bot": True, "first_name": "t", "username": "t_bot"}
+            me = {
+                "id": 123,
+                "is_bot": True,
+                "first_name": "t",
+                "username": "t_bot",
+                "can_join_groups": True,
+                "can_read_all_group_messages": False,
+                "supports_guest_queries": False,
+                "supports_inline_queries": False,
+                "needs_inline_query_location": False,
+                "can_connect_to_business": False,
+                "has_main_web_app": False,
+                "has_topics_enabled": False,
+                "allows_users_to_create_topics": False,
+                "has_topic_sidebar": False,
+                "can_manage_bots": False,
+                "supports_join_request_queries": False,
+            }
             return web.json_response({"ok": True, "result": me})
         if method == "getUpdates":
             self.get_updates += 1

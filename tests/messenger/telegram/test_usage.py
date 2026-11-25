@@ -28,6 +28,7 @@ async def usage_bot(tmp_path, monkeypatch, request):
     api.me = AsyncMock(
         return_value=User(id=900, is_bot=True, first_name="Fixture", username="fixture_bot")
     )
+    api.usernames = AsyncMock(return_value=("fixture_bot",))
     api.send_message = AsyncMock(
         return_value=Message.model_validate(
             {"message_id": 400, "date": 1000, "chat": {"id": 1, "type": "private"}}
