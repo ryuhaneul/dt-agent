@@ -5415,6 +5415,7 @@ async def test_activity_payload_and_snapshot_only_expose_redacted_details(
     tool_ready, text_ready, release_tool, release_text = (asyncio.Event() for _ in range(4))
     canary = "private-activity-input-canary"
     token = "ghp_" + "A" * 36
+    second_token = "ghp_" + "B" * 36
     slack = "xoxb-" + "12345-" + "ABCDE"
     bearer = "synthetic" + ".credential"
     masked_name = "mcp__***_***"
@@ -5440,7 +5441,7 @@ async def test_activity_payload_and_snapshot_only_expose_redacted_details(
         await callbacks["on_tool_activity"](
             ToolUseEvent(
                 type="tool_use",
-                tool_name=f"mcp__{canary}_{token}",
+                tool_name=f"mcp__{canary}_{token}{second_token}",
                 parameters={"command": canary},
             )
         )
@@ -5449,7 +5450,7 @@ async def test_activity_payload_and_snapshot_only_expose_redacted_details(
             tool_name="bash",
             kind="shell",
             parameters={
-                "command": f"cmd {canary} CACHE_KEY=archive_{token}; "
+                "command": f"cmd {canary} CACHE_KEY=archive_{token}{second_token}; "
                 f"auth=Bearer {bearer}; combo=archive_{slack}-Bearer {bearer}"
             },
         )
@@ -5507,7 +5508,7 @@ async def test_activity_payload_and_snapshot_only_expose_redacted_details(
             },
             {**last_tool, "offset": 5},
         ]
-        for value in (canary, token, slack, bearer):
+        for value in (canary, token, second_token, slack, bearer):
             assert value not in json.dumps([events, topic])
         release_tool.set()
         await asyncio.wait_for(text_ready.wait(), 3)
@@ -5524,7 +5525,7 @@ async def test_activity_payload_and_snapshot_only_expose_redacted_details(
         assert history[-1]["activity"] == state["activities"]
         sidecar = h.runtime.history.directory / "-123.7.meta.jsonl"
         stored = sidecar.read_text()
-        for value in (canary, token, slack, bearer):
+        for value in (canary, token, second_token, slack, bearer):
             assert value not in json.dumps(history)
             assert value not in stored
     finally:

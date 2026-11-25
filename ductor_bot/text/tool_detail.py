@@ -22,8 +22,8 @@ _ANSI = re.compile(
     r"|\x1b[ -/]*[0-~]"
 )
 _CONTROLS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+_GITHUB_CLASSIC = re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}")
 _TOKEN_PATTERNS = (
-    re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
     re.compile(r"github_pat_[A-Za-z0-9_]+"),
     re.compile(r"(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,}"),
     re.compile(r"xox[baprs]-[A-Za-z0-9-]+"),
@@ -78,7 +78,19 @@ async def _redact_activity(text: str, vault: SecretVault | None) -> str | None:
 
     for pattern in _TOKEN_PATTERNS:
         spans.extend(match.span() for match in pattern.finditer(normalized))
-    spans.extend((match.end(1), match.end()) for match in _BEARER.finditer(normalized))
+
+    cursor = 0
+    while match := _GITHUB_CLASSIC.search(normalized, cursor):
+        spans.append(match.span())
+        # A match may consume the three letters before the next token's underscore.
+        cursor = max(match.end() - 3, match.start() + 1)
+
+    cursor = 0
+    while match := _BEARER.search(normalized, cursor):
+        # The credential may itself begin the next Bearer match.
+        cursor = match.end(1)
+        spans.append((cursor, match.end()))
+
     spans.extend(_pem_spans(normalized))
 
     merged: list[tuple[int, int]] = []

@@ -205,6 +205,64 @@ async def test_activity_masks_adjacent_slack_and_bearer_tokens(tmp_path: Path) -
     assert await redact_tool_name(text, vault) == "archive_*** ***"
 
 
+@pytest.mark.parametrize("count", [2, 3])
+async def test_activity_masks_overlapping_github_tokens(tmp_path: Path, count: int) -> None:
+    vault = SecretVault(tmp_path / "secrets.env")
+    text = "".join("ghp_" + chr(ord("A") + index) * 36 for index in range(count))
+    assert await build_detail(_shell_event(text), vault) == {
+        "kind": "shell",
+        "text": "***",
+        "truncated": False,
+    }
+    assert await redact_tool_name(text, vault) == "***"
+
+
+@pytest.mark.parametrize("count", [2, 3])
+async def test_activity_masks_overlapping_bearer_tokens(tmp_path: Path, count: int) -> None:
+    vault = SecretVault(tmp_path / "secrets.env")
+    text = "Bearer " * count + "synthetic" + ".credential"
+    expected = "Bearer" + " ***" * count
+    assert await build_detail(_shell_event(text), vault) == {
+        "kind": "shell",
+        "text": expected,
+        "truncated": False,
+    }
+    assert await redact_tool_name(text, vault) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "ghp_" + "A" * 36 + "xoxb-" + "12345-ABCDE",
+        "AKIA" + "A" * 16 + "ghp_" + "B" * 36,
+    ],
+    ids=["github-slack", "aws-github"],
+)
+async def test_activity_masks_touching_token_formats(tmp_path: Path, text: str) -> None:
+    vault = SecretVault(tmp_path / "secrets.env")
+    assert await build_detail(_shell_event(text), vault) == {
+        "kind": "shell",
+        "text": "***",
+        "truncated": False,
+    }
+    assert await redact_tool_name(text, vault) == "***"
+
+
+@pytest.mark.parametrize(
+    ("prefix", "unit"),
+    [("", "sk-"), ("ghp_", "A"), ("", "Bearer "), ("", "ghp_" + "A" * 36)],
+    ids=["sk-prefixes", "long-github-token", "bearer-markers", "github-tokens"],
+)
+async def test_activity_large_token_input(tmp_path: Path, prefix: str, unit: str) -> None:
+    vault = SecretVault(tmp_path / "secrets.env")
+    size = 1024 * 1024
+    text = (prefix + unit * (size // len(unit) + 1))[:size]
+    event = _shell_event(text)
+    start = perf_counter()
+    assert await build_detail(event, vault) is not None
+    assert perf_counter() - start < 2
+
+
 async def test_activity_checks_short_values_before_masking_token_shapes(tmp_path: Path) -> None:
     vault = SecretVault(tmp_path / "secrets.env")
     await vault.set("SHORT", "abc")
