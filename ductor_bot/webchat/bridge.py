@@ -402,10 +402,19 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
         try:
             cursors = await read_state.load()
         except OSError:
-            cursors = {}
-        return web.json_response(
-            {"topics": [{**topic, "seen": cursors.get(topic["tid"])} for topic in listed]}
-        )
+            return web.json_response(
+                {"topics": [{**topic, "seen": None, "unread": None} for topic in listed]}
+            )
+        try:
+            result = []
+            for topic in listed:
+                tid = topic["tid"]
+                cursor = cursors.get(tid)
+                unread = await runtime.history.count_after(tid, cursor)
+                result.append({**topic, "seen": cursor, "unread": unread})
+        except LockTimeoutError:
+            return _error("history_busy", 503)
+        return web.json_response({"topics": result})
 
     async def save_seen(request: web.Request) -> web.Response:
         tid = request.match_info["tid"]
