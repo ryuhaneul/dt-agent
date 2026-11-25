@@ -54,7 +54,19 @@ def strip_controls(text: str) -> str:
 
 
 def _mask_tokens(text: str) -> str:
-    return _BEARER.sub(r"\g<1>***", _TOKEN.sub("***", text))
+    return _TOKEN.sub("***", _BEARER.sub(r"\g<1>***", text))
+
+
+async def _redact_activity(text: str, vault: SecretVault) -> str | None:
+    # Check the original input for short values before adding any masks.
+    redacted = await vault.redact(text, strip_controls)
+    if redacted is None:
+        return None
+    # Match token shapes before vault replacements can remove their markers.
+    masked = _mask_tokens(text)
+    if masked != text:
+        redacted = await vault.redact(masked, strip_controls)
+    return None if redacted is None else _mask_tokens(redacted)
 
 
 async def redact_tool_name(name: str, vault: SecretVault | None) -> str:
@@ -62,10 +74,10 @@ async def redact_tool_name(name: str, vault: SecretVault | None) -> str:
     if vault is None:
         return _mask_tokens(name)
     try:
-        redacted = await vault.redact(name, strip_controls)
+        redacted = await _redact_activity(name, vault)
     except (VaultError, OSError):
         return "tool"
-    return "tool" if redacted is None else _mask_tokens(redacted)
+    return "tool" if redacted is None else redacted
 
 
 async def build_detail(event: ToolUseEvent, vault: SecretVault) -> ToolDetail | None:
@@ -74,12 +86,11 @@ async def build_detail(event: ToolUseEvent, vault: SecretVault) -> ToolDetail | 
     if text is None or event.kind is None:
         return None
     try:
-        text = await vault.redact(text, strip_controls)
+        text = await _redact_activity(text, vault)
     except VaultError:
         return None
     if text is None:
         return None
-    text = _mask_tokens(text)
     return {
         "kind": event.kind,
         "text": text[:_DETAIL_LIMIT],

@@ -5258,10 +5258,13 @@ async def test_activity_payload_and_snapshot_only_expose_redacted_details(
     tool_ready, text_ready, release_tool, release_text = (asyncio.Event() for _ in range(4))
     canary = "private-activity-input-canary"
     token = "ghp_" + "A" * 36
+    slack = "xoxb-" + "12345-" + "ABCDE"
+    bearer = "synthetic" + ".credential"
     masked_name = "mcp__***_***"
     lookup = MagicMock(return_value=activity_vault)
     monkeypatch.setattr("ductor_bot.webchat.turns.get_secret_vault", lookup)
     await activity_vault.set("TOKEN", canary)
+    await activity_vault.set("MARKER", "Bearer")
     await activity_vault.setup("synthetic-activity-master-key")
 
     async def handle(key, text, **callbacks):
@@ -5288,7 +5291,10 @@ async def test_activity_payload_and_snapshot_only_expose_redacted_details(
             type="tool_use",
             tool_name="bash",
             kind="shell",
-            parameters={"command": f"cmd {canary} CACHE_KEY=archive_{token}"},
+            parameters={
+                "command": f"cmd {canary} CACHE_KEY=archive_{token}; "
+                f"auth=Bearer {bearer}; combo=archive_{slack}-Bearer {bearer}"
+            },
         )
         await callbacks["on_tool_activity"](builtin)
         await activity_vault.lock()
@@ -5312,7 +5318,11 @@ async def test_activity_payload_and_snapshot_only_expose_redacted_details(
             events.extend(await receive_until(ws, lambda event: event.get("type") == "tool"))
         tools = [event for event in events if event["type"] == "tool"]
         event_keys = {"type", "tid", "turn_id", "seq", "name"}
-        detail = {"kind": "shell", "text": "cmd *** CACHE_KEY=archive_***", "truncated": False}
+        detail = {
+            "kind": "shell",
+            "text": "cmd *** CACHE_KEY=archive_***; auth=*** ***; combo=archive_*** ***",
+            "truncated": False,
+        }
         assert [set(tool) for tool in tools] == [event_keys, event_keys | {"detail"}, event_keys]
         assert [tool["name"] for tool in tools] == [masked_name, "Shell", "tool"]
         assert lookup.call_count == len(tools)
@@ -5340,8 +5350,8 @@ async def test_activity_payload_and_snapshot_only_expose_redacted_details(
             },
             {**last_tool, "offset": 5},
         ]
-        assert canary not in json.dumps([events, topic])
-        assert token not in json.dumps([events, topic])
+        for value in (canary, token, slack, bearer):
+            assert value not in json.dumps([events, topic])
         release_tool.set()
         await asyncio.wait_for(text_ready.wait(), 3)
         response = await h.client.get(f"{_PREFIX}/topics", headers=headers())
@@ -5357,7 +5367,7 @@ async def test_activity_payload_and_snapshot_only_expose_redacted_details(
         assert history[-1]["activity"] == state["activities"]
         sidecar = h.runtime.history.directory / "-123.7.meta.jsonl"
         stored = sidecar.read_text()
-        for value in (canary, token):
+        for value in (canary, token, slack, bearer):
             assert value not in json.dumps(history)
             assert value not in stored
     finally:
@@ -5409,7 +5419,7 @@ async def test_activity_snapshot_enforces_count_and_byte_limits(
         )
         assert len(json.dumps(activities).encode("utf-8")) <= 64 * 1024
         if count > 200:
-            assert all("detail" not in activity for activity in activities)
+            assert all(("detail" in activity) == bool(detail_length) for activity in activities)
         else:
             kept = [activity["seq"] for activity in activities if "detail" in activity]
             assert kept

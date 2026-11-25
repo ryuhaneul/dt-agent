@@ -223,6 +223,9 @@ affected name display as `tool` or omits the affected detail. If vault lookup
 returns no vault, names receive token-pattern masking and details are omitted.
 The short-value check runs before masking. A registered value made entirely of
 asterisks can coincide with the `***` mask.
+Masking covers a Slack token followed by a Bearer credential, but other
+combinations of adjacent token formats are best-effort and may leave some
+text visible.
 
 - WebSocket `tool` events carry `tid`, `turn_id`, `seq`, `name` and an optional
   `detail` object with `kind`, `text` and `truncated`. The original tool
@@ -233,9 +236,10 @@ asterisks can coincide with the `***` mask.
   streamed answer when the call occurred.
 
 Each turn retains up to 200 activity items and 64 KiB of serialized activity.
-When a limit is exceeded, the bridge removes older details first, then older
-items as needed. Live events still go out in full, and a tab keeps the activity
-it has already received when it reconnects.
+The bridge removes the oldest items above the count limit first. If the byte
+limit is still exceeded, it removes the oldest details, then the oldest items
+as needed. Live events still go out in full, and a tab keeps the activity it
+has already received when it reconnects.
 
 At turn completion, retained activity is saved with the recorded reply.
 `GET /topics/{tid}/messages` includes it as `activity` on that reply. A turn

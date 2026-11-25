@@ -69,24 +69,26 @@ class _QueuedTurn:
     cancellation: asyncio.Task[None] | None = None
     transition: asyncio.Lock = field(default_factory=asyncio.Lock)
 
-    def _activities_over_limit(self) -> bool:
-        return len(self.activities) > _MAX_ACTIVITIES or self.activities_bytes > _MAX_ACTIVITY_BYTES
+    def _drop_oldest_activity(self) -> None:
+        removed = self.activities.pop(0)
+        self.activities_bytes -= len(json.dumps(removed)) + (2 if self.activities else 0)
 
     def add_activity(self, activity: dict[str, Any]) -> None:
         # Match the default JSON encoder used by snapshots, including list separators.
         self.activities_bytes += len(json.dumps(activity)) + (2 if self.activities else 0)
         self.activities.append(activity)
+        while len(self.activities) > _MAX_ACTIVITIES:
+            self._drop_oldest_activity()
         for i, previous in enumerate(self.activities):
-            if not self._activities_over_limit():
+            if self.activities_bytes <= _MAX_ACTIVITY_BYTES:
                 break
             if "detail" in previous:
                 reduced = previous.copy()
                 reduced.pop("detail")
                 self.activities[i] = reduced
                 self.activities_bytes -= len(json.dumps(previous)) - len(json.dumps(reduced))
-        while self._activities_over_limit():
-            removed = self.activities.pop(0)
-            self.activities_bytes -= len(json.dumps(removed)) + (2 if self.activities else 0)
+        while self.activities_bytes > _MAX_ACTIVITY_BYTES:
+            self._drop_oldest_activity()
 
 
 class _QueueJournal:

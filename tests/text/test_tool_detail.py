@@ -154,3 +154,43 @@ async def test_redact_tool_name_uses_default_on_io_error(tmp_path: Path, monkeyp
     vault = SecretVault(tmp_path / "secrets.env")
     monkeypatch.setattr(vault, "redact", AsyncMock(side_effect=OSError))
     assert await redact_tool_name("mcp__synthetic_value", vault) == "tool"
+
+
+@pytest.mark.parametrize(
+    ("marker", "text", "expected"),
+    [
+        ("Bearer", "auth=Bearer " + "synthetic" + ".credential", "auth=*** ***"),
+        (
+            "PRIVATE KEY",
+            "-----BEGIN " + "PRIVATE KEY-----\nsynthetic-key-body\n-----END " + "PRIVATE KEY-----",
+            "***",
+        ),
+    ],
+    ids=["bearer", "pem"],
+)
+async def test_activity_masks_credentials_overlapping_registered_markers(
+    tmp_path: Path, marker: str, text: str, expected: str
+) -> None:
+    vault = SecretVault(tmp_path / "secrets.env")
+    await vault.set("MARKER", marker)
+    detail = await build_detail(_shell_event(text), vault)
+    assert detail == {"kind": "shell", "text": expected, "truncated": False}
+    assert await redact_tool_name(text, vault) == expected
+
+
+async def test_activity_masks_adjacent_slack_and_bearer_tokens(tmp_path: Path) -> None:
+    vault = SecretVault(tmp_path / "secrets.env")
+    slack = "xoxb-" + "12345-" + "ABCDE"
+    bearer = "synthetic" + ".credential"
+    text = f"archive_{slack}-Bearer {bearer}"
+    detail = await build_detail(_shell_event(text), vault)
+    assert detail == {"kind": "shell", "text": "archive_*** ***", "truncated": False}
+    assert await redact_tool_name(text, vault) == "archive_*** ***"
+
+
+async def test_activity_checks_short_values_before_masking_token_shapes(tmp_path: Path) -> None:
+    vault = SecretVault(tmp_path / "secrets.env")
+    await vault.set("SHORT", "abc")
+    token = "sk-" + "A" * 20 + "abc"
+    assert await build_detail(_shell_event(token), vault) is None
+    assert await redact_tool_name(token, vault) == "tool"
