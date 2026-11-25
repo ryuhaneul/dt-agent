@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
+from ductor_bot.cli.gemini_events import parse_gemini_stream_line
+from ductor_bot.cli.grok_events import parse_grok_stream_line
 from ductor_bot.cli.stream_events import (
     AssistantTextDelta,
     ResultEvent,
@@ -83,6 +87,40 @@ def test_parse_assistant_tool_use() -> None:
     assert events[0].tool_name == "Read"
     assert events[0].tool_id == "tool-1"
     assert events[0].parameters == {"path": "a.txt"}
+
+
+@pytest.mark.parametrize(
+    ("name", "kind"),
+    [
+        ("Bash", "shell"),
+        ("Read", "file"),
+        ("Write", "file"),
+        ("Edit", "file"),
+        ("NotebookEdit", "file"),
+        ("Grep", "search"),
+        ("Glob", "search"),
+        ("WebFetch", "web"),
+        ("WebSearch", "web"),
+        ("mcp__example__Bash", None),
+        ("UnknownTool", None),
+    ],
+)
+def test_parse_claude_builtin_tool_kind(name: str, kind: str | None) -> None:
+    line = json.dumps(
+        {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": name}]}}
+    )
+    events = parse_stream_line(line)
+    assert len(events) == 1
+    assert isinstance(events[0], ToolUseEvent)
+    assert events[0].kind == kind
+
+
+@pytest.mark.parametrize("parse", [parse_gemini_stream_line, parse_grok_stream_line])
+def test_other_providers_leave_tool_kind_unset(parse) -> None:
+    events = parse('{"type":"tool_use","name":"Bash","input":{"command":"ls"}}')
+    assert len(events) == 1
+    assert isinstance(events[0], ToolUseEvent)
+    assert events[0].kind is None
 
 
 def test_parse_assistant_thinking() -> None:

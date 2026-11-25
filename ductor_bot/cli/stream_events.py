@@ -4,11 +4,26 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
+
+
+ToolKind = Literal["shell", "file", "search", "web"]
+
+_CLAUDE_TOOL_KINDS: dict[str, ToolKind] = {
+    "Bash": "shell",
+    "Read": "file",
+    "Write": "file",
+    "Edit": "file",
+    "NotebookEdit": "file",
+    "Grep": "search",
+    "Glob": "search",
+    "WebFetch": "web",
+    "WebSearch": "web",
+}
 
 
 def _as_dict(value: Any) -> dict[str, Any] | None:
@@ -53,6 +68,7 @@ class ToolUseEvent(StreamEvent):
     tool_name: str = ""
     tool_id: str | None = None
     parameters: dict[str, Any] | None = None
+    kind: ToolKind | None = None
 
 
 class ThinkingEvent(StreamEvent):
@@ -179,6 +195,7 @@ def _parse_assistant_content(data: dict[str, Any]) -> list[StreamEvent]:
                         tool_name=name,
                         tool_id=block.get("id"),
                         parameters=_as_dict(block.get("input") or block.get("parameters")),
+                        kind=_CLAUDE_TOOL_KINDS.get(name) if isinstance(name, str) else None,
                     )
                 )
 
