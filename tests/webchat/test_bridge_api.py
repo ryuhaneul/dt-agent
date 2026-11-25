@@ -564,7 +564,7 @@ async def conversation(tmp_path, monkeypatch):
         _autocompact_global_lock=asyncio.Lock(),
         _lock_pool=pool,
         _process_registry=registry,
-        is_chat_busy=lambda chat, topic: pool.is_locked((chat, topic)),
+        is_topic_busy=lambda key: pool.is_locked(key.lock_key),
         abort=AsyncMock(),
     )
     calls = []
@@ -609,6 +609,38 @@ async def conversation(tmp_path, monkeypatch):
         )
     finally:
         await client.close()
+
+
+async def test_general_topic_busy_only_counts_general_work(conversation):
+    from ductor_bot.orchestrator.core import Orchestrator
+    from tests.cli.test_process_registry import _mock_process
+
+    h = conversation
+    general = SessionKey.telegram(h.key.chat_id)
+    orch = Orchestrator(h.bot.config, h.paths, lock_pool=h.pool)
+    orch._sessions = h.bot._orch._sessions
+    h.bot._orch = orch
+    await orch._sessions.resolve_session(general)
+
+    async def snapshot():
+        response = await h.client.get(f"{_PREFIX}/topics", headers=headers())
+        assert response.status == 200
+        return {topic["tid"]: topic["busy"] for topic in (await response.json())["topics"]}
+
+    for key in (h.key, general):
+        async with h.pool.get(key.lock_key):
+            assert (await snapshot())[str(general.chat_id)] is (key == general)
+
+        process = orch._process_registry.register(
+            key.chat_id, _mock_process(), "task:example", topic_id=key.topic_id
+        )
+        try:
+            topics = await snapshot()
+            assert topics[str(general.chat_id)] is (key == general)
+            assert topics[f"{h.key.chat_id}.{h.key.topic_id}"] is (key == h.key)
+            assert orch.is_chat_busy(general.chat_id)
+        finally:
+            orch._process_registry.unregister(process)
 
 
 async def receive_until(ws, predicate):

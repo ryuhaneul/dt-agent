@@ -69,7 +69,7 @@ def harness(tmp_path):
         _history_recorder=runtime.recorder,
         _inflight_tracker=SimpleNamespace(shutting_down=False),
         _observers=SimpleNamespace(heartbeat=SimpleNamespace(notify_activity=MagicMock())),
-        is_chat_busy=lambda *_: False,
+        is_topic_busy=lambda _key: False,
     )
     bot = SimpleNamespace(config=config, _orch=orch, _topic_names=TopicNameCache())
     return paths, bot, runtime
