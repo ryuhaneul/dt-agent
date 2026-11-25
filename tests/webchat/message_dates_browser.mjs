@@ -1139,30 +1139,34 @@ async function reconnectHistory(browser, scenario) {
       }
       if (scenario === 'reconnect-history-overlap') {
         const reading = Promise.withResolvers(), release = Promise.withResolvers();
-        let latestReads = 0;
+        let held = false;
         await page.route('**/api/topics/*/messages?*', async route => {
           const request = route.request(), url = new URL(request.url());
-          if (request.method() === 'GET' && !url.searchParams.has('before')) {
-            latestReads++;
-            reading.resolve();
-            await release.promise;
+          if (held || request.method() !== 'GET' || url.searchParams.has('before')) {
+            return route.fallback();
           }
-          await route.fallback();
+          held = true;
+          const snapshot = { entries: entries.slice(-100), has_more: entries.length > 100 };
+          reading.resolve();
+          await release.promise;
+          return route.fulfill({ json: snapshot });
         });
         socket.send(JSON.stringify({ type: 'topics' }));
         try {
           await reading.promise;
           const reconnected = topicsResponse(200);
           await socket.close();
+          entries.push({ ...messages[121], text: 'Message received during the second disconnection' });
           await page.clock.fastForward(2000);
           await reconnected;
-          // Let the new resync process its list while the recovery read is pending.
-          await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+          await page.locator('[data-entry-seq="122"]').waitFor({ timeout: 2500 })
+            .catch(() => assert.fail('the second reconnect missed the message added after the held read'));
+          assert.equal(await page.locator('[data-entry-seq="121"]').count(), 1);
+          assert.equal(await page.locator('#toasts .toast-error').count(), 1);
         } finally {
           release.resolve();
         }
-        await page.locator('[data-entry-seq="121"]').waitFor({ timeout: 2500 });
-        assert.equal(latestReads, 1, 'overlapping resyncs should share the latest history request');
+        return;
       } else {
         const retried = topicsResponse(200);
         if (scenario === 'reconnect-history-topics-event') socket.send(JSON.stringify({ type: 'topics' }));

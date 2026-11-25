@@ -949,7 +949,6 @@ async function resync({ preserveReading = false } = {}) {
   for (const state of histories.values()) state.loaded = false;
   const generation = epoch, versions = new Map(topicVersions);
   const previousRecovery = resumedHistoryRecovery;
-  const recoveryWasLoading = previousRecovery?.loading;
   if (preserveReading && pendingHistoryRecovery) pendingHistoryRecovery.preserveReading = true;
   let waitingForTopics = true;
   const auxiliary = Promise.all([refreshState(), refreshOutbox()]).catch(error => {
@@ -989,11 +988,9 @@ async function resync({ preserveReading = false } = {}) {
     } });
     waitingForTopics = false;
     if (!active || generation !== epoch) return;
-    // This resync can share a recovery that overlapped its topic request.
-    const recovery = resumedHistoryRecovery;
-    if (recovery && recovery.tid === getTopic()?.tid && (recovery !== previousRecovery || recoveryWasLoading)) {
-      await recovery.promise;
-    } else if (!pendingHistoryRecovery) await reloadSelectedHistory(generation, preserveReading);
+    // The successful list may already have resumed a deferred recovery.
+    if (resumedHistoryRecovery !== previousRecovery) await resumedHistoryRecovery;
+    else if (!pendingHistoryRecovery) await reloadSelectedHistory(generation, preserveReading);
   } catch (error) {
     if (active && generation === epoch) {
       if (waitingForTopics && resumedHistoryRecovery === previousRecovery) {
@@ -1386,11 +1383,9 @@ export function initChat() {
     if (!active || !pendingHistoryRecovery) return;
     const { preserveReading } = pendingHistoryRecovery, generation = epoch;
     pendingHistoryRecovery = null;
-    const recovery = { tid: getTopic()?.tid, loading: true };
-    resumedHistoryRecovery = recovery;
-    recovery.promise = reloadSelectedHistory(generation, preserveReading).catch(error => {
+    resumedHistoryRecovery = reloadSelectedHistory(generation, preserveReading).catch(error => {
       if (active && generation === epoch) errorNotice(error);
-    }).finally(() => { recovery.loading = false; });
+    });
   });
   document.addEventListener('topic-updated', () => renderHeader());
   document.addEventListener('topic-busy-updated', () => renderThread({ changes: {}, preserveReading: true }));
