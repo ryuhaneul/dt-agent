@@ -181,6 +181,7 @@ Stopping a turn targets only that chat/topic with `kill_by_chat_topic`. Abort an
 topic mutations use a 45-second bridge request timeout. Message POSTs use the same
 limit because they also accept `/stop`; normal sends return without waiting for
 the turn to finish.
+The answering indicator follows activity in the selected topic, including the general conversation.
 Topic creation, rename and deletion call Telegram's forum topic API; deletion
 also removes the exact session, history and queued deliveries for that topic.
 The **Imported history** group covers topics with zero live entries and activity

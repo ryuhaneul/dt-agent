@@ -918,6 +918,12 @@ class Orchestrator:
             return self._lock_pool.is_locked((chat_id, topic_id))
         return self._lock_pool.any_locked_for_chat(chat_id)
 
+    def is_topic_busy(self, key: SessionKey) -> bool:
+        """Check running work for the exact session lock key."""
+        return self._process_registry.has_active_in_topic(key.chat_id, key.topic_id) or (
+            self._lock_pool is not None and self._lock_pool.is_locked(key.lock_key)
+        )
+
     def set_config_hot_reload_handler(
         self,
         handler: Callable[[AgentConfig, dict[str, object]], None],

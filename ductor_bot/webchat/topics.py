@@ -197,8 +197,7 @@ class WebTopics:
                     "turns": self.turns.snapshot(tid),
                     "busy": False
                     if key is None
-                    else self.turns.busy(tid)
-                    or self.bot._orch.is_chat_busy(key.chat_id, key.topic_id),
+                    else self.turns.busy(tid) or self.bot._orch.is_topic_busy(key),
                     "renamable": bool(key and key.topic_id is not None),
                     "deletable": bool(key and key.topic_id is not None),
                     "read_only": unknown,

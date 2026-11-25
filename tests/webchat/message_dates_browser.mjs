@@ -890,12 +890,112 @@ async function userLineBreaks(browser) {
   }
 }
 
+async function busyIndicator(browser, scenario) {
+  const context = await browser.newContext();
+  try {
+    const page = await context.newPage();
+    await page.clock.install({ time: new Date(today) });
+    const tid = topic.tid;
+    const turn = { turn_id: 'active', phase: 'started', text: 'Prompt', received: today };
+    const row = { ...topic, busy: scenario !== 'busy-reconnect', turns: scenario === 'busy-terminal' ? [turn] : [] };
+    let failOutbox = false, holdTopics, topicsReads = 0;
+    await mockChat(page, messages.slice(0, 2), row);
+    await page.route('**/api/topics', async route => {
+      topicsReads++;
+      const snapshot = structuredClone(row);
+      if (holdTopics) await holdTopics;
+      await route.fulfill({ json: { topics: [snapshot] } });
+    });
+    await page.route('**/api/outbox', route => failOutbox
+      ? route.fulfill({ status: 503, json: { error: 'generic' } })
+      : route.fulfill({ json: { items: [] } }));
+    await page.goto(origin);
+    await page.locator('[data-entry-seq="2"]').waitFor();
+
+    const busy = page.locator('#thread [data-thread-key="busy"]');
+    const live = page.locator('#streamMsg');
+    const event = (type, fields = {}) => page.evaluate(async data => {
+      const { handleEvent } = await import('/static/js/chat.js');
+      await handleEvent(data);
+    }, { tid, type, ...fields });
+    async function expectActivity(element, visible, message) {
+      await element.waitFor({ state: visible ? 'visible' : 'hidden', timeout: 2500 })
+        .catch(() => assert.fail(message));
+    }
+
+    if (scenario === 'busy-refresh') {
+      await expectActivity(busy, true, 'the snapshot should show activity');
+      row.busy = false;
+      await event('topics');
+      await expectActivity(busy, false, 'an ordinary topic refresh should clear an idle topic');
+      let release;
+      holdTopics = new Promise(resolve => { release = resolve; });
+      const requested = page.waitForRequest(request => new URL(request.url()).pathname === '/api/topics');
+      const refreshing = event('topics');
+      await requested;
+      await event('busy', { busy: true, source: 'telegram' });
+      release();
+      await refreshing;
+      holdTopics = null;
+      await expectActivity(busy, true, 'an older idle response must preserve a newer Telegram start');
+      await event('busy', { busy: false, source: 'telegram' });
+      await expectActivity(busy, false, 'the Telegram finish should clear the indicator');
+    } else if (scenario === 'busy-recheck') {
+      await expectActivity(busy, true, 'the active CLI snapshot should show activity');
+      const initialReads = topicsReads;
+      await page.clock.runFor(2500);
+      await expectActivity(busy, true, 'rechecks should keep an active CLI visible');
+      assert.ok(topicsReads > initialReads);
+      row.busy = false;
+      await page.clock.runFor(10000);
+      await expectActivity(busy, false, 'a recheck should clear the indicator without an event');
+      const idleReads = topicsReads;
+      await page.clock.runFor(40000);
+      assert.equal(topicsReads, idleReads, 'idle chat should have no recheck timer');
+    } else if (scenario === 'busy-terminal') {
+      await expectActivity(live, true, 'the active web turn should display its live reply');
+      row.busy = false;
+      row.turns = [];
+      await event('turn', { turn_id: turn.turn_id, phase: 'done' });
+      await expectActivity(live, false, 'the live response should end');
+      await expectActivity(busy, false, 'a completed web turn should refresh the idle topic');
+
+      row.busy = true;
+      row.turns = [{ ...turn, turn_id: 'queued', phase: 'queued' }];
+      await event('bridge', { up: true });
+      await page.locator('[data-queue-turn="queued"]').waitFor();
+      row.turns = [];
+      await event('turn', { turn_id: 'queued', phase: 'cancelled' });
+      await expectActivity(busy, true, 'other work in the topic should remain visible after cancellation');
+      row.turns = [{ ...turn, turn_id: 'last', phase: 'queued' }];
+      await event('bridge', { up: true });
+      await page.locator('[data-queue-turn="last"]').waitFor();
+      row.busy = false;
+      row.turns = [];
+      await event('turn', { turn_id: 'last', phase: 'cancelled' });
+      await expectActivity(busy, false, 'cancelling the last queued turn should refresh the idle topic');
+    } else {
+      await event('busy', { busy: true });
+      await event('turn', { turn_id: turn.turn_id, phase: 'started' });
+      await expectActivity(live, true, 'the test should start with a live reply');
+      failOutbox = true;
+      await event('bridge', { up: false });
+      await event('bridge', { up: true });
+      await expectActivity(live, false, 'reconnect should clear a finished turn despite an outbox error');
+      await expectActivity(busy, false, 'the successful idle snapshot should still apply');
+    }
+  } finally {
+    await context.close();
+  }
+}
+
 const browser = await chromium.launch();
 try {
   await fs.mkdir(config.shots, { recursive: true });
   const scenarios = { dates: messageDates, window: preserveOldestGroup, focus: chatFocus, 'code-copy': codeCopy, 'telegram-code': telegramCode, 'telegram-code-boundaries': telegramCodeBoundaries, 'user-line-breaks': userLineBreaks };
   const scenario = process.argv[3] ?? 'dates';
   if (scenario.startsWith('overflow-')) await documentOverflow(browser, scenario);
+  else if (scenario.startsWith('busy-')) await busyIndicator(browser, scenario);
   else await scenarios[scenario](browser);
 } finally {
   await browser.close();
