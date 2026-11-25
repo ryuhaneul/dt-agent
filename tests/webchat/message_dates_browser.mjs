@@ -898,16 +898,12 @@ async function busyIndicator(browser, scenario) {
     const tid = topic.tid;
     const turn = { turn_id: 'active', phase: 'started', text: 'Prompt', received: today };
     const terminal = scenario.startsWith('busy-terminal');
-    if (/-(cancelled|entry|retry)$/.test(scenario)) turn.phase = 'queued';
+    if (/-(cancelled|entry)$/.test(scenario)) turn.phase = 'queued';
     const row = { ...topic, busy: !scenario.startsWith('busy-reconnect'), turns: terminal ? [turn] : [] };
-    let failOutbox = false, failNextTopics = false, holdTopics, onHeldTopics, topicsReads = 0;
+    let failOutbox = false, holdTopics, onHeldTopics, topicsReads = 0;
     await mockChat(page, messages.slice(0, 2), row);
     await page.route('**/api/topics', async route => {
       topicsReads++;
-      if (failNextTopics) {
-        failNextTopics = false;
-        return route.fulfill({ status: 503, json: { error: 'generic' } });
-      }
       const snapshot = structuredClone(row);
       if (holdTopics) {
         onHeldTopics?.();
@@ -961,20 +957,6 @@ async function busyIndicator(browser, scenario) {
       const idleReads = topicsReads;
       await page.clock.runFor(40000);
       assert.equal(topicsReads, idleReads, 'idle chat should have no recheck timer');
-    } else if (scenario === 'busy-terminal-retry') {
-      await event('bridge', { up: true });
-      const cancel = page.locator('[data-queue-turn="active"] [data-cancel-turn]');
-      await expectActivity(cancel, true, 'the last queued turn should be visible');
-      row.turns = [];
-      failNextTopics = true;
-      const failed = page.waitForResponse(response =>
-        new URL(response.url()).pathname === '/api/topics' && response.status() === 503);
-      await event('turn', { turn_id: turn.turn_id, phase: 'cancelled' });
-      await (await failed).finished();
-      await expectActivity(cancel, false, 'the cancelled turn should stop waiting');
-      assert.equal(await busy.isVisible(), false, 'the failed lookup should not restore stale activity');
-      await page.clock.runFor(2500);
-      await expectActivity(busy, true, 'a backoff recheck should restore activity when other work remains');
     } else if (scenario.startsWith('busy-terminal-held-')) {
       const queued = turn.phase === 'queued';
       const indicator = queued ? page.locator('[data-queue-turn="active"] [data-cancel-turn]') : live;
@@ -1026,8 +1008,7 @@ async function busyIndicator(browser, scenario) {
       await event('bridge', { up: true });
       await event('turn', { turn_id: turn.turn_id, phase: 'started' });
       await expectActivity(live, true, 'the test should start with a live reply');
-      const failNewerTopics = scenario.endsWith('topics-error');
-      failOutbox = !failNewerTopics && scenario.endsWith('503');
+      failOutbox = scenario.endsWith('503');
       await event('bridge', { up: false });
       row.busy = true;
       row.turns = [turn];
@@ -1040,11 +1021,8 @@ async function busyIndicator(browser, scenario) {
         holdTopics = null;
         row.busy = false;
         row.turns = [];
-        failNextTopics = failNewerTopics;
-        await event('topics').catch(error => {
-          if (!failNewerTopics) throw error;
-        });
-        await expectActivity(live, false, 'the idle snapshot should settle the turn before the older request returns');
+        await event('topics');
+        await expectActivity(live, false, 'the newer response should settle the turn before the older request returns');
         assert.equal(await page.locator('#stopBtn').isVisible(), false);
       } finally {
         release();

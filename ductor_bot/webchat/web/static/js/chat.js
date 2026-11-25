@@ -22,7 +22,6 @@ const streamUpdates = new Set();
 const HISTORY_PAGE_SIZE = 100, MESSAGE_WINDOW_SIZE = 100, WINDOW_STEP = 50;
 const LATEST_GAP = 80;
 const BUSY_RECHECK_MS = [2000, 4000, 8000, 16000, 30000, 30000, 30000];
-const failedBusyRefresh = new WeakSet();
 let busyRecheck = null;
 let renderedTopic = null, pinnedDay = null;
 let threadScrollLimit = 0;
@@ -41,17 +40,9 @@ function hasTurnEntry(turn, role) {
 function isLiveTurn(turn) { return turn.phase === 'queued' || turn.phase === 'started'; }
 function refreshAfterLastTurn(tid) {
   if ([...turns.values()].some(turn => turn.tid === tid && isLiveTurn(turn))) return;
-  const topic = getTopics().find(item => item.tid === tid), generation = epoch;
+  const topic = getTopics().find(item => item.tid === tid);
   if (topic?.busyFromSnapshot) topic.busy = false;
-  void refreshTopics().catch(error => {
-    if (!active || generation !== epoch) return;
-    errorNotice(error);
-    // A successful snapshot replaces the topic object and settles the failed refresh.
-    if (topic && getTopic() === topic && visibleChat()) {
-      failedBusyRefresh.add(topic);
-      renderThread({ changes: {}, preserveReading: true });
-    }
-  });
+  void refreshTopics().catch(errorNotice);
 }
 function started(tid) {
   return [...turns.values()].find(turn => turn.tid === tid && turn.phase === 'started');
@@ -739,9 +730,6 @@ function mountedRows(rows, start, end, showBusy) {
   if (showBusy) mounted.push({ kind: 'busy', key: 'busy' });
   return mounted;
 }
-function needsBusyRecheck(topic) {
-  return topic.busy ? topic.busyFromSnapshot : failedBusyRefresh.has(topic);
-}
 function watchSnapshotBusy(tid = null) {
   if (busyRecheck?.tid !== tid) {
     clearTimeout(busyRecheck?.timer);
@@ -756,8 +744,7 @@ function watchSnapshotBusy(tid = null) {
     finally {
       if (busyRecheck === check) {
         check.timer = null;
-        const topic = getTopic();
-        watchSnapshotBusy(topic?.tid === tid && needsBusyRecheck(topic) ? tid : null);
+        watchSnapshotBusy(tid);
       }
     }
   }, BUSY_RECHECK_MS[check.attempts]);
@@ -801,8 +788,7 @@ export function renderThread({
   }
   if (!sameTopic || bottom || seq !== null || move === 'top') threadOffset(thread)?.remove();
   const showBusy = !state.range.newer && topic.busy && !liveTurns.length;
-  const recheckBusy = active && visibleChat() && !state.range.newer && !liveTurns.length && needsBusyRecheck(topic);
-  watchSnapshotBusy(recheckBusy ? topic.tid : null);
+  watchSnapshotBusy(active && visibleChat() && showBusy && topic.busyFromSnapshot ? topic.tid : null);
   const mounted = mountedRows(rows, start, end, showBusy), groups = threadGroups(mounted);
   if (changes || sameTopic) patchThread(thread, groups, changes);
   else {
