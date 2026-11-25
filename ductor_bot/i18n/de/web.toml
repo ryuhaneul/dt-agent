@@ -558,6 +558,8 @@ unavailable = "Bild ist nicht verfügbar."
 open_original = "Original ansehen"
 
 [slots]
+move_up = "{name} nach oben verschieben"
+move_down = "{name} nach unten verschieben"
 title = "Claude-Slots"
 usage_title = "Claude- und Codex-Nutzung"
 show_all_usage = "Alle Nutzungseinträge anzeigen ({n})"

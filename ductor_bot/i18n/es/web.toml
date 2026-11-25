@@ -558,6 +558,8 @@ unavailable = "Imagen no disponible."
 open_original = "Ver original"
 
 [slots]
+move_up = "Subir {name}"
+move_down = "Bajar {name}"
 title = "Ranuras de Claude"
 usage_title = "Uso de Claude y Codex"
 show_all_usage = "Mostrar todas las entradas de uso ({n})"

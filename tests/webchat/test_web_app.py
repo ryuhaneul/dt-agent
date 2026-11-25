@@ -105,7 +105,7 @@ class FakeBridge:
                     }
                 )
             if request.method == "POST" and path.startswith("/cli-login/slots/"):
-                if path.endswith(("/logout", "/disconnect")):
+                if path.endswith(("/logout", "/disconnect")) or "/swap/" in path:
                     return web.json_response({"ok": True})
             if path == "/cli-login/jobs":
                 if body.get("provider") not in ("claude", "codex", "grok"):
@@ -1381,6 +1381,33 @@ async def test_attachment_message_owner_is_derived_from_cookie(site):
     fetched = await client.get("/api/topics/123/messages/entry/attachments", headers=authorized)
     assert fetched.status == 200
     assert (await fetched.json())["path"] == "/topics/123/messages/entry/attachments"
+
+
+async def test_swap_slots_requires_session_and_csrf_and_relays_empty_post(site):
+    client, fake = site
+    route = "/cli-login/slots/claude-first/swap/claude-last"
+    denied = await client.post(
+        f"/api{route}", headers={**CLIENT, "Authorization": "Bearer fixture"}
+    )
+    assert denied.status == 403
+    assert await denied.json() == {"error": "auth_required"}
+    assert "WWW-Authenticate" not in denied.headers
+    authorized, session = await login(client)
+    no_csrf = {key: value for key, value in authorized.items() if key != "X-Dtw-Csrf"}
+    denied = await client.post(f"/api{route}", headers=no_csrf)
+    assert denied.status == 403
+    assert isinstance(await denied.json(), dict)
+    assert "WWW-Authenticate" not in denied.headers
+    assert not [call for call in fake.calls if call[1] == route]
+    response = await client.post(f"/api{route}", headers=authorized)
+    assert response.status == 200
+    assert await response.json() == {"ok": True}
+    assert "WWW-Authenticate" not in response.headers
+    assert fake.calls[-1] == ("POST", route, {}, None, b"")
+    expected = hmac.digest(
+        client.app[STATE].owner_key, session.cookies["dtw_session"].value.encode(), "sha256"
+    ).hex()
+    assert [owner for path, owner in fake.owner_headers if path == route] == [expected]
 
 
 async def test_slot_logout_returns_the_result_after_five_seconds(site):

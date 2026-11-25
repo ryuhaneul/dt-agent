@@ -334,6 +334,21 @@ def move(home: Path, slot: str, delta: int) -> None:
         logger.info("Claude slot moved: %s (%+d)", _slot_name_for_log(slot), delta)
 
 
+def swap(home: Path, first: str, second: str) -> None:
+    """Exchange two configured slots while preserving every other position."""
+
+    def reorder(accounts: list[str]) -> list[str]:
+        if first == second:
+            raise ValueError("invalid_swap")
+        _require_slot(accounts, first)
+        _require_slot(accounts, second)
+        left, right = accounts.index(first), accounts.index(second)
+        accounts[left], accounts[right] = accounts[right], accounts[left]
+        return accounts
+
+    _change_priority(home, reorder)
+
+
 def set_priority(home: Path, slots: Sequence[str]) -> None:
     """Replace the order while retaining exactly the configured slot set."""
 

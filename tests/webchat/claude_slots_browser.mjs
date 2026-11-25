@@ -1194,6 +1194,101 @@ async function checkUsageRegressions(browser) {
 }
 
 
+async function checkUsageSlotOrder(browser, width) {
+  const page = await browser.newPage({ viewport: { width, height: 812 } });
+  page.setDefaultTimeout(3500);
+  try {
+    const long = 'claude-long-research-account-with-a-descriptive-name';
+    const slots = [slot('claude', 'oauth', 'ok'), slot(long, 'oauth', 'ok'),
+      slot('claude-backup', 'oauth', 'ok')];
+    let singleton = false, rejectSwap = false, release, swapStarted;
+    const calls = [];
+    await page.routeWebSocket('**/api/ws', () => {});
+    await page.route('**/api/**', async route => {
+      const request = route.request();
+      const endpoint = new URL(request.url()).pathname;
+      if (endpoint === '/api/i18n') return route.fulfill({ json: { lang: 'en', strings: config.locales.en } });
+      if (endpoint === '/api/auth/state') return route.fulfill({ json: { authenticated: true, csrf: 'fixture', bridge_up: true } });
+      if (endpoint === '/api/masterkey/status') return route.fulfill({ json: { state: 'unconfigured' } });
+      if (endpoint === '/api/state') return route.fulfill({ json: {
+        telegram: { state: 'up' }, bot: { up: true }, outbox: { pending: 0 },
+        claude: { next: slots[0].name, slots: singleton ? slots.slice(0, 1) : slots },
+        codex: { captured_at: now, windows: [] },
+      } });
+      if (endpoint.includes('/swap/')) {
+        assert.equal(request.method(), 'POST');
+        assert.equal(request.postData(), null);
+        const [name, other] = endpoint.split('/').slice(-3).filter(part => part !== 'swap');
+        calls.push([name, other]);
+        if (rejectSwap) return route.fulfill({ status: 500, json: { error: 'slot_move_error' } });
+        await new Promise(resolve => { release = resolve; swapStarted(); });
+        const a = slots.findIndex(item => item.name === name), b = slots.findIndex(item => item.name === other);
+        [slots[a], slots[b]] = [slots[b], slots[a]];
+        return route.fulfill({ json: { ok: true } });
+      }
+      return route.fulfill({ json: { topics: [], commands: [], items: [], keys: [], files: [] } });
+    });
+
+    await page.goto(origin);
+    await page.locator('#claudeSlots [data-primary]').click();
+    const popover = page.locator('#claudeSlotPopover');
+    const row = name => popover.locator(`.slot-row[data-slot="${name}"]`);
+    const button = (name, direction) => row(name).locator(`[data-slot-order="${direction}"]`);
+    await button(long, 'up').waitFor();
+    assert.equal(await popover.locator('.slot-order-button').count(), 6);
+    assert.equal(await popover.locator('.slot-row').last().locator('.slot-order-button').count(), 0);
+    assert.equal(await button('claude', 'up').isDisabled(), true);
+    assert.equal(await button('claude-backup', 'down').isDisabled(), true);
+    assert.equal(await button(long, 'up').getAttribute('aria-label'),
+      config.locales.en['slots.move_up'].replace('{name}', long));
+
+    assert.deepEqual(await popover.evaluate(panel => {
+      const issues = [];
+      for (const row of panel.querySelectorAll('.slot-row')) {
+        const bounds = row.getBoundingClientRect();
+        const info = row.querySelector('.slot-name').getBoundingClientRect();
+        for (const button of row.querySelectorAll('.slot-order-button')) {
+          const rect = button.getBoundingClientRect();
+          if (rect.width < 44 || rect.height < 44 || rect.right > bounds.right || info.right > rect.left) {
+            issues.push(row.dataset.slot);
+          }
+        }
+      }
+      return [panel.scrollWidth > panel.clientWidth, ...issues];
+    }), [false]);
+
+    async function move(direction, other, focused) {
+      const started = new Promise(resolve => { swapStarted = resolve; });
+      await button(long, direction).click();
+      await started;
+      assert.equal(await button(long, direction).isDisabled(), true);
+      assert.equal(await popover.locator('.slot-order-button:not(:disabled)').count(), 0);
+      assert.deepEqual(calls.at(-1), [long, other]);
+      release();
+      await page.waitForFunction(({ long, focused }) => document.activeElement.matches(
+        `.slot-row[data-slot="${long}"] [data-slot-order="${focused}"]:not(:disabled)`), { long, focused });
+      assert.deepEqual(await popover.locator('.slot-row-top .slot-name').allTextContents(),
+        [...slots.map(item => item.name), 'Codex']);
+    }
+    await move('up', 'claude', 'down');
+    await move('down', 'claude', 'down');
+
+    rejectSwap = true;
+    await button(long, 'up').click();
+    await popover.locator('.slot-popover-head [data-slot-refresh][data-failed]').waitFor();
+    assert.equal(await button(long, 'up').isEnabled(), true);
+    assert.deepEqual(await popover.locator('.slot-row-top .slot-name').allTextContents(),
+      ['claude', long, 'claude-backup', 'Codex']);
+
+    singleton = true;
+    await popover.locator('.slot-popover-head [data-slot-refresh]').click();
+    await row(long).waitFor({ state: 'detached' });
+    assert.equal(await popover.locator('.slot-order-button').count(), 0);
+  } finally {
+    await page.close();
+  }
+}
+
 async function checkSlotInteractions(browser) {
   await checkUsageRegressions(browser);
   for (const [width, height, theme] of [
@@ -1210,9 +1305,10 @@ try {
       { language: 'de', count: 2 },
       { language: 'fr', count: 4 },
     ];
-    const [longestLocale, , ...cooldownFailures] = await Promise.all([
+    const [longestLocale, , , ...cooldownFailures] = await Promise.all([
       checkHeaderMatrix(browser),
       checkSlotInteractions(browser),
+      Promise.all([1280, 375].map(width => checkUsageSlotOrder(browser, width))),
       ...cooldownTransitions.map(scenario => checkHeaderMatrix(browser, scenario)),
     ]);
     assert.deepEqual(cooldownFailures.flat(), []);

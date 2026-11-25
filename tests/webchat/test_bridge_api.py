@@ -372,6 +372,69 @@ async def test_state_excludes_signed_out_and_detached_slots_and_uses_visible_pri
     assert claude["next"] == ("claude-ready" if visible else None)
 
 
+async def test_swap_slots_changes_visible_neighbors_and_keeps_hidden_index(bridge):
+    client, _, _, paths = bridge
+    accounts = ["claude-first", "claude-hidden", "claude-last"]
+    write_state_accounts(paths, accounts)
+    for name in (accounts[0], accounts[2]):
+        write_slot_credentials(paths.ductor_home, name)
+
+    async def visible_slots():
+        result = await client.get(f"{_PREFIX}/state", headers=headers())
+        return [slot["name"] for slot in (await result.json())["claude"]["slots"]]
+
+    assert await visible_slots() == ["claude-first", "claude-last"]
+    response = await client.post(
+        f"{_PREFIX}/cli-login/slots/claude-first/swap/claude-last",
+        headers={**headers(), "X-Dtw-Owner": "owner"},
+    )
+    assert response.status == 200
+    assert await response.json() == {"ok": True}
+    assert claude_slots.read_accounts(paths.ductor_home) == [
+        "claude-last",
+        "claude-hidden",
+        "claude-first",
+    ]
+    assert await visible_slots() == ["claude-last", "claude-first"]
+
+
+@pytest.mark.parametrize(
+    "other,owner,status,code",
+    [
+        ("claude-unknown", "owner", 404, "slot_not_found"),
+        ("claude-first", "owner", 400, "invalid_swap"),
+        ("claude-last", "", 403, "forbidden"),
+    ],
+)
+async def test_swap_slots_rejects_invalid_requests(bridge, other, owner, status, code):
+    client, _, _, paths = bridge
+    accounts = ["claude-first", "claude-last"]
+    write_state_accounts(paths, accounts)
+    response = await client.post(
+        f"{_PREFIX}/cli-login/slots/claude-first/swap/{other}",
+        headers={**headers(), **({"X-Dtw-Owner": owner} if owner else {})},
+    )
+    assert response.status == status
+    assert await response.json() == {"error": code}
+    assert "WWW-Authenticate" not in response.headers
+    assert claude_slots.read_accounts(paths.ductor_home) == accounts
+
+
+async def test_swap_slots_reports_disk_error(bridge, monkeypatch):
+    client, _, _, _ = bridge
+
+    def failed(*_args):
+        raise OSError("fixture")
+
+    monkeypatch.setattr(claude_slots, "swap", failed, raising=False)
+    response = await client.post(
+        f"{_PREFIX}/cli-login/slots/claude-first/swap/claude-last",
+        headers={**headers(), "X-Dtw-Owner": "owner"},
+    )
+    assert response.status == 500
+    assert await response.json() == {"error": "slot_move_error"}
+
+
 async def test_state_preserves_other_fields_when_claude_overview_fails(bridge, monkeypatch, caplog):
     monkeypatch.setattr("ductor_bot.cli.codex_usage._last_successful", None)
     client, _, _, paths = bridge

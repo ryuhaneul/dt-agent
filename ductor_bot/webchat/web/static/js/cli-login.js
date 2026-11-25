@@ -1,5 +1,6 @@
 import { api } from './api.js';
 import { t, translate } from './i18n.js';
+import { focusSlotOrder, slotOrderControls, swapSlotOrder } from './slots.js';
 
 const providers = ['claude', 'codex', 'grok'];
 const terminal = ['succeeded', 'failed', 'cancelled', 'timed_out'];
@@ -156,7 +157,12 @@ export function initCliLogin() {
         const canRun = menu
           ? [...menu.children].some(item => !status?.running || Object.hasOwn(item.dataset, 'slotMutation'))
           : !status?.running || Object.hasOwn(element.dataset, 'slotMutation');
-        element.disabled = busy || loading || !canRun;
+        element.disabled = busy || loading || !canRun
+          || (Boolean(element.dataset.slotOrder) && !element.dataset.slotNeighbor);
+        if (element.dataset.slotOrder) {
+          const name = element.closest('[data-slot]').dataset.slot;
+          element.setAttribute('aria-label', t(`slots.move_${element.dataset.slotOrder}`, { name }));
+        }
         if (menu) {
           const label = t('cli_login.slot_more', { name: element.closest('[data-slot]').dataset.slot });
           element.setAttribute('aria-label', label); menu.setAttribute('aria-label', label);
@@ -179,7 +185,9 @@ export function initCliLogin() {
         }));
         section.append(head);
         const slots = node('div', 'cli-slots');
-        (status?.claude_slots || []).forEach(slot => {
+        const accounts = status?.claude_slots || [];
+        const ranked = accounts.filter(slot => slot.priority != null);
+        accounts.forEach(slot => {
           const row = node('div', 'cli-slot'); row.dataset.slot = slot.name;
           const error = slotError?.name === slot.name ? slotError : null;
           const name = node('span', 'cli-slot-name mono', slot.name === 'claude' ? t('cli_login.default_slot') : slot.name);
@@ -189,7 +197,16 @@ export function initCliLogin() {
             : slot.kind === 'api_key' ? 'key_connected'
             : !slot.authenticated ? 'logged_out'
             : slot.priority == null ? 'unused' : slot.auth_expired ? 'expired' : null;
-          row.append(name, badge(slot.authenticated, state));
+          const stateBadge = badge(slot.authenticated, state);
+          const index = ranked.indexOf(slot);
+          const order = index < 0 ? '' : slotOrderControls(slot.name, ranked[index - 1]?.name,
+            ranked[index + 1]?.name, busy || loading || Boolean(status?.running));
+          if (order) {
+            const info = node('div', 'cli-slot-info');
+            info.append(name, stateBadge);
+            row.append(info);
+            row.insertAdjacentHTML('beforeend', order);
+          } else row.append(name, stateBadge);
           renderSlotMenu(row, slot, provider);
           slots.append(row);
           if (slot.kind === 'api_key_detached') {
@@ -411,6 +428,11 @@ export function initCliLogin() {
     if (busy) return;
     target = selection; confirmMode = 'start'; renderConfirmation(); confirmation.showModal(); $('cliConfirmNo').focus();
   }
+  $('cliProviders').addEventListener('click', event => {
+    const button = event.target.closest('[data-slot-order]');
+    if (button) void reorderSlot(button);
+  });
+
   function askSlotChange(action, name) {
     if (busy || loading) return;
     target = { slot: name }; confirmMode = action; renderConfirmation();
@@ -462,6 +484,36 @@ export function initCliLogin() {
       }
     }
   }
+  async function reorderSlot(button) {
+    const { slotOrder, slotNeighbor } = button.dataset;
+    if (busy || loading || status?.running || !slotNeighbor) return;
+    const name = button.closest('[data-slot]').dataset.slot;
+    const version = generation;
+    const live = () => version === generation && dialog.open;
+    busy = true; render();
+    try {
+      await swapSlotOrder(name, slotNeighbor);
+      if (!live()) return;
+      const result = await api('/cli-login/status');
+      if (live()) {
+        status = result;
+        slotError = null;
+      }
+    } catch (error) {
+      if (live()) {
+        const key = error.code === 'slot_not_found' ? 'cli_login.delete_missing'
+          : error.code === 'bot_unreachable' ? 'error.bot_unreachable' : 'error.generic';
+        slotError = { name, key, args: { name } };
+      }
+    } finally {
+      if (live()) {
+        busy = false; render();
+        if (!focusSlotOrder($('cliProviders'), name, slotOrder)) $('cliClose').focus();
+        schedule();
+      }
+    }
+  }
+
   function askCancel() {
     if (!active() || busy || cancelRequested) return;
     confirmMode = 'cancel'; renderConfirmation(); confirmation.showModal(); $('cliConfirmNo').focus();

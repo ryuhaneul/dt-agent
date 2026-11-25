@@ -50,6 +50,8 @@ async function run(browser, origin, width, theme) {
   context.setDefaultTimeout(3500);
   const failures = [];
   let current, cancelled = false, resumeAfterCancel = false;
+  let accountSlots = slots, releaseSwap, swapStarted, rejectSwap = false;
+  const swaps = [];
   try {
     // Simulate browser popup restrictions while retaining real user gestures for normal and fallback links.
     await context.addInitScript(() => {
@@ -94,9 +96,28 @@ async function run(browser, origin, width, theme) {
       });
       if (endpoint === '/api/cli-login/status') return reply({
         providers: { claude: 'authenticated', codex: 'installed', grok: 'installed' },
-        claude_slots: slots, running: cancelled && resumeAfterCancel,
+        claude_slots: accountSlots, running: cancelled && resumeAfterCancel,
         ...(cancelled && resumeAfterCancel ? { provider: 'claude', job_id: 'fixture-resumed' } : {}),
       });
+      if (endpoint.includes('/swap/')) {
+        assert.equal(request.method(), 'POST');
+        assert.equal(request.postData(), null);
+        const parts = endpoint.split('/');
+        const name = parts.at(-3), other = parts.at(-1);
+        swaps.push([name, other]);
+        if (rejectSwap) return route.fulfill({ status: 500, json: { error: 'slot_move_error' } });
+        return new Promise(resolve => {
+          releaseSwap = () => {
+            const a = accountSlots.findIndex(item => item.name === name);
+            const b = accountSlots.findIndex(item => item.name === other);
+            [accountSlots[a], accountSlots[b]] = [accountSlots[b], accountSlots[a]];
+            accountSlots = accountSlots.map((item, index) =>
+              ({ ...item, priority: item.priority == null ? null : index + 1 }));
+            resolve(reply({ ok: true }));
+          };
+          swapStarted();
+        });
+      }
       if (endpoint === '/api/cli-login/jobs') {
         current = request.postDataJSON();
         cancelled = false;
@@ -279,6 +300,69 @@ async function run(browser, origin, width, theme) {
       await shot('markdown');
     } catch (error) {
       failures.push(`markdown: ${error.message}`);
+    }
+    if ([1280, 375].includes(width) && theme === 'light') {
+      const long = 'claude-long-research-account-with-a-descriptive-name';
+      const unused = slots.find(item => item.priority == null);
+      accountSlots = [slots[0], { ...slots[1], name: long },
+        { ...slots[1], name: 'claude-backup', priority: 3 }, unused];
+      cancelled = false;
+      await page.goto(origin);
+      const open = async () => {
+        await act(page.locator('#accountButton'));
+        await act(page.locator('#openCliLogin'));
+      };
+      await open();
+      const dialog = page.locator('#cliLoginDlg');
+      const row = name => dialog.locator(`.cli-slot[data-slot="${name}"]`);
+      const button = (name, direction) => row(name).locator(`[data-slot-order="${direction}"]`);
+      await button(long, 'up').waitFor();
+      assert.equal(await dialog.locator('.slot-order-button').count(), 6);
+      assert.equal(await row(unused.name).locator('.slot-order-button').count(), 0);
+      assert.equal(await button('claude', 'up').isDisabled(), true);
+      assert.equal(await button('claude-backup', 'down').isDisabled(), true);
+      assert.equal(await button(long, 'up').getAttribute('aria-label'),
+        config.strings['slots.move_up'].replace('{name}', long));
+      assert.deepEqual(await dialog.evaluate(panel => {
+        const issues = [];
+        for (const row of panel.querySelectorAll('.cli-slot')) {
+          const options = row.querySelector('.cli-slot-more').getBoundingClientRect();
+          const name = row.querySelector('.cli-slot-name').getBoundingClientRect();
+          const badge = row.querySelector('.badge').getBoundingClientRect();
+          for (const button of row.querySelectorAll('.slot-order-button')) {
+            const bounds = button.getBoundingClientRect();
+            if (bounds.width < 44 || bounds.height < 44 || bounds.right > options.left
+                || Math.max(name.right, badge.right) > bounds.left) issues.push(row.dataset.slot);
+          }
+        }
+        return [panel.scrollWidth > panel.clientWidth, ...issues];
+      }), [false]);
+
+      async function move(direction, focused) {
+        const started = new Promise(resolve => { swapStarted = resolve; });
+        await act(button(long, direction));
+        await started;
+        assert.deepEqual(swaps.at(-1), [long, 'claude']);
+        assert.equal(await dialog.locator('.slot-order-button:not(:disabled)').count(), 0);
+        assert.equal(await row(long).locator('.cli-slot-more').isDisabled(), true);
+        releaseSwap();
+        await page.waitForFunction(({ long, focused }) => document.activeElement.matches(
+          `.cli-slot[data-slot="${long}"] [data-slot-order="${focused}"]:not(:disabled)`), { long, focused });
+        assert.deepEqual(await dialog.locator('.cli-slot').evaluateAll(rows => rows.map(row => row.dataset.slot)),
+          accountSlots.map(item => item.name));
+      }
+      await move('up', 'down');
+      await move('down', 'down');
+
+      rejectSwap = true;
+      await act(button(long, 'up'));
+      await dialog.locator('.slot-error').waitFor();
+      assert.equal(await button(long, 'up').isEnabled(), true);
+      await act(dialog.locator('#cliClose'));
+      accountSlots = [slots[0], unused];
+      await open();
+      await row(unused.name).waitFor();
+      assert.equal(await dialog.locator('.slot-order-button').count(), 0);
     }
     assert.deepEqual(pageErrors, []);
     return failures;

@@ -1277,6 +1277,27 @@ def _register_cli_login_routes(app: web.Application, bot: TelegramBot) -> None: 
             return _error(failure, 500)
         return web.json_response({"ok": True})
 
+    async def swap_slots(request: web.Request) -> web.Response:
+        if not request.headers.get("X-Dtw-Owner"):
+            return _error("forbidden", 403)
+        try:
+            await asyncio.to_thread(
+                claude_slots.swap,
+                paths.ductor_home,
+                request.match_info["slot"],
+                request.match_info["other"],
+            )
+        except ValueError as exc:
+            if str(exc) == "unknown_slot":
+                return _error("slot_not_found", 404)
+            if str(exc) == "invalid_swap":
+                return _error("invalid_swap", 400)
+            return _error("slot_move_error", 500)
+        except OSError:
+            return _error("slot_move_error", 500)
+        return web.json_response({"ok": True})
+
+    app.router.add_post(f"{_PREFIX}/cli-login/slots/{{slot}}/swap/{{other}}", swap_slots)
     app.router.add_delete(f"{_PREFIX}/cli-login/slots/{{slot}}", mutate_slot)
     app.router.add_post(
         f"{_PREFIX}/cli-login/slots/{{slot}}/{{action:logout|disconnect}}", mutate_slot

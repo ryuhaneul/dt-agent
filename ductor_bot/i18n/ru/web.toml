@@ -558,6 +558,8 @@ unavailable = "Изображение недоступно."
 open_original = "Открыть оригинал"
 
 [slots]
+move_up = "Переместить {name} вверх"
+move_down = "Переместить {name} вниз"
 title = "Слоты Claude"
 usage_title = "Использование Claude и Codex"
 show_all_usage = "Показать все записи об использовании ({n})"

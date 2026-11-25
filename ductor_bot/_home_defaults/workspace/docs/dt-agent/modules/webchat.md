@@ -162,6 +162,11 @@ any chip or the overflow button to see every available window with its usage,
 reset time and capture time. API-key slots have no OAuth usage data. The header
 hides OAuth slots without credentials and slots with disconnected API keys.
 
+Use the up and down buttons in the CLI login dialog or the header usage popover
+to swap a ranked Claude slot with the adjacent ranked slot you can see. In the
+usage popover, a slot hidden between two visible slots keeps its position, while
+a one-step move in `/accounts` swaps with the hidden slot.
+
 The popover shows when the browser last fetched state and when each usage
 snapshot was captured. State refreshes on login, reconnect, when the page
 becomes visible again, when a web turn ends, and when a new Codex usage

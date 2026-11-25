@@ -1,3 +1,4 @@
+import { api } from './api.js';
 import { t } from './i18n.js';
 import { esc } from './md.js';
 
@@ -6,6 +7,26 @@ const MORE_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" st
 const TOGGLE = 'aria-haspopup="dialog" aria-controls="claudeSlotPopover" aria-expanded="false"';
 const REFRESH = `<button class="slot-refresh" type="button" data-slot-refresh>${REFRESH_ICON}</button>`;
 const WINDOWS = { five_hour: '5h', seven_day: '7d' };
+
+export function slotOrderControls(name, previous, next, disabled) {
+  if (!previous && !next) return '';
+  const button = (direction, neighbor, shape) =>
+    `<button class="theme-btn slot-order-button" type="button" data-slot-order="${direction}"${neighbor ? ` data-slot-neighbor="${esc(neighbor)}"` : ''}
+      aria-label="${esc(t(`slots.move_${direction}`, { name }))}"${disabled || !neighbor ? ' disabled' : ''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${shape}"/></svg></button>`;
+  return `<div class="slot-order-controls">${button('up', previous, 'm6 15 6-6 6 6')}${button('down', next, 'm6 9 6 6 6-6')}</div>`;
+}
+
+export function swapSlotOrder(name, neighbor) {
+  return api(`/cli-login/slots/${encodeURIComponent(name)}/swap/${encodeURIComponent(neighbor)}`, { method: 'POST' });
+}
+
+export function focusSlotOrder(root, name, direction) {
+  const row = root.querySelector(`[data-slot="${CSS.escape(name)}"]`);
+  const button = row?.querySelector(`[data-slot-order="${direction}"]:not(:disabled)`)
+    || row?.querySelector('[data-slot-order]:not(:disabled)');
+  button?.focus({ preventScroll: true });
+  return Boolean(button);
+}
 
 function formatTime(seconds, withDay = false) {
   const date = new Date(seconds * 1000);
@@ -87,7 +108,7 @@ function chip(slot, windows, status, next, primary, now) {
   </button>`;
 }
 
-function slotRow(slot, windows, status, next, now) {
+function slotRow(slot, windows, status, next, now, order) {
   const rows = windows.map(window => {
     const reset = windowHasReset(window, now);
     const resetText = reset ? t('slots.reset_done')
@@ -101,11 +122,12 @@ function slotRow(slot, windows, status, next, now) {
   }).join('');
   const captured = slot.usage ? t('slots.captured_at', { time: formatTime(slot.usage.captured_at, true) }) : '';
   const label = status?.keyLabel ? `${status.keyLabel} · ${status.label}` : status?.label;
-  return `<div class="slot-row" ${next ? 'data-next' : ''}>
-    <div class="slot-row-top"><span class="slot-name">${esc(slot.name)}</span>
-      ${next ? `<span class="slot-next-tag">${esc(t('slots.next'))}</span>` : ''}
-      ${status ? `<span class="badge badge-${status.badge}">${esc(label)}</span>` : ''}
-    </div>${rows ? `<div class="slot-windows">${rows}</div>` : ''}
+  const info = `<span class="slot-name">${esc(slot.name)}</span>
+    ${next ? `<span class="slot-next-tag">${esc(t('slots.next'))}</span>` : ''}
+    ${status ? `<span class="badge badge-${status.badge}">${esc(label)}</span>` : ''}`;
+  return `<div class="slot-row" data-slot="${esc(slot.name)}" ${next ? 'data-next' : ''}>
+    <div class="slot-row-top">${order ? `<div class="slot-row-info">${info}</div>${order}` : info}</div>
+    ${rows ? `<div class="slot-windows">${rows}</div>` : ''}
     ${captured ? `<div class="slot-time slot-captured">${esc(captured)}</div>` : ''}
   </div>`;
 }
@@ -128,7 +150,7 @@ export function initSlots(refresh) {
   const narrow = matchMedia('(max-width: 1180px)');
   const mobile = matchMedia('(max-width: 760px)');
   let data = null, codex = null, updatedAt = null, trigger = null;
-  let refreshing = false, failed = false;
+  let refreshing = false, failed = false, ordering = false;
 
   function chipCapacity() {
     const header = getComputedStyle(bar);
@@ -247,7 +269,7 @@ export function initSlots(refresh) {
   function renderRefresh() {
     const label = t(failed ? 'slots.refresh_failed' : 'slots.refresh');
     refreshButtons.forEach(button => {
-      button.disabled = refreshing;
+      button.disabled = refreshing || ordering;
       button.toggleAttribute('data-failed', failed);
       button.setAttribute('aria-busy', String(refreshing));
       button.setAttribute('aria-label', label);
@@ -276,13 +298,20 @@ export function initSlots(refresh) {
     popover.setAttribute('aria-label', title);
     const scroll = list.scrollTop;
     const focused = document.activeElement;
+    const focusedOrder = list.contains(focused) && focused.dataset.slotOrder;
     const more = slots.length - 1;
     const now = Date.now() / 1000;
     const primary = slots.find(({ next }) => next) ?? slots[0];
     chips.innerHTML = slots.map(item => chip(item.slot, item.windows, item.status, item.next, item === primary, now)).join('') +
       (more > 0 ? `<button class="slot-chip slot-more" type="button" data-slot-more ${TOGGLE}
         aria-label="${esc(t(codex ? 'slots.show_all_usage' : 'slots.show_all', { n: slots.length }))}"><span>+${more}</span>${MORE_ICON}</button>` : '');
-    list.innerHTML = slots.map(({ slot, windows, status, next }) => slotRow(slot, windows, status, next, now)).join('');
+    const ranked = data?.slots ?? [];
+    list.innerHTML = slots.map(({ slot, windows, status, next }, index) => {
+      const order = index < ranked.length
+        ? slotOrderControls(slot.name, ranked[index - 1]?.name, ranked[index + 1]?.name, ordering)
+        : '';
+      return slotRow(slot, windows, status, next, now, order);
+    }).join('');
     list.scrollTop = scroll;
     const clock = formatTime(updatedAt.getTime() / 1000);
     const label = t('slots.refreshed_at', { time: clock });
@@ -298,13 +327,44 @@ export function initSlots(refresh) {
         item.dataset.provider === button?.dataset.provider && item.dataset.slotToggle === button?.dataset.slotToggle);
     }
     trigger = replacement(trigger) || chips.querySelector('[data-primary]');
-    replacement(focused)?.focus();
+    if (focusedOrder) {
+      focusSlotOrder(popover, focused.closest('[data-slot]').dataset.slot, focusedOrder);
+    } else replacement(focused)?.focus();
     setOpen(!popover.hidden);
     renderRefresh();
   }
 
+  function setOrdering(value) {
+    ordering = value;
+    list.querySelectorAll('[data-slot-order]').forEach(button => {
+      button.disabled = ordering || !button.dataset.slotNeighbor;
+    });
+    renderRefresh();
+  }
+
+  async function reorderSlot(button) {
+    const { slotOrder, slotNeighbor } = button.dataset;
+    if (ordering || !slotNeighbor) return;
+    const name = button.closest('[data-slot]').dataset.slot;
+    setOrdering(true);
+    try {
+      await swapSlotOrder(name, slotNeighbor);
+      // A read started before the swap can still contain the previous order.
+      if (refreshing) await refresh();
+      if (data) await refresh();
+    } catch {
+      failed = true;
+    } finally {
+      setOrdering(false);
+      if (!popover.hidden && !focusSlotOrder(popover, name, slotOrder)) {
+        popover.focus({ preventScroll: true });
+      }
+    }
+  }
+
   root.addEventListener('click', event => {
     const button = event.target.closest('button');
+    if (button?.hasAttribute('data-slot-order')) void reorderSlot(button);
     if (button?.hasAttribute('data-slot-refresh')) void refresh();
     if (!button?.hasAttribute('aria-controls')) return;
     trigger = button;
