@@ -12,8 +12,20 @@ const seen = new Map(), confirmed = new Map(), migrated = new Set();
 const BADGE_DELAY = 150, BADGE_MAX_WAIT = 1000, BADGE_RETRIES = [1000, 2000, 4000, 8000];
 let badgeEpoch = 0, badgeTimer, badgeDue = null, badgeDeadline = null, badgeRetries = 0;
 let topicsInFlight = 0, readWrites = 0, badgeNotified = false, badgeWaiters = [];
+const busyEvents = new Map();
+let pendingSnapshot = null;
 export function getTopics() { return topics; }
 export function getTopic() { return topics.find(topic => topic.tid === selected) || null; }
+export function noteTopicBusy(tid, value) {
+  const event = { value };
+  busyEvents.set(tid, event);
+  const topic = topics.find(item => item.tid === tid);
+  if (!topic) return false;
+  const changed = topic.busy !== value || topic.busyFromSnapshot;
+  topic.busy = value;
+  topic.busyFromSnapshot = false;
+  return changed;
+}
 export function formatTime(value, date = false) {
   if (!value || Number.isNaN(Date.parse(value))) return '—';
   return new Date(value).toLocaleString(document.documentElement.lang,
@@ -37,10 +49,11 @@ function armBadgeRefresh() {
     badgeDue = badgeDeadline = null;
     const waiters = badgeWaiters;
     badgeWaiters = [];
+    const onSnapshot = waiters.findLast(waiter => waiter.onSnapshot)?.onSnapshot;
     let refreshed = false;
-    try { await refreshTopics({ badgeRequest: true }); refreshed = true; }
+    try { await refreshTopics({ badgeRequest: true, onSnapshot }); refreshed = true; }
     catch { /* refreshTopics handles badge failures and retries. */ }
-    for (const resolve of waiters) resolve(refreshed);
+    for (const { resolve } of waiters) resolve(refreshed);
   }, Math.max(0, badgeDue - performance.now()));
 }
 export function scheduleBadgeRefresh() {
@@ -52,10 +65,14 @@ export function scheduleBadgeRefresh() {
   badgeDue = Math.min(now + BADGE_DELAY, badgeDeadline);
   armBadgeRefresh();
 }
-export function resyncTopics() {
+export function resyncTopics(onSnapshot) {
   if (!active) return Promise.resolve(false);
+  if (!onSnapshot && pendingSnapshot && topicsInFlight && !readWrites) {
+    // A topic event can settle a reconnect snapshot before the older request returns.
+    return refreshTopics();
+  }
   return new Promise(resolve => {
-    badgeWaiters.push(resolve);
+    badgeWaiters.push({ resolve, onSnapshot });
     scheduleBadgeRefresh();
   });
 }
@@ -232,23 +249,41 @@ async function migrateSeen() {
     if (migrationEpoch === epoch) migrationEpoch = null;
   }
 }
-export async function refreshTopics({ badgeRequest = false } = {}) {
+export async function refreshTopics({ badgeRequest = false, onSnapshot } = {}) {
+  if (onSnapshot) pendingSnapshot = onSnapshot;
+  const observedBusy = new Map(busyEvents);
   const generation = ++revision, authEpoch = readEpoch, requestedBadgeEpoch = badgeEpoch;
   ++topicsInFlight;
   try {
     const data = await api('/topics');
     if (!active || generation !== revision) return;
+    const previous = getTopic();
     topics = data.topics;
-    for (const topic of topics) mergeSeen(topic.tid, topic.seen);
     for (const topic of topics) {
+      // Each busy event has a new identity, even if its value did not change.
+      const event = busyEvents.get(topic.tid);
+      topic.busyFromSnapshot = event === observedBusy.get(topic.tid);
+      if (!topic.busyFromSnapshot) topic.busy = event.value;
+      mergeSeen(topic.tid, topic.seen);
+
       if (topic.name_key) topic.name = t(topic.name_key);
       topic.name ||= topic.tid === 'unknown' ? t('topic.unknown_name') : topic.topic_id === null
         ? t('topic.general') : `Topic #${topic.topic_id}`;
       if (topic.group === 'imported') topic.preview = t('topic.imported_preview', { n: topic.count });
     }
     if (requestedBadgeEpoch === badgeEpoch) applyBadges();
-    if (!getTopic()) selectTopic(topics[0]?.tid, null, false);
-    else document.dispatchEvent(new CustomEvent('topic-updated', { detail: getTopic() }));
+    // The newest topic request can supply the snapshot for an older recovery request.
+    const applySnapshot = pendingSnapshot;
+    pendingSnapshot = null;
+    applySnapshot?.(topics);
+    const current = getTopic();
+    if (!current) selectTopic(topics[0]?.tid, null, false);
+    else {
+      document.dispatchEvent(new CustomEvent('topic-updated', { detail: current }));
+      if (current.busy !== previous?.busy || (current.busy && current.busyFromSnapshot !== previous?.busyFromSnapshot)) {
+        document.dispatchEvent(new CustomEvent('topic-busy-updated'));
+      }
+    }
     renderTopics();
     document.dispatchEvent(new CustomEvent('topics-updated', { detail: topics }));
     void migrateSeen();
@@ -357,7 +392,7 @@ export function initTopics() {
     topicsInFlight = readWrites = badgeRetries = 0;
     badgeNotified = false;
     pendingRead.clear(); awaitingUnread.clear();
-    for (const resolve of badgeWaiters) resolve(false);
+    for (const { resolve } of badgeWaiters) resolve(false);
     badgeWaiters = [];
     document.querySelector('#markAllRead').disabled = false;
     if (!active) {
@@ -366,6 +401,7 @@ export function initTopics() {
       form.querySelectorAll('input, button').forEach(element => { element.disabled = false; });
       document.querySelector('#renameClose').disabled = false;
       ++request; clearTimeout(searchTimer); topics = []; selected = null; hits = [];
+      pendingSnapshot = null; busyEvents.clear();
       query = ''; serverUnread.clear(); seen.clear(); confirmed.clear(); migrated.clear(); document.querySelector('#q').value = ''; renderTopics();
     }
   });

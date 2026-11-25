@@ -1527,7 +1527,7 @@ async def test_automatic_title_records_web_title_without_service_edit(
     assert queue.get_nowait() == {"type": "topics"}
     assert (await orch._sessions.get_active(key)).topic_name == "시스템 점검"
     tg._topic_names = type(tg._topic_names)()
-    orch.is_chat_busy = lambda *_: False
+    orch.is_topic_busy = lambda *_: False
     turns = SimpleNamespace(
         active_turn_id=lambda _: None, busy=lambda _: False, snapshot=lambda _: []
     )

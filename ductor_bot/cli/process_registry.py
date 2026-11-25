@@ -195,10 +195,16 @@ class ProcessRegistry:
         When *topic_id* is given, only processes for that specific topic are
         checked.  When ``None``, all processes for *chat_id* are considered.
         """
-        entries = self._processes.get(chat_id, [])
         if topic_id is not None:
-            return any(e.process.returncode is None and e.topic_id == topic_id for e in entries)
-        return any(e.process.returncode is None for e in entries)
+            return self.has_active_in_topic(chat_id, topic_id)
+        return any(e.process.returncode is None for e in self._processes.get(chat_id, []))
+
+    def has_active_in_topic(self, chat_id: int, topic_id: int | None) -> bool:
+        """Check the exact topic, including the general conversation when topic_id is None."""
+        return any(
+            e.process.returncode is None and e.topic_id == topic_id
+            for e in self._processes.get(chat_id, [])
+        )
 
     async def kill_by_label(self, chat_id: int, label: str) -> int:
         """Kill processes matching *label* for *chat_id*. Returns count killed."""

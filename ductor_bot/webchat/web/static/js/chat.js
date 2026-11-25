@@ -12,10 +12,10 @@ import { connectEvents } from './ws.js';
 import { md, esc, createMarkdownCache, createMarkdownStream, initMarkdownLinks } from './md.js';
 import {
   getTopic, getTopics, selectTopic, refreshTopics, resyncTopics, scheduleBadgeRefresh,
-  noteEntry, markSeen, formatTime,
+  noteEntry, noteTopicBusy, markSeen, formatTime,
 } from './topics.js';
 
-const histories = new Map(), turns = new Map(), busy = new Map(), drafts = new Map(), topicVersions = new Map(), busyVersions = new Map();
+const histories = new Map(), turns = new Map(), drafts = new Map(), topicVersions = new Map();
 let active = false, epoch = 0, stopEvents = null, telegram = { state: 'unknown' };
 let botUp = false, webSessions = null, releaseVersion = '', pending = 0, outbox = [], sending = false;
 let slots = null, stateRequest = null;
@@ -24,6 +24,8 @@ let streamFrame = null, historyRender = null, composerFiles = null, attachmentVi
 const streamUpdates = new Set();
 const HISTORY_PAGE_SIZE = 100, MESSAGE_WINDOW_SIZE = 100, WINDOW_STEP = 50;
 const LATEST_GAP = 80;
+const BUSY_RECHECK_MS = [2000, 4000, 8000, 16000, 30000, 30000, 30000];
+let busyRecheck = null;
 let renderedTopic = null, pinnedDay = null;
 let threadScrollLimit = 0;
 function history(tid) {
@@ -37,6 +39,13 @@ export function mergeEntries(entries, incoming) {
 function sorted(tid) { return mergeEntries(history(tid).entries, []); }
 function hasTurnEntry(turn, role) {
   return [...history(turn.tid).entries.values()].some(entry => entry.role === role && entry.turn_id === turn.id);
+}
+function isLiveTurn(turn) { return turn.phase === 'queued' || turn.phase === 'started'; }
+function refreshAfterLastTurn(tid) {
+  if ([...turns.values()].some(turn => turn.tid === tid && isLiveTurn(turn))) return;
+  const topic = getTopics().find(item => item.tid === tid);
+  if (topic?.busyFromSnapshot) topic.busy = false;
+  void refreshTopics().catch(errorNotice);
 }
 function started(tid) {
   return [...turns.values()].find(turn => turn.tid === tid && turn.phase === 'started');
@@ -172,7 +181,10 @@ async function cancelQueued(turnId) {
   try {
     await api(`/topics/${encodeURIComponent(turn.tid)}/turns/${encodeURIComponent(turnId)}/cancel`, { method: 'POST' });
     if (!active || generation !== epoch) return;
-    turn.phase = 'cancelled';
+    if (turn.phase !== 'cancelled') {
+      turn.phase = 'cancelled';
+      refreshAfterLastTurn(turn.tid);
+    }
     if (!hasTurnEntry(turn, 'user')) await loadHistory(turn.tid, { turnId });
   } catch (error) {
     if (!active || generation !== epoch) return;
@@ -721,6 +733,25 @@ function mountedRows(rows, start, end, showBusy) {
   if (showBusy) mounted.push({ kind: 'busy', key: 'busy' });
   return mounted;
 }
+function watchSnapshotBusy(tid = null) {
+  if (busyRecheck?.tid !== tid) {
+    clearTimeout(busyRecheck?.timer);
+    busyRecheck = tid === null ? null : { tid, timer: null, attempts: 0 };
+  }
+  const check = busyRecheck;
+  if (!check || check.timer !== null || check.attempts >= BUSY_RECHECK_MS.length) return;
+  check.timer = setTimeout(async () => {
+    check.attempts++;
+    try { await refreshTopics(); }
+    catch { /* Check again at the next bounded interval. */ }
+    finally {
+      if (busyRecheck === check) {
+        check.timer = null;
+        watchSnapshotBusy(tid);
+      }
+    }
+  }, BUSY_RECHECK_MS[check.attempts]);
+}
 export function renderThread({
   bottom = false, seq = null, changes = null, move = null, calendar, preserveReading = !!calendar,
 } = {}) {
@@ -733,7 +764,7 @@ export function renderThread({
   if (!changes) rememberActivity(thread);
   const sameTopic = renderedTopic === topic?.tid;
   renderedTopic = topic?.tid;
-  if (!topic) { thread.replaceChildren(); updateThreadNavigation(); return; }
+  if (!topic) { watchSnapshotBusy(); thread.replaceChildren(); updateThreadNavigation(); return; }
   calendar ??= readCalendar();
   const dayChanged = calendarDay !== calendar.day, zoneChanged = calendarZone !== calendar.zone;
   calendarDay = calendar.day; calendarZone = calendar.zone;
@@ -748,7 +779,7 @@ export function renderThread({
     ? viewportMessages(thread) : {};
   const entries = sorted(topic.tid);
   const topicTurns = [...turns.values()].filter(turn => turn.tid === topic.tid);
-  const liveTurns = topicTurns.filter(turn => ['queued', 'started'].includes(turn.phase));
+  const liveTurns = topicTurns.filter(isLiveTurn);
   const rows = orderedMessages(entries, liveTurns, topicTurns);
   const { start: limit, end } = messageRange(state, rows, {
     seq, bottom, move, viewport, keepReading: sameTopic && !followLatest,
@@ -759,7 +790,8 @@ export function renderThread({
     start = resumed >= limit && resumed < end ? resumed : end - 12;
   }
   if (!sameTopic || bottom || seq !== null || move === 'top') threadOffset(thread)?.remove();
-  const showBusy = !state.range.newer && (busy.get(topic.tid) ?? topic.busy) && !liveTurns.length;
+  const showBusy = !state.range.newer && topic.busy && !liveTurns.length;
+  watchSnapshotBusy(active && visibleChat() && showBusy && topic.busyFromSnapshot ? topic.tid : null);
   const mounted = mountedRows(rows, start, end, showBusy), groups = threadGroups(mounted);
   if (changes || sameTopic) patchThread(thread, groups, changes);
   else {
@@ -898,36 +930,45 @@ async function refreshOutbox() {
 async function resync({ preserveReading = false, initial = false } = {}) {
   attachmentView?.markStale();
   for (const state of histories.values()) state.loaded = false;
-  const generation = epoch, versions = new Map(topicVersions), busySnapshot = new Map(busyVersions);
+  const generation = epoch, versions = new Map(topicVersions);
+  const auxiliary = Promise.all([refreshState(), refreshOutbox()]).catch(error => {
+    if (active && generation === epoch) errorNotice(error);
+  });
   try {
-    const topicSnapshot = initial ? refreshTopics().then(() => true) : resyncTopics();
-    const [refreshed] = await Promise.all([topicSnapshot, refreshState(), refreshOutbox()]);
-    if (!refreshed || !active || generation !== epoch) return;
-    for (const item of getTopics()) {
-      if (busySnapshot.get(item.tid) === busyVersions.get(item.tid)) busy.set(item.tid, item.busy);
-      const stable = versions.get(item.tid) === topicVersions.get(item.tid);
-      const snapshot = item.turns ?? (item.turn_id ? [{ turn_id: item.turn_id, phase: 'started' }] : []);
-      const ids = new Set(snapshot.map(turn => turn.turn_id));
-      if (stable) {
-        for (const turn of turns.values()) {
-          if (turn.tid === item.tid && ['queued', 'started'].includes(turn.phase) && !ids.has(turn.id)) {
-            turn.phase = 'done'; turn.finished = null;
+    const applySnapshot = items => {
+      if (!active || generation !== epoch) return;
+      const selected = getTopic()?.tid, changed = new Set();
+      for (const item of items) {
+        const stable = versions.get(item.tid) === topicVersions.get(item.tid);
+        const snapshot = item.turns ?? (item.turn_id ? [{ turn_id: item.turn_id, phase: 'started' }] : []);
+        const ids = new Set(snapshot.map(turn => turn.turn_id));
+        if (stable) {
+          for (const turn of turns.values()) {
+            if (turn.tid === item.tid && isLiveTurn(turn) && !ids.has(turn.id)) {
+              turn.phase = 'done'; turn.finished = null;
+              if (item.tid === selected) changed.add(turn.id);
+            }
           }
         }
+        for (const state of snapshot) {
+          const existing = turns.get(state.turn_id);
+          if (!existing && !stable) continue;
+          const turn = existing || { id: state.turn_id, tid: item.tid, text: '' };
+          if (stable) turn.phase = state.phase;
+          // Admission text/time are immutable, even when newer stream events won the phase race.
+          if (state.text !== undefined) turn.userText = state.text;
+          turn.received = state.received ?? turn.received;
+          turn.startedAt = state.started_at ?? turn.startedAt;
+          if (stable && state.activity) addActivity(turn, state.activity);
+          turns.set(turn.id, turn);
+          if (item.tid === selected) changed.add(turn.id);
+        }
       }
-      for (const state of snapshot) {
-        const existing = turns.get(state.turn_id);
-        if (!existing && !stable) continue;
-        const turn = existing || { id: state.turn_id, tid: item.tid, text: '' };
-        if (stable) turn.phase = state.phase;
-        // Admission text/time are immutable, even when newer stream events won the phase race.
-        if (state.text !== undefined) turn.userText = state.text;
-        turn.received = state.received ?? turn.received;
-        turn.startedAt = state.started_at ?? turn.startedAt;
-        if (stable && state.activity) addActivity(turn, state.activity);
-        turns.set(turn.id, turn);
-      }
-    }
+      if (changed.size) renderThread({ changes: { turns: changed }, preserveReading: true });
+    };
+    if (initial) await refreshTopics({ onSnapshot: applySnapshot });
+    else if (!await resyncTopics(applySnapshot)) return;
+    if (!active || generation !== epoch) return;
     const topic = getTopic();
     if (topic) {
       const entries = history(topic.tid).entries;
@@ -938,6 +979,7 @@ async function resync({ preserveReading = false, initial = false } = {}) {
       }
     }
   } catch (error) { if (active && generation === epoch) errorNotice(error); }
+  finally { await auxiliary; }
 }
 function updateMirror(item, historyId, status) {
   if (!item || !historyId) return;
@@ -976,7 +1018,10 @@ export async function handleEvent(event) {
       if (!state.entries.has(entry.id)) noteEntry(tid, entry);
       mergeHistory(state, [entry]);
       const turn = turns.get(entry.turn_id);
-      if (turn && entry.role === 'user' && entry.status === 'cancelled') turn.phase = 'cancelled';
+      if (turn && entry.role === 'user' && entry.status === 'cancelled' && turn.phase !== 'cancelled') {
+        turn.phase = 'cancelled';
+        refreshAfterLastTurn(tid);
+      }
       if (!active || generation !== epoch || tid !== getTopic()?.tid) return;
       attachmentView?.load(tid, [state.entries.get(entry.id)]);
       const entries = new Set([entry.id]);
@@ -1004,14 +1049,12 @@ export async function handleEvent(event) {
       return;
     }
     case 'busy':
-      busyVersions.set(tid, (busyVersions.get(tid) || 0) + 1);
-      if (busy.get(tid) === event.busy) return;
-      busy.set(tid, event.busy);
-      if (tid === getTopic()?.tid) renderThread({ changes: {} });
+      if (noteTopicBusy(tid, event.busy) && tid === getTopic()?.tid) renderThread({ changes: {} });
       return;
     case 'turn': {
       const turn = turns.get(event.turn_id) || { id: event.turn_id, tid, text: '' };
       const phaseChanged = turn.lastEventPhase !== event.phase;
+      const wasCancelled = turn.phase === 'cancelled';
       turn.lastEventPhase = event.phase;
       turn.phase = event.phase;
       turn.startedAt = event.started_at ?? turn.startedAt;
@@ -1030,7 +1073,10 @@ export async function handleEvent(event) {
       const terminal = !['queued', 'started'].includes(event.phase);
       if (terminal) {
         turn.finished = new Date().toISOString();
-        if (phaseChanged) void refreshState();
+        if (phaseChanged) {
+          void refreshState();
+          if (!(wasCancelled && event.phase === 'cancelled')) refreshAfterLastTurn(tid);
+        }
       }
       updateTurn(turn);
       if (terminal && tid === getTopic()?.tid && !hasTurnEntry(turn, event.phase === 'cancelled' ? 'user' : 'bot')) {
@@ -1315,13 +1361,15 @@ export function initChat() {
     } catch (error) { if (active && generation === epoch) errorNotice(error); }
   });
   document.addEventListener('topic-updated', () => renderHeader());
+  document.addEventListener('topic-busy-updated', () => renderThread({ changes: {}, preserveReading: true }));
   document.addEventListener('route-change', event => {
     view = event.detail.view;
     if (active && event.detail.route === 'chat') { renderThread(); resizeComposer(); }
+    else watchSnapshotBusy();
   });
   window.addEventListener('focus', refreshCalendar);
   document.addEventListener('visibilitychange', () => {
-    if (!active || document.hidden) return;
+    if (!active || document.hidden) { watchSnapshotBusy(); return; }
     refreshCalendar();
     void resync({ preserveReading: true });
   });
@@ -1336,7 +1384,8 @@ export function initChat() {
     cancelStreamRender(); cancelHistoryRender();
     clearTimeout(midnightTimer); midnightTimer = null;
     stopEvents?.(); stopEvents = null; renderedTopic = null; pagination = null;
-    histories.clear(); turns.clear(); busy.clear(); drafts.clear(); topicVersions.clear(); busyVersions.clear(); input.value = '';
+    watchSnapshotBusy();
+    histories.clear(); turns.clear(); drafts.clear(); topicVersions.clear(); input.value = '';
     telegram = { state: 'unknown' }; botUp = false; webSessions = null; releaseVersion = '';
     renderVersion();
     pending = 0; outbox = []; renderStatus(); renderHeader(); resizeComposer();
