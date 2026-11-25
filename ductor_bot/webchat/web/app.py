@@ -592,6 +592,7 @@ def create_app(
         ("/cli-login/status", ("GET",)),
         ("/cli-login/slots/{slot}", ("DELETE",)),
         ("/cli-login/slots/{slot}/{action:logout|disconnect}", ("POST",)),
+        ("/cli-login/slots/{slot}/swap/{other}", ("POST",)),
         ("/cli-login/jobs", ("POST",)),
         ("/cli-login/jobs/{id}", ("GET",)),
         ("/cli-login/jobs/{id}/input", ("POST",)),

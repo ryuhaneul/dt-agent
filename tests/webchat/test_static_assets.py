@@ -2749,8 +2749,15 @@ const api=new vm.SyntheticModule(['api'],function(){this.setExport('api',async(p
  throw Error('unexpected endpoint');
 })},{context});
 const i18n=new vm.SyntheticModule(['t','translate'],function(){this.setExport('t',key=>language+':'+key);this.setExport('translate',()=>{})},{context});
-for(const module of [api,i18n]){await module.link(()=>{});await module.evaluate()}
-const module=new vm.SourceTextModule(source,{context});await module.link(name=>name==='./api.js'?api:i18n);await module.evaluate();
+// The browser scenarios exercise slot-order controls and their DOM layout.
+const slots=new vm.SyntheticModule(['slotOrderControls','focusSlotOrder','swapSlotOrder'],function(){
+ this.setExport('slotOrderControls',()=> '');
+ this.setExport('focusSlotOrder',()=>false);
+ this.setExport('swapSlotOrder',()=>{throw Error('unexpected slot swap')});
+},{context});
+const imports={'./api.js':api,'./i18n.js':i18n,'./slots.js':slots};
+for(const module of Object.values(imports)){await module.link(()=>{});await module.evaluate()}
+const module=new vm.SourceTextModule(source,{context});await module.link(name=>imports[name]);await module.evaluate();
 const flush=async()=>{for(let i=0;i<8;i++)await new Promise(setImmediate)};
 module.namespace.initCliLogin();module.namespace.openCliLogin();await flush();
 const rows=get('cliProviders').children[0].children[1].children;

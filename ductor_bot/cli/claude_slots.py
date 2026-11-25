@@ -334,6 +334,32 @@ def move(home: Path, slot: str, delta: int) -> None:
         logger.info("Claude slot moved: %s (%+d)", _slot_name_for_log(slot), delta)
 
 
+def swap(
+    home: Path,
+    first: str,
+    second: str,
+    *,
+    validate: Callable[[list[str]], None] | None = None,
+) -> None:
+    """Exchange two slots, optionally validating the locked order before mutation."""
+
+    def reorder(accounts: list[str]) -> list[str]:
+        if validate is not None:
+            validate(accounts)
+        if first == second:
+            raise ValueError("invalid_swap")
+        _require_slot(accounts, first)
+        _require_slot(accounts, second)
+        left, right = accounts.index(first), accounts.index(second)
+        accounts[left], accounts[right] = accounts[right], accounts[left]
+        return accounts
+
+    if _change_priority(home, reorder):
+        logger.info(
+            "Claude slot swapped: %s, %s", _slot_name_for_log(first), _slot_name_for_log(second)
+        )
+
+
 def set_priority(home: Path, slots: Sequence[str]) -> None:
     """Replace the order while retaining exactly the configured slot set."""
 

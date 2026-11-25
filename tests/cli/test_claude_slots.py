@@ -78,6 +78,45 @@ def test_priority_operations_keep_other_fields_and_lock_inode(home, slot_logs):
     ]
 
 
+@pytest.mark.parametrize(
+    "first,second,expected",
+    [
+        ("claude-a", "claude-b", ["claude-b", "claude-a", "claude-c"]),
+        ("claude-a", "claude-c", ["claude-c", "claude-b", "claude-a"]),
+    ],
+)
+def test_swap_slot_priority(home, first, second, expected):
+    from ductor_bot.cli import claude_slots
+
+    claude_slots.swap(home, first, second)
+    assert _config(home) == {"claude_accounts": expected, "model": "opus"}
+
+
+@pytest.mark.parametrize(
+    "first,second,error",
+    [
+        ("claude-a", "absent", "unknown_slot"),
+        ("absent", "claude-a", "unknown_slot"),
+        ("claude-a", "claude-a", "invalid_swap"),
+    ],
+)
+def test_swap_slot_priority_rejects_invalid_pairs(home, first, second, error):
+    from ductor_bot.cli import claude_slots
+
+    original = _config(home)
+    with pytest.raises(ValueError, match=error):
+        claude_slots.swap(home, first, second)
+    assert _config(home) == original
+
+
+def test_swap_slot_priority_logs_changed_slots(home, slot_logs):
+    from ductor_bot.cli.claude_slots import swap
+
+    swap(home, "claude-a", "claude-c")
+
+    assert slot_logs() == ["Claude slot swapped: claude-a, claude-c"]
+
+
 def test_priority_log_hides_invalid_configured_names(home, slot_logs):
     from ductor_bot.cli.claude_slots import prefer, set_priority
 
