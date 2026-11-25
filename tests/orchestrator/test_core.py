@@ -199,6 +199,82 @@ async def test_status_command(orch: Orchestrator) -> None:
     assert "Model:" in result.text
 
 
+async def test_telegram_quick_command_preserves_stopping_turn(
+    orch: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ductor_bot.chat_log.events import EventHub
+    from ductor_bot.chat_log.history import HistoryStore
+    from ductor_bot.chat_log.recorder import HistoryRecorder
+    from tests.cli.test_process_registry import _mock_process
+    from tests.messenger.telegram.test_app import _make_message, _make_tg_bot
+
+    key = SessionKey.telegram(1, 7)
+    started, release = asyncio.Event(), asyncio.Event()
+    hub = EventHub()
+    history = HistoryStore(orch.paths.chat_log_dir / "history", hub)
+    recorder = HistoryRecorder(history, hub)
+    finish = AsyncMock(wraps=recorder.finish)
+    monkeypatch.setattr(recorder, "finish", finish)
+    orch.set_history_recorder(recorder)
+    bot, network = _make_tg_bot(orch.config)
+    bot._orchestrator = orch
+    registry = orch._process_registry
+
+    async def execute(_request: AgentRequest) -> AgentResponse:
+        registry.register(key.chat_id, _mock_process(), "main", topic_id=key.topic_id)
+        started.set()
+        await release.wait()
+        return _mock_response()
+
+    monkeypatch.setattr(orch._cli_service, "execute", AsyncMock(side_effect=execute))
+    monkeypatch.setattr("ductor_bot.cli.process_registry._kill_processes", AsyncMock(return_value=1))
+    turn = asyncio.create_task(orch.handle_message(key, "stop this turn"))
+    try:
+        await asyncio.wait_for(started.wait(), 2)
+        assert await orch.abort(key.chat_id, key.topic_id) == 1
+        command = _make_message(chat_id=key.chat_id, text="/version", topic_thread_id=key.topic_id)
+        assert await asyncio.wait_for(bot._on_quick_command(key.chat_id, command), 2)
+        network.send_message.assert_awaited()
+        assert not turn.done()
+    finally:
+        release.set()
+        result = await asyncio.wait_for(turn, 2)
+
+    assert finish.await_args.kwargs["status"] == "aborted"
+    assert result.text == ""
+    assert finish.await_args_list[0].kwargs["status"] == "ok"
+    bot_replies = [entry.text for entry in await history.read("1.7") if entry.role == "bot"]
+    assert len(bot_replies) == 1
+    assert "Response text" not in bot_replies
+
+
+@pytest.mark.parametrize("text", ["new prompt", "/status unexpected argument"])
+async def test_new_turn_clears_previous_abort_flags(
+    orch: Orchestrator, monkeypatch: pytest.MonkeyPatch, text: str
+) -> None:
+    from ductor_bot.chat_log.recorder import HistoryRecorder
+    from tests.cli.test_process_registry import _mock_process
+
+    key = SessionKey.telegram(1, 7)
+    registry = orch._process_registry
+    registry.register(key.chat_id, _mock_process(), "main", topic_id=key.topic_id)
+    monkeypatch.setattr("ductor_bot.cli.process_registry._kill_processes", AsyncMock(return_value=1))
+    assert await orch.abort(key.chat_id, key.topic_id) == 1
+    await orch.abort(key.chat_id)
+    assert registry.was_aborted(key.chat_id)
+    assert registry.was_aborted_topic(key.chat_id, key.topic_id)
+
+    recorder = MagicMock(spec=HistoryRecorder)
+    orch.set_history_recorder(recorder)
+    monkeypatch.setattr(orch._cli_service, "execute", AsyncMock(return_value=_mock_response()))
+    result = await orch.handle_message(key, text)
+
+    assert result.text == "Response text"
+    assert recorder.finish.await_args.kwargs["status"] == "ok"
+    assert not registry.was_aborted(key.chat_id)
+    assert not registry.was_aborted_topic(key.chat_id, key.topic_id)
+
+
 # -- normal flow routing --
 
 

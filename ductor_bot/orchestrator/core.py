@@ -32,6 +32,7 @@ from ductor_bot.errors import (
 from ductor_bot.heartbeat.models import HeartbeatOutcome
 from ductor_bot.i18n import t
 from ductor_bot.infra.inflight import InflightTracker
+from ductor_bot.messenger.telegram.middleware import is_quick_command
 from ductor_bot.multiagent.delegation import DelegationContext
 from ductor_bot.orchestrator.commands import (
     cmd_autocompact,
@@ -430,8 +431,10 @@ class Orchestrator:
             return OrchestratorResult(text=t("error.shutting_down"))
         if dispatch.counts_as_activity:
             self._observers.heartbeat.notify_activity(dispatch.key)
-        self._process_registry.clear_abort(dispatch.key.chat_id)
-        self._process_registry.clear_topic_abort(dispatch.key.chat_id, dispatch.key.topic_id)
+        quick_command = is_quick_command(dispatch.cmd) and self.has_command(dispatch.cmd)
+        if not quick_command:
+            self._process_registry.clear_abort(dispatch.key.chat_id)
+            self._process_registry.clear_topic_abort(dispatch.key.chat_id, dispatch.key.topic_id)
         logger.info("Message received text=%s", dispatch.cmd[:80])
 
         patterns = detect_suspicious_patterns(dispatch.text)
@@ -473,10 +476,14 @@ class Orchestrator:
         finally:
             if recorder is not None:
                 try:
-                    if status == "ok" and (
-                        self._process_registry.was_aborted(dispatch.key.chat_id)
-                        or self._process_registry.was_aborted_topic(
-                            dispatch.key.chat_id, dispatch.key.topic_id
+                    if (
+                        not quick_command
+                        and status == "ok"
+                        and (
+                            self._process_registry.was_aborted(dispatch.key.chat_id)
+                            or self._process_registry.was_aborted_topic(
+                                dispatch.key.chat_id, dispatch.key.topic_id
+                            )
                         )
                     ):
                         status = "aborted"

@@ -613,6 +613,58 @@ async def test_running_web_turn_new_conflict_and_stop_are_immediate(conversation
     h.bot._orch._process_registry.kill_by_chat_topic.assert_awaited_once_with(-123, 7)
 
 
+async def test_web_quick_command_preserves_aborted_event(conversation, monkeypatch):
+    from ductor_bot.cli.process_registry import ProcessRegistry
+    from ductor_bot.orchestrator.commands import cmd_version
+    from tests.cli.test_process_registry import _mock_process
+
+    h = conversation
+    orch = h.bot._orch
+    registry = ProcessRegistry()
+    orch._process_registry = registry
+    orch._inflight_tracker = SimpleNamespace(shutting_down=False)
+    orch._observers = SimpleNamespace(heartbeat=SimpleNamespace(notify_activity=MagicMock()))
+    orch._command_registry = CommandRegistry()
+    orch._command_registry.register_async("/version", cmd_version)
+    orch.active_provider_name = "Claude Code"
+    monkeypatch.setattr(
+        "ductor_bot.cli.process_registry._kill_processes", AsyncMock(return_value=1)
+    )
+    started, release = asyncio.Event(), asyncio.Event()
+    original = orch.handle_message_streaming.side_effect
+
+    async def running(key, text, **callbacks):
+        registry.register(key.chat_id, _mock_process(), "main", topic_id=key.topic_id)
+        started.set()
+        await release.wait()
+        return await original(key, text, **callbacks)
+
+    orch.handle_message_streaming.side_effect = running
+    async with h.client.ws_connect("/webchat/v1/events", headers=headers()) as ws:
+        response = await post_message(h)
+        assert response.status == 202
+        turn_id = (await response.json())["turn_id"]
+        try:
+            await asyncio.wait_for(started.wait(), 2)
+            stopped = await post_message(h, text="/stop")
+            assert stopped.status == 202
+            assert await stopped.json() == {"killed": 1}
+            version = await asyncio.wait_for(post_message(h, text="/version"), 2)
+            assert version.status == 200
+            assert (await version.json())["text"]
+        finally:
+            release.set()
+
+        events = await receive_until(
+            ws,
+            lambda event: (
+                event.get("turn_id") == turn_id
+                and event.get("phase") in {"aborted", "done", "error"}
+            ),
+        )
+        assert events[-1]["phase"] == "aborted"
+
+
 async def test_zero_source_message_id_reaches_sender_without_reply_quote(commands):
     from ductor_bot.background.models import BackgroundResult
     from ductor_bot.bus.adapters import from_background_result

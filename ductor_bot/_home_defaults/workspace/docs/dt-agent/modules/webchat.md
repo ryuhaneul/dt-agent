@@ -223,7 +223,8 @@ The JSON response contains `text` and `buttons`; callback and URL buttons use
 `{text, callback_data}` and `{text, url}`, respectively.
 
 Read-only quick commands and interrupt/stop controls can run while a turn is
-active. State-changing commands such as `/new`, `/reset`, `/session` and
+active. A quick command such as `/status` preserves the stop status of a turn
+that is still ending. State-changing commands such as `/new`, `/reset`, `/session` and
 `/agent_start` return `409 web_turn_running` when their session is busy; Telegram
 queues those commands instead. `/new @topic` also checks and locks its target
 topic. `/stop_all` discards Telegram's pending messages and this chat's waiting
