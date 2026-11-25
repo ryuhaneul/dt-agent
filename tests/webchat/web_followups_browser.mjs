@@ -53,6 +53,7 @@ async function run(browser, origin, width, theme) {
   let current, cancelled = false, resumeAfterCancel = false, loginFailed = false;
   let accountSlots = slots, releaseSwap, swapStarted, rejectSwap = false;
   const swaps = [];
+  let showUsage = false;
   try {
     // Simulate browser popup restrictions while retaining real user gestures for normal and fallback links.
     await context.addInitScript(() => {
@@ -92,9 +93,16 @@ async function run(browser, origin, width, theme) {
         id: 'fixture-entry', seq: 1, role: 'bot', source: 'telegram', ts: null,
         text: '~~literal~~ and **bold**',
       }] });
-      if (endpoint === '/api/state') return reply({
-        telegram: { state: 'up' }, outbox: { pending: 0 }, bot: { up: true }, web_sessions: 1,
-      });
+      if (endpoint === '/api/state') {
+        const visible = showUsage ? accountSlots.filter(slot => slot.priority != null) : [];
+        return reply({
+          telegram: { state: 'up' }, outbox: { pending: 0 }, bot: { up: true }, web_sessions: 1,
+          ...(visible.length ? { claude: {
+            next: visible[0].name,
+            slots: visible.map(({ name, kind }) => ({ name, kind, state: 'ok' })),
+          } } : {}),
+        });
+      }
       if (endpoint === '/api/cli-login/status') return reply({
         providers: providerStates,
         claude_slots: accountSlots, running: cancelled && resumeAfterCancel,
@@ -343,7 +351,10 @@ async function run(browser, origin, width, theme) {
       accountSlots = [slots[0], { ...slots[1], name: long },
         { ...slots[1], name: 'claude-backup', priority: 3 }, unused];
       cancelled = false;
+      showUsage = width === 1280;
       await page.goto(origin);
+      const primary = page.locator('#claudeSlots [data-primary]');
+      if (showUsage) await primary.waitFor();
       const open = async () => {
         await act(page.locator('#accountButton'));
         await act(page.locator('#openCliLogin'));
@@ -424,6 +435,26 @@ async function run(browser, origin, width, theme) {
         assert.equal(await button(long, 'down').isEnabled(), true);
       } catch (error) {
         failures.push(`slot reorder after reopen: ${error.message}`);
+      }
+
+      if (showUsage) {
+        try {
+          await act(dialog.locator('#cliClose'));
+          await act(primary);
+          const usage = page.locator('#claudeSlotPopover');
+          const expected = accountSlots.filter(slot => slot.priority != null).map(slot => slot.name);
+          await page.waitForFunction(expected => {
+            const rows = [...document.querySelectorAll('#claudeSlotPopover .slot-row[data-slot]')];
+            return rows.map(row => row.dataset.slot).join(',') === expected.join(',');
+          }, expected);
+          const started = new Promise(resolve => { swapStarted = resolve; });
+          await act(usage.locator(`.slot-row[data-slot="${long}"] [data-slot-order="down"]`));
+          await started;
+          releaseSwap();
+          assert.deepEqual(swaps.at(-1), [long, expected[1]]);
+        } catch (error) {
+          failures.push(`usage order after CLI swap: ${error.message}`);
+        }
       }
 
       if (width === 375) {

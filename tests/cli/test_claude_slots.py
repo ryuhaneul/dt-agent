@@ -109,6 +109,14 @@ def test_swap_slot_priority_rejects_invalid_pairs(home, first, second, error):
     assert _config(home) == original
 
 
+def test_swap_slot_priority_logs_changed_slots(home, slot_logs):
+    from ductor_bot.cli.claude_slots import swap
+
+    swap(home, "claude-a", "claude-c")
+
+    assert slot_logs() == ["Claude slot swapped: claude-a, claude-c"]
+
+
 def test_priority_log_hides_invalid_configured_names(home, slot_logs):
     from ductor_bot.cli.claude_slots import prefer, set_priority
 

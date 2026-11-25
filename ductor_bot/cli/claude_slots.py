@@ -346,7 +346,10 @@ def swap(home: Path, first: str, second: str) -> None:
         accounts[left], accounts[right] = accounts[right], accounts[left]
         return accounts
 
-    _change_priority(home, reorder)
+    if _change_priority(home, reorder):
+        logger.info(
+            "Claude slot swapped: %s, %s", _slot_name_for_log(first), _slot_name_for_log(second)
+        )
 
 
 def set_priority(home: Path, slots: Sequence[str]) -> None:

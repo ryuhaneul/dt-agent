@@ -886,6 +886,11 @@ function refreshState() {
   stateRequest = { controller, promise, timeout };
   return promise;
 }
+function queueStateRefresh() {
+  if (!active) return;
+  if (stateRequest) stateRequest.refreshPending = true;
+  else void refreshState();
+}
 async function refreshOutbox() {
   const generation = epoch;
   const data = await api('/outbox');
@@ -963,8 +968,7 @@ export async function handleEvent(event) {
   }
   switch (event.type) {
     case 'codex_usage_changed':
-      if (stateRequest) stateRequest.refreshPending = true;
-      else void refreshState();
+      queueStateRefresh();
       return;
     case 'entry': {
       const state = history(tid), entry = event.entry;
@@ -1144,6 +1148,7 @@ async function sendMessage() {
 }
 export function initChat() {
   slots = initSlots(refreshState);
+  document.addEventListener('claude-slot-order-changed', queueStateRefresh);
   cronDialog = initCron(getTopic);
   secretDialog = initSecret();
   attachmentView = initAttachmentView({ changed: (tid, entryId) => updateEntries(tid, [entryId]) });

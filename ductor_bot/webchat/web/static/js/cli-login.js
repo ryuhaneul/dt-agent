@@ -510,7 +510,9 @@ export function initCliLogin() {
     render();
     try {
       await swap;
-      if (slotOrderRequest !== swap || !dialog.open) return;
+      if (slotOrderRequest !== swap) return;
+      document.dispatchEvent(new Event('claude-slot-order-changed'));
+      if (!dialog.open) return;
       const currentVersion = generation;
       // An account read started while the swap was pending can return the old order.
       const read = fetchAccountStatus();
