@@ -645,13 +645,25 @@ async def test_transient_usage_failure_retries_next_turn(server, monkeypatch, mo
     assert codex_usage.last_codex_usage() is not None
 
 
-def test_event_loop_shutdown_reaps_turn_usage_query(server, caplog):
+def test_event_loop_shutdown_reaps_turn_usage_query(server, caplog, monkeypatch):
     pids = server("timeout")
+    spawned = []
+    real_exec = asyncio.create_subprocess_exec
+
+    async def tracking_exec(*args, **kwargs):
+        process = await real_exec(*args, **kwargs)
+        spawned.append(process)
+        return process
+
+    # Cancelling while the child is still being spawned logs an unrelated warning.
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", tracking_exec)
 
     async def run():
+        # Debug mode also warns about slow callbacks, which depends on machine load.
+        asyncio.get_running_loop().slow_callback_duration = 60
         codex_usage.schedule_codex_usage_refresh()
         async with asyncio.timeout(5):
-            while not pids.exists() or not pids.read_text().strip():
+            while not spawned or not pids.exists() or not pids.read_text().strip():
                 await asyncio.sleep(0.01)
 
     asyncio.run(run(), debug=True)
