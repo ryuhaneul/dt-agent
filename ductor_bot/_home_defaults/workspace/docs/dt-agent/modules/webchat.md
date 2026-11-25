@@ -182,9 +182,10 @@ topic mutations use a 45-second bridge request timeout. Message POSTs use the sa
 limit because they also accept `/stop`; normal sends return without waiting for
 the turn to finish.
 The answering indicator follows activity in the selected topic, including the general conversation.
-If the topic list request fails right after a web turn ends, the indicator can stay
-off while other work in that topic is still running, and a finished turn can keep
-its streaming bubble, until the next event or refresh.
+If a topic list request fails right after a web turn ends, or while reconnect
+recovery is still waiting for its own request, the indicator or a finished turn's
+streaming bubble can be wrong until the next event or refresh. While the indicator
+is shown only from a snapshot, rechecks stop after about two minutes.
 Topic creation, rename and deletion call Telegram's forum topic API; deletion
 also removes the exact session, history and queued deliveries for that topic.
 The **Imported history** group covers topics with zero live entries and activity
