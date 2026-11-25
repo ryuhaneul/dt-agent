@@ -261,6 +261,29 @@ async def test_index_reuses_parsing_and_updates_local_append(tmp_path, monkeypat
     assert parser.call_count == 0
 
 
+async def test_count_after_distinguishes_rows_from_sequences_and_rebuilds_index(tmp_path):
+    store = HistoryStore(tmp_path)
+    await store.append("1", Entry("user", "import", "first", imported=True, seq=-2))
+    await store.append("1", Entry("bot", "import", "second", imported=True, seq=-1))
+
+    assert await store.count_after("1", -2) == 1
+    await store.append(
+        "1", Entry("event", "import", "duplicate", kind="log", imported=True, seq=-1)
+    )
+    assert await store.count_after("1", None) == (await store.summary("1")).count == 3
+    assert await store.count_after("1", -2) == 1
+    assert await store.count_after("1", -3) == 2
+
+    other = HistoryStore(tmp_path)
+    await other.append("1", Entry("bot", "import", "earlier", imported=True, seq=-4))
+    assert await store.count_after("1", None) == 4
+    assert await store.count_after("1", -3) == 2
+    assert await store.count_after("1", -2) == 1
+    assert await store.count_after("1", -1) == 0
+    assert await store.count_after("2", None) == 0
+    assert await store.count_after("2", -2) == 0
+
+
 async def test_index_randomized_reference_equivalence(tmp_path):  # noqa: C901, PLR0912 - mutation matrix
     import random
     from datetime import UTC, datetime, timedelta

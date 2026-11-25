@@ -2,7 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import suppress
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
+
+import pytest
+
+from ductor_bot.cli.types import AgentResponse
+from ductor_bot.config import AgentConfig, MatrixConfig
+from ductor_bot.i18n import t
+from ductor_bot.messenger.matrix.bot import MatrixBot
 from ductor_bot.messenger.matrix.buttons import REACTION_DIGITS, ButtonTracker
+from ductor_bot.orchestrator.registry import OrchestratorResult
+from ductor_bot.session.key import SessionKey
+from tests.orchestrator.conftest import orch, workspace  # noqa: F401
 
 
 class TestButtonTracker:
@@ -138,3 +152,439 @@ class TestRegisterButtons:
             callback_data=["ms:p:claude", "ms:p:codex"],
         )
         assert bt.match_input("!room:s", "2") == "ms:p:codex"
+
+
+_ROOM = "!buttons:example.invalid"
+_USER = "@reader:example.invalid"
+_BOT = "@bot:example.invalid"
+_REPLY = "Named session reply"
+_CALLBACK_LABEL = "Continue"
+
+
+@pytest.fixture
+async def matrix_bot(orch, monkeypatch):  # noqa: F811 - imported fixture
+    nio = pytest.importorskip("nio")
+    client = Mock(user_id=_BOT, room_read_markers=AsyncMock())
+    monkeypatch.setattr(nio, "AsyncClient", Mock(return_value=client))
+    config = orch._config.model_copy(update={"ductor_home": str(orch.paths.ductor_home)})
+    config.matrix.allowed_rooms = [_ROOM]
+    config.matrix.allowed_users = [_USER]
+    bot = MatrixBot(config)
+    bot._orchestrator = orch
+    bot._ready = True
+    monkeypatch.setattr(bot, "_send_rich", AsyncMock())
+    yield bot
+    tasks = tuple(bot._background_tasks)
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.fixture
+def named_button(matrix_bot):
+    key = SessionKey.matrix(matrix_bot.id_map.room_to_int(_ROOM))
+    sessions = matrix_bot._orch._named_sessions
+    session = sessions.create(key.chat_id, "claude", "opus", "Initial turn", key=key)
+    sessions.update_after_response(key.chat_id, session.name, "previous-session")
+    cli = matrix_bot._orch._cli_service
+    response = AgentResponse(result=_REPLY, session_id="next-session")
+    cli.execute.return_value = response
+    cli.execute_streaming.return_value = response
+    return key, session.name, f"ns:{session.name}:{_CALLBACK_LABEL}"
+
+
+def _text_event(body, event_id):
+    from nio import RoomMessageText
+
+    return RoomMessageText(
+        {"sender": _USER, "event_id": event_id, "origin_server_ts": 1_700_000_000_000},
+        body,
+        None,
+        None,
+    )
+
+
+async def _press_named_button(bot, data, trigger):
+    from nio import MatrixRoom, ReactionEvent
+
+    room = MatrixRoom(_ROOM, _BOT)
+    if trigger == "number":
+        bot._button_tracker.extract_and_format(_ROOM, f"[button:{data}]")
+        await bot._on_message(room, _text_event("1", "$input"))
+    else:
+        bot._button_tracker.register_buttons(_ROOM, "$buttons", [_CALLBACK_LABEL], [data])
+        reaction = ReactionEvent(
+            {"sender": _USER, "event_id": "$reaction", "origin_server_ts": 1_700_000_000_000},
+            "$buttons",
+            REACTION_DIGITS[0],
+        )
+        await bot._on_reaction(room, reaction)
+
+
+async def _finish_button_tasks(bot):
+    await asyncio.wait_for(asyncio.gather(*tuple(bot._background_tasks)), timeout=2)
+
+
+@pytest.mark.parametrize("trigger", ["number", "reaction"])
+@pytest.mark.parametrize("streaming", [False, True], ids=["nonstreaming", "streaming"])
+@pytest.mark.parametrize("abort_scope", ["chat", "topic"])
+async def test_named_button_replies_after_stale_abort(
+    matrix_bot, named_button, trigger, streaming, abort_scope
+):
+    bot = matrix_bot
+    key, name, data = named_button
+    bot.config.streaming.enabled = streaming
+    registry = bot._orch._process_registry
+    if abort_scope == "chat":
+        await registry.kill_all(key.chat_id)
+    else:
+        registry._aborted_topics.add((key.chat_id, key.topic_id))
+
+    await _press_named_button(bot, data, trigger)
+    await _finish_button_tasks(bot)
+
+    cli = bot._orch._cli_service
+    execute, unused = (
+        (cli.execute_streaming, cli.execute)
+        if streaming
+        else (
+            cli.execute,
+            cli.execute_streaming,
+        )
+    )
+    execute.assert_awaited_once()
+    unused.assert_not_awaited()
+    request = execute.await_args.args[0]
+    assert request.resume_session == "previous-session"
+    assert request.prompt == _CALLBACK_LABEL
+    bot._send_rich.assert_awaited_once_with(_ROOM, f"**[{name} | claude]**\n{_REPLY}")
+    assert not registry.was_aborted(key.chat_id)
+    assert not registry.was_aborted_topic(key.chat_id, key.topic_id)
+
+
+@pytest.mark.parametrize("trigger", ["number", "reaction"])
+@pytest.mark.parametrize("streaming", [False, True], ids=["nonstreaming", "streaming"])
+async def test_ended_named_button_reports_ended_without_cli(
+    matrix_bot, named_button, trigger, streaming
+):
+    bot = matrix_bot
+    key, name, data = named_button
+    bot.config.streaming.enabled = streaming
+    assert bot._orch._named_sessions.end_session(key.chat_id, name)
+
+    await _press_named_button(bot, data, trigger)
+    await _finish_button_tasks(bot)
+
+    bot._orch._cli_service.execute.assert_not_awaited()
+    bot._orch._cli_service.execute_streaming.assert_not_awaited()
+    bot._send_rich.assert_awaited_once_with(_ROOM, t("session.ended", name=name))
+
+
+async def test_named_button_returns_before_room_lock_is_available(matrix_bot, named_button):
+    bot = matrix_bot
+    key, name, data = named_button
+    bot.config.streaming.enabled = False
+
+    async with bot._lock_pool.get(key.lock_key):
+        await asyncio.wait_for(bot._handle_button_callback(_ROOM, "", data), timeout=2)
+        await asyncio.sleep(0)
+        bot._orch._cli_service.execute.assert_not_awaited()
+        bot._send_rich.assert_not_awaited()
+        assert bot._message_queue.pending_count(key.chat_id) == 1
+
+    await _finish_button_tasks(bot)
+    bot._orch._cli_service.execute.assert_awaited_once()
+    bot._send_rich.assert_awaited_once_with(_ROOM, f"**[{name} | claude]**\n{_REPLY}")
+
+
+async def test_waiting_named_button_preserves_abort_marks_until_admitted(matrix_bot, named_button):
+    bot = matrix_bot
+    key, _, data = named_button
+    registry = bot._orch._process_registry
+    bot.config.streaming.enabled = False
+
+    async with bot._lock_pool.get(key.lock_key):
+        await registry.kill_all(key.chat_id)
+        registry._aborted_topics.add((key.chat_id, key.topic_id))
+        await asyncio.wait_for(bot._handle_button_callback(_ROOM, "", data), timeout=2)
+        await asyncio.sleep(0)
+        assert registry.was_aborted(key.chat_id)
+        assert registry.was_aborted_topic(key.chat_id, key.topic_id)
+        bot._orch._cli_service.execute.assert_not_awaited()
+
+    await _finish_button_tasks(bot)
+    assert not registry.was_aborted(key.chat_id)
+    assert not registry.was_aborted_topic(key.chat_id, key.topic_id)
+    bot._orch._cli_service.execute.assert_awaited_once()
+
+
+async def test_stop_cancels_waiting_named_button(matrix_bot, named_button):
+    from nio import MatrixRoom
+
+    bot = matrix_bot
+    key, _, data = named_button
+    bot.config.streaming.enabled = False
+
+    async with bot._lock_pool.get(key.lock_key):
+        await asyncio.wait_for(bot._handle_button_callback(_ROOM, "", data), timeout=2)
+        await asyncio.sleep(0)
+        assert bot._message_queue.pending_count(key.chat_id) == 1
+        (task,) = bot._background_tasks
+
+        await asyncio.wait_for(
+            bot._on_message(MatrixRoom(_ROOM, _BOT), _text_event("!stop", "$stop")), timeout=2
+        )
+        await asyncio.sleep(0)
+        assert task.cancelled()
+        assert bot._message_queue.pending_count(key.chat_id) == 0
+        assert bot._orch._process_registry.was_aborted(key.chat_id)
+
+    bot._orch._cli_service.execute.assert_not_awaited()
+    bot._send_rich.assert_awaited_once_with(_ROOM, t("abort_all.done", count=1))
+
+
+@pytest.mark.parametrize("data", ["tsc:list", "ordinary choice"])
+async def test_other_button_callbacks_keep_existing_routes(matrix_bot, monkeypatch, data):
+    bot = matrix_bot
+    handle = AsyncMock(return_value=OrchestratorResult(text="Handled choice"))
+    monkeypatch.setattr(bot._orch, "handle_message", handle)
+    key = SessionKey.matrix(bot.id_map.room_to_int(_ROOM))
+
+    await bot._handle_button_callback(_ROOM, "$buttons", data)
+
+    if data == "tsc:list":
+        handle.assert_not_awaited()
+        bot._send_rich.assert_awaited_once_with(_ROOM, t("notice.task_system_unavailable"))
+    else:
+        handle.assert_awaited_once_with(key, data)
+        bot._send_rich.assert_awaited_once_with(_ROOM, "Handled choice")
+    assert not bot._background_tasks
+
+
+@pytest.mark.parametrize(
+    ("sender", "room_allowed", "leaving", "group_mention_only", "accepted", "rejected"),
+    [
+        ("@guest:s", True, False, False, False, True),
+        ("@user:s", False, False, False, False, True),
+        ("@user:s", True, False, False, True, False),
+        ("@bot:s", True, False, False, False, False),
+        ("@user:s", True, True, False, False, False),
+        ("@user:s", True, False, True, True, False),
+        ("@guest:s", True, False, True, True, False),
+        ("@user:s", False, False, True, False, True),
+    ],
+    ids=[
+        "user-denied",
+        "room-denied",
+        "authorized",
+        "own-reaction",
+        "leaving-room",
+        "group-without-mention",
+        "group-room-policy",
+        "group-room-denied",
+    ],
+)
+async def test_reaction_button_authorization(
+    *,
+    sender: str,
+    room_allowed: bool,
+    leaving: bool,
+    group_mention_only: bool,
+    accepted: bool,
+    rejected: bool,
+) -> None:
+    nio = pytest.importorskip("nio")
+    room = nio.MatrixRoom("!room:s", "@bot:s")
+    if group_mention_only:
+        room.name = "Group"
+    allowed_rooms = [room.room_id] if room_allowed else ["!other:s"]
+    bot = MatrixBot.__new__(MatrixBot)
+    bot._ready = True
+    bot._config = AgentConfig(
+        group_mention_only=group_mention_only,
+        matrix=MatrixConfig(allowed_rooms=allowed_rooms, allowed_users=["@user:s"]),
+    )
+    bot._client = SimpleNamespace(user_id="@bot:s")
+    bot._allowed_rooms_set = set(allowed_rooms)
+    bot._leaving_rooms = {room.room_id} if leaving else set()
+    bot._rejections = Mock()
+    bot._button_tracker = ButtonTracker()
+    bot._button_tracker.register_buttons(room.room_id, "$options", ["Choice"], ["cb:choice"])
+    callback = AsyncMock()
+    bot._handle_button_callback = callback
+    event = nio.ReactionEvent.from_dict(
+        {
+            "sender": sender,
+            "event_id": "$reaction",
+            "origin_server_ts": 1,
+            "type": "m.reaction",
+            "content": {
+                "m.relates_to": {
+                    "rel_type": "m.annotation",
+                    "event_id": "$options",
+                    "key": REACTION_DIGITS[0],
+                },
+            },
+        },
+    )
+    assert isinstance(event, nio.ReactionEvent)
+
+    await bot._on_reaction(room, event)
+
+    if accepted:
+        callback.assert_awaited_once_with(room.room_id, "$options", "cb:choice")
+        assert bot._button_tracker.match_input(room.room_id, "1") is None
+    else:
+        callback.assert_not_awaited()
+        assert bot._button_tracker.match_input(room.room_id, "1") == "cb:choice"
+    if rejected:
+        room_kind = "group" if group_mention_only else "private"
+        bot._rejections.log.assert_called_once_with(room_kind, room.room_id, sender, None)
+    else:
+        bot._rejections.log.assert_not_called()
+
+
+@pytest.fixture
+def killed_cli(matrix_bot, named_button, monkeypatch):
+    key, _, _ = named_button
+    registry = matrix_bot._orch._process_registry
+    process = SimpleNamespace(pid=42, returncode=None, stdin=None)
+    started, exited = asyncio.Event(), asyncio.Event()
+
+    def terminate(pid):
+        assert pid == process.pid
+        process.returncode = -15
+        exited.set()
+
+    async def execute(request, **_kwargs):
+        tracked = registry.register(
+            key.chat_id, process, request.process_label, topic_id=key.topic_id
+        )
+        try:
+            started.set()
+            await exited.wait()
+            return AgentResponse(result="Stopped", returncode=process.returncode, is_error=True)
+        finally:
+            registry.unregister(tracked)
+
+    monkeypatch.setattr("ductor_bot.cli.process_registry.terminate_process_tree", terminate)
+    monkeypatch.setattr("ductor_bot.cli.process_registry._SIGTERM_GRACE_SECONDS", 0)
+    return execute, started, exited
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["nonstreaming", "streaming"])
+async def test_stop_all_during_named_button_leaves_session_resumable(
+    matrix_bot, named_button, killed_cli, streaming
+):
+    from nio import MatrixRoom
+
+    bot = matrix_bot
+    key, name, data = named_button
+    bot.config.streaming.enabled = streaming
+    cli = bot._orch._cli_service
+    execute = cli.execute_streaming if streaming else cli.execute
+    killed_reply, started, exited = killed_cli
+    execute.side_effect = killed_reply
+    await bot._handle_button_callback(_ROOM, "$buttons", data)
+    await asyncio.wait_for(started.wait(), timeout=2)
+    (task,) = bot._background_tasks
+
+    await bot._on_message(MatrixRoom(_ROOM, _BOT), _text_event("!stop_all", "$stop-all"))
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2)
+    assert exited.is_set()
+    session = bot._orch.named_sessions.get(key.chat_id, name)
+    assert session is not None
+    assert session.status == "idle"
+
+    execute.side_effect = None
+    bot._send_rich.reset_mock()
+    await bot._handle_button_callback(_ROOM, "$buttons", data)
+    # The cancelled task may still be in the set until its done callback runs.
+    (retry,) = bot._background_tasks - {task}
+    await asyncio.wait_for(retry, timeout=2)
+
+    assert execute.await_count == 2
+    bot._send_rich.assert_awaited_once_with(_ROOM, f"**[{name} | claude]**\n{_REPLY}")
+
+
+@pytest.mark.parametrize("command", ["!stop", "!stop_all"])
+@pytest.mark.parametrize("streaming", [False, True], ids=["nonstreaming", "streaming"])
+async def test_stop_before_named_button_cli_prevents_execution(
+    matrix_bot, named_button, monkeypatch, command, streaming
+):
+    from nio import MatrixRoom
+
+    bot = matrix_bot
+    key, name, data = named_button
+    bot.config.streaming.enabled = streaming
+    auth_started, auth_release = asyncio.Event(), asyncio.Event()
+
+    async def wait_for_auth(*_args):
+        auth_started.set()
+        await auth_release.wait()
+
+    monkeypatch.setattr("ductor_bot.orchestrator.flows._user_auth_warning", wait_for_auth)
+    await bot._handle_button_callback(_ROOM, "$buttons", data)
+    await asyncio.wait_for(auth_started.wait(), timeout=2)
+    (task,) = bot._background_tasks
+    assert bot._lock_pool.get(key.lock_key).locked()
+
+    await bot._on_message(MatrixRoom(_ROOM, _BOT), _text_event(command, "$stop"))
+    bot._send_rich.assert_awaited_once()
+    bot._send_rich.reset_mock()
+    auth_release.set()
+    with suppress(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2)
+
+    bot._orch._cli_service.execute.assert_not_awaited()
+    bot._orch._cli_service.execute_streaming.assert_not_awaited()
+    bot._send_rich.assert_not_awaited()
+    assert task.cancelled()
+    session = bot._orch.named_sessions.get(key.chat_id, name)
+    assert session is not None
+    assert session.status == ("ended" if command == "!stop" else "idle")
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["nonstreaming", "streaming"])
+async def test_stop_during_named_button_preserves_ended(
+    matrix_bot, named_button, killed_cli, streaming
+):
+    from nio import MatrixRoom
+
+    bot = matrix_bot
+    key, name, data = named_button
+    bot.config.streaming.enabled = streaming
+    cli = bot._orch._cli_service
+    execute = cli.execute_streaming if streaming else cli.execute
+    killed_reply, started, exited = killed_cli
+    finish_cancel = asyncio.Event()
+
+    async def cancel_after_stop(request, **kwargs):
+        try:
+            return await killed_reply(request, **kwargs)
+        except asyncio.CancelledError:
+            await finish_cancel.wait()
+            raise
+
+    execute.side_effect = cancel_after_stop
+    await bot._handle_button_callback(_ROOM, "$buttons", data)
+    await asyncio.wait_for(started.wait(), timeout=2)
+    (task,) = bot._background_tasks
+
+    await bot._on_message(MatrixRoom(_ROOM, _BOT), _text_event("!stop", "$stop"))
+    assert exited.is_set()
+    session = bot._orch.named_sessions.get(key.chat_id, name)
+    assert session is not None
+    assert session.status == "ended"
+    finish_cancel.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2)
+    assert session.status == "ended"
+
+    bot._send_rich.reset_mock()
+    await bot._handle_button_callback(_ROOM, "$buttons", data)
+    await _finish_button_tasks(bot)
+
+    execute.assert_awaited_once()
+    bot._send_rich.assert_awaited_once_with(_ROOM, t("session.ended", name=name))

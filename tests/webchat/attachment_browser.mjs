@@ -20,7 +20,7 @@ const browser=await chromium.launch({headless:true});
 const context=await browser.newContext({viewport:{width:1280,height:720},permissions:['clipboard-read','clipboard-write']});
 const page=await context.newPage(), errors=[], sessions=new Map(), messages=[], requests=[];
 page.on('pageerror',error=>errors.push(error.message));
-const topic={tid:'123.7',chat_id:123,topic_id:7,name:'Attachment checks',preview:'',group:'telegram',count:0,imported_count:0,read_only:false,renamable:true,deletable:true,busy:false,seen:0};
+const topic={tid:'123.7',chat_id:123,topic_id:7,name:'Attachment checks',preview:'',group:'telegram',count:0,unread:0,imported_count:0,read_only:false,renamable:true,deletable:true,busy:false,seen:0};
 let settings={max_file_bytes:2*1024**3,max_files_per_message:10,chunk_bytes:1024**2,server_max_file_bytes:2*1024**3,server_max_files_per_message:10}, failPut=false;
 const draftTopic={...topic,tid:'123.8',topic_id:8,name:'Other draft'};
 const composerDraft='Send this\nmultiline draft\nnow';

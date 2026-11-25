@@ -10,6 +10,7 @@ import logging
 import secrets
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import asdict
+from itertools import pairwise
 from typing import TYPE_CHECKING, Any, Literal
 
 from aiogram.exceptions import TelegramAPIError
@@ -93,6 +94,27 @@ logger = logging.getLogger(__name__)
 
 _PREFIX = "/webchat/v1"
 CLI_LOGIN = web.AppKey("cli_login_manager", CliLoginManager)
+
+
+def _login_slot_rows(home: Path, configured: list[str]) -> list[dict[str, object]]:
+    priority = list(dict.fromkeys(name for name in configured if claude_slots.is_slot_name(name)))
+    if not configured:
+        priority = [DEFAULT_SLOT]
+    names = [*priority, *claude_slots.unregistered_slots(home, priority)]
+    expired_slots: set[str] = set()
+    # Expiration metadata must not prevent listing existing login slots.
+    with contextlib.suppress(Exception):
+        expired_slots = set(SlotRegistry(state_file_path(home)).load().auth_failures)
+    return [
+        {
+            "name": name,
+            "kind": slot_kind(host_slot_config_dir(home, name)),
+            "auth_expired": name in expired_slots,
+            "priority": priority.index(name) + 1 if name in priority else None,
+            "authenticated": slot_is_authenticated(host_slot_config_dir(home, name)),
+        }
+        for name in names
+    ]
 
 
 def _claude_slot_rows(home: Path, accounts: list[str]) -> list[dict[str, object]]:
@@ -402,10 +424,19 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
         try:
             cursors = await read_state.load()
         except OSError:
-            cursors = {}
-        return web.json_response(
-            {"topics": [{**topic, "seen": cursors.get(topic["tid"])} for topic in listed]}
-        )
+            return web.json_response(
+                {"topics": [{**topic, "seen": None, "unread": None} for topic in listed]}
+            )
+        try:
+            result = []
+            for topic in listed:
+                tid = topic["tid"]
+                cursor = cursors.get(tid)
+                unread = await runtime.history.count_after(tid, cursor)
+                result.append({**topic, "seen": cursor, "unread": unread})
+        except LockTimeoutError:
+            return _error("history_busy", 503)
+        return web.json_response({"topics": result})
 
     async def save_seen(request: web.Request) -> web.Response:
         tid = request.match_info["tid"]
@@ -1159,31 +1190,8 @@ def _register_cli_login_routes(app: web.Application, bot: TelegramBot) -> None: 
     app.on_cleanup.append(close)
 
     def list_slots() -> list[dict[str, object]]:
-        configured = claude_slots.read_accounts(paths.ductor_home)
-        priority = list(
-            dict.fromkeys(name for name in configured if claude_slots.is_slot_name(name))
-        )
-        if not configured:
-            priority = ["claude"]
-        names = [*priority, *claude_slots.unregistered_slots(paths.ductor_home, priority)]
-        expired_slots: set[str] = set()
-        # Expiration metadata must not prevent listing existing login slots.
-        with contextlib.suppress(Exception):
-            expired_slots = set(
-                SlotRegistry(state_file_path(paths.ductor_home)).load().auth_failures
-            )
-        return [
-            {
-                "name": name,
-                "kind": slot_kind(host_slot_config_dir(paths.ductor_home, name)),
-                "auth_expired": name in expired_slots,
-                "priority": priority.index(name) + 1 if name in priority else None,
-                "authenticated": slot_is_authenticated(
-                    host_slot_config_dir(paths.ductor_home, name)
-                ),
-            }
-            for name in names
-        ]
+        home = paths.ductor_home
+        return _login_slot_rows(home, claude_slots.read_accounts(home))
 
     async def handle(request: web.Request) -> web.Response:  # noqa: C901, PLR0911, PLR0912
         owner = request.headers.get("X-Dtw-Owner", "")
@@ -1277,6 +1285,46 @@ def _register_cli_login_routes(app: web.Application, bot: TelegramBot) -> None: 
             return _error(failure, 500)
         return web.json_response({"ok": True})
 
+    async def swap_slots(request: web.Request) -> web.Response:
+        if not request.headers.get("X-Dtw-Owner"):
+            return _error("forbidden", 403)
+        body = await _body(request)
+        view, expected = body.get("view"), body.get("expected")
+        if (
+            view not in ("login", "usage")
+            or not isinstance(expected, list)
+            or not all(isinstance(name, str) for name in expected)
+        ):
+            return _error("bad_request", 400)
+        first, second = request.match_info["slot"], request.match_info["other"]
+        home = paths.ductor_home
+
+        def validate(accounts: list[str]) -> None:
+            if view == "login":
+                visible = [
+                    row["name"]
+                    for row in _login_slot_rows(home, accounts)
+                    if row["priority"] is not None
+                ]
+            else:
+                visible = [row["name"] for row in _claude_slot_rows(home, accounts)]
+            if visible != expected:
+                raise ValueError("slot_order_changed")
+            if first == second or not any(
+                (left, right) in ((first, second), (second, first))
+                for left, right in pairwise(expected)
+            ):
+                raise ValueError("invalid_swap")
+
+        try:
+            await asyncio.to_thread(claude_slots.swap, home, first, second, validate=validate)
+        except (OSError, ValueError) as exc:
+            code = str(exc) if isinstance(exc, ValueError) else ""
+            status = {"slot_order_changed": 409, "invalid_swap": 400}.get(code)
+            return _error(code, status) if status is not None else _error("slot_move_error", 500)
+        return web.json_response({"ok": True})
+
+    app.router.add_post(f"{_PREFIX}/cli-login/slots/{{slot}}/swap/{{other}}", swap_slots)
     app.router.add_delete(f"{_PREFIX}/cli-login/slots/{{slot}}", mutate_slot)
     app.router.add_post(
         f"{_PREFIX}/cli-login/slots/{{slot}}/{{action:logout|disconnect}}", mutate_slot

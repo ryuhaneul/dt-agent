@@ -121,7 +121,7 @@ async function check(width, browser) {
       if (endpoint === '/api/state') return reply({ telegram: { state: 'up' }, bot: { up: true }, outbox: { pending: 0 } });
       if (endpoint === '/api/topics') return reply({ topics: [{
         tid: '1.2', chat_id: 1, topic_id: 2, name: 'Example topic', group: 'telegram',
-        count: 0, last_ts: null, preview: '', deletable: true, renamable: true,
+        count: 0, unread: 0, last_ts: null, preview: '', deletable: true, renamable: true,
       }] });
       if (endpoint.endsWith('/messages')) return reply({ entries: [], has_more: false });
       if (endpoint === '/api/files') return reply({ files: [{ name: 'PERSONA.md' }] });

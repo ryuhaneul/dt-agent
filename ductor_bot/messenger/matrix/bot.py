@@ -36,7 +36,7 @@ from ductor_bot.session.key import SessionKey
 from ductor_bot.text.response_format import SEP, fmt
 
 if TYPE_CHECKING:
-    from nio import AsyncClient, MatrixRoom, RoomMessageMedia, RoomMessageText
+    from nio import AsyncClient, MatrixRoom, ReactionEvent, RoomMessageMedia, RoomMessageText
 
     from ductor_bot.bus.envelope import DeliveryOutcome
     from ductor_bot.infra.shutdown_budget import ShutdownBudget
@@ -330,7 +330,7 @@ class MatrixBot:
     def _should_process_event(
         self,
         room: MatrixRoom,
-        event: RoomMessageText | RoomMessageMedia,
+        event: RoomMessageText | RoomMessageMedia | ReactionEvent,
         sender: str,
     ) -> bool:
         """Common guard checks for incoming events.
@@ -828,7 +828,7 @@ class MatrixBot:
     def _is_authorized(
         self,
         room: MatrixRoom,
-        event: RoomMessageText | RoomMessageMedia,
+        event: RoomMessageText | RoomMessageMedia | ReactionEvent,
     ) -> bool:
         """Check if the sender/room is authorized.
 
@@ -1003,8 +1003,8 @@ class MatrixBot:
             return
         if not isinstance(room, MatrixRoom) or not isinstance(event, ReactionEvent):
             return
-        if event.sender == self._client.user_id:
-            return  # Ignore own reactions
+        if not self._should_process_event(room, event, event.sender):
+            return
 
         room_id = room.room_id
         cb = self._button_tracker.match_reaction(room_id, event.reacts_to, event.key)
@@ -1035,7 +1035,12 @@ class MatrixBot:
 
         # Transport-specific callbacks handled locally.
         if callback_data.startswith("ns:"):
-            await self._handle_ns_callback(room_id, key, callback_data)
+            task = self._spawn_task(
+                self._ns_callback_with_lock(room_id, key, callback_data),
+                name="mx-ns-button",
+            )
+            if task is not None:
+                self._message_queue.track(chat_id=chat_id, task=task)
         else:
             # Unknown callback — treat as text input to the orchestrator
             resp = await orch.handle_message(key, callback_data)
@@ -1043,6 +1048,14 @@ class MatrixBot:
                 await self._send_rich(room_id, resp.text)
 
     # --- Named session callback ---
+
+    async def _ns_callback_with_lock(self, room_id: str, key: SessionKey, data: str) -> None:
+        lock = self._lock_pool.get(key.lock_key)
+        async with input_lock(lock):
+            registry = self._orch._process_registry
+            registry.clear_abort(key.chat_id)
+            registry.clear_topic_abort(key.chat_id, key.topic_id)
+            await self._handle_ns_callback(room_id, key, data)
 
     async def _handle_ns_callback(self, room_id: str, key: SessionKey, data: str) -> None:
         """Handle ``ns:<session_name>:<label>`` button callbacks."""
@@ -1057,14 +1070,21 @@ class MatrixBot:
         if not orch:
             return
 
-        if self._config.streaming.enabled:
-            from ductor_bot.orchestrator.flows import named_session_streaming
+        try:
+            if self._config.streaming.enabled:
+                from ductor_bot.orchestrator.flows import named_session_streaming
 
-            result = await named_session_streaming(orch, key, session_name, label)
-        else:
-            from ductor_bot.orchestrator.flows import named_session_flow
+                result = await named_session_streaming(orch, key, session_name, label)
+            else:
+                from ductor_bot.orchestrator.flows import named_session_flow
 
-            result = await named_session_flow(orch, key, session_name, label)
+                result = await named_session_flow(orch, key, session_name, label)
+        except asyncio.CancelledError:
+            # Cancellation can bypass the flow's in-memory abort cleanup.
+            session = orch.named_sessions.get(key.chat_id, session_name)
+            if session is not None and session.status == "running":
+                session.status = "idle"
+            raise
 
         if result.text:
             await self._send_rich(room_id, result.text)

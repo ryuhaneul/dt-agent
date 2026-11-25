@@ -51,6 +51,9 @@ async function run(browser, origin, width, theme) {
   const failures = [];
   const providerStates = { claude: 'authenticated', codex: 'installed', grok: 'installed' };
   let current, cancelled = false, resumeAfterCancel = false, loginFailed = false;
+  let accountSlots = slots, releaseSwap, swapStarted, rejectSwap = false;
+  const swaps = [];
+  let showUsage = false;
   try {
     // Simulate browser popup restrictions while retaining real user gestures for normal and fallback links.
     await context.addInitScript(() => {
@@ -82,7 +85,7 @@ async function run(browser, origin, width, theme) {
       if (endpoint === '/api/auth/state') return reply({ authenticated: true, csrf: 'fixture-csrf', bridge_up: true });
       if (endpoint === '/api/topics') return reply({ topics: [{
         tid: '1.2', chat_id: 1, topic_id: 2, name: 'Markdown fixture', group: 'telegram',
-        count: 1, seen: 1, renamable: true, deletable: true, read_only: false, busy: false,
+        count: 1, seen: 1, unread: 0, renamable: true, deletable: true, read_only: false, busy: false,
         preview: '~~literal~~ and bold', created_at: null, last_ts: null, imported_count: 0,
       }] });
       if (endpoint === '/api/masterkey/status') return reply({ state: 'unconfigured' });
@@ -90,14 +93,47 @@ async function run(browser, origin, width, theme) {
         id: 'fixture-entry', seq: 1, role: 'bot', source: 'telegram', ts: null,
         text: '~~literal~~ and **bold**',
       }] });
-      if (endpoint === '/api/state') return reply({
-        telegram: { state: 'up' }, outbox: { pending: 0 }, bot: { up: true }, web_sessions: 1,
-      });
+      if (endpoint === '/api/state') {
+        const visible = showUsage ? accountSlots.filter(slot => slot.priority != null) : [];
+        return reply({
+          telegram: { state: 'up' }, outbox: { pending: 0 }, bot: { up: true }, web_sessions: 1,
+          ...(visible.length ? { claude: {
+            next: visible[0].name,
+            slots: visible.map(({ name, kind }) => ({ name, kind, state: 'ok' })),
+          } } : {}),
+        });
+      }
       if (endpoint === '/api/cli-login/status') return reply({
         providers: providerStates,
-        claude_slots: slots, running: cancelled && resumeAfterCancel,
+        claude_slots: accountSlots, running: cancelled && resumeAfterCancel,
         ...(cancelled && resumeAfterCancel ? { provider: 'claude', job_id: 'fixture-resumed' } : {}),
       });
+      if (endpoint.includes('/swap/')) {
+        assert.equal(request.method(), 'POST');
+        const parts = endpoint.split('/');
+        const name = parts.at(-3), other = parts.at(-1);
+        const body = request.postDataJSON();
+        const expected = rejectSwap === 'conflict'
+          ? ['claude', accountSlots[1].name, 'claude-backup']
+          : accountSlots.filter(item => item.priority != null).map(item => item.name);
+        assert.deepEqual(body?.expected, expected);
+        swaps.push([name, other, body.view]);
+        if (rejectSwap === 'conflict') {
+          return route.fulfill({ status: 409, json: { error: 'slot_order_changed' } });
+        }
+        if (rejectSwap) return route.fulfill({ status: 500, json: { error: 'slot_move_error' } });
+        return new Promise(resolve => {
+          releaseSwap = () => {
+            const a = accountSlots.findIndex(item => item.name === name);
+            const b = accountSlots.findIndex(item => item.name === other);
+            [accountSlots[a], accountSlots[b]] = [accountSlots[b], accountSlots[a]];
+            accountSlots = accountSlots.map((item, index) =>
+              ({ ...item, priority: item.priority == null ? null : index + 1 }));
+            resolve(reply({ ok: true }));
+          };
+          swapStarted();
+        });
+      }
       if (endpoint === '/api/cli-login/jobs') {
         current = request.postDataJSON();
         cancelled = false;
@@ -315,6 +351,162 @@ async function run(browser, origin, width, theme) {
       await shot('markdown');
     } catch (error) {
       failures.push(`markdown: ${error.message}`);
+    }
+    if ([1280, 375].includes(width) && theme === 'light') {
+      const long = 'claude-long-research-account-with-a-descriptive-name';
+      const unused = slots.find(item => item.priority == null);
+      accountSlots = [slots[0], { ...slots[1], name: long },
+        { ...slots[1], name: 'claude-backup', priority: 3 }, unused];
+      cancelled = false;
+      showUsage = width === 1280;
+      await page.goto(origin);
+      const primary = page.locator('#claudeSlots [data-primary]');
+      if (showUsage) await primary.waitFor();
+      const open = async () => {
+        await act(page.locator('#accountButton'));
+        await act(page.locator('#openCliLogin'));
+      };
+      await open();
+      const dialog = page.locator('#cliLoginDlg');
+      const row = name => dialog.locator(`.cli-slot[data-slot="${name}"]`);
+      const button = (name, direction) => row(name).locator(`[data-slot-order="${direction}"]`);
+      await button(long, 'up').waitFor();
+      assert.equal(await dialog.locator('.slot-order-button').count(), 6);
+      assert.equal(await row(unused.name).locator('.slot-order-button').count(), 0);
+      assert.equal(await button('claude', 'up').isDisabled(), true);
+      assert.equal(await button('claude-backup', 'down').isDisabled(), true);
+      assert.equal(await button(long, 'up').getAttribute('aria-label'),
+        config.strings['slots.move_up'].replace('{name}', long));
+      assert.deepEqual(await dialog.evaluate(panel => {
+        const issues = [];
+        for (const row of panel.querySelectorAll('.cli-slot')) {
+          const options = row.querySelector('.cli-slot-more').getBoundingClientRect();
+          const name = row.querySelector('.cli-slot-name').getBoundingClientRect();
+          const badge = row.querySelector('.badge').getBoundingClientRect();
+          for (const button of row.querySelectorAll('.slot-order-button')) {
+            const bounds = button.getBoundingClientRect();
+            if (bounds.width < 44 || bounds.height < 44 || bounds.right > options.left
+                || Math.max(name.right, badge.right) > bounds.left) issues.push(row.dataset.slot);
+          }
+        }
+        return [panel.scrollWidth > panel.clientWidth, ...issues];
+      }), [false]);
+
+      async function move(direction, focused) {
+        const started = new Promise(resolve => { swapStarted = resolve; });
+        await act(button(long, direction));
+        await started;
+        assert.deepEqual(swaps.at(-1), [long, 'claude', 'login']);
+        assert.equal(await dialog.locator('.slot-order-button:not(:disabled)').count(), 0);
+        assert.equal(await row(long).locator('.cli-slot-more').isDisabled(), true);
+        releaseSwap();
+        await page.waitForFunction(({ long, focused }) => document.activeElement.matches(
+          `.cli-slot[data-slot="${long}"] [data-slot-order="${focused}"]:not(:disabled)`), { long, focused });
+        assert.deepEqual(await dialog.locator('.cli-slot').evaluateAll(rows => rows.map(row => row.dataset.slot)),
+          accountSlots.map(item => item.name));
+      }
+      await move('up', 'down');
+      await move('down', 'down');
+
+      const [first, middle, last] = accountSlots;
+      accountSlots = [{ ...last, priority: 1 }, middle, { ...first, priority: 3 }, unused];
+      rejectSwap = 'conflict';
+      await act(button(long, 'up'));
+      await dialog.locator('.slot-error').waitFor();
+      assert.deepEqual(swaps.at(-1), [long, 'claude', 'login']);
+      assert.deepEqual(await dialog.locator('.cli-slot').evaluateAll(rows => rows.map(row => row.dataset.slot)),
+        accountSlots.map(item => item.name));
+
+      rejectSwap = true;
+      const failure = page.waitForResponse(response => response.url().includes('/swap/'));
+      await act(button(long, 'up'));
+      assert.equal((await failure).status(), 500);
+      await page.waitForFunction(name => document.querySelector(
+        `.cli-slot[data-slot="${name}"] [data-slot-order="up"]:not(:disabled)`), long);
+      assert.equal(await button(long, 'up').isEnabled(), true);
+      await act(dialog.locator('#cliClose'));
+      accountSlots = [slots[0], unused];
+      await open();
+      await row(unused.name).waitFor();
+      assert.equal(await dialog.locator('.slot-order-button').count(), 0);
+
+      try {
+        await act(dialog.locator('#cliClose'));
+        rejectSwap = false;
+        accountSlots = [slots[0], { ...slots[1], name: long },
+          { ...slots[1], name: 'claude-backup', priority: 3 }, unused];
+        const started = new Promise(resolve => { swapStarted = resolve; });
+        const swapsBefore = swaps.length;
+        await open();
+        await act(button(long, 'up'));
+        await started;
+        await act(dialog.locator('#cliClose'));
+        await open();
+        await row(long).waitFor();
+        const disabledWhileReopened = await button(long, 'up').isDisabled();
+        const complete = releaseSwap;
+        await button(long, 'up').evaluate(element => element.click());
+        complete();
+        assert.equal(disabledWhileReopened, true, 'an in-flight swap must stay disabled after reopening');
+        await page.waitForFunction(name =>
+          document.querySelector('#cliLoginDlg .cli-slot')?.dataset.slot === name, long);
+        assert.equal(swaps.length, swapsBefore + 1);
+        assert.equal(await button(long, 'down').isEnabled(), true);
+      } catch (error) {
+        failures.push(`slot reorder after reopen: ${error.message}`);
+      }
+
+      if (showUsage) {
+        try {
+          await act(dialog.locator('#cliClose'));
+          await act(primary);
+          const usage = page.locator('#claudeSlotPopover');
+          const expected = accountSlots.filter(slot => slot.priority != null).map(slot => slot.name);
+          await page.waitForFunction(expected => {
+            const rows = [...document.querySelectorAll('#claudeSlotPopover .slot-row[data-slot]')];
+            return rows.map(row => row.dataset.slot).join(',') === expected.join(',');
+          }, expected);
+          const started = new Promise(resolve => { swapStarted = resolve; });
+          await act(usage.locator(`.slot-row[data-slot="${long}"] [data-slot-order="down"]`));
+          await started;
+          releaseSwap();
+          assert.deepEqual(swaps.at(-1), [long, expected[1], 'usage']);
+        } catch (error) {
+          failures.push(`usage order after CLI swap: ${error.message}`);
+        }
+      }
+
+      if (width === 375) {
+        try {
+          await page.setViewportSize({ width, height: 667 });
+          accountSlots = Array.from({ length: 12 }, (_, index) =>
+            ({ ...slots[0], name: `claude-slot-${index}`, priority: index + 1 }));
+          rejectSwap = false;
+          await page.goto(origin);
+          await open();
+          const target = button('claude-slot-6', 'down');
+          await target.evaluate(element => {
+            const scroller = element.closest('.cli-body');
+            scroller.scrollTop += element.getBoundingClientRect().bottom
+              - scroller.getBoundingClientRect().bottom + 2;
+            element.focus({ preventScroll: true });
+          });
+          const started = new Promise(resolve => { swapStarted = resolve; });
+          await page.keyboard.press('Enter');
+          await started;
+          releaseSwap();
+          await page.waitForFunction(() => document.activeElement.matches(
+            '.cli-slot[data-slot="claude-slot-6"] [data-slot-order="down"]:not(:disabled)'));
+          const outside = await target.evaluate(element => {
+            const button = element.getBoundingClientRect();
+            const pane = element.closest('.cli-body').getBoundingClientRect();
+            return Math.max(pane.top - button.top, button.bottom - pane.bottom, 0);
+          });
+          assert.ok(outside <= 0.5, `restored CLI slot button is clipped by ${outside}px`);
+        } catch (error) {
+          failures.push(`slot reorder keyboard visibility: ${error.message}`);
+        }
+      }
     }
     assert.deepEqual(pageErrors, []);
     return failures;

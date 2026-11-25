@@ -27,7 +27,7 @@ const afterMidnight = '2025-12-31T15:00:00.000Z';
 const today = '2026-01-01T15:01:00.000Z';
 const topic = {
   tid: '1.2', chat_id: 1, topic_id: 2, name: 'Message dates', group: 'telegram',
-  count: 240, imported_count: 0, created_at: beforeMidnight, last_ts: today,
+  count: 240, unread: 240, imported_count: 0, created_at: beforeMidnight, last_ts: today,
   preview: 'Please compare current messages with earlier messages.',
   read_only: false, renamable: true, deletable: true, busy: false,
 };
@@ -41,7 +41,7 @@ const messages = Array.from({ length: topic.count }, (_, index) => ({
 messages[74].role = 'event';
 messages[74].kind = 'background';
 async function mockChat(page, entries = messages, fixture = topic, onSocket = () => {}) {
-  const fixtureTopic = { ...fixture, count: entries.length, last_ts: entries.at(-1).ts };
+  const fixtureTopic = { ...fixture, count: entries.length, unread: entries.length, last_ts: entries.at(-1).ts };
   await page.routeWebSocket('**/api/ws', onSocket);
   await page.route('**/api/**', async route => {
     const request = route.request(), url = new URL(request.url());
@@ -59,7 +59,11 @@ async function mockChat(page, entries = messages, fixture = topic, onSocket = ()
       case '/api/commands': return fulfill({ commands: [] });
       case '/api/files': return fulfill({ files: [] });
       case '/api/masterkey/status': return fulfill({ state: 'unconfigured', remaining_seconds: null });
-      case '/api/topics/1.2/seen': return fulfill({ seen: request.postDataJSON().seq });
+      case '/api/topics/1.2/seen': {
+        fixtureTopic.seen = Math.max(fixtureTopic.seen ?? -Infinity, request.postDataJSON().seq);
+        fixtureTopic.unread = entries.filter(entry => entry.seq > fixtureTopic.seen).length;
+        return fulfill({ seen: fixtureTopic.seen });
+      }
       case '/api/topics/1.2/messages': {
         if (request.method() === 'POST') return fulfill({ turn_id: 'test-turn', phase: 'queued' });
         const before = Number(url.searchParams.get('before') ?? Infinity);
@@ -216,14 +220,17 @@ async function chatFocus(browser) {
     assert.ok(afterSelection, `${width}px topic selection focuses the expected element`);
     if (readOnly) {
       const delayedTopic = { ...topic, tid: '1.3', topic_id: 3, name: 'Delayed topic', read_only: true };
-      const unreadTopic = { ...delayedTopic, tid: '1.4', topic_id: 4, name: 'Unread topic', count: 1 };
+      const unreadTopic = { ...delayedTopic, tid: '1.4', topic_id: 4, name: 'Unread topic', count: 1, unread: 1 };
       await page.route('**/api/topics', route => route.fulfill({
         json: { topics: [{ ...topic, read_only: true }, delayedTopic, unreadTopic] },
       }));
       await page.route(/\/api\/topics\/1\.4\/messages\?/, route =>
         route.fulfill({ json: { entries: [messages[6]], has_more: false } }));
-      await page.route('**/api/topics/1.4/seen', route =>
-        route.fulfill({ json: { seen: route.request().postDataJSON().seq } }));
+      await page.route('**/api/topics/1.4/seen', route => {
+        unreadTopic.seen = route.request().postDataJSON().seq;
+        unreadTopic.unread = 0;
+        return route.fulfill({ json: { seen: unreadTopic.seen } });
+      });
       await page.evaluate(async () => (await import('/static/js/topics.js')).refreshTopics());
 
       const unreadCell = page.locator('#tlist [data-tid="1.4"]');
@@ -548,8 +555,8 @@ async function copyOpenBlockWithMouse(page, event) {
 }
 
 async function copyFromCachedTopic(page, event) {
-  const other = { ...topic, tid: '1.3', topic_id: 3, name: 'Other conversation', count: 1 };
-  const original = { ...topic, name: 'Code examples', count: 2 };
+  const other = { ...topic, tid: '1.3', topic_id: 3, name: 'Other conversation', count: 1, unread: 1 };
+  const original = { ...topic, name: 'Code examples', count: 2, unread: 2 };
   let topics = [original, other];
   await page.route('**/api/topics', route => route.fulfill({ json: { topics } }));
   await page.route(/\/api\/topics\/1\.3\/messages\?/, route => route.fulfill({
@@ -559,7 +566,7 @@ async function copyFromCachedTopic(page, event) {
   await page.locator('#tlist [data-tid="1.3"]').click();
   await page.locator('#thread [data-entry-seq="42"]').waitFor();
 
-  // Fail the history reload and let the separate unread-count request reach the fixture.
+  // Fail the selected topic's history reload while removing the other topic.
   await page.route(/\/api\/topics\/1\.2\/messages\?/, route =>
     route.fulfill({ status: 503, json: {} }), { times: 1 });
   const unavailable = page.waitForResponse(response =>
@@ -752,7 +759,7 @@ async function telegramCode(browser) {
     await live.locator('[data-copy-message]').click();
     assert.equal(await page.evaluate(() => navigator.clipboard.readText()), text);
 
-    const next = { ...topic, tid: '1.3', topic_id: 3, name: 'Second topic', count: 1 };
+    const next = { ...topic, tid: '1.3', topic_id: 3, name: 'Second topic', count: 1, unread: 1 };
     await page.route('**/api/topics', route => route.fulfill({ json: { topics: [topic, next] } }));
     await page.route(/\/api\/topics\/1\.3\/messages\?/, route =>
       route.fulfill({ json: { entries: [messages[4]], has_more: false } }));
@@ -854,7 +861,7 @@ async function userLineBreaks(browser) {
       await checkMessages();
       await page.screenshot({ path: path.join(config.shots, 'user-line-breaks-' + width + '.png') });
 
-      const next = { ...topic, tid: '1.3', topic_id: 3, name: 'Second topic', count: 1 };
+      const next = { ...topic, tid: '1.3', topic_id: 3, name: 'Second topic', count: 1, unread: 1 };
       await page.route('**/api/topics', route => route.fulfill({ json: { topics: [next] } }));
       await page.route(/\/api\/topics\/1\.3\/messages\?/, route =>
         route.fulfill({ json: { entries: [messages[5]], has_more: false } }));
@@ -890,6 +897,296 @@ async function userLineBreaks(browser) {
   }
 }
 
+async function unreadBadges(browser) {
+  const page = await browser.newPage();
+  try {
+    const entries = messages.slice(0, 2);
+    const current = { ...topic, read_only: true, seen: 1, unread: 1, count: 2 };
+    const other = { ...current, tid: '1.3', topic_id: 3, name: 'Other topic', seen: null, unread: 0, count: 0 };
+    let socket;
+    await mockChat(page, entries, current, connection => { socket = connection; });
+    await page.route('**/api/topics', route => route.fulfill({ json: { topics: [current, other] } }));
+    const requests = [];
+    page.on('request', request => {
+      const { pathname } = new URL(request.url());
+      if (pathname.startsWith('/api/topics')) requests.push(pathname);
+    });
+    await page.goto(origin);
+    await page.locator('#thread [data-entry-seq="2"]').waitFor();
+    assert.ok(socket);
+    const badge = tid => page.locator(`#tlist [data-tid="${tid}"] .unread`);
+    assert.equal(await badge(current.tid).textContent(), '1');
+    const initialHistory = requests.filter(path => path.endsWith('/messages')).length;
+    const duplicate = { type: 'entry', tid: current.tid, entry: entries[1] };
+    const response = () => page.waitForResponse(reply => new URL(reply.url()).pathname === '/api/topics');
+    for (const unread of [2, 2]) {
+      const updated = response();
+      current.unread = unread;
+      socket.send(JSON.stringify(duplicate));
+      await updated;
+      await page.waitForFunction(({ tid, unread }) =>
+        document.querySelector(`#tlist [data-tid="${tid}"] .unread`)?.textContent === String(unread),
+      { tid: current.tid, unread });
+    }
+    const updated = response();
+    other.unread = 1;
+    socket.send(JSON.stringify({ type: 'entry', tid: other.tid, entry: entries[0] }));
+    await updated;
+    await badge(other.tid).waitFor();
+    assert.equal(await badge(other.tid).textContent(), '1');
+    assert.equal(await page.locator('#thread [data-entry-seq="2"]').count(), 1);
+    assert.ok(!requests.includes('/api/topics/1.3/messages'));
+    assert.equal(requests.filter(path => path.endsWith('/messages')).length, initialHistory);
+  } finally {
+    await page.close();
+  }
+}
+
+async function unreadRecovery(browser, scenario) {
+  const page = await browser.newPage();
+  const row = { ...topic, seen: 2, unread: 3, count: 5 };
+  const entryNull = scenario === 'unread-entry-null';
+  const target = entryNull ? { ...row, tid: '1.3', topic_id: 3, name: 'Other topic' } : row;
+  const list = target => ({ topics: entryNull ? [row, target] : [target] });
+  const firstList = Promise.withResolvers(), releaseList = Promise.withResolvers();
+  const writes = [];
+  let socket, nextWrite, started = false, listCalls = 0;
+  const busy = { status: 503, json: { error: 'history_busy' } };
+  const failedWrite = scenario.endsWith('-notice'), overlap = scenario.endsWith('-overlap');
+  try {
+    await mockChat(page, messages.slice(0, 2), row, peer => { socket = peer; });
+    await page.route('**/api/topics', async route => {
+      if (!started) return route.fulfill({ json: list(target) });
+      const call = ++listCalls;
+      if (call === 1) {
+        firstList.resolve();
+        if (overlap) await releaseList.promise;
+      }
+      if ((overlap && call <= 2) || (failedWrite && call === 1)) {
+        return route.fulfill(busy);
+      }
+      const unread = call === 1 ? null : entryNull ? 4 : scenario === 'unread-remote-null' ? 0 : 2;
+      return route.fulfill({ json: list({ ...target, unread, preview: 'Updated topic' }) });
+    });
+    for (const path of ['**/api/topics/1.2/seen', '**/api/topics/seen-all']) {
+      await page.route(path, async route => {
+        const gate = Promise.withResolvers();
+        writes.push(gate);
+        nextWrite?.(gate);
+        await route.fulfill(await gate.promise);
+      });
+    }
+    await page.goto(origin);
+    await page.locator('#thread [data-entry-seq="2"]').waitFor();
+    await page.evaluate(async () => (await import('/static/js/topics.js')).refreshTopics());
+    assert.ok(socket);
+    const cell = page.locator(`#tlist [data-tid="${target.tid}"]`);
+    const badge = cell.locator('.unread');
+    assert.equal(await badge.textContent(), '3');
+    await page.evaluate(() => {
+      window.unreadNotices = 0;
+      new MutationObserver(records => {
+        for (const record of records) for (const node of record.addedNodes) {
+          if (node.matches?.('.toast-error')) window.unreadNotices++;
+        }
+      }).observe(document.querySelector('#toasts'), { childList: true });
+    });
+    const write = seq => page.evaluate(async value => {
+      (await import('/static/js/topics.js')).markSeen('1.2', value);
+    }, seq);
+    const waitForList = () => page.waitForResponse(reply => new URL(reply.url()).pathname === '/api/topics');
+    const captureWrite = async trigger => {
+      const gate = Promise.withResolvers();
+      nextWrite = gate.resolve;
+      await trigger();
+      return gate.promise;
+    };
+    const put = seq => captureWrite(() => write(seq));
+    const waitForBadge = expected => page.waitForFunction(({ tid, value }) =>
+      (document.querySelector(`#tlist [data-tid="${tid}"] .unread`)?.textContent ?? '0') === value,
+    { tid: target.tid, value: expected }, { timeout: 5500 });
+    started = true;
+    if (overlap) {
+      (await put(3)).resolve({ json: { seen: 3 } });
+      await firstList.promise;
+      if (scenario === 'unread-direct-overlap') {
+        await page.evaluate(async () => {
+          await (await import('/static/js/topics.js')).refreshTopics().catch(() => {});
+        });
+      } else {
+        const failed = waitForList();
+        socket.send(JSON.stringify({ type: 'topics' }));
+        assert.equal((await failed).status(), 503, 'the topic event request fails while the first list is held');
+      }
+      releaseList.resolve();
+      await waitForBadge('2');
+      assert.equal(listCalls, 3);
+      assert.match(await page.locator('#tlist').textContent(), /Updated topic/);
+    } else if (scenario === 'unread-overlapping-puts') {
+      const first = await put(3), second = await put(4);
+      const saved = page.waitForResponse(reply =>
+        new URL(reply.url()).pathname === '/api/topics/1.2/seen' && reply.ok());
+      first.resolve({ json: { seen: 3 } });
+      await saved;
+      second.resolve(busy);
+      await waitForBadge('2');
+      assert.equal(listCalls, 2, 'an earlier successful write still requires confirmation');
+    } else if (entryNull) {
+      const unknown = waitForList();
+      socket.send(JSON.stringify({ type: 'entry', tid: target.tid, entry: messages[5] }));
+      assert.equal((await unknown).status(), 200);
+      await cell.getByText('Updated topic', { exact: true }).waitFor();
+      assert.equal(await badge.textContent(), '3');
+      await waitForBadge('4');
+      assert.equal(listCalls, 2, 'the unavailable count is retried without another signal');
+      assert.equal(writes.length, 0);
+    } else if (scenario === 'unread-remote-null') {
+      socket.send(JSON.stringify({ type: 'seen', seen: { '1.2': 5 } }));
+      await waitForBadge('0');
+      assert.equal(listCalls, 2, 'a remote seen event retries an unknown count');
+      assert.equal(writes.length, 0);
+    } else {
+      const read = scenario === 'unread-post-notice'
+        ? await captureWrite(() => page.locator('#markAllRead').click()) : await put(3);
+      const failed = waitForList();
+      read.resolve(busy);
+      assert.equal((await failed).status(), 503);
+      await waitForBadge('2');
+      assert.equal(await page.evaluate(() => window.unreadNotices), 1);
+    }
+  } finally {
+    releaseList.resolve();
+    for (const write of writes) write.resolve(busy);
+    await page.close();
+  }
+}
+
+async function reconnectHistory(browser, scenario) {
+  const visibility = scenario.startsWith('reconnect-history-visibility-');
+  const width = visibility ? Number(scenario.split('-').at(-1)) : 375;
+  const context = await browser.newContext({ viewport: { width, height: 667 } });
+  try {
+    const page = await context.newPage();
+    await page.clock.install({ time: new Date(today) });
+    const entries = messages.slice(0, 120);
+    let socket, failTopics = false, historyReads = 0, holdTopics = false;
+    const visibilityGate = visibility ? Promise.withResolvers() : null;
+    await mockChat(page, entries, topic, peer => { socket = peer; });
+    await page.route('**/api/topics', async route => {
+      if (failTopics) {
+        failTopics = false;
+        holdTopics = visibility;
+        return route.fulfill({ status: 503, json: { error: 'bot_unreachable' } });
+      }
+      if (holdTopics) await visibilityGate.promise;
+      return route.fulfill({ json: { topics: [{ ...topic, count: entries.length }] } });
+    });
+    page.on('request', request => {
+      if (request.method() === 'GET' && new URL(request.url()).pathname.endsWith('/messages')) historyReads++;
+    });
+    const topicsResponse = status => page.waitForResponse(response =>
+      new URL(response.url()).pathname === '/api/topics' && response.status() === status,
+    { timeout: 4000 });
+    await page.goto(origin);
+    await page.locator('[data-entry-seq="120"]').waitFor();
+    // Settle the read cursor and its topic badge update before disconnecting.
+    await topicsResponse(200);
+
+    if (visibility) {
+      await page.waitForFunction(() => document.querySelectorAll('#thread [data-entry-seq]').length === 100);
+      await page.evaluate(() => document.fonts.ready);
+    }
+    const readingPosition = visibility ? await scrollPosition(page, 64) : null;
+    if (visibility) assert.equal(readingPosition.gap, 64);
+    const beforeReconnect = historyReads;
+    const missing = { ...messages[120], text: 'Message received while disconnected' };
+    if (!visibility) entries.push(missing);
+    const succeeds = scenario === 'reconnect-history-success';
+    failTopics = !succeeds;
+    const first = topicsResponse(succeeds ? 200 : 503);
+    await socket.close();
+    await page.clock.fastForward(2000);
+    await first;
+    if (!succeeds) {
+      await page.locator('#toasts .toast-error').waitFor({ timeout: 2500 });
+      assert.equal(await page.locator('#toasts .toast-error').count(), 1);
+      assert.equal(historyReads, beforeReconnect);
+      if (scenario === 'reconnect-history-auth-change') {
+        await page.evaluate(() => document.dispatchEvent(new CustomEvent('auth-change', {
+          detail: { authenticated: false },
+        })));
+        // Simulate a later topic update and advance beyond the scheduled retry.
+        await page.evaluate(() => document.dispatchEvent(new CustomEvent('topics-updated')));
+        await page.clock.runFor(1200);
+        assert.equal(historyReads, beforeReconnect, 'a logged-out session must not reload its old history');
+        assert.equal(await page.locator('[data-entry-seq="121"]').count(), 0);
+        return;
+      }
+      if (visibility) {
+        assert.deepEqual(await scrollPosition(page), readingPosition);
+        const refreshed = page.waitForResponse(response => response.request().method() === 'GET'
+          && new URL(response.url()).pathname.endsWith('/messages'), { timeout: 4000 });
+        try {
+          holdTopics = false;
+          await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+          await (await refreshed).finished();
+        } finally {
+          visibilityGate.resolve();
+        }
+        assert.deepEqual(await scrollPosition(page), readingPosition, 'tab resume should preserve the reading position');
+        assert.equal(await page.locator('#toasts .toast-error').count(), 1);
+        return;
+      }
+      if (scenario === 'reconnect-history-overlap') {
+        const reading = Promise.withResolvers(), release = Promise.withResolvers();
+        let held = false;
+        await page.route('**/api/topics/*/messages?*', async route => {
+          const request = route.request(), url = new URL(request.url());
+          if (held || request.method() !== 'GET' || url.searchParams.has('before')) {
+            return route.fallback();
+          }
+          held = true;
+          const snapshot = { entries: entries.slice(-100), has_more: entries.length > 100 };
+          reading.resolve();
+          await release.promise;
+          return route.fulfill({ json: snapshot });
+        });
+        socket.send(JSON.stringify({ type: 'topics' }));
+        try {
+          await reading.promise;
+          const reconnected = topicsResponse(200);
+          await socket.close();
+          entries.push({ ...messages[121], text: 'Message received during the second disconnection' });
+          await page.clock.fastForward(2000);
+          await reconnected;
+          await page.locator('[data-entry-seq="122"]').waitFor({ timeout: 2500 })
+            .catch(() => assert.fail('the second reconnect missed the message added after the held read'));
+          assert.equal(await page.locator('[data-entry-seq="121"]').count(), 1);
+          assert.equal(await page.locator('#toasts .toast-error').count(), 1);
+        } finally {
+          release.resolve();
+        }
+        return;
+      } else {
+        const retried = topicsResponse(200);
+        if (scenario === 'reconnect-history-topics-event') socket.send(JSON.stringify({ type: 'topics' }));
+        else if (scenario === 'reconnect-history-next-resync') socket.send(JSON.stringify({ type: 'bridge', up: true }));
+        else await page.clock.runFor(1000);
+        await retried;
+      }
+    }
+    await page.locator('[data-entry-seq="121"]').waitFor({ timeout: 2500 })
+      .catch(() => assert.fail(`history was not restored after reconnect (${historyReads - beforeReconnect} reads)`));
+    assert.equal(historyReads - beforeReconnect, 2, 'recovery should read both history pages once');
+    assert.equal(await page.locator('#toasts .toast-error').count(), succeeds ? 0 : 1);
+    socket.send(JSON.stringify({ type: 'entry', tid: topic.tid, entry: messages[121] }));
+    await page.locator('[data-entry-seq="122"]').waitFor({ timeout: 2500 });
+    assert.equal(await page.locator('[data-entry-seq="121"]').count(), 1);
+  } finally {
+    await context.close();
+  }
+}
+
 async function busyIndicator(browser, scenario) {
   const context = await browser.newContext();
   try {
@@ -900,8 +1197,8 @@ async function busyIndicator(browser, scenario) {
     const terminal = scenario.startsWith('busy-terminal');
     if (/-(cancelled|entry)$/.test(scenario)) turn.phase = 'queued';
     const row = { ...topic, busy: !scenario.startsWith('busy-reconnect'), turns: terminal ? [turn] : [] };
-    let failOutbox = false, holdTopics, onHeldTopics, topicsReads = 0;
-    await mockChat(page, messages.slice(0, 2), row);
+    let failOutbox = false, holdTopics, onHeldTopics, topicsReads = 0, socket;
+    await mockChat(page, messages.slice(0, 2), row, peer => { socket = peer; });
     await page.route('**/api/topics', async route => {
       topicsReads++;
       const snapshot = structuredClone(row);
@@ -1004,6 +1301,38 @@ async function busyIndicator(browser, scenario) {
       row.turns = [];
       await event('turn', { turn_id: 'last', phase: 'cancelled' });
       await expectActivity(busy, false, 'cancelling the last queued turn should refresh the idle topic');
+    } else if (scenario === 'busy-reconnect-held-list') {
+      const stop = page.locator('#stopBtn');
+      socket.send(JSON.stringify({ type: 'turn', tid, turn_id: turn.turn_id, phase: 'started' }));
+      await expectActivity(live, true, 'the test should start with a live reply');
+      await expectActivity(stop, true, 'the running reply should show Stop');
+      row.busy = true;
+      row.turns = [turn];
+      const held = Promise.withResolvers(), release = Promise.withResolvers();
+      holdTopics = release.promise;
+      onHeldTopics = held.resolve;
+      const refreshing = page.evaluate(async () => (await import('/static/js/topics.js')).refreshTopics());
+      try {
+        await held.promise;
+        holdTopics = null;
+        row.busy = false;
+        row.turns = [];
+        let replies = 0;
+        const recovered = page.waitForResponse(reply =>
+          new URL(reply.url()).pathname === '/api/topics' && reply.ok() && ++replies === 2,
+        { timeout: 3000 });
+        socket.send(JSON.stringify({ type: 'bridge', up: false }));
+        socket.send(JSON.stringify({ type: 'bridge', up: true }));
+        socket.send(JSON.stringify({ type: 'topics' }));
+        await recovered.catch(() => assert.fail(`expected two new list responses while the old list was held, got ${replies}`));
+        await expectActivity(live, false, 'the recovery should hide the finished reply before the old list returns');
+        await expectActivity(stop, false, 'the recovery should hide Stop before the old list returns');
+      } finally {
+        release.resolve();
+        await refreshing;
+      }
+      assert.equal(await live.isVisible(), false, 'the old list must not restore the reply');
+      assert.equal(await stop.isVisible(), false, 'the old list must not restore Stop');
     } else if (scenario.startsWith('busy-reconnect-overlap-')) {
       await event('bridge', { up: true });
       await event('turn', { turn_id: turn.turn_id, phase: 'started' });
@@ -1253,9 +1582,11 @@ async function toolActivity(browser) {
 const browser = await chromium.launch();
 try {
   await fs.mkdir(config.shots, { recursive: true });
-  const scenarios = { dates: messageDates, window: preserveOldestGroup, focus: chatFocus, 'code-copy': codeCopy, 'telegram-code': telegramCode, 'telegram-code-boundaries': telegramCodeBoundaries, 'user-line-breaks': userLineBreaks, 'tool-activity': toolActivity };
+  const scenarios = { dates: messageDates, window: preserveOldestGroup, focus: chatFocus, 'code-copy': codeCopy, 'telegram-code': telegramCode, 'telegram-code-boundaries': telegramCodeBoundaries, 'user-line-breaks': userLineBreaks, 'tool-activity': toolActivity, 'unread-badges': unreadBadges };
   const scenario = process.argv[3] ?? 'dates';
   if (scenario.startsWith('overflow-')) await documentOverflow(browser, scenario);
+  else if (scenario.startsWith('unread-') && scenario !== 'unread-badges') await unreadRecovery(browser, scenario);
+  else if (scenario.startsWith('reconnect-history-')) await reconnectHistory(browser, scenario);
   else if (scenario.startsWith('busy-resume-scroll-')) await busyResumeScroll(browser, Number(scenario.split('-').at(-1)));
   else if (scenario.startsWith('busy-')) await busyIndicator(browser, scenario);
   else await scenarios[scenario](browser);

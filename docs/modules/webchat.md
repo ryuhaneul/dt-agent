@@ -162,6 +162,15 @@ any chip or the overflow button to see every available window with its usage,
 reset time and capture time. API-key slots have no OAuth usage data. The header
 hides OAuth slots without credentials and slots with disconnected API keys.
 
+Use the up and down buttons in the CLI login dialog or the header usage popover
+to swap a ranked Claude slot with the adjacent ranked slot you can see. In the
+usage popover, a slot hidden between two visible slots keeps its position, while
+a one-step move in `/accounts` swaps with the hidden slot. If the order changed since
+the dialog or popover last loaded it, the browser reloads the order so you can
+retry the swap. If that reload fails after a 409 conflict, the screen keeps
+showing the old order, the server rejects another swap from that order, and
+the new order appears once a reload succeeds.
+
 The popover shows when the browser last fetched state and when each usage
 snapshot was captured. State refreshes on login, reconnect, when the page
 becomes visible again, when a web turn ends, and when a new Codex usage
@@ -191,6 +200,29 @@ also removes the exact session, history and queued deliveries for that topic.
 The **Imported history** group covers topics with zero live entries and activity
 older than 30 days. Real imported topics remain usable and manageable.
 **Unknown topic** is a read-only history group.
+
+The topic sidebar uses the unread counts returned by `GET /topics`. With a
+saved read cursor, the count includes each sequence after that cursor once.
+Without a saved cursor, it includes every history row. Read cursors are shared
+across web clients. Reading a topic or marking all topics as read hides the
+affected badges immediately while the read state is saved. If the server cannot
+provide an unread count, the browser shows the last confirmed count and retries.
+If saving the read state fails and a later topic-list or reconnect request
+fails before the list recovers, the error notice can appear twice.
+
+Badge refreshes after new entries or read-state changes normally start within
+150 ms. Reconnects and topic-list events request the list immediately.
+If the topic list fails to load on reconnect, the next successful list update
+reloads the open conversation to recover messages missed while disconnected.
+A reconnect that overlaps an ongoing history recovery may request the same
+history twice.
+A continuous stream can delay the start up to one second when no read write or
+list request is in progress. If new changes keep arriving faster than responses,
+the badges may only catch up when the stream settles. A history lock on one topic
+can delay updates for the entire list. The browser retries failed updates up to
+four times at intervals of 1, 2, 4, and 8 seconds (15 seconds total in retry
+delays, plus request time). When those retries run out, the last confirmed
+counts remain until the next change, reconnect, or return to the tab.
 
 Webchat preserves line breaks inside paragraphs, list items, and escaped HTML
 text in user messages.
@@ -532,8 +564,10 @@ The browser app relays bridge JSON statuses and error codes. Bridge routes use
 | Operation | Status and response |
 |---|---|
 | Read state (`GET /state`) | 200 with `telegram`, `outbox`, `claude` (`{next, slots}` or `null`), and `codex` (`{captured_at, windows}` or `null`). The browser relay adds `bot`, `web_sessions`, and `version`. |
+| Swap Claude slots (`POST /cli-login/slots/{slot}/swap/{other}`) | Send JSON with `view` (`login` or `usage`) and `expected` (the full ordered list of ranked Claude slots shown in that view). 200 `{"ok":true}`; 409 `slot_order_changed` if the order differs, including if a slot was deleted; 400 `invalid_swap` if the slots are not adjacent in the matching order; 400 `bad_request` for an invalid body. |
 | Delete topic while its session lock remains held beyond 30 seconds | 409 `topic_busy`; retry after the topic finishes stopping |
 | Send to or abort Unknown topic | 409 `read_only`; select a real topic |
+| List topics (`GET /topics`) | 200 with `topics`, including each topic’s `seen` cursor and `unread` count. If the stored read state cannot be read, both fields are `null`. A history lock timeout returns 503 `history_busy`. |
 | List commands (`GET /commands`, optional allowed `lang`) | 200 `{ "commands": [...] }`; invalid language: 400 `bad_request` |
 | Execute a supported command | 200 `{ "text": "...", "buttons": [...] }` (`buttons` may be null) |
 | Send a normal message | 202 `{ "turn_id": "..." }` |

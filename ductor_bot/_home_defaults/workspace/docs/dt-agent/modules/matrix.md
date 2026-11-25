@@ -66,6 +66,7 @@ Actual allowlist denials log only chat/user/thread metadata at INFO, once per re
 - **User-level**: `allowed_users` filter (empty = all users)
 - **Group mention-only**: in multi-user rooms, bot responds only to @mentions or replies to its own messages
 - **Important nuance**: when `group_mention_only=true` in non-DM rooms, `allowed_users` is bypassed and room allowlist + mention/reply become the effective gate
+- Button reactions follow the same allowlist policy as numbered replies, and selecting a registered button in a mention-only group requires no additional mention.
 - Auto-join allowed rooms on invite; reject + leave unauthorized rooms
 
 ## Command routing

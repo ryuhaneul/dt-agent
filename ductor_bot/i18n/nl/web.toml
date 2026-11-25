@@ -562,6 +562,8 @@ unavailable = "Afbeelding niet beschikbaar."
 open_original = "Origineel bekijken"
 
 [slots]
+move_up = "{name} omhoog verplaatsen"
+move_down = "{name} omlaag verplaatsen"
 title = "Claude-slots"
 usage_title = "Claude- en Codex-gebruik"
 show_all_usage = "Alle gebruiksgegevens tonen ({n})"

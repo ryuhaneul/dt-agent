@@ -11,8 +11,9 @@ import mimetypes
 import os
 import tempfile
 from bisect import bisect_left, bisect_right
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
+from itertools import pairwise
 from pathlib import Path
 from typing import Any, BinaryIO, Literal
 
@@ -55,6 +56,7 @@ class HistorySummary:
 class _HistoryIndex:
     key: tuple[int, int, int, int]
     rows: list[tuple[int, int, int]]
+    duplicate_seqs: list[int]
     imported_count: int
     last: Entry | None
 
@@ -503,43 +505,67 @@ class HistoryStore:
                     last = entry
             offset += len(line)
         rows.sort(key=lambda row: row[0])
-        index = _HistoryIndex(key, rows, imported_count, last)
+        duplicate_seqs = [seq for prev, seq in pairwise(row[0] for row in rows) if prev == seq]
+        index = _HistoryIndex(key, rows, duplicate_seqs, imported_count, last)
         self._indexes[tid] = index
         return index
 
-    def _query(
-        self, tid: str, before: int | None = None, limit: int = 0
-    ) -> tuple[list[Entry], bool, HistorySummary]:
-        path = self._path(tid)
+    @contextlib.contextmanager
+    def _indexed_history(
+        self, tid: str, path: Path
+    ) -> Iterator[tuple[BinaryIO, _HistoryIndex] | None]:
         # Missing history is an empty snapshot; existing files still require the lock.
         if not path.exists():
             self._indexes.pop(tid, None)
-            return [], False, HistorySummary()
+            yield None
+            return
         with exclusive_file_lock(path):
             try:
                 stream = path.open("rb")
             except FileNotFoundError:
                 self._indexes.pop(tid, None)
-                return [], False, HistorySummary()
+                yield None
+                return
             with stream:
-                index = self._index(tid, stream)
-                summary = HistorySummary(len(index.rows), index.imported_count, index.last)
-                if not limit:
-                    return [], False, summary
-                end = (
-                    len(index.rows)
-                    if before is None
-                    else bisect_left(index.rows, before, key=lambda row: row[0])
-                )
-                selected = index.rows[max(0, end - limit) : end]
-                entries = []
-                for _, offset, length in selected:
-                    stream.seek(offset)
-                    entry = _parse_entry(stream.read(length), path, 0)
-                    if entry is not None:
-                        entries.append(entry)
-                more = bool(selected and index.rows[0][0] < selected[0][0])
-                return entries, more, summary
+                yield stream, self._index(tid, stream)
+
+    def _query(
+        self, tid: str, before: int | None = None, limit: int = 0
+    ) -> tuple[list[Entry], bool, HistorySummary]:
+        path = self._path(tid)
+        with self._indexed_history(tid, path) as history:
+            if history is None:
+                return [], False, HistorySummary()
+            stream, index = history
+            summary = HistorySummary(len(index.rows), index.imported_count, index.last)
+            if not limit:
+                return [], False, summary
+            end = (
+                len(index.rows)
+                if before is None
+                else bisect_left(index.rows, before, key=lambda row: row[0])
+            )
+            selected = index.rows[max(0, end - limit) : end]
+            entries = []
+            for _, offset, length in selected:
+                stream.seek(offset)
+                entry = _parse_entry(stream.read(length), path, 0)
+                if entry is not None:
+                    entries.append(entry)
+            more = bool(selected and index.rows[0][0] < selected[0][0])
+            return entries, more, summary
+
+    def _count_after(self, tid: str, cursor: int | None) -> int:
+        with self._indexed_history(tid, self._path(tid)) as history:
+            if history is None:
+                return 0
+            _, index = history
+            if cursor is None:
+                return len(index.rows)
+            first = bisect_right(index.rows, cursor, key=lambda row: row[0])
+            # Each duplicate contributes one extra row with the same sequence.
+            duplicates = len(index.duplicate_seqs) - bisect_right(index.duplicate_seqs, cursor)
+            return len(index.rows) - first - duplicates
 
     def _append(
         self,
@@ -578,6 +604,9 @@ class HistoryStore:
                 os.fsync(stream.fileno())
                 if index is not None:
                     position = bisect_right(index.rows, saved.seq, key=lambda row: row[0])
+                    if position and index.rows[position - 1][0] == saved.seq:
+                        duplicate_position = bisect_right(index.duplicate_seqs, saved.seq)
+                        index.duplicate_seqs.insert(duplicate_position, saved.seq)
                     index.rows.insert(position, (saved.seq, offset, len(content)))
                     index.imported_count += bool(saved.imported)
                     if index.last is None or saved.seq >= index.last.seq:
@@ -631,6 +660,11 @@ class HistoryStore:
 
     async def count(self, tid: str) -> int:
         return (await self.summary(tid)).count
+
+    async def count_after(self, tid: str, cursor: int | None) -> int:
+        """Count all rows without a cursor, or distinct sequences strictly after it."""
+        async with self._lock(tid):
+            return await asyncio.to_thread(self._count_after, tid, cursor)
 
     async def last(self, tid: str) -> Entry | None:
         return (await self.summary(tid)).last

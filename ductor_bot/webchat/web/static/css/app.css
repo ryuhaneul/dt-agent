@@ -632,6 +632,18 @@ dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(2px)}
 .slot-row-top .slot-name{font-weight:700;font-size:.84rem;overflow-wrap:anywhere}
 .slot-row-top .badge{margin-left:auto;white-space:normal;text-align:right}
 .slot-next-tag{padding:0 6px;border-radius:4px;background:var(--accent);color:var(--on-accent);font-size:.68rem;font-weight:700;line-height:18px;white-space:nowrap}
+.slot-order-controls{display:flex;flex:none;align-items:center;gap:4px}
+.slot-order-button:disabled{opacity:.45;cursor:not-allowed}
+.slot-order-button:disabled:hover{border-color:var(--rule);background:var(--surface)}
+.cli-slot:has(>.slot-order-controls){flex-wrap:nowrap}
+.cli-slot-info,.slot-row-info{display:flex;align-items:center;gap:8px;flex:1;min-width:0}
+.slot-row-info{flex-wrap:wrap}
+.slot-row-info>.slot-name{min-width:0;max-width:100%}
+.slot-row-info>.badge{max-width:100%;overflow-wrap:anywhere}
+@media(max-width:600px){
+  .cli-slot-info{flex-direction:column;align-items:flex-start;gap:4px}
+  .cli-slot-info>.cli-slot-name,.cli-slot-info>.badge{max-width:100%}
+}
 .slot-windows{display:grid;grid-template-columns:max-content minmax(0,1fr) 46px minmax(74px,max-content);align-items:center;gap:4px 8px;margin-top:8px;color:var(--muted);font-size:.74rem}
 .slot-window{display:contents}
 .slot-window .slot-percent,.slot-reset{text-align:right}
