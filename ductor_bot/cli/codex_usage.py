@@ -169,7 +169,11 @@ async def _read_result(process: asyncio.subprocess.Process, request_id: int) -> 
             request_id == 2
             and isinstance(error, dict)
             and error.get("code") == -32600
-            and error.get("message") == "chatgpt authentication required to read rate limits"
+            and error.get("message")
+            in (
+                "chatgpt authentication required to read rate limits",
+                "codex account authentication required to read rate limits",
+            )
         ):
             raise _ChatGPTAuthRequiredError
         if "error" in message or not isinstance(message.get("result"), dict):

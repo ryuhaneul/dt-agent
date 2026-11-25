@@ -20,6 +20,10 @@ from ductor_bot.cli.codex_usage import query_codex_usage, parse_codex_usage
 CHATGPT_AUTH_ERROR = (
     '{"error":{"code":-32600,"message":"chatgpt authentication required to read rate limits"},"id":2}'
 )
+CODEX_ACCOUNT_AUTH_ERROR = (
+    '{"error":{"code":-32600,'
+    '"message":"codex account authentication required to read rate limits"},"id":2}'
+)
 
 
 RESPONSE = {
@@ -90,12 +94,13 @@ def server(tmp_path, monkeypatch, usage_auth_file):
             "#!"
             + sys.executable
             + "\n"
-            + 'import json, os, sys, time\nfrom pathlib import Path\nwith Path(PID_LITERAL).open("a") as log:\n    log.write(str(os.getpid()) + chr(10))\nmode = MODE_LITERAL\nif mode == "exit":\n    sys.exit(7)\ninit = json.loads(input())\nassert init["id"] == 1 and init["method"] == "initialize"\nassert set(init["params"]["clientInfo"]) == {"name", "version"}\nprint(json.dumps({"id": 1, "result": {"codexHome": "fixture-home", "platformFamily": "unix", "platformOs": "linux", "userAgent": "fixture-agent"}}), flush=True)\nassert json.loads(input()) == {"method": "initialized"}\nrequest = json.loads(input())\nassert request == {"id": 2, "method": "account/rateLimits/read", "params": {"excludeResetCreditDetails": True}}\nfor method in ("configWarning", "remoteControl/status/changed", "account/updated"):\n    print(json.dumps({"method": method, "params": {}}), flush=True)\nif mode == "timeout":\n    time.sleep(16)\nif mode == "brief-delay":\n    time.sleep(0.1)\nresponse = RESPONSE_LITERAL\nif mode == "deep-json":\n    print("[" * 2000 + "0" + "]" * 2000, flush=True)\nelif mode == "bad-json":\n    print("not-json", flush=True)\nelif mode == "rpc-error":\n    print(json.dumps({"id": 2, "error": {"code": -32600, "message": "fixture-account"}}), flush=True)\nelif mode == "chatgpt-auth-required":\n    print(CHATGPT_AUTH_ERROR_LITERAL, flush=True)\nelse:\n    if mode == "missing-limits":\n        del response["result"]["rateLimits"]\n    if mode == "bad-window":\n        response["result"]["rateLimits"]["primary"]["usedPercent"] = "16"\n    print(json.dumps(response), flush=True)\nsys.stdin.read()\n'.replace(
+            + 'import json, os, sys, time\nfrom pathlib import Path\nwith Path(PID_LITERAL).open("a") as log:\n    log.write(str(os.getpid()) + chr(10))\nmode = MODE_LITERAL\nif mode == "exit":\n    sys.exit(7)\ninit = json.loads(input())\nassert init["id"] == 1 and init["method"] == "initialize"\nassert set(init["params"]["clientInfo"]) == {"name", "version"}\nprint(json.dumps({"id": 1, "result": {"codexHome": "fixture-home", "platformFamily": "unix", "platformOs": "linux", "userAgent": "fixture-agent"}}), flush=True)\nassert json.loads(input()) == {"method": "initialized"}\nrequest = json.loads(input())\nassert request == {"id": 2, "method": "account/rateLimits/read", "params": {"excludeResetCreditDetails": True}}\nfor method in ("configWarning", "remoteControl/status/changed", "account/updated"):\n    print(json.dumps({"method": method, "params": {}}), flush=True)\nif mode == "timeout":\n    time.sleep(16)\nif mode == "brief-delay":\n    time.sleep(0.1)\nresponse = RESPONSE_LITERAL\nif mode == "deep-json":\n    print("[" * 2000 + "0" + "]" * 2000, flush=True)\nelif mode == "bad-json":\n    print("not-json", flush=True)\nelif mode == "rpc-error":\n    print(json.dumps({"id": 2, "error": {"code": -32600, "message": "fixture-account"}}), flush=True)\nelif mode == "chatgpt-auth-required":\n    print(CHATGPT_AUTH_ERROR_LITERAL, flush=True)\nelif mode == "codex-account-auth-required":\n    print(CODEX_ACCOUNT_AUTH_ERROR_LITERAL, flush=True)\nelse:\n    if mode == "missing-limits":\n        del response["result"]["rateLimits"]\n    if mode == "bad-window":\n        response["result"]["rateLimits"]["primary"]["usedPercent"] = "16"\n    print(json.dumps(response), flush=True)\nsys.stdin.read()\n'.replace(
                 "MODE_LITERAL", repr(mode)
             )
             .replace("PID_LITERAL", repr(str(pid_file)))
             .replace("RESPONSE_LITERAL", repr(RESPONSE))
             .replace("CHATGPT_AUTH_ERROR_LITERAL", repr(CHATGPT_AUTH_ERROR))
+            .replace("CODEX_ACCOUNT_AUTH_ERROR_LITERAL", repr(CODEX_ACCOUNT_AUTH_ERROR))
         )
         script.chmod(0o700)
         monkeypatch.setattr(codex_usage, "which", lambda name: str(script))
@@ -567,7 +572,7 @@ async def test_chatgpt_required_skips_next_turn(server, usage_auth_file, caplog)
 async def test_auth_file_timestamp_change_resumes_turn_usage(server, usage_auth_file, existing_file):
     if existing_file:
         usage_auth_file.write_text('{"OPENAI_API_KEY":"fixture-api-key"}')
-    pids = server("chatgpt-auth-required")
+    pids = server("chatgpt-auth-required" if existing_file else "codex-account-auth-required")
     await _complete_usage_refresh()
     await _complete_usage_refresh()
     assert len(pids.read_text().splitlines()) == 1
@@ -611,7 +616,7 @@ async def test_manual_usage_query_bypasses_turn_skip(server):
     from ductor_bot.config import AgentConfig
     from ductor_bot.orchestrator.selectors.usage_view import render_usage
 
-    pids = server("chatgpt-auth-required")
+    pids = server("codex-account-auth-required")
     await _complete_usage_refresh()
     await _complete_usage_refresh()
     assert len(pids.read_text().splitlines()) == 1
