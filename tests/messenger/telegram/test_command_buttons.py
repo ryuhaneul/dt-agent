@@ -98,6 +98,7 @@ async def test_group_mentions_match_typed_command_gate(data, accepted):
         bot._bot_username = "test_bot"
         bot._sequential.set_bot_username("test_bot")
         api.me = AsyncMock(return_value=User(id=200, is_bot=True, first_name="Bot", username="test_bot"))
+        api.usernames = AsyncMock(return_value=("test_bot",))
         bot._handle_streaming = AsyncMock()
         await bot._on_callback_query(callback(data, chat_type="supergroup", chat_id=-1001))
     assert handler.await_count == int(accepted)
