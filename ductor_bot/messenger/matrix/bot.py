@@ -1057,18 +1057,14 @@ class MatrixBot:
         if not orch:
             return
 
-        async with input_lock(self._lock_pool.get(key.lock_key)):
-            registry = orch._process_registry
-            registry.clear_abort(key.chat_id)
-            registry.clear_topic_abort(key.chat_id, key.topic_id)
-            if self._config.streaming.enabled:
-                from ductor_bot.orchestrator.flows import named_session_streaming
+        if self._config.streaming.enabled:
+            from ductor_bot.orchestrator.flows import named_session_streaming
 
-                result = await named_session_streaming(orch, key, session_name, label)
-            else:
-                from ductor_bot.orchestrator.flows import named_session_flow
+            result = await named_session_streaming(orch, key, session_name, label)
+        else:
+            from ductor_bot.orchestrator.flows import named_session_flow
 
-                result = await named_session_flow(orch, key, session_name, label)
+            result = await named_session_flow(orch, key, session_name, label)
 
         if result.text:
             await self._send_rich(room_id, result.text)
