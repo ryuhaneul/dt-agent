@@ -1035,7 +1035,12 @@ class MatrixBot:
 
         # Transport-specific callbacks handled locally.
         if callback_data.startswith("ns:"):
-            await self._handle_ns_callback(room_id, key, callback_data)
+            task = self._spawn_task(
+                self._ns_callback_with_lock(room_id, key, callback_data),
+                name="mx-ns-button",
+            )
+            if task is not None:
+                self._message_queue.track(chat_id=chat_id, task=task)
         else:
             # Unknown callback — treat as text input to the orchestrator
             resp = await orch.handle_message(key, callback_data)
@@ -1043,6 +1048,14 @@ class MatrixBot:
                 await self._send_rich(room_id, resp.text)
 
     # --- Named session callback ---
+
+    async def _ns_callback_with_lock(self, room_id: str, key: SessionKey, data: str) -> None:
+        lock = self._lock_pool.get(key.lock_key)
+        async with input_lock(lock):
+            registry = self._orch._process_registry
+            registry.clear_abort(key.chat_id)
+            registry.clear_topic_abort(key.chat_id, key.topic_id)
+            await self._handle_ns_callback(room_id, key, data)
 
     async def _handle_ns_callback(self, room_id: str, key: SessionKey, data: str) -> None:
         """Handle ``ns:<session_name>:<label>`` button callbacks."""
