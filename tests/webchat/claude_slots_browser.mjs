@@ -53,20 +53,6 @@ function initialState() {
   };
 }
 
-// Measured at 1181px on d8087fe. Each row lists 2, 5 and 12 slots
-// with no pending messages, then with three pending messages.
-const cooldownBadgeLeft = {
-  en: [249, 247, 243, 167, 165, 161],
-  de: [199, 197, 193, 154.08, 154.08, 154.08],
-  nl: [218, 216, 212, 154.08, 154.08, 154.08],
-  es: [186, 184, 180, 154.08, 154.08, 154.08],
-  fr: [239, 237, 233, 154.08, 154.08, 154.08],
-  id: [218, 216, 212, 154.08, 154.08, 154.08],
-  pt: [201, 199, 195, 154.08, 154.08, 154.08],
-  ru: [208, 206, 202, 154.08, 154.08, 154.08],
-  ko: [316, 259, 252, 243, 186, 179],
-};
-
 async function checkHeaderMatrix(browser, cooldownTransition) {
   const page = await browser.newPage({ viewport: { width: 844, height: 844 }, timezoneId: 'Asia/Seoul' });
   try {
@@ -323,11 +309,12 @@ async function checkHeaderMatrix(browser, cooldownTransition) {
     let shiftedBadges = 0;
     let maxBadgeShift = 0;
     let wrappedCases = 0;
+    let widthMismatches = 0;
     let maxGlyphClipping = 0;
     await page.setViewportSize({ width: 1181, height: 900 });
     for (locale of Object.keys(config.locales)) {
       for (unsent of [0, 3]) {
-        for (const [index, count] of [2, 5, 12].entries()) {
+        for (const count of [2, 5, 12]) {
           state = initialState();
           state.slots[0] = slot('claude', 'oauth', 'cooldown', futureCooldown,
             usage(1, futureCooldown, 0.41, futureCooldown));
@@ -379,15 +366,33 @@ async function checkHeaderMatrix(browser, cooldownTransition) {
                 }
               }
             }
-            return {
-              badgeLeft: document.querySelector('.stat').getBoundingClientRect().left,
+            const stat = document.querySelector('.stat');
+            const widthLimit = chip.style.getPropertyValue('--slot-cooldown-width');
+            const measure = {
+              badgeLeft: stat.getBoundingClientRect().left,
               headerHeight: document.querySelector('.bar').getBoundingClientRect().height,
               chipHeight: box.height,
+              chipWidth: box.width,
+              widthLimit: Number.parseFloat(widthLimit),
               wrapped, glyphClipping,
               nameClipped: name.scrollWidth > name.clientWidth || textOverflow(name) > 0.5,
               labelClipped: label.scrollWidth > label.clientWidth,
               labelOverflow: textOverflow(label),
             };
+            let referenceBadgeLeft = measure.badgeLeft;
+            if (wrapped && widthLimit) {
+              // Measure the single-line layout with the same width limit.
+              const maxWidth = chip.style.maxWidth;
+              try {
+                chip.removeAttribute('data-wrap-cooldown');
+                chip.style.maxWidth = widthLimit;
+                referenceBadgeLeft = stat.getBoundingClientRect().left;
+              } finally {
+                chip.style.maxWidth = maxWidth;
+                chip.setAttribute('data-wrap-cooldown', '');
+              }
+            }
+            return { ...measure, referenceBadgeLeft };
           });
           cooldownCases++;
           labelOverflows += Number(measure.labelClipped || measure.labelOverflow > 0.5);
@@ -396,22 +401,24 @@ async function checkHeaderMatrix(browser, cooldownTransition) {
             cooldownOverflows++;
             failures.push({ cooldown: 'future', width: 1181, locale, unsent, count, ...measure });
           }
-          const baselineLeft = cooldownBadgeLeft[locale][index + (unsent ? 3 : 0)];
-          const shift = Math.abs(measure.badgeLeft - baselineLeft);
+          const shift = Math.abs(measure.badgeLeft - measure.referenceBadgeLeft);
+          const widthMismatch = measure.wrapped && (!Number.isFinite(measure.widthLimit)
+            || Math.abs(measure.chipWidth - measure.widthLimit) > 0.5);
           shiftedBadges += Number(shift > 0.5);
           maxBadgeShift = Math.max(maxBadgeShift, shift);
           wrappedCases += Number(measure.wrapped);
+          widthMismatches += Number(widthMismatch);
           maxGlyphClipping = Math.max(maxGlyphClipping, measure.glyphClipping);
-          if (shift > 0.5 || measure.glyphClipping > 0.5
+          if (shift > 0.5 || widthMismatch || measure.glyphClipping > 0.5
               || measure.chipHeight !== 30 || measure.headerHeight !== 65) {
-            failures.push({ cooldown: 'geometry', width: 1181, locale, unsent, count, baselineLeft, ...measure });
+            failures.push({ cooldown: 'geometry', width: 1181, locale, unsent, count, widthMismatch, ...measure });
           }
           if (locale === 'de' && unsent === 3 && count === 2) await screenshot('issue87-de-1181');
         }
       }
     }
     console.log(`Issue 87 cooldown: ${cooldownOverflows}/${cooldownCases} overflowing cases (${labelOverflows} labels), max label overflow ${maxLabelOverflow.toFixed(1)}px`);
-    console.log(`Issue 87 cooldown geometry: ${shiftedBadges}/${cooldownCases} badge shifts, max ${maxBadgeShift.toFixed(2)}px; ${wrappedCases} wrapped chips, max glyph clipping ${maxGlyphClipping.toFixed(2)}px`);
+    console.log(`Issue 87 cooldown geometry: ${shiftedBadges}/${cooldownCases} badge shifts, max ${maxBadgeShift.toFixed(2)}px; ${widthMismatches}/${wrappedCases} wrapped chip width mismatches, max glyph clipping ${maxGlyphClipping.toFixed(2)}px`);
     assert.equal(cooldownCases, 54);
     assert.ok(wrappedCases > 0);
 
