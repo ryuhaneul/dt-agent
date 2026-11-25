@@ -945,6 +945,9 @@ async function unreadBadges(browser) {
 async function unreadRecovery(browser, scenario) {
   const page = await browser.newPage();
   const row = { ...topic, seen: 2, unread: 3, count: 5 };
+  const entryNull = scenario === 'unread-entry-null';
+  const target = entryNull ? { ...row, tid: '1.3', topic_id: 3, name: 'Other topic' } : row;
+  const list = target => ({ topics: entryNull ? [row, target] : [target] });
   const firstList = Promise.withResolvers(), releaseList = Promise.withResolvers();
   const writes = [];
   let socket, nextWrite, started = false, listCalls = 0;
@@ -953,7 +956,7 @@ async function unreadRecovery(browser, scenario) {
   try {
     await mockChat(page, messages.slice(0, 2), row, peer => { socket = peer; });
     await page.route('**/api/topics', async route => {
-      if (!started) return route.fulfill({ json: { topics: [row] } });
+      if (!started) return route.fulfill({ json: list(target) });
       const call = ++listCalls;
       if (call === 1) {
         firstList.resolve();
@@ -962,8 +965,8 @@ async function unreadRecovery(browser, scenario) {
       if ((overlap && call <= 2) || (failedWrite && call === 1)) {
         return route.fulfill(busy);
       }
-      const unread = call === 1 ? null : scenario === 'unread-remote-null' ? 0 : 2;
-      return route.fulfill({ json: { topics: [{ ...row, unread, preview: 'Updated topic' }] } });
+      const unread = call === 1 ? null : entryNull ? 4 : scenario === 'unread-remote-null' ? 0 : 2;
+      return route.fulfill({ json: list({ ...target, unread, preview: 'Updated topic' }) });
     });
     for (const path of ['**/api/topics/1.2/seen', '**/api/topics/seen-all']) {
       await page.route(path, async route => {
@@ -977,7 +980,8 @@ async function unreadRecovery(browser, scenario) {
     await page.locator('#thread [data-entry-seq="2"]').waitFor();
     await page.evaluate(async () => (await import('/static/js/topics.js')).refreshTopics());
     assert.ok(socket);
-    const badge = page.locator('#tlist [data-tid="1.2"] .unread');
+    const cell = page.locator(`#tlist [data-tid="${target.tid}"]`);
+    const badge = cell.locator('.unread');
     assert.equal(await badge.textContent(), '3');
     await page.evaluate(() => {
       window.unreadNotices = 0;
@@ -998,9 +1002,9 @@ async function unreadRecovery(browser, scenario) {
       return gate.promise;
     };
     const put = seq => captureWrite(() => write(seq));
-    const waitForBadge = expected => page.waitForFunction(value =>
-      (document.querySelector('#tlist [data-tid="1.2"] .unread')?.textContent ?? '0') === value,
-    expected, { timeout: 5500 });
+    const waitForBadge = expected => page.waitForFunction(({ tid, value }) =>
+      (document.querySelector(`#tlist [data-tid="${tid}"] .unread`)?.textContent ?? '0') === value,
+    { tid: target.tid, value: expected }, { timeout: 5500 });
     started = true;
     if (overlap) {
       (await put(3)).resolve({ json: { seen: 3 } });
@@ -1028,6 +1032,15 @@ async function unreadRecovery(browser, scenario) {
       second.resolve(busy);
       await waitForBadge('2');
       assert.equal(listCalls, 2, 'an earlier successful write still requires confirmation');
+    } else if (entryNull) {
+      const unknown = waitForList();
+      socket.send(JSON.stringify({ type: 'entry', tid: target.tid, entry: messages[5] }));
+      assert.equal((await unknown).status(), 200);
+      await cell.getByText('Updated topic', { exact: true }).waitFor();
+      assert.equal(await badge.textContent(), '3');
+      await waitForBadge('4');
+      assert.equal(listCalls, 2, 'the unavailable count is retried without another signal');
+      assert.equal(writes.length, 0);
     } else if (scenario === 'unread-remote-null') {
       socket.send(JSON.stringify({ type: 'seen', seen: { '1.2': 5 } }));
       await waitForBadge('0');

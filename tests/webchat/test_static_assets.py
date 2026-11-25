@@ -1469,7 +1469,7 @@ async function fetch(url,options={}){
  if(url==='/api/i18n')return response(200,{lang:'en',strings});
  if(!authenticated)return response(403,{error:'auth_required'});
  if(['PATCH','DELETE','PUT'].includes(options.method)){assert.equal(options.headers['X-Dtw-Client'],'web');assert.equal(options.headers['X-Dtw-Csrf'],'fake-csrf');}
- if(url==='/api/topics')return response(200,{topics:topicRows});
+ if(url==='/api/topics')return response(200,{topics:topicRows.map(row=>({...row,unread:row.count}))});
  if(url.startsWith('/api/topics/')){
   if(unavailable)return response(503,{error:'telegram_unavailable'});
   const tid=url.split('/')[3],topic=topicRows.find(topic=>topic.tid===tid);
@@ -2325,7 +2325,7 @@ if(scenario==='menus'){
 }
 if(scenario==='rename'||scenario==='rename-stale'){
  const form=get('renameForm'),input=get('renameName');form.children=[input,get('renameCancel'),get('save')];form.querySelector=()=>get('save');
- const topic={tid:'-123.4',name:'Original topic',group:'telegram',renamable:true,count:1,preview:'Unchanged conversation',last_ts:null};
+ const topic={tid:'-123.4',name:'Original topic',group:'telegram',renamable:true,count:1,unread:1,preview:'Unchanged conversation',last_ts:null};
  const requests=[];let failure=false,rows=[topic];
  const api=async(url,options={})=>{requests.push({url,...options});if(options.method==='PATCH'){if(failure)throw {code:'telegram_unavailable'};topic.name=options.body.name;return {topic:{...topic}}}assert.equal(url,'/topics');return {topics:rows.map(row=>({...row}))}};
  const topics=await load('topics.js',{'./api.js':{api},'./i18n.js':{t:key=>key},'./router.js':{renderRoute:()=>{},go:()=>{throw Error('Rename must retain the chat route')}},'./auth.js':{notify:()=>{}},'./md.js':{esc:value=>String(value)}});
@@ -2602,7 +2602,7 @@ if(scenario==='topic-labels'){
  {tid:'unknown',topic_id:null,name:'토픽 미상',name_key:'topic.unknown_name',group:'unknown',count:0},
  {tid:'-456',topic_id:null,name:'일반',name_key:null,group:'telegram',count:0},
  {tid:'-123.7',topic_id:7,name:'User topic 그대로',name_key:null,group:'telegram',count:0}];
- const topics=await load('topics.js',{'./api.js':{api:async()=>({topics:rows.map(row=>({...row}))})},'./i18n.js':{t:key=>translations[lang][key]},'./router.js':{renderRoute:()=>{},go:()=>{}},'./auth.js':{notify:()=>{}},'./md.js':{esc:value=>String(value)}});
+ const topics=await load('topics.js',{'./api.js':{api:async()=>({topics:rows.map(row=>({...row,unread:0}))})},'./i18n.js':{t:key=>translations[lang][key]},'./router.js':{renderRoute:()=>{},go:()=>{}},'./auth.js':{notify:()=>{}},'./md.js':{esc:value=>String(value)}});
  topics.initTopics();document.dispatchEvent(new CustomEvent('auth-change',{detail:{authenticated:true}}));await topics.refreshTopics();
  const verify=()=>{const actual=new Map(topics.getTopics().map(topic=>[topic.tid,topic.name]));assert.equal(actual.get('-123'),translations[lang]['topic.general']);assert.equal(actual.get('unknown'),translations[lang]['topic.unknown_name']);assert.equal(actual.get('-456'),'일반');assert.equal(actual.get('-123.7'),'User topic 그대로')};
  for(const selected of Object.keys(translations)){lang=selected;document.dispatchEvent(new CustomEvent('language-changed',{detail:{lang}}));verify();await topics.refreshTopics();verify();}
@@ -3009,7 +3009,7 @@ def test_autocompact_dialog_has_labeled_scopes_and_bounded_token_inputs(markup):
         "dates", "window", "focus", "overflow-footnote", "overflow-activity", "code-copy",
         "telegram-code", "telegram-code-boundaries", "user-line-breaks", "unread-badges",
         "unread-topics-overlap", "unread-direct-overlap", "unread-overlapping-puts", "unread-remote-null",
-        "unread-post-notice", "unread-put-notice",
+        "unread-post-notice", "unread-put-notice", "unread-entry-null",
         "busy-refresh", "busy-recheck", "busy-terminal", "busy-reconnect",
         "busy-terminal-held-done", "busy-terminal-held-cancelled", "busy-terminal-held-entry",
         "busy-reconnect-overlap-200", "busy-reconnect-overlap-503",

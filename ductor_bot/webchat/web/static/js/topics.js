@@ -126,14 +126,13 @@ function applyBadges() {
     const { tid, unread } = topic;
     listed.add(tid);
     const pending = pendingRead.get(tid);
-    if (pending?.inFlight) continue;
-    pendingRead.delete(tid);
-    if (Number.isInteger(unread)) {
+    if (!pending?.inFlight) pendingRead.delete(tid);
+    if (!Number.isInteger(unread)) {
+      awaitingUnread.add(tid);
+      unconfirmed = true;
+    } else if (!pending?.inFlight) {
       serverUnread.set(tid, unread);
       awaitingUnread.delete(tid);
-    } else {
-      if (pending) awaitingUnread.add(tid);
-      unconfirmed ||= awaitingUnread.has(tid);
     }
   }
   for (const [tid, pending] of pendingRead) if (!pending.inFlight && !listed.has(tid)) pendingRead.delete(tid);

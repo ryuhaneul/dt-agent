@@ -197,7 +197,7 @@ saved read cursor, the count includes each sequence after that cursor once.
 Without a saved cursor, it includes every history row. Read cursors are shared
 across web clients. Reading a topic or marking all topics as read hides the
 affected badges immediately while the read state is saved. If the server cannot
-confirm a count after saving, the browser shows the last confirmed count and retries.
+provide an unread count, the browser shows the last confirmed count and retries.
 
 Badge updates normally start within 150 ms of a change, plus the request time.
 A continuous stream can delay the start up to one second when no read write or
