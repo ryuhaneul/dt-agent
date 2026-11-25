@@ -17,12 +17,14 @@ export function initCliLogin() {
   let timer = null, generation = 0, busy = false, loading = false, polling = false, confirmMode = 'start';
   let noticeKey = null, cancelNoticeKey = null, copied = false, cancelRequested = false, refreshingProvider = null;
   let accountsKey = null, linksKey = null, slotError = null, slotMenu = null, confirmReturn = null;
+  let slotOrderRequest = null, accountRead = null;
   let codeFocusPending = false, returnToCode = false;
   let loginTab = null, previousLoginHref = null;
   // Probes can take 10s (Claude) + 15s (Grok), plus a queued completion probe.
   // Bound unknown-status polling; two snapshots skip the first cached response.
   let statusChecksLeft = 60, refreshChecksLeft = 0;
   const active = () => dialog.open && view === 'progress' && job && !terminal.includes(job.state);
+  const slotControlsBusy = () => busy || Boolean(slotOrderRequest);
   const slotName = name => ['', 'default', 'claude'].includes(name) ? 'claude'
     : name.startsWith('claude-') ? name : `claude-${name}`;
   const targetName = () => target?.provider === 'claude' && target.slot
@@ -38,7 +40,7 @@ export function initCliLogin() {
   function button(key, callback, primary = false) {
     const element = node('button', `btn btn-sm${primary ? ' btn-primary' : ''}`, t(key));
     element.dataset.i18n = key;
-    element.type = 'button'; element.disabled = busy || loading || Boolean(status?.running);
+    element.type = 'button'; element.disabled = slotControlsBusy() || loading || Boolean(status?.running);
     element.addEventListener('click', callback); return element;
   }
   function badge(authenticated, state = null) {
@@ -96,7 +98,7 @@ export function initCliLogin() {
       action.setAttribute('aria-haspopup', 'dialog');
       if (options.mutation) {
         action.dataset.slotMutation = '';
-        action.disabled = busy || loading;
+        action.disabled = slotControlsBusy() || loading;
       }
       if (options.remove) {
         action.dataset.delete = name;
@@ -113,7 +115,7 @@ export function initCliLogin() {
       if (slot.authenticated) add('logout', () => askSlotChange('logout', name), { mutation: true });
     }
     if (name !== 'claude') add('delete', () => askSlotChange('delete', name), { mutation: true, remove: true });
-    trigger.disabled = busy || loading || !menu.children.length || [...menu.children].every(item => item.disabled);
+    trigger.disabled = slotControlsBusy() || loading || !menu.children.length || [...menu.children].every(item => item.disabled);
     menu.addEventListener('beforetoggle', event => {
       if (event.newState !== 'closed') return;
       trigger.setAttribute('aria-expanded', 'false');
@@ -157,7 +159,7 @@ export function initCliLogin() {
         const canRun = menu
           ? [...menu.children].some(item => !status?.running || Object.hasOwn(item.dataset, 'slotMutation'))
           : !status?.running || Object.hasOwn(element.dataset, 'slotMutation');
-        element.disabled = busy || loading || !canRun
+        element.disabled = slotControlsBusy() || loading || !canRun
           || (Boolean(element.dataset.slotOrder) && !element.dataset.slotNeighbor);
         if (element.dataset.slotOrder) {
           const name = element.closest('[data-slot]').dataset.slot;
@@ -200,7 +202,7 @@ export function initCliLogin() {
           const stateBadge = badge(slot.authenticated, state);
           const index = ranked.indexOf(slot);
           const order = index < 0 ? '' : slotOrderControls(slot.name, ranked[index - 1]?.name,
-            ranked[index + 1]?.name, busy || loading || Boolean(status?.running));
+            ranked[index + 1]?.name, slotControlsBusy() || loading || Boolean(status?.running));
           if (order) {
             const info = node('div', 'cli-slot-info');
             info.append(name, stateBadge);
@@ -338,14 +340,21 @@ export function initCliLogin() {
   function schedule() {
     stopPolling();
     if (active()) timer = setTimeout(pollJob, 1000);
-    else if (dialog.open && !confirmation.open && !slotMenu && ['list', 'result'].includes(view) && !busy && statusChecksLeft > 0 && (refreshChecksLeft || Object.values(status?.providers || {}).some(value => value === null))) timer = setTimeout(loadStatus, 1000);
+    else if (dialog.open && !confirmation.open && !slotMenu && ['list', 'result'].includes(view) && !slotControlsBusy() && statusChecksLeft > 0 && (refreshChecksLeft || Object.values(status?.providers || {}).some(value => value === null))) timer = setTimeout(loadStatus, 1000);
   }
+  function fetchAccountStatus() {
+    accountRead = api('/cli-login/status');
+    return accountRead;
+  }
+
   async function loadStatus() {
     if (!dialog.open || confirmation.open || slotMenu || !['list', 'result'].includes(view) || busy || statusChecksLeft <= 0) return;
     const version = generation; statusChecksLeft--; loading = true; renderAccounts();
+    const request = fetchAccountStatus();
+    const live = () => version === generation && dialog.open && accountRead === request;
     try {
-      const result = await api('/cli-login/status');
-      if (version !== generation || !dialog.open) return;
+      const result = await request;
+      if (!live()) return;
       if (!['list', 'result'].includes(view) || busy) return;
       status = result;
       if (refreshChecksLeft && result.providers?.[refreshingProvider] != null) refreshChecksLeft--;
@@ -486,30 +495,43 @@ export function initCliLogin() {
   }
   async function reorderSlot(button) {
     const { slotOrder, slotNeighbor } = button.dataset;
-    if (busy || loading || status?.running || !slotNeighbor) return;
+    if (slotControlsBusy() || loading || status?.running || !slotNeighbor) return;
     const name = button.closest('[data-slot]').dataset.slot;
     const version = generation;
-    const live = () => version === generation && dialog.open;
-    busy = true; render();
+    const swap = swapSlotOrder(name, slotNeighbor);
+    slotOrderRequest = swap;
+    render();
     try {
-      await swapSlotOrder(name, slotNeighbor);
-      if (!live()) return;
-      const result = await api('/cli-login/status');
-      if (live()) {
-        status = result;
-        slotError = null;
+      await swap;
+      if (slotOrderRequest !== swap || !dialog.open) return;
+      const currentVersion = generation;
+      // An account read started while the swap was pending can return the old order.
+      const read = fetchAccountStatus();
+      const live = () => slotOrderRequest === swap && dialog.open
+        && generation === currentVersion && accountRead === read;
+      try {
+        const result = await read;
+        if (live()) {
+          status = result;
+          slotError = null;
+        }
+      } finally {
+        if (live()) loading = false;
       }
     } catch (error) {
-      if (live()) {
+      if (slotOrderRequest === swap && dialog.open) {
         const key = error.code === 'slot_not_found' ? 'cli_login.delete_missing'
           : error.code === 'bot_unreachable' ? 'error.bot_unreachable' : 'error.generic';
         slotError = { name, key, args: { name } };
       }
     } finally {
-      if (live()) {
-        busy = false; render();
-        if (!focusSlotOrder($('cliProviders'), name, slotOrder)) $('cliClose').focus();
-        schedule();
+      if (slotOrderRequest === swap) {
+        slotOrderRequest = null;
+        if (dialog.open) {
+          render();
+          if (version === generation && !focusSlotOrder($('cliProviders'), name, slotOrder)) $('cliClose').focus();
+          schedule();
+        }
       }
     }
   }
@@ -673,5 +695,10 @@ export function initCliLogin() {
     rawOutput.data = ''; job = null; target = null; status = null; $('accountButton').focus();
   });
   document.addEventListener('language-changed', () => { if (dialog.open) render(); });
-  document.addEventListener('auth-change', event => { if (!event.detail.authenticated) { refreshingProvider = null; confirmation.close(); dialog.close(); stopPolling(); } });
+  document.addEventListener('auth-change', event => {
+    if (event.detail.authenticated) return;
+    slotOrderRequest = null;
+    refreshingProvider = null;
+    confirmation.close(); dialog.close(); stopPolling();
+  });
 }

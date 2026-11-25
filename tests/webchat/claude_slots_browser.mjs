@@ -1194,36 +1194,52 @@ async function checkUsageRegressions(browser) {
 }
 
 
-async function checkUsageSlotOrder(browser, width) {
-  const page = await browser.newPage({ viewport: { width, height: 812 } });
+async function checkUsageSlotOrder(browser, width, lifecycle) {
+  const page = await browser.newPage({ viewport: { width, height: lifecycle === 'scroll' ? 667 : 812 } });
   page.setDefaultTimeout(3500);
   try {
     const long = 'claude-long-research-account-with-a-descriptive-name';
-    const slots = [slot('claude', 'oauth', 'ok'), slot(long, 'oauth', 'ok'),
-      slot('claude-backup', 'oauth', 'ok')];
-    let singleton = false, rejectSwap = false, release, swapStarted;
+    const slots = lifecycle === 'scroll'
+      ? Array.from({ length: 14 }, (_, index) => slot(`claude-slot-${index}`, 'oauth', 'ok'))
+      : [slot('claude', 'oauth', 'ok'), slot(long, 'oauth', 'ok'), slot('claude-backup', 'oauth', 'ok')];
+    let singleton = false, rejectSwap = false, release, swapStarted, authenticated = true, session = 1;
+    let stateReads = 0;
     const calls = [];
     await page.routeWebSocket('**/api/ws', () => {});
     await page.route('**/api/**', async route => {
       const request = route.request();
       const endpoint = new URL(request.url()).pathname;
       if (endpoint === '/api/i18n') return route.fulfill({ json: { lang: 'en', strings: config.locales.en } });
-      if (endpoint === '/api/auth/state') return route.fulfill({ json: { authenticated: true, csrf: 'fixture', bridge_up: true } });
-      if (endpoint === '/api/masterkey/status') return route.fulfill({ json: { state: 'unconfigured' } });
-      if (endpoint === '/api/state') return route.fulfill({ json: {
-        telegram: { state: 'up' }, bot: { up: true }, outbox: { pending: 0 },
-        claude: { next: slots[0].name, slots: singleton ? slots.slice(0, 1) : slots },
-        codex: { captured_at: now, windows: [] },
+      if (endpoint === '/api/auth/state') return route.fulfill({ json: {
+        authenticated, csrf: authenticated ? `fixture-${session}` : null, bridge_up: true, totp_configured: true,
       } });
+      if (endpoint === '/api/auth/password') return route.fulfill({ json: { next: 'totp' } });
+      if (endpoint === '/api/auth/totp') {
+        authenticated = true; session++;
+        return route.fulfill({ json: { ok: true } });
+      }
+      if (endpoint === '/api/masterkey/status') return route.fulfill({ json: { state: 'unconfigured' } });
+      if (endpoint === '/api/state') {
+        stateReads++;
+        if (!authenticated) return route.fulfill({ status: 403, json: { error: 'auth_required' } });
+        return route.fulfill({ json: {
+          telegram: { state: 'up' }, bot: { up: true }, outbox: { pending: 0 },
+          claude: { next: slots[0].name, slots: singleton ? slots.slice(0, 1) : slots },
+          codex: { captured_at: now, windows: [] },
+        } });
+      }
       if (endpoint.includes('/swap/')) {
         assert.equal(request.method(), 'POST');
         assert.equal(request.postData(), null);
         const [name, other] = endpoint.split('/').slice(-3).filter(part => part !== 'swap');
         calls.push([name, other]);
         if (rejectSwap) return route.fulfill({ status: 500, json: { error: 'slot_move_error' } });
+        const requestSession = session;
         await new Promise(resolve => { release = resolve; swapStarted(); });
-        const a = slots.findIndex(item => item.name === name), b = slots.findIndex(item => item.name === other);
-        [slots[a], slots[b]] = [slots[b], slots[a]];
+        if (requestSession === session) {
+          const a = slots.findIndex(item => item.name === name), b = slots.findIndex(item => item.name === other);
+          [slots[a], slots[b]] = [slots[b], slots[a]];
+        }
         return route.fulfill({ json: { ok: true } });
       }
       return route.fulfill({ json: { topics: [], commands: [], items: [], keys: [], files: [] } });
@@ -1234,6 +1250,61 @@ async function checkUsageSlotOrder(browser, width) {
     const popover = page.locator('#claudeSlotPopover');
     const row = name => popover.locator(`.slot-row[data-slot="${name}"]`);
     const button = (name, direction) => row(name).locator(`[data-slot-order="${direction}"]`);
+    if (lifecycle === 'scroll') {
+      const moving = 'claude-slot-8';
+      const target = button(moving, 'down');
+      await target.evaluate(element => {
+        const scroller = element.closest('.slot-list');
+        scroller.scrollTop += element.getBoundingClientRect().bottom
+          - scroller.getBoundingClientRect().bottom + 2;
+        element.focus({ preventScroll: true });
+      });
+      const started = new Promise(resolve => { swapStarted = resolve; });
+      await page.keyboard.press('Enter');
+      await started;
+      release();
+      await page.waitForFunction(name => document.activeElement.matches(
+        `.slot-row[data-slot="${name}"] [data-slot-order="down"]:not(:disabled)`), moving);
+      const outside = await target.evaluate(element => {
+        const button = element.getBoundingClientRect();
+        const pane = element.closest('.slot-list').getBoundingClientRect();
+        return Math.max(pane.top - button.top, button.bottom - pane.bottom, 0);
+      });
+      assert.ok(outside <= 0.5, `restored usage slot button is clipped by ${outside}px`);
+      return;
+    }
+
+    if (lifecycle === 'session') {
+      const started = new Promise(resolve => { swapStarted = resolve; });
+      await button(long, 'up').click();
+      await started;
+      authenticated = false;
+      await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+      await page.locator('#pw').fill('fixture-password');
+      await page.locator('#pwForm button[type=submit]').click();
+      await page.locator('#otp input').first().waitFor();
+      for (let index = 0; index < 6; index++) await page.locator('#otp input').nth(index).fill('1');
+      await page.locator('#claudeSlots [data-primary]').click();
+      await row(long).waitFor();
+      const refresh = popover.locator('.slot-popover-head [data-slot-refresh]');
+      const enabledBeforeCompletion = await refresh.isEnabled();
+      await popover.focus();
+      const reads = stateReads;
+      const response = page.waitForResponse(result => result.url().includes('/swap/'));
+      release();
+      const completed = await response;
+      assert.equal(completed.status(), 200);
+      await completed.finished();
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      assert.deepEqual({
+        enabledBeforeCompletion,
+        enabledAfterCompletion: await refresh.isEnabled(),
+        focus: await popover.evaluate(panel => panel === document.activeElement),
+        stateReads: stateReads - reads,
+      }, { enabledBeforeCompletion: true, enabledAfterCompletion: true, focus: true, stateReads: 0 });
+      return;
+    }
+
     await button(long, 'up').waitFor();
     assert.equal(await popover.locator('.slot-order-button').count(), 6);
     assert.equal(await popover.locator('.slot-row').last().locator('.slot-order-button').count(), 0);
@@ -1308,7 +1379,11 @@ try {
     const [longestLocale, , , ...cooldownFailures] = await Promise.all([
       checkHeaderMatrix(browser),
       checkSlotInteractions(browser),
-      Promise.all([1280, 375].map(width => checkUsageSlotOrder(browser, width))),
+      Promise.all([
+        ...[1280, 375].map(width => checkUsageSlotOrder(browser, width)),
+        checkUsageSlotOrder(browser, 375, 'scroll'),
+        checkUsageSlotOrder(browser, 1280, 'session'),
+      ]),
       ...cooldownTransitions.map(scenario => checkHeaderMatrix(browser, scenario)),
     ]);
     assert.deepEqual(cooldownFailures.flat(), []);

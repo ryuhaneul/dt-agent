@@ -363,6 +363,64 @@ async function run(browser, origin, width, theme) {
       await open();
       await row(unused.name).waitFor();
       assert.equal(await dialog.locator('.slot-order-button').count(), 0);
+
+      try {
+        await act(dialog.locator('#cliClose'));
+        rejectSwap = false;
+        accountSlots = [slots[0], { ...slots[1], name: long },
+          { ...slots[1], name: 'claude-backup', priority: 3 }, unused];
+        const started = new Promise(resolve => { swapStarted = resolve; });
+        const swapsBefore = swaps.length;
+        await open();
+        await act(button(long, 'up'));
+        await started;
+        await act(dialog.locator('#cliClose'));
+        await open();
+        await row(long).waitFor();
+        const disabledWhileReopened = await button(long, 'up').isDisabled();
+        const complete = releaseSwap;
+        await button(long, 'up').evaluate(element => element.click());
+        complete();
+        assert.equal(disabledWhileReopened, true, 'an in-flight swap must stay disabled after reopening');
+        await page.waitForFunction(name =>
+          document.querySelector('#cliLoginDlg .cli-slot')?.dataset.slot === name, long);
+        assert.equal(swaps.length, swapsBefore + 1);
+        assert.equal(await button(long, 'down').isEnabled(), true);
+      } catch (error) {
+        failures.push(`slot reorder after reopen: ${error.message}`);
+      }
+
+      if (width === 375) {
+        try {
+          await page.setViewportSize({ width, height: 667 });
+          accountSlots = Array.from({ length: 12 }, (_, index) =>
+            ({ ...slots[0], name: `claude-slot-${index}`, priority: index + 1 }));
+          rejectSwap = false;
+          await page.goto(origin);
+          await open();
+          const target = button('claude-slot-6', 'down');
+          await target.evaluate(element => {
+            const scroller = element.closest('.cli-body');
+            scroller.scrollTop += element.getBoundingClientRect().bottom
+              - scroller.getBoundingClientRect().bottom + 2;
+            element.focus({ preventScroll: true });
+          });
+          const started = new Promise(resolve => { swapStarted = resolve; });
+          await page.keyboard.press('Enter');
+          await started;
+          releaseSwap();
+          await page.waitForFunction(() => document.activeElement.matches(
+            '.cli-slot[data-slot="claude-slot-6"] [data-slot-order="down"]:not(:disabled)'));
+          const outside = await target.evaluate(element => {
+            const button = element.getBoundingClientRect();
+            const pane = element.closest('.cli-body').getBoundingClientRect();
+            return Math.max(pane.top - button.top, button.bottom - pane.bottom, 0);
+          });
+          assert.ok(outside <= 0.5, `restored CLI slot button is clipped by ${outside}px`);
+        } catch (error) {
+          failures.push(`slot reorder keyboard visibility: ${error.message}`);
+        }
+      }
     }
     assert.deepEqual(pageErrors, []);
     return failures;

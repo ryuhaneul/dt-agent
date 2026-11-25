@@ -24,8 +24,10 @@ export function focusSlotOrder(root, name, direction) {
   const row = root.querySelector(`[data-slot="${CSS.escape(name)}"]`);
   const button = row?.querySelector(`[data-slot-order="${direction}"]:not(:disabled)`)
     || row?.querySelector('[data-slot-order]:not(:disabled)');
-  button?.focus({ preventScroll: true });
-  return Boolean(button);
+  if (!button) return false;
+  button.focus({ preventScroll: true });
+  button.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  return true;
 }
 
 function formatTime(seconds, withDay = false) {
@@ -150,7 +152,7 @@ export function initSlots(refresh) {
   const narrow = matchMedia('(max-width: 1180px)');
   const mobile = matchMedia('(max-width: 760px)');
   let data = null, codex = null, updatedAt = null, trigger = null;
-  let refreshing = false, failed = false, ordering = false;
+  let refreshing = false, failed = false, orderRequest = null;
 
   function chipCapacity() {
     const header = getComputedStyle(bar);
@@ -269,7 +271,7 @@ export function initSlots(refresh) {
   function renderRefresh() {
     const label = t(failed ? 'slots.refresh_failed' : 'slots.refresh');
     refreshButtons.forEach(button => {
-      button.disabled = refreshing || ordering;
+      button.disabled = refreshing || Boolean(orderRequest);
       button.toggleAttribute('data-failed', failed);
       button.setAttribute('aria-busy', String(refreshing));
       button.setAttribute('aria-label', label);
@@ -308,7 +310,7 @@ export function initSlots(refresh) {
     const ranked = data?.slots ?? [];
     list.innerHTML = slots.map(({ slot, windows, status, next }, index) => {
       const order = index < ranked.length
-        ? slotOrderControls(slot.name, ranked[index - 1]?.name, ranked[index + 1]?.name, ordering)
+        ? slotOrderControls(slot.name, ranked[index - 1]?.name, ranked[index + 1]?.name, Boolean(orderRequest))
         : '';
       return slotRow(slot, windows, status, next, now, order);
     }).join('');
@@ -334,30 +336,34 @@ export function initSlots(refresh) {
     renderRefresh();
   }
 
-  function setOrdering(value) {
-    ordering = value;
+  function setOrdering(request) {
+    orderRequest = request;
     list.querySelectorAll('[data-slot-order]').forEach(button => {
-      button.disabled = ordering || !button.dataset.slotNeighbor;
+      button.disabled = Boolean(orderRequest) || !button.dataset.slotNeighbor;
     });
     renderRefresh();
   }
 
   async function reorderSlot(button) {
     const { slotOrder, slotNeighbor } = button.dataset;
-    if (ordering || !slotNeighbor) return;
+    if (orderRequest || !slotNeighbor) return;
     const name = button.closest('[data-slot]').dataset.slot;
-    setOrdering(true);
+    const swap = swapSlotOrder(name, slotNeighbor);
+    setOrdering(swap);
     try {
-      await swapSlotOrder(name, slotNeighbor);
+      await swap;
+      if (orderRequest !== swap) return;
       // A read started before the swap can still contain the previous order.
       if (refreshing) await refresh();
-      if (data) await refresh();
+      if (orderRequest === swap && data) await refresh();
     } catch {
-      failed = true;
+      if (orderRequest === swap) failed = true;
     } finally {
-      setOrdering(false);
-      if (!popover.hidden && !focusSlotOrder(popover, name, slotOrder)) {
-        popover.focus({ preventScroll: true });
+      if (orderRequest === swap) {
+        setOrdering(null);
+        if (!popover.hidden && !focusSlotOrder(popover, name, slotOrder)) {
+          popover.focus({ preventScroll: true });
+        }
       }
     }
   }
@@ -399,6 +405,7 @@ export function initSlots(refresh) {
 
   return {
     update(value, codexUsage = null) {
+      if (value === null) setOrdering(null);
       data = value;
       codex = codexUsage;
       updatedAt = new Date();
