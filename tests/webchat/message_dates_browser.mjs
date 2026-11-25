@@ -1061,6 +1061,74 @@ async function unreadRecovery(browser, scenario) {
   }
 }
 
+async function reconnectHistory(browser, scenario) {
+  const context = await browser.newContext({ viewport: { width: 375, height: 667 } });
+  try {
+    const page = await context.newPage();
+    await page.clock.install({ time: new Date(today) });
+    const entries = messages.slice(0, 120);
+    let socket, failTopics = false, historyReads = 0;
+    await mockChat(page, entries, topic, peer => { socket = peer; });
+    await page.route('**/api/topics', route => {
+      if (failTopics) {
+        failTopics = false;
+        return route.fulfill({ status: 503, json: { error: 'bot_unreachable' } });
+      }
+      return route.fulfill({ json: { topics: [{ ...topic, count: entries.length }] } });
+    });
+    page.on('request', request => {
+      if (request.method() === 'GET' && new URL(request.url()).pathname.endsWith('/messages')) historyReads++;
+    });
+    const topicsResponse = status => page.waitForResponse(response =>
+      new URL(response.url()).pathname === '/api/topics' && response.status() === status,
+    { timeout: 4000 });
+    await page.goto(origin);
+    await page.locator('[data-entry-seq="120"]').waitFor();
+    // Settle the read cursor and its topic badge update before disconnecting.
+    await topicsResponse(200);
+
+    const beforeReconnect = historyReads;
+    const missing = { ...messages[120], text: 'Message received while disconnected' };
+    entries.push(missing);
+    const succeeds = scenario === 'reconnect-history-success';
+    failTopics = !succeeds;
+    const first = topicsResponse(succeeds ? 200 : 503);
+    await socket.close();
+    await page.clock.fastForward(2000);
+    await first;
+    if (!succeeds) {
+      await page.locator('#toasts .toast-error').waitFor({ timeout: 2500 });
+      assert.equal(await page.locator('#toasts .toast-error').count(), 1);
+      assert.equal(historyReads, beforeReconnect);
+      if (scenario === 'reconnect-history-auth-change') {
+        await page.evaluate(() => document.dispatchEvent(new CustomEvent('auth-change', {
+          detail: { authenticated: false },
+        })));
+        // Simulate a later topic update and advance beyond the scheduled retry.
+        await page.evaluate(() => document.dispatchEvent(new CustomEvent('topics-updated')));
+        await page.clock.runFor(1200);
+        assert.equal(historyReads, beforeReconnect, 'a logged-out session must not reload its old history');
+        assert.equal(await page.locator('[data-entry-seq="121"]').count(), 0);
+        return;
+      }
+      const retried = topicsResponse(200);
+      if (scenario === 'reconnect-history-topics-event') socket.send(JSON.stringify({ type: 'topics' }));
+      else if (scenario === 'reconnect-history-next-resync') socket.send(JSON.stringify({ type: 'bridge', up: true }));
+      else await page.clock.runFor(1000);
+      await retried;
+    }
+    await page.locator('[data-entry-seq="121"]').waitFor({ timeout: 2500 })
+      .catch(() => assert.fail(`history was not restored after reconnect (${historyReads - beforeReconnect} reads)`));
+    assert.equal(historyReads - beforeReconnect, 2, 'recovery should read both history pages once');
+    assert.equal(await page.locator('#toasts .toast-error').count(), succeeds ? 0 : 1);
+    socket.send(JSON.stringify({ type: 'entry', tid: topic.tid, entry: messages[121] }));
+    await page.locator('[data-entry-seq="122"]').waitFor({ timeout: 2500 });
+    assert.equal(await page.locator('[data-entry-seq="121"]').count(), 1);
+  } finally {
+    await context.close();
+  }
+}
+
 async function busyIndicator(browser, scenario) {
   const context = await browser.newContext();
   try {
@@ -1290,6 +1358,7 @@ try {
   const scenario = process.argv[3] ?? 'dates';
   if (scenario.startsWith('overflow-')) await documentOverflow(browser, scenario);
   else if (scenario.startsWith('unread-') && scenario !== 'unread-badges') await unreadRecovery(browser, scenario);
+  else if (scenario.startsWith('reconnect-history-')) await reconnectHistory(browser, scenario);
   else if (scenario.startsWith('busy-resume-scroll-')) await busyResumeScroll(browser, Number(scenario.split('-').at(-1)));
   else if (scenario.startsWith('busy-')) await busyIndicator(browser, scenario);
   else await scenarios[scenario](browser);
