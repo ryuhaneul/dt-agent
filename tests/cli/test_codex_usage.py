@@ -649,6 +649,8 @@ def test_event_loop_shutdown_reaps_turn_usage_query(server, caplog):
     pids = server("timeout")
 
     async def run():
+        # Debug mode also warns about slow callbacks, which depends on machine load.
+        asyncio.get_running_loop().slow_callback_duration = 60
         codex_usage.schedule_codex_usage_refresh()
         async with asyncio.timeout(5):
             while not pids.exists() or not pids.read_text().strip():
