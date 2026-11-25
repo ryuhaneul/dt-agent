@@ -277,6 +277,7 @@ invalid_slot = "Verifique o nome. Espaços, maiúsculas e o nome reservado “sl
 duplicate_slot = "Este nome de slot já existe."
 confirm_title = "Iniciar login?"
 confirm_warning = "Ao iniciar, a conta atual será desconectada. Continuar?"
+confirm_login = "Ainda não há uma conta conectada aqui."
 confirm_new_slot = "Um novo slot será adicionado. As sessões existentes continuarão ativas."
 confirm_codex = "O Codex desconecta a conta assim que o processo começa. Cancelar não restaura o login anterior."
 start = "Iniciar login"

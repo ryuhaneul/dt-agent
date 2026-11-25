@@ -277,6 +277,7 @@ invalid_slot = "Revisa el nombre. No se permiten espacios, mayúsculas ni el nom
 duplicate_slot = "Este nombre de ranura ya existe."
 confirm_title = "¿Iniciar sesión?"
 confirm_warning = "Al comenzar se cerrará la sesión de la cuenta actual. ¿Continuar?"
+confirm_login = "Todavía no se ha iniciado sesión en ninguna cuenta aquí."
 confirm_new_slot = "Se añadirá una nueva ranura. Las sesiones ya iniciadas seguirán activas."
 confirm_codex = "Codex cierra la sesión en cuanto se inicia el proceso. Cancelarlo no restaura la sesión anterior."
 start = "Iniciar sesión"
