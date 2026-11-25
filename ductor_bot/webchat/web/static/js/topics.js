@@ -178,7 +178,11 @@ export async function refreshTopics(onSnapshot) {
   if (onSnapshot) pendingSnapshot = onSnapshot;
   // Each busy event has a new identity, even if its value did not change.
   const generation = ++revision, observedBusy = new Map(busyEvents);
-  const data = await api('/topics');
+  const data = await api('/topics').catch(error => {
+    // The newest request owns any pending turn recovery even if its first fetch fails.
+    if (!active || generation !== revision || !pendingSnapshot) throw error;
+    return api('/topics');
+  });
   if (!active || generation !== revision) return;
   const previous = getTopic();
   topics = data.topics;
