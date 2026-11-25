@@ -500,7 +500,9 @@ async def test_stop_all_during_named_button_leaves_session_resumable(
     execute.side_effect = None
     bot._send_rich.reset_mock()
     await bot._handle_button_callback(_ROOM, "$buttons", data)
-    await _finish_button_tasks(bot)
+    # The cancelled task may still be in the set until its done callback runs.
+    (retry,) = bot._background_tasks - {task}
+    await asyncio.wait_for(retry, timeout=2)
 
     assert execute.await_count == 2
     bot._send_rich.assert_awaited_once_with(_ROOM, f"**[{name} | claude]**\n{_REPLY}")
