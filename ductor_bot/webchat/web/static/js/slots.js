@@ -156,12 +156,15 @@ export function initSlots(refresh) {
       more.hidden = count === 0;
     };
 
+    const isNarrow = narrow.matches;
     root.removeAttribute('data-compact');
+    primary.removeAttribute('data-wrap-cooldown');
     const name = primary.querySelector('.slot-name');
     const usage = primary.querySelector('.slot-usage');
     primary.style.removeProperty('max-width');
     primary.style.removeProperty('min-width');
-    buttons.forEach(button => { button.hidden = false; });
+    // Keep the narrow fold in the DOM when the wide styles first take effect.
+    buttons.forEach(button => { button.hidden = isNarrow && button !== primary; });
     setHiddenCount(buttons.length - 1);
     const capacity = chipCapacity();
     const gap = parseFloat(getComputedStyle(chips).columnGap);
@@ -171,7 +174,7 @@ export function initSlots(refresh) {
     const widths = () => buttons.map(widthOf);
     const groupWidth = sizes => sizes.reduce((sum, width) => sum + width, 0) + gap * (sizes.length - 1);
     const reserved = more ? gap + widthOf(more) : 0;
-    if (usage && (narrow.matches || groupWidth(widths()) > capacity)
+    if (usage && (isNarrow || groupWidth(widths()) > capacity)
         && widthWithoutClippedName() + reserved > capacity) {
       root.setAttribute('data-compact', '');
     }
@@ -184,20 +187,24 @@ export function initSlots(refresh) {
         + parseFloat(style.borderLeftWidth) + parseFloat(style.borderRightWidth);
       primary.style.minWidth = `${Math.ceil(fixedWidth + 1)}px`;
     }
-    if (narrow.matches) return;
+    if (isNarrow) return;
 
+    const limitPrimary = limit => {
+      if (primary.dataset.status === 'cooldown') primary.setAttribute('data-wrap-cooldown', '');
+      primary.style.maxWidth = `${Math.max(0, limit)}px`;
+    };
     const sizes = widths();
     const fullWidth = groupWidth(sizes);
     if (fullWidth <= capacity || !more) {
       setHiddenCount(0);
-      if (fullWidth > capacity) primary.style.maxWidth = `${Math.max(0, capacity)}px`;
+      if (fullWidth > capacity) limitPrimary(capacity);
       return;
     }
 
     let hidden = buttons.length - 1;
     const primaryWidth = sizes[buttons.indexOf(primary)];
     const primaryLimit = capacity - reserved;
-    if (primaryWidth > primaryLimit) primary.style.maxWidth = `${Math.max(0, primaryLimit)}px`;
+    if (primaryWidth > primaryLimit) limitPrimary(primaryLimit);
     let used = primaryWidth;
     // Try the remaining Claude slots in order. Codex is last and folds first.
     buttons.forEach((button, index) => {

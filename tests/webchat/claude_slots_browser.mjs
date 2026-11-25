@@ -57,7 +57,7 @@ async function checkHeaderMatrix(browser) {
   const page = await browser.newPage({ viewport: { width: 844, height: 844 }, timezoneId: 'Asia/Seoul' });
   try {
     await page.clock.setFixedTime(new Date(now * 1000));
-    let locale, unsent, state = initialState(), vaultState = 'unconfigured';
+    let locale, unsent, codex, state = initialState(), vaultState = 'unconfigured';
     await page.addInitScript(() => {
       window.headerLayout = () => {
         const visible = selector => [...document.querySelectorAll(selector)]
@@ -106,7 +106,7 @@ async function checkHeaderMatrix(browser) {
       if (endpoint === '/api/masterkey/status') return reply({ state: vaultState });
       if (endpoint === '/api/state') return reply({
         telegram: { state: 'up' }, bot: { up: true }, outbox: { pending: unsent },
-        web_sessions: 1, version: '9.8.7', claude: state,
+        web_sessions: 1, version: '9.8.7', claude: state, codex,
       });
       return reply({ topics: [], commands: [], items: [], keys: [], files: [] });
     });
@@ -260,6 +260,137 @@ async function checkHeaderMatrix(browser) {
       }
     }
     console.log(`Wide header layout: ${JSON.stringify(wide)}`);
+
+    const settle = () => page.evaluate(() => new Promise(resolve =>
+      requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    let cooldownCases = 0;
+    let cooldownOverflows = 0;
+    let labelOverflows = 0;
+    let maxLabelOverflow = 0;
+    await page.setViewportSize({ width: 1181, height: 900 });
+    for (locale of Object.keys(config.locales)) {
+      for (unsent of [0, 3]) {
+        for (const count of [2, 5, 12]) {
+          state = initialState();
+          state.slots[0] = slot('claude', 'oauth', 'cooldown', futureCooldown,
+            usage(1, futureCooldown, 0.41, futureCooldown));
+          state.slots = state.slots.slice(0, count);
+          while (state.slots.length < count) {
+            state.slots.push(slot(`claude-slot-${state.slots.length + 1}`, 'oauth', 'ok'));
+          }
+          if (count === 2) {
+            await page.goto(origin);
+            await waitForHeader();
+          } else {
+            await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+            await page.waitForFunction(count => document.querySelectorAll('.slot-row').length === count, count);
+          }
+          await settle();
+          const measure = await page.locator('.slot-chip[data-next]').evaluate(chip => {
+            const box = chip.getBoundingClientRect();
+            const name = chip.querySelector('.slot-name');
+            const label = chip.querySelector('.slot-label');
+            const textOverflow = element => {
+              const range = document.createRange();
+              range.selectNodeContents(element);
+              return Math.max(0, ...[...range.getClientRects()].map(rect => rect.right - box.right));
+            };
+            return {
+              nameClipped: name.scrollWidth > name.clientWidth || textOverflow(name) > 0.5,
+              labelClipped: label.scrollWidth > label.clientWidth,
+              labelOverflow: textOverflow(label),
+            };
+          });
+          cooldownCases++;
+          labelOverflows += Number(measure.labelClipped || measure.labelOverflow > 0.5);
+          maxLabelOverflow = Math.max(maxLabelOverflow, measure.labelOverflow);
+          if (measure.nameClipped || measure.labelClipped || measure.labelOverflow > 0.5) {
+            cooldownOverflows++;
+            failures.push({ cooldown: 'future', width: 1181, locale, unsent, count, ...measure });
+          }
+          if (locale === 'de' && unsent === 3 && count === 2) await screenshot('issue87-de-1181');
+        }
+      }
+    }
+    console.log(`Issue 87 cooldown: ${cooldownOverflows}/${cooldownCases} overflowing cases (${labelOverflows} labels), max label overflow ${maxLabelOverflow.toFixed(1)}px`);
+    assert.equal(cooldownCases, 54);
+
+    async function checkBreakpoint(name) {
+      for (const width of [1440, 1180, 1181]) {
+        await page.setViewportSize({ width, height: 900 });
+        await settle();
+        const measure = await layout();
+        if (measure.overlaps || measure.clipped || measure.document) {
+          failures.push({ transition: name, settled: true, ...measure });
+        }
+      }
+      const frames = [];
+      for (let repeat = 0; repeat < 60; repeat++) {
+        for (const width of [1440, 1180]) {
+          await page.setViewportSize({ width, height: 900 });
+          await settle();
+        }
+        await page.evaluate(() => {
+          window.breakpointFrames = new Promise(resolve => {
+            const samples = [];
+            function sample() {
+              if (innerWidth === 1181) {
+                const layout = window.headerLayout();
+                const primary = document.querySelector('.slot-chip[data-primary]');
+                const chip = primary.getBoundingClientRect();
+                const meterOverflow = [...primary.querySelectorAll('.slot-mini')]
+                  .filter(meter => meter.getClientRects().length)
+                  .some(meter => meter.getBoundingClientRect().right > chip.right + 0.5);
+                samples.push({ overlaps: layout.overlaps, meterOverflow, primaryWidth: layout.primaryWidth });
+              }
+              if (samples.length === 8) resolve(samples);
+              else requestAnimationFrame(sample);
+            }
+            requestAnimationFrame(sample);
+          });
+        });
+        await page.setViewportSize({ width: 1181, height: 900 });
+        frames.push(...await page.evaluate(() => window.breakpointFrames));
+      }
+      const overlaps = frames.filter(frame => frame.overlaps).length;
+      const meters = frames.filter(frame => frame.meterOverflow).length;
+      const minWidth = Math.min(...frames.map(frame => frame.primaryWidth));
+      console.log(`Issue 87 ${name}: ${frames.length} frames, ${overlaps} with control overlap, ${meters} with meter overflow, min next chip at 1181px ${minWidth.toFixed(1)}px`);
+      assert.equal(frames.length, 480);
+      if (overlaps || meters) failures.push({ transition: name, overlaps, meters, minWidth });
+    }
+
+    locale = 'fr';
+    unsent = 3;
+    state = initialState();
+    while (state.slots.length < 12) {
+      state.slots.push(slot(`claude-slot-${state.slots.length + 1}`, 'oauth', 'ok'));
+    }
+    await page.goto(origin);
+    await waitForHeader();
+    await checkBreakpoint('French, 12 Claude slots');
+    await screenshot('issue87-fr-1181');
+
+    locale = 'ko';
+    unsent = 0;
+    const teamUsage = usage(0.26, cooldown, 0.94, futureCooldown);
+    state = { next: 'claude-team', slots: [
+      slot('claude', 'oauth', 'ok', null, teamUsage),
+      slot('claude-weekly', 'oauth', 'ok', null, { captured_at: now, windows: {
+        seven_day: teamUsage.windows.seven_day,
+      } }),
+      slot('claude-empty', 'oauth', 'ok'),
+      slot('claude-team', 'oauth', 'ok', null, teamUsage),
+    ] };
+    codex = { captured_at: now, windows: [
+      { used_percent: 64, window_minutes: 300, resets_at: cooldown },
+      { used_percent: 91, window_minutes: 10080, resets_at: futureCooldown },
+    ] };
+    await page.goto(origin);
+    await waitForHeader();
+    await page.locator('.slot-chip[data-provider="codex"]').waitFor({ state: 'attached' });
+    await checkBreakpoint('Korean, four Claude slots and Codex');
+    codex = null;
 
     locale = 'ko';
     unsent = 3;
