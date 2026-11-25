@@ -110,10 +110,17 @@ async function run(browser, origin, width, theme) {
       });
       if (endpoint.includes('/swap/')) {
         assert.equal(request.method(), 'POST');
-        assert.equal(request.postData(), null);
         const parts = endpoint.split('/');
         const name = parts.at(-3), other = parts.at(-1);
-        swaps.push([name, other]);
+        const body = request.postDataJSON();
+        const expected = rejectSwap === 'conflict'
+          ? ['claude', accountSlots[1].name, 'claude-backup']
+          : accountSlots.filter(item => item.priority != null).map(item => item.name);
+        assert.deepEqual(body?.expected, expected);
+        swaps.push([name, other, body.view]);
+        if (rejectSwap === 'conflict') {
+          return route.fulfill({ status: 409, json: { error: 'slot_order_changed' } });
+        }
         if (rejectSwap) return route.fulfill({ status: 500, json: { error: 'slot_move_error' } });
         return new Promise(resolve => {
           releaseSwap = () => {
@@ -389,7 +396,7 @@ async function run(browser, origin, width, theme) {
         const started = new Promise(resolve => { swapStarted = resolve; });
         await act(button(long, direction));
         await started;
-        assert.deepEqual(swaps.at(-1), [long, 'claude']);
+        assert.deepEqual(swaps.at(-1), [long, 'claude', 'login']);
         assert.equal(await dialog.locator('.slot-order-button:not(:disabled)').count(), 0);
         assert.equal(await row(long).locator('.cli-slot-more').isDisabled(), true);
         releaseSwap();
@@ -401,9 +408,21 @@ async function run(browser, origin, width, theme) {
       await move('up', 'down');
       await move('down', 'down');
 
-      rejectSwap = true;
+      const [first, middle, last] = accountSlots;
+      accountSlots = [{ ...last, priority: 1 }, middle, { ...first, priority: 3 }, unused];
+      rejectSwap = 'conflict';
       await act(button(long, 'up'));
       await dialog.locator('.slot-error').waitFor();
+      assert.deepEqual(swaps.at(-1), [long, 'claude', 'login']);
+      assert.deepEqual(await dialog.locator('.cli-slot').evaluateAll(rows => rows.map(row => row.dataset.slot)),
+        accountSlots.map(item => item.name));
+
+      rejectSwap = true;
+      const failure = page.waitForResponse(response => response.url().includes('/swap/'));
+      await act(button(long, 'up'));
+      assert.equal((await failure).status(), 500);
+      await page.waitForFunction(name => document.querySelector(
+        `.cli-slot[data-slot="${name}"] [data-slot-order="up"]:not(:disabled)`), long);
       assert.equal(await button(long, 'up').isEnabled(), true);
       await act(dialog.locator('#cliClose'));
       accountSlots = [slots[0], unused];
@@ -451,7 +470,7 @@ async function run(browser, origin, width, theme) {
           await act(usage.locator(`.slot-row[data-slot="${long}"] [data-slot-order="down"]`));
           await started;
           releaseSwap();
-          assert.deepEqual(swaps.at(-1), [long, expected[1]]);
+          assert.deepEqual(swaps.at(-1), [long, expected[1], 'usage']);
         } catch (error) {
           failures.push(`usage order after CLI swap: ${error.message}`);
         }

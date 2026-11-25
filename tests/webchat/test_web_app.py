@@ -1383,7 +1383,7 @@ async def test_attachment_message_owner_is_derived_from_cookie(site):
     assert (await fetched.json())["path"] == "/topics/123/messages/entry/attachments"
 
 
-async def test_swap_slots_requires_session_and_csrf_and_relays_empty_post(site):
+async def test_swap_slots_requires_session_and_csrf_and_relays_json(site):
     client, fake = site
     route = "/cli-login/slots/claude-first/swap/claude-last"
     denied = await client.post(
@@ -1399,11 +1399,13 @@ async def test_swap_slots_requires_session_and_csrf_and_relays_empty_post(site):
     assert isinstance(await denied.json(), dict)
     assert "WWW-Authenticate" not in denied.headers
     assert not [call for call in fake.calls if call[1] == route]
-    response = await client.post(f"/api{route}", headers=authorized)
+    body = {"view": "usage", "expected": ["claude-first", "claude-last"]}
+    response = await client.post(f"/api{route}", headers=authorized, json=body)
     assert response.status == 200
     assert await response.json() == {"ok": True}
     assert "WWW-Authenticate" not in response.headers
-    assert fake.calls[-1] == ("POST", route, {}, None, b"")
+    assert fake.calls[-1][:4] == ("POST", route, {}, body)
+    assert fake.calls[-1][4] == json.dumps(body).encode()
     expected = hmac.digest(
         client.app[STATE].owner_key, session.cookies["dtw_session"].value.encode(), "sha256"
     ).hex()

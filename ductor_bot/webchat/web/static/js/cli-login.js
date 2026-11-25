@@ -505,13 +505,18 @@ export function initCliLogin() {
     if (slotControlsBusy() || loading || status?.running || !slotNeighbor) return;
     const name = button.closest('[data-slot]').dataset.slot;
     const version = generation;
-    const swap = swapSlotOrder(name, slotNeighbor);
+    const expected = status.claude_slots.filter(slot => slot.priority != null).map(slot => slot.name);
+    const swap = swapSlotOrder(name, slotNeighbor, 'login', expected);
     slotOrderRequest = swap;
     render();
+    let conflict = false;
     try {
-      await swap;
+      await swap.catch(error => {
+        if (error.code !== 'slot_order_changed') throw error;
+        conflict = true;
+      });
       if (slotOrderRequest !== swap) return;
-      document.dispatchEvent(new Event('claude-slot-order-changed'));
+      if (!conflict) document.dispatchEvent(new Event('claude-slot-order-changed'));
       if (!dialog.open) return;
       const currentVersion = generation;
       // An account read started while the swap was pending can return the old order.
@@ -522,7 +527,7 @@ export function initCliLogin() {
         const result = await read;
         if (live()) {
           status = result;
-          slotError = null;
+          slotError = conflict ? { name, key: 'error.generic', args: { name } } : null;
         }
       } finally {
         if (live()) loading = false;

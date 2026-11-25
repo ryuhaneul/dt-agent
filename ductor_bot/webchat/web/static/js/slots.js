@@ -16,8 +16,10 @@ export function slotOrderControls(name, previous, next, disabled) {
   return `<div class="slot-order-controls">${button('up', previous, 'm6 15 6-6 6 6')}${button('down', next, 'm6 9 6 6 6-6')}</div>`;
 }
 
-export function swapSlotOrder(name, neighbor) {
-  return api(`/cli-login/slots/${encodeURIComponent(name)}/swap/${encodeURIComponent(neighbor)}`, { method: 'POST' });
+export function swapSlotOrder(name, neighbor, view, expected) {
+  return api(`/cli-login/slots/${encodeURIComponent(name)}/swap/${encodeURIComponent(neighbor)}`, {
+    method: 'POST', body: { view, expected },
+  });
 }
 
 export function focusSlotOrder(root, name, direction) {
@@ -348,14 +350,22 @@ export function initSlots(refresh) {
     const { slotOrder, slotNeighbor } = button.dataset;
     if (orderRequest || !slotNeighbor) return;
     const name = button.closest('[data-slot]').dataset.slot;
-    const swap = swapSlotOrder(name, slotNeighbor);
+    const expected = data.slots.map(slot => slot.name);
+    const swap = swapSlotOrder(name, slotNeighbor, 'usage', expected);
     setOrdering(swap);
+    let conflict = false;
     try {
-      await swap;
+      await swap.catch(error => {
+        if (error.code !== 'slot_order_changed') throw error;
+        conflict = true;
+      });
       if (orderRequest !== swap) return;
       // A read started before the swap can still contain the previous order.
       if (refreshing) await refresh();
-      if (orderRequest === swap && data) await refresh();
+      if (orderRequest === swap) {
+        await refresh();
+        if (orderRequest === swap && conflict) failed = true;
+      }
     } catch {
       if (orderRequest === swap) failed = true;
     } finally {
@@ -368,6 +378,7 @@ export function initSlots(refresh) {
     }
   }
 
+  document.addEventListener('auth-change', () => setOrdering(null));
   root.addEventListener('click', event => {
     const button = event.target.closest('button');
     if (button?.hasAttribute('data-slot-order')) void reorderSlot(button);
@@ -405,7 +416,6 @@ export function initSlots(refresh) {
 
   return {
     update(value, codexUsage = null) {
-      if (value === null) setOrdering(null);
       data = value;
       codex = codexUsage;
       updatedAt = new Date();

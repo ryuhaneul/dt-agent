@@ -1203,7 +1203,7 @@ async function checkUsageSlotOrder(browser, width, lifecycle) {
       ? Array.from({ length: 14 }, (_, index) => slot(`claude-slot-${index}`, 'oauth', 'ok'))
       : [slot('claude', 'oauth', 'ok'), slot(long, 'oauth', 'ok'), slot('claude-backup', 'oauth', 'ok')];
     let singleton = false, rejectSwap = false, release, swapStarted, authenticated = true, session = 1;
-    let stateReads = 0;
+    let stateReads = 0, stateUnavailable = false, staleView = false;
     const calls = [];
     await page.routeWebSocket('**/api/ws', () => {});
     await page.route('**/api/**', async route => {
@@ -1224,15 +1224,17 @@ async function checkUsageSlotOrder(browser, width, lifecycle) {
         if (!authenticated) return route.fulfill({ status: 403, json: { error: 'auth_required' } });
         return route.fulfill({ json: {
           telegram: { state: 'up' }, bot: { up: true }, outbox: { pending: 0 },
-          claude: { next: slots[0].name, slots: singleton ? slots.slice(0, 1) : slots },
+          claude: stateUnavailable ? null : { next: slots[0].name, slots: singleton ? slots.slice(0, 1) : slots },
           codex: { captured_at: now, windows: [] },
         } });
       }
       if (endpoint.includes('/swap/')) {
         assert.equal(request.method(), 'POST');
-        assert.equal(request.postData(), null);
+        const expected = staleView ? ['claude', long, 'claude-backup'] : slots.map(slot => slot.name);
+        assert.deepEqual(request.postDataJSON(), { view: 'usage', expected });
         const [name, other] = endpoint.split('/').slice(-3).filter(part => part !== 'swap');
         calls.push([name, other]);
+        if (staleView) return route.fulfill({ status: 409, json: { error: 'slot_order_changed' } });
         if (rejectSwap) return route.fulfill({ status: 500, json: { error: 'slot_move_error' } });
         const requestSession = session;
         await new Promise(resolve => { release = resolve; swapStarted(); });
@@ -1302,6 +1304,44 @@ async function checkUsageSlotOrder(browser, width, lifecycle) {
         focus: await popover.evaluate(panel => panel === document.activeElement),
         stateReads: stateReads - reads,
       }, { enabledBeforeCompletion: true, enabledAfterCompletion: true, focus: true, stateReads: 0 });
+      return;
+    }
+
+    if (lifecycle === 'unavailable') {
+      const started = new Promise(resolve => { swapStarted = resolve; });
+      await button(long, 'up').click();
+      await started;
+      const complete = release;
+      const refresh = () => page.evaluate(() =>
+        document.dispatchEvent(new Event('claude-slot-order-changed')));
+      stateUnavailable = true;
+      await refresh();
+      await row(long).waitFor({ state: 'detached' });
+      stateUnavailable = false;
+      await refresh();
+      await row(long).waitFor();
+      const disabledDuringSwap = await button(long, 'up').isDisabled();
+      await button(long, 'up').evaluate(element => element.click());
+      complete();
+      assert.equal(disabledDuringSwap, true, 'order controls enabled while swap is pending');
+      await page.waitForFunction(name => document.activeElement.matches(
+        `.slot-row[data-slot="${name}"] [data-slot-order="down"]:not(:disabled)`), long);
+      assert.deepEqual(calls, [[long, 'claude']]);
+      return;
+    }
+
+    if (lifecycle === 'conflict') {
+      // The server changed the order without the browser receiving another state snapshot.
+      [slots[0], slots[2]] = [slots[2], slots[0]];
+      staleView = true;
+      const response = page.waitForResponse(result => result.url().includes('/swap/'));
+      await button(long, 'up').click();
+      assert.equal((await response).status(), 409);
+      await page.waitForFunction(() => document.querySelector(
+        '#claudeSlotPopover .slot-row[data-slot]')?.dataset.slot === 'claude-backup');
+      assert.deepEqual(calls, [[long, 'claude']]);
+      assert.equal(await button(long, 'up').isEnabled(), true);
+      await popover.locator('.slot-popover-head [data-slot-refresh][data-failed]').waitFor();
       return;
     }
 
@@ -1383,6 +1423,8 @@ try {
         ...[1280, 375].map(width => checkUsageSlotOrder(browser, width)),
         checkUsageSlotOrder(browser, 375, 'scroll'),
         checkUsageSlotOrder(browser, 1280, 'session'),
+        checkUsageSlotOrder(browser, 1280, 'unavailable'),
+        checkUsageSlotOrder(browser, 1280, 'conflict'),
       ]),
       ...cooldownTransitions.map(scenario => checkHeaderMatrix(browser, scenario)),
     ]);
