@@ -18,7 +18,6 @@ from ductor_bot.infra.platform import CREATION_FLAGS
 from ductor_bot.infra.process_tree import force_kill_process_tree
 
 if TYPE_CHECKING:
-    from datetime import datetime
     from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -54,7 +53,7 @@ _last_successful: CodexUsage | None = None
 _turn_refreshes: set[asyncio.Task[None]] = set()
 _usage_listeners: set[Callable[[], None]] = set()
 _logged_refresh_errors: set[str] = set()
-_turn_auth_rejection: tuple[Path | None, datetime | None] | None = None
+_turn_auth_rejection: tuple[Path | None, int | None] | None = None
 
 
 def parse_codex_usage(result: object) -> CodexUsage:
@@ -88,12 +87,24 @@ def schedule_codex_usage_refresh() -> None:
     task.add_done_callback(_turn_refreshes.discard)
 
 
+def _auth_file_stamp(auth_file: Path | None) -> tuple[Path | None, int | None]:
+    if auth_file is None:
+        return None, None
+    try:
+        return auth_file, auth_file.stat().st_mtime_ns
+    except OSError:
+        return None, None
+
+
 async def _refresh_after_turn() -> None:
     global _turn_auth_rejection  # noqa: PLW0603
     try:
         if _turn_auth_rejection is not None:
-            auth = check_codex_auth()
-            if (auth.auth_file, auth.auth_age) == _turn_auth_rejection:
+            try:
+                auth_file = check_codex_auth().auth_file
+            except OSError:
+                auth_file = None
+            if _auth_file_stamp(auth_file) == _turn_auth_rejection:
                 return
             _turn_auth_rejection = None
         reason: str | None = (await query_codex_usage(reuse_completed=False)).error
@@ -174,6 +185,7 @@ async def _query() -> CodexUsage:
         codex_path = which("codex")
         if not codex_path or (auth := check_codex_auth()).status != AuthStatus.AUTHENTICATED:
             return CodexUsage(error="login_required")
+        auth_stamp = _auth_file_stamp(auth.auth_file)
         async with asyncio.timeout(QUERY_TIMEOUT):
             process = await asyncio.create_subprocess_exec(
                 codex_path,
@@ -204,7 +216,7 @@ async def _query() -> CodexUsage:
             try:
                 result = parse_codex_usage(await _read_result(process, 2))
             except _ChatGPTAuthRequiredError:
-                _turn_auth_rejection = auth.auth_file, auth.auth_age
+                _turn_auth_rejection = auth_stamp
                 return CodexUsage(error="chatgpt_auth_required")
             if process.returncode not in (None, 0):
                 return CodexUsage(error="invalid_response")

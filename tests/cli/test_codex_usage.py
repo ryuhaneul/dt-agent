@@ -583,6 +583,30 @@ async def test_auth_file_timestamp_change_resumes_turn_usage(server, usage_auth_
     assert codex_usage.last_codex_usage() is not None
 
 
+async def test_auth_file_one_nanosecond_change_resumes_turn_usage(server, usage_auth_file):
+    initial_mtime = 1_793_000_000_000_000_000
+    usage_auth_file.write_text('{"OPENAI_API_KEY":"fixture-api-key"}')
+    os.utime(usage_auth_file, ns=(initial_mtime, initial_mtime))
+    pids = server("chatgpt-auth-required")
+    await _complete_usage_refresh()
+    assert len(pids.read_text().splitlines()) == 1
+    await _complete_usage_refresh()
+    assert len(pids.read_text().splitlines()) == 1
+
+    observed_initial_mtime = usage_auth_file.stat().st_mtime_ns
+    replacement = usage_auth_file.with_suffix(".next.json")
+    replacement.write_text('{"auth_mode":"chatgpt","tokens":{"access_token":"fixture-token"}}')
+    os.utime(replacement, ns=(initial_mtime, initial_mtime + 1))
+    replacement.replace(usage_auth_file)
+    if usage_auth_file.stat().st_mtime_ns != observed_initial_mtime + 1:
+        pytest.skip("Filesystem does not preserve a one-nanosecond timestamp change")
+
+    server()
+    await _complete_usage_refresh()
+    assert len(pids.read_text().splitlines()) == 2
+    assert codex_usage.last_codex_usage() is not None
+
+
 async def test_manual_usage_query_bypasses_turn_skip(server):
     from ductor_bot.config import AgentConfig
     from ductor_bot.orchestrator.selectors.usage_view import render_usage
