@@ -13,6 +13,8 @@ from ductor_bot.messenger.queue_context import current_queue_context
 from ductor_bot.messenger.telegram.app import TelegramBot
 from tests.messenger.telegram.test_app import _make_config, _make_orchestrator, _make_tg_bot
 from tests.messenger.telegram.test_command_buttons import callback
+from tests.orchestrator.conftest import orch as orch  # noqa: PLC0414 -- pytest fixture
+from tests.orchestrator.conftest import workspace as workspace  # noqa: PLC0414 -- pytest fixture
 
 
 def setup_bot(*, mention_only=False):
@@ -460,6 +462,52 @@ async def test_unrecorded_named_callback_keeps_legacy_no_edit_behavior():
     assert bot._handle_ns_callback.await_args.args[1] == "ns:worker:Yes"
     api.edit_message_text.assert_not_awaited()
     api.edit_message_reply_markup.assert_not_awaited()
+
+
+@pytest.mark.parametrize("streaming", [True, False])
+async def test_named_button_clears_abort_only_after_topic_lock(orch, monkeypatch, streaming):
+    from ductor_bot.cli.types import AgentResponse
+    from ductor_bot.session.key import SessionKey
+    from tests.cli.test_process_registry import _mock_process
+    from tests.messenger.telegram.test_app import _make_callback_query
+
+    bot, _, _ = setup_bot()
+    bot._config.streaming.enabled = streaming
+    bot._orchestrator = orch
+    key = SessionKey.telegram(1, 5)
+    session = orch._named_sessions.create(key.chat_id, "claude", "opus", "setup", key=key)
+    orch._named_sessions.update_after_response(key.chat_id, session.name, "existing-session")
+    cli = orch._cli_service.execute_streaming if streaming else orch._cli_service.execute
+    cli.return_value = AgentResponse(result="Named reply", session_id="continued-session")
+    send = AsyncMock()
+    monkeypatch.setattr("ductor_bot.messenger.telegram.app.send_rich", send)
+    monkeypatch.setattr(
+        "ductor_bot.orchestrator.flows._user_auth_warning", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        "ductor_bot.cli.process_registry._kill_processes", AsyncMock(return_value=1)
+    )
+
+    registry = orch._process_registry
+    acknowledged = asyncio.Event()
+    callback = _make_callback_query(data=f"ns:{session.name}:Yes", topic_thread_id=key.topic_id)
+    callback.answer.side_effect = lambda **_kwargs: acknowledged.set()
+    async with bot._sequential.get_lock(key.lock_key):
+        registry.register(key.chat_id, _mock_process(), "main", topic_id=key.topic_id)
+        assert await orch.abort(key.chat_id, key.topic_id) == 1
+        await registry.kill_all(key.chat_id)
+        pressed = asyncio.create_task(bot._on_callback_query(callback))
+        await asyncio.wait_for(acknowledged.wait(), 2)
+        assert not pressed.done()
+        cli.assert_not_awaited()
+        assert registry.was_aborted(key.chat_id)
+        assert registry.was_aborted_topic(key.chat_id, key.topic_id)
+
+    await asyncio.wait_for(pressed, 2)
+    cli.assert_awaited_once()
+    send.assert_awaited_once()
+    assert send.await_args.args[2] == f"**[{session.name} | claude]**\nNamed reply"
+    assert orch._named_sessions.get(key.chat_id, session.name).session_id == "continued-session"
 
 
 async def test_recorded_queued_choice_remains_answered_after_cancel(tmp_path):

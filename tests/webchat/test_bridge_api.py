@@ -552,6 +552,8 @@ async def conversation(tmp_path, monkeypatch):
     pool = LockPool()
     registry = SimpleNamespace(
         kill_by_chat_topic=AsyncMock(return_value=0),
+        clear_abort=MagicMock(),
+        clear_topic_abort=MagicMock(),
         was_aborted=lambda _chat: False,
         was_aborted_topic=lambda _chat, _topic: False,
     )

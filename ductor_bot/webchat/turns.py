@@ -630,6 +630,10 @@ class WebTurns:
         from ductor_bot.orchestrator.core import _MessageDispatch
         from ductor_bot.orchestrator.flows import named_session_streaming
 
+        registry = self.bot._orch._process_registry
+        registry.clear_abort(key.chat_id)
+        registry.clear_topic_abort(key.chat_id, key.topic_id)
+
         dispatch = _MessageDispatch(
             key=key, text=text, cmd=text.strip().lower(), transport_override="api"
         )
