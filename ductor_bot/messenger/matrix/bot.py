@@ -36,7 +36,7 @@ from ductor_bot.session.key import SessionKey
 from ductor_bot.text.response_format import SEP, fmt
 
 if TYPE_CHECKING:
-    from nio import AsyncClient, MatrixRoom, RoomMessageMedia, RoomMessageText
+    from nio import AsyncClient, MatrixRoom, ReactionEvent, RoomMessageMedia, RoomMessageText
 
     from ductor_bot.bus.envelope import DeliveryOutcome
     from ductor_bot.infra.shutdown_budget import ShutdownBudget
@@ -330,7 +330,7 @@ class MatrixBot:
     def _should_process_event(
         self,
         room: MatrixRoom,
-        event: RoomMessageText | RoomMessageMedia,
+        event: RoomMessageText | RoomMessageMedia | ReactionEvent,
         sender: str,
     ) -> bool:
         """Common guard checks for incoming events.
@@ -828,7 +828,7 @@ class MatrixBot:
     def _is_authorized(
         self,
         room: MatrixRoom,
-        event: RoomMessageText | RoomMessageMedia,
+        event: RoomMessageText | RoomMessageMedia | ReactionEvent,
     ) -> bool:
         """Check if the sender/room is authorized.
 
@@ -1003,8 +1003,8 @@ class MatrixBot:
             return
         if not isinstance(room, MatrixRoom) or not isinstance(event, ReactionEvent):
             return
-        if event.sender == self._client.user_id:
-            return  # Ignore own reactions
+        if not self._should_process_event(room, event, event.sender):
+            return
 
         room_id = room.room_id
         cb = self._button_tracker.match_reaction(room_id, event.reacts_to, event.key)
