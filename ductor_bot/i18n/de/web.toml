@@ -277,6 +277,7 @@ invalid_slot = "Namen prüfen. Leerzeichen, Großbuchstaben und der reservierte 
 duplicate_slot = "Dieser Slot-Name existiert bereits."
 confirm_title = "Anmeldung starten?"
 confirm_warning = "Beim Start wird das bisherige Konto abgemeldet. Fortfahren?"
+confirm_new_slot = "Ein neuer Slot wird hinzugefügt. Bestehende Anmeldungen bleiben unverändert."
 confirm_codex = "Codex meldet das Konto sofort beim Start ab. Ein Abbruch stellt die bisherige Anmeldung nicht wieder her."
 start = "Anmeldung starten"
 cancel_title = "Anmeldung abbrechen?"

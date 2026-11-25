@@ -219,7 +219,9 @@ export function initCliLogin() {
     const prefix = start ? 'confirm' : confirmMode;
     $('cliConfirmTitle').textContent = t(`cli_login.${prefix}_title`);
     $('cliConfirmTarget').textContent = start || cancel ? targetName() : target?.slot || '';
-    $('cliConfirmWarning').textContent = t(`cli_login.${prefix}_warning`)
+    const warning = start && target?.new_slot === true
+      ? 'cli_login.confirm_new_slot' : `cli_login.${prefix}_warning`;
+    $('cliConfirmWarning').textContent = t(warning)
       + (start && target?.provider === 'codex' ? ` ${t('cli_login.confirm_codex')}` : '');
     $('cliConfirmNo').textContent = t(cancel ? 'cli_login.keep_login' : 'common.cancel');
     $('cliConfirmYes').textContent = t(`cli_login.${cancel ? 'confirm_cancel' : confirmMode}`);

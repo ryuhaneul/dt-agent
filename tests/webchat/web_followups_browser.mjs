@@ -151,6 +151,13 @@ async function run(browser, origin, width, theme) {
           await act(provider.locator('[data-i18n="cli_login.login"]'));
         }
         await confirm.waitFor();
+        const warning = await confirm.locator('#cliConfirmWarning').textContent();
+        if (selection.new_slot) {
+          assert.equal(warning, 'This adds a new slot. Existing logins stay as they are.');
+          assert.ok(!warning.includes(config.strings['cli_login.confirm_warning']));
+        } else if (selection.slot && selection.slot !== 'claude-unused') {
+          assert.equal(warning, config.strings['cli_login.confirm_warning']);
+        }
         const popup = mode === 'normal' ? context.waitForEvent('page', { timeout: 3500 }) : null;
         if (popup) popup.catch(() => {});
         await act(confirm.locator('#cliConfirmYes'));

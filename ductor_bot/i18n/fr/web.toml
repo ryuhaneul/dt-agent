@@ -277,6 +277,7 @@ invalid_slot = "Vérifiez le nom. Les espaces, les majuscules et le nom réserv�
 duplicate_slot = "Ce nom d’emplacement existe déjà."
 confirm_title = "Démarrer la connexion ?"
 confirm_warning = "Le démarrage déconnectera le compte actuel. Continuer ?"
+confirm_new_slot = "Un nouvel emplacement sera ajouté. Les sessions déjà ouvertes resteront actives."
 confirm_codex = "Codex déconnecte le compte dès le démarrage. Annuler ne rétablit pas la connexion précédente."
 start = "Démarrer la connexion"
 cancel_title = "Annuler la connexion ?"

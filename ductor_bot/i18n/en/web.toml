@@ -277,6 +277,7 @@ invalid_slot = "Check the name. Spaces, uppercase letters and the reserved name 
 duplicate_slot = "This slot name already exists."
 confirm_title = "Start logging in?"
 confirm_warning = "Starting login will log out the existing account. Continue?"
+confirm_new_slot = "This adds a new slot. Existing logins stay as they are."
 confirm_codex = "Codex logs out immediately when you start. Cancelling will not restore the previous login."
 start = "Start login"
 cancel_title = "Cancel login?"
