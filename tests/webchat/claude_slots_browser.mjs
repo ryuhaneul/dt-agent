@@ -1340,8 +1340,10 @@ async function checkUsageSlotOrder(browser, width, lifecycle) {
       await page.waitForFunction(() => document.querySelector(
         '#claudeSlotPopover .slot-row[data-slot]')?.dataset.slot === 'claude-backup');
       assert.deepEqual(calls, [[long, 'claude']]);
+      const refresh = popover.locator('.slot-popover-head [data-slot-refresh]:enabled');
+      await refresh.waitFor();
       assert.equal(await button(long, 'up').isEnabled(), true);
-      await popover.locator('.slot-popover-head [data-slot-refresh][data-failed]').waitFor();
+      assert.equal(await refresh.getAttribute('data-failed'), null, 'the order refresh succeeded');
       return;
     }
 

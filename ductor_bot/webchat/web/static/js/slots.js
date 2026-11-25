@@ -353,19 +353,14 @@ export function initSlots(refresh) {
     const expected = data.slots.map(slot => slot.name);
     const swap = swapSlotOrder(name, slotNeighbor, 'usage', expected);
     setOrdering(swap);
-    let conflict = false;
     try {
       await swap.catch(error => {
         if (error.code !== 'slot_order_changed') throw error;
-        conflict = true;
       });
       if (orderRequest !== swap) return;
       // A read started before the swap can still contain the previous order.
       if (refreshing) await refresh();
-      if (orderRequest === swap) {
-        await refresh();
-        if (orderRequest === swap && conflict) failed = true;
-      }
+      if (orderRequest === swap) await refresh();
     } catch {
       if (orderRequest === swap) failed = true;
     } finally {

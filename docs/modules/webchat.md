@@ -167,7 +167,9 @@ to swap a ranked Claude slot with the adjacent ranked slot you can see. In the
 usage popover, a slot hidden between two visible slots keeps its position, while
 a one-step move in `/accounts` swaps with the hidden slot. If the order changed since
 the dialog or popover last loaded it, the browser reloads the order so you can
-retry the swap.
+retry the swap. If that reload fails after a 409 conflict, the screen keeps
+showing the old order, the server rejects another swap from that order, and
+the new order appears once a reload succeeds.
 
 The popover shows when the browser last fetched state and when each usage
 snapshot was captured. State refreshes on login, reconnect, when the page
