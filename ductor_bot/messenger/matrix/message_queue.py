@@ -43,6 +43,14 @@ class MatrixMessageQueue:
         """Register a spawned message-handling task for a chat."""
         self._pending.setdefault(chat_id, []).append(task)
 
+    def untrack(self, *, chat_id: int, task: asyncio.Task[None]) -> None:
+        """Remove one task from the stop queue."""
+        tasks = self._pending.get(chat_id)
+        if tasks is not None and task in tasks:
+            tasks.remove(task)
+            if not tasks:
+                del self._pending[chat_id]
+
     def pending_count(self, chat_id: int) -> int:
         """Return the number of pending (not yet done) tasks for a chat."""
         tasks = self._pending.get(chat_id)

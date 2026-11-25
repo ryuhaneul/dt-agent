@@ -1052,6 +1052,9 @@ class MatrixBot:
     async def _ns_callback_with_lock(self, room_id: str, key: SessionKey, data: str) -> None:
         lock = self._lock_pool.get(key.lock_key)
         async with input_lock(lock):
+            task = asyncio.current_task()
+            if task is not None:
+                self._message_queue.untrack(chat_id=key.chat_id, task=task)
             registry = self._orch._process_registry
             registry.clear_abort(key.chat_id)
             registry.clear_topic_abort(key.chat_id, key.topic_id)
