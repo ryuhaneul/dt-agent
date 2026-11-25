@@ -2683,7 +2683,7 @@ const stableProvider=get('cliProviders').children[0];language='en';events['langu
 assert.equal(get('cliProviders').children[0],stableProvider,'translation must preserve account control nodes');language='ko';events['language-changed']();
 assert.equal(get('cliProviders').children.length,3);
 const grok=get('cliProviders').children[2].children[0];await grok.children.at(-1).emit('click');assert.ok(get('cliConfirmDlg').open);
-assert.equal(get('cliConfirmWarning').textContent,'ko:cli_login.confirm_warning');
+assert.equal(get('cliConfirmWarning').textContent,'ko:cli_login.confirm_login');
 await get('cliConfirmYes').emit('click');await flush();
 assert.equal(get('cliProgress').hidden,false);assert.equal(get('cliLinkRows').childElementCount,1);
 const stableLink=get('cliLinkRows').children[0], rawText=get('cliRawOutput').children[0];

@@ -238,8 +238,15 @@ export function initCliLogin() {
     const prefix = start ? 'confirm' : confirmMode;
     $('cliConfirmTitle').textContent = t(`cli_login.${prefix}_title`);
     $('cliConfirmTarget').textContent = start || cancel ? targetName() : target?.slot || '';
-    $('cliConfirmWarning').textContent = t(`cli_login.${prefix}_warning`)
-      + (start && target?.provider === 'codex' ? ` ${t('cli_login.confirm_codex')}` : '');
+    const provider = target?.provider, providerStatus = status?.providers?.[provider];
+    const loggedOut = start && (target?.slot
+      ? status?.claude_slots?.find(slot => slot.name === target.slot)?.authenticated === false
+      : refreshingProvider !== provider && ['installed', 'not_found'].includes(providerStatus));
+    let warning = `cli_login.${prefix}_warning`;
+    if (start && target?.new_slot === true) warning = 'cli_login.confirm_new_slot';
+    else if (loggedOut) warning = 'cli_login.confirm_login';
+    $('cliConfirmWarning').textContent = t(warning)
+      + (start && provider === 'codex' && !loggedOut ? ` ${t('cli_login.confirm_codex')}` : '');
     $('cliConfirmNo').textContent = t(cancel ? 'cli_login.keep_login' : 'common.cancel');
     $('cliConfirmYes').textContent = t(`cli_login.${cancel ? 'confirm_cancel' : confirmMode}`);
     $('cliConfirmYes').classList.toggle('btn-danger', !start);

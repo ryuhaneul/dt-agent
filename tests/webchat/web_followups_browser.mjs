@@ -49,7 +49,8 @@ async function run(browser, origin, width, theme) {
   });
   context.setDefaultTimeout(3500);
   const failures = [];
-  let current, cancelled = false, resumeAfterCancel = false;
+  const providerStates = { claude: 'authenticated', codex: 'installed', grok: 'installed' };
+  let current, cancelled = false, resumeAfterCancel = false, loginFailed = false;
   let accountSlots = slots, releaseSwap, swapStarted, rejectSwap = false;
   const swaps = [];
   try {
@@ -95,7 +96,7 @@ async function run(browser, origin, width, theme) {
         telegram: { state: 'up' }, outbox: { pending: 0 }, bot: { up: true }, web_sessions: 1,
       });
       if (endpoint === '/api/cli-login/status') return reply({
-        providers: { claude: 'authenticated', codex: 'installed', grok: 'installed' },
+        providers: providerStates,
         claude_slots: accountSlots, running: cancelled && resumeAfterCancel,
         ...(cancelled && resumeAfterCancel ? { provider: 'claude', job_id: 'fixture-resumed' } : {}),
       });
@@ -132,7 +133,7 @@ async function run(browser, origin, width, theme) {
         state: 'running', seq: 1, output: [], needs_input: true,
       });
       if (endpoint === '/api/cli-login/jobs/fixture-login') return reply({
-        ...current, job_id: 'fixture-login', state: cancelled ? 'cancelled' : 'running', seq: 1, output: [],
+        ...current, job_id: 'fixture-login', state: cancelled ? 'cancelled' : loginFailed ? 'failed' : 'running', seq: 1, output: [],
         urls: current.provider === 'claude' ? config.claudeUrls : [targets[current.provider]],
         needs_input: current.provider === 'claude',
         code: current.provider === 'claude' ? null : 'TEST-CODE',
@@ -147,15 +148,18 @@ async function run(browser, origin, width, theme) {
         path: path.join(config.shots, `${name}-${width}-${theme}.png`), animations: 'disabled',
       });
     }
-    async function login(selection, mode = 'normal', save = false) {
+    async function login(selection, mode = 'normal', save = false, confirmOnly = false) {
       try {
-        current = null; cancelled = false;
+        current = null; cancelled = false; loginFailed = false;
         await page.goto(origin);
         await page.evaluate(mode => { window.testPopupMode = mode; }, mode);
         await act(page.locator('#accountButton'));
         await act(page.locator('#openCliLogin'));
         const dialog = page.locator('#cliLoginDlg');
         const confirm = page.locator('#cliConfirmDlg');
+        const account = slots.find(slot => slot.name === selection.slot);
+        const providerStatus = providerStates[selection.provider];
+        const authenticated = selection.slot ? account?.authenticated : providerStatus === 'authenticated';
         if (selection.new_slot) {
           await act(dialog.locator('.cli-provider-head [data-i18n="cli_login.add_slot"]'));
           await dialog.locator('#cliSlotName').fill(selection.slot.slice(7));
@@ -165,13 +169,28 @@ async function run(browser, origin, width, theme) {
           const more = row.locator('.cli-slot-more');
           await row.waitFor();
           if (await more.count()) await act(more);
-          const key = selection.slot === 'claude-unused' ? 'login' : 'relogin';
+          const key = authenticated ? 'relogin' : 'login';
           await act(row.locator(`button[data-i18n="cli_login.${key}"]`));
         } else {
           const provider = dialog.locator('.cli-provider').filter({ hasText: selection.provider });
-          await act(provider.locator('[data-i18n="cli_login.login"]'));
+          const key = authenticated ? 'relogin' : 'login';
+          await act(provider.locator(`[data-i18n="cli_login.${key}"]`));
         }
         await confirm.waitFor();
+        const warning = await confirm.locator('#cliConfirmWarning').textContent();
+        if (selection.new_slot) {
+          assert.equal(warning, 'This adds a new slot. Existing logins stay as they are.');
+          assert.ok(!warning.includes(config.strings['cli_login.confirm_warning']));
+        } else if (account?.authenticated === false || (!selection.slot && providerStatus === 'installed')) {
+          assert.equal(warning, 'No account is logged in here yet.');
+        } else {
+          const keys = selection.provider === 'codex' ? ['confirm_warning', 'confirm_codex'] : ['confirm_warning'];
+          assert.equal(warning, keys.map(key => config.strings[`cli_login.${key}`]).join(' '));
+        }
+        if (confirmOnly) {
+          await act(confirm.locator('#cliConfirmNo'));
+          return;
+        }
         const popup = mode === 'normal' ? context.waitForEvent('page', { timeout: 3500 }) : null;
         if (popup) popup.catch(() => {});
         await act(confirm.locator('#cliConfirmYes'));
@@ -219,6 +238,23 @@ async function run(browser, origin, width, theme) {
     }
 
     for (const selection of cases) await login(selection, 'normal', selection === cases[0]);
+    for (const status of ['authenticated', null]) {
+      providerStates.codex = status;
+      await login({ provider: 'codex' }, 'normal', false, true);
+    }
+    providerStates.codex = 'installed';
+
+    try {
+      await login(cases[2]);
+      loginFailed = true;
+      await act(page.locator('#cliRetry'));
+      await page.locator('#cliConfirmDlg').waitFor();
+      assert.equal(await page.locator('#cliConfirmWarning').textContent(), 'No account is logged in here yet.');
+      await act(page.locator('#cliConfirmNo'));
+    } catch (error) {
+      failures.push(`logged-out slot retry: ${error.message}`);
+    }
+
     await login(cases[0], 'denied', true);
     await login(cases[0], 'blocked');
 
