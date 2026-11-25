@@ -53,11 +53,11 @@ function initialState() {
   };
 }
 
-async function checkHeaderMatrix(browser) {
+async function checkHeaderMatrix(browser, cooldownTransition) {
   const page = await browser.newPage({ viewport: { width: 844, height: 844 }, timezoneId: 'Asia/Seoul' });
   try {
     await page.clock.setFixedTime(new Date(now * 1000));
-    let locale, unsent, state = initialState(), vaultState = 'unconfigured';
+    let locale, unsent, codex, state = initialState(), vaultState = 'unconfigured';
     await page.addInitScript(() => {
       window.headerLayout = () => {
         const visible = selector => [...document.querySelectorAll(selector)]
@@ -74,13 +74,16 @@ async function checkHeaderMatrix(browser) {
               || (child instanceof HTMLElement && child.scrollWidth > child.clientWidth));
         }).length;
         const primary = visible('[data-slot-toggle][data-primary]');
+        const overlaps = rectangles.flatMap((a, i) => rectangles.slice(i + 1)
+          .filter(b => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom)
+          .map(b => Math.min(a.right, b.right) - Math.max(a.left, b.left)));
         return {
           height: document.querySelector('.bar').getBoundingClientRect().height,
           neighborWidth: ['.stat', '.bar-acts'].reduce((sum, selector) =>
             sum + document.querySelector(selector).getBoundingClientRect().width, 0),
           document: document.documentElement.scrollWidth - innerWidth,
-          overlaps: rectangles.reduce((count, a, i) => count + rectangles.slice(i + 1)
-            .filter(b => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom).length, 0),
+          overlaps: overlaps.length,
+          maxOverlap: Math.max(0, ...overlaps),
           clipped,
           shown: visible('[data-slot-toggle]').length,
           primary: primary.length,
@@ -106,7 +109,7 @@ async function checkHeaderMatrix(browser) {
       if (endpoint === '/api/masterkey/status') return reply({ state: vaultState });
       if (endpoint === '/api/state') return reply({
         telegram: { state: 'up' }, bot: { up: true }, outbox: { pending: unsent },
-        web_sessions: 1, version: '9.8.7', claude: state,
+        web_sessions: 1, version: '9.8.7', claude: state, codex,
       });
       return reply({ topics: [], commands: [], items: [], keys: [], files: [] });
     });
@@ -120,6 +123,49 @@ async function checkHeaderMatrix(browser) {
       await page.locator('#vaultBadge').getByText(config.locales[locale]['vault.unconfigured'], { exact: true }).waitFor();
       await page.evaluate(() => document.fonts.ready);
     };
+    const layout = () => page.evaluate(() => window.headerLayout());
+    const settle = () => page.evaluate(() => new Promise(resolve => {
+      const observer = new ResizeObserver(() => {
+        observer.disconnect();
+        resolve();
+      });
+      observer.observe(document.querySelector('.bar'));
+    }));
+    if (cooldownTransition) {
+      const { language, count } = cooldownTransition;
+      locale = language;
+      unsent = 3;
+      state.slots = state.slots.slice(0, count);
+      state.slots[0] = slot('claude', 'oauth', 'cooldown', futureCooldown,
+        usage(1, futureCooldown, 0.41, futureCooldown));
+      await page.goto(origin);
+      await waitForHeader();
+      await checkBreakpoint(`${locale} cooldown, ${count} slots`);
+      return failures;
+    }
+    let loadedLocale;
+    const showHeaderFixture = async () => {
+      if (loadedLocale !== locale) {
+        await page.goto(origin);
+        loadedLocale = locale;
+      } else {
+        await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+      }
+      await page.waitForFunction(({ count, pending, status, language, vault }) =>
+        document.documentElement.lang === language
+          && document.querySelector('#appSubtitle').textContent === 'v9.8.7'
+          && document.querySelector('#vaultBadge span')?.textContent === vault
+          && !document.querySelector('#pendingBadge').hidden === pending
+          && document.querySelectorAll('.slot-row').length === count
+          && document.querySelector('.slot-chip[data-next]')?.dataset.status === status, {
+        count: state?.slots.length ?? 0,
+        pending: unsent !== 0,
+        status: state?.slots[0].state,
+        language: locale,
+        vault: config.locales[locale]['vault.unconfigured'],
+      });
+      await page.evaluate(() => document.fonts.ready);
+    };
     const screenshot = name =>
       page.screenshot({ path: path.join(config.shots, `fix3-${name}.png`), animations: 'disabled' });
     for (locale of Object.keys(config.locales)) {
@@ -131,8 +177,7 @@ async function checkHeaderMatrix(browser) {
           state.slots[0].cooldown_until = futureCooldown;
           state.slots[0].usage.windows.five_hour.resets_at = futureCooldown;
         }
-        await page.goto(origin);
-        await waitForHeader();
+        await showHeaderFixture();
         assert.equal(await page.locator('#pendingBadge').isVisible(), unsent !== 0);
         for (const width of widths) {
           await page.setViewportSize({ width, height: 844 });
@@ -187,7 +232,6 @@ async function checkHeaderMatrix(browser) {
     const wide = Object.fromEntries(wideWidths.map(width => [width, {
       height: 0, heightChange: 0, document: 0, overlaps: 0, clipped: 0, countErrors: 0, cases: 0,
     }]));
-    const layout = () => page.evaluate(() => window.headerLayout());
     let longestLocale = { locale: '', width: 0 };
     const resize = async width => {
       await page.evaluate(width => {
@@ -206,10 +250,7 @@ async function checkHeaderMatrix(browser) {
     for (locale of Object.keys(config.locales)) {
       for (unsent of [0, 3]) {
         state = null;
-        await page.goto(origin);
-        await page.locator('#vaultBadge').getByText(config.locales[locale]['vault.unconfigured'], { exact: true }).waitFor();
-        await page.waitForFunction(() => document.querySelector('#appSubtitle').textContent === 'v9.8.7');
-        await page.evaluate(() => document.fonts.ready);
+        await showHeaderFixture();
         const baseline = {};
         for (const width of wideWidths) {
           await resize(width);
@@ -260,6 +301,206 @@ async function checkHeaderMatrix(browser) {
       }
     }
     console.log(`Wide header layout: ${JSON.stringify(wide)}`);
+
+    let cooldownCases = 0;
+    let cooldownOverflows = 0;
+    let labelOverflows = 0;
+    let maxLabelOverflow = 0;
+    let shiftedBadges = 0;
+    let maxBadgeShift = 0;
+    let wrappedCases = 0;
+    let widthMismatches = 0;
+    let maxGlyphClipping = 0;
+    await page.setViewportSize({ width: 1181, height: 900 });
+    for (locale of Object.keys(config.locales)) {
+      for (unsent of [0, 3]) {
+        for (const count of [2, 5, 12]) {
+          state = initialState();
+          state.slots[0] = slot('claude', 'oauth', 'cooldown', futureCooldown,
+            usage(1, futureCooldown, 0.41, futureCooldown));
+          state.slots = state.slots.slice(0, count);
+          while (state.slots.length < count) {
+            state.slots.push(slot(`claude-slot-${state.slots.length + 1}`, 'oauth', 'ok'));
+          }
+          await showHeaderFixture();
+          const measure = await page.locator('.slot-chip[data-next]').evaluate(chip => {
+            const box = chip.getBoundingClientRect();
+            const name = chip.querySelector('.slot-name');
+            const label = chip.querySelector('.slot-label');
+            const textOverflow = element => {
+              const range = document.createRange();
+              range.selectNodeContents(element);
+              return Math.max(0, ...[...range.getClientRects()].map(rect => rect.right - box.right));
+            };
+            const wrapped = chip.hasAttribute('data-wrap-cooldown');
+            let glyphClipping = 0;
+            if (wrapped) {
+              // The next chip has a 1px inset outline inside its border.
+              const inner = chip.clientTop + 1;
+              const canvas = document.createElement('canvas').getContext('2d');
+              const range = document.createRange();
+              for (const row of [name, label]) {
+                const style = getComputedStyle(row);
+                const bounds = row.getBoundingClientRect();
+                const node = row.firstChild;
+                // A zero-height inline box locates the baseline without changing the text width.
+                const marker = document.createElement('span');
+                marker.style.cssText = 'display:inline-block;width:0;height:0;vertical-align:baseline';
+                row.append(marker);
+                const baseline = marker.getBoundingClientRect().bottom;
+                marker.remove();
+                canvas.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+                let offset = 0;
+                for (const glyph of node.data) {
+                  range.setStart(node, offset);
+                  offset += glyph.length;
+                  if (!glyph.trim()) continue;
+                  range.setEnd(node, offset);
+                  const x = range.getBoundingClientRect().left;
+                  const ink = canvas.measureText(glyph);
+                  glyphClipping = Math.max(glyphClipping,
+                    Math.max(bounds.top, box.top + inner) - (baseline - ink.actualBoundingBoxAscent),
+                    baseline + ink.actualBoundingBoxDescent - Math.min(bounds.bottom, box.bottom - inner),
+                    Math.max(bounds.left, box.left + inner) - (x - ink.actualBoundingBoxLeft),
+                    x + ink.actualBoundingBoxRight - Math.min(bounds.right, box.right - inner));
+                }
+              }
+            }
+            const stat = document.querySelector('.stat');
+            const widthLimit = chip.style.getPropertyValue('--slot-cooldown-width');
+            const measure = {
+              badgeLeft: stat.getBoundingClientRect().left,
+              headerHeight: document.querySelector('.bar').getBoundingClientRect().height,
+              chipHeight: box.height,
+              chipWidth: box.width,
+              widthLimit: Number.parseFloat(widthLimit),
+              wrapped, glyphClipping,
+              nameClipped: name.scrollWidth > name.clientWidth || textOverflow(name) > 0.5,
+              labelClipped: label.scrollWidth > label.clientWidth,
+              labelOverflow: textOverflow(label),
+            };
+            let referenceBadgeLeft = measure.badgeLeft;
+            if (wrapped && widthLimit) {
+              // Measure the single-line layout with the same width limit.
+              const maxWidth = chip.style.maxWidth;
+              try {
+                chip.removeAttribute('data-wrap-cooldown');
+                chip.style.maxWidth = widthLimit;
+                referenceBadgeLeft = stat.getBoundingClientRect().left;
+              } finally {
+                chip.style.maxWidth = maxWidth;
+                chip.setAttribute('data-wrap-cooldown', '');
+              }
+            }
+            return { ...measure, referenceBadgeLeft };
+          });
+          cooldownCases++;
+          labelOverflows += Number(measure.labelClipped || measure.labelOverflow > 0.5);
+          maxLabelOverflow = Math.max(maxLabelOverflow, measure.labelOverflow);
+          if (measure.nameClipped || measure.labelClipped || measure.labelOverflow > 0.5) {
+            cooldownOverflows++;
+            failures.push({ cooldown: 'future', width: 1181, locale, unsent, count, ...measure });
+          }
+          const shift = Math.abs(measure.badgeLeft - measure.referenceBadgeLeft);
+          const widthMismatch = measure.wrapped && (!Number.isFinite(measure.widthLimit)
+            || Math.abs(measure.chipWidth - measure.widthLimit) > 0.5);
+          shiftedBadges += Number(shift > 0.5);
+          maxBadgeShift = Math.max(maxBadgeShift, shift);
+          wrappedCases += Number(measure.wrapped);
+          widthMismatches += Number(widthMismatch);
+          maxGlyphClipping = Math.max(maxGlyphClipping, measure.glyphClipping);
+          if (shift > 0.5 || widthMismatch || measure.glyphClipping > 0.5
+              || measure.chipHeight !== 30 || measure.headerHeight !== 65) {
+            failures.push({ cooldown: 'geometry', width: 1181, locale, unsent, count, widthMismatch, ...measure });
+          }
+          if (locale === 'de' && unsent === 3 && count === 2) await screenshot('issue87-de-1181');
+        }
+      }
+    }
+    console.log(`Issue 87 cooldown: ${cooldownOverflows}/${cooldownCases} overflowing cases (${labelOverflows} labels), max label overflow ${maxLabelOverflow.toFixed(1)}px`);
+    console.log(`Issue 87 cooldown geometry: ${shiftedBadges}/${cooldownCases} badge shifts, max ${maxBadgeShift.toFixed(2)}px; ${widthMismatches}/${wrappedCases} wrapped chip width mismatches, max glyph clipping ${maxGlyphClipping.toFixed(2)}px`);
+    assert.equal(cooldownCases, 54);
+    assert.ok(wrappedCases > 0);
+
+    async function checkBreakpoint(name) {
+      for (const width of [1440, 1180, 1181]) {
+        await page.setViewportSize({ width, height: 900 });
+        await settle();
+        const measure = await layout();
+        if (measure.overlaps || measure.clipped || measure.document) {
+          failures.push({ transition: name, settled: true, ...measure });
+        }
+      }
+      const frames = [];
+      for (let repeat = 0; repeat < 60; repeat++) {
+        for (const width of [1440, 1180]) {
+          await page.setViewportSize({ width, height: 900 });
+          await settle();
+        }
+        await page.evaluate(() => {
+          window.breakpointFrames = new Promise(resolve => {
+            const samples = [];
+            function sample() {
+              if (innerWidth === 1181) {
+                const layout = window.headerLayout();
+                const primary = document.querySelector('.slot-chip[data-primary]');
+                const chip = primary.getBoundingClientRect();
+                const meterOverflow = [...primary.querySelectorAll('.slot-mini')]
+                  .filter(meter => meter.getClientRects().length)
+                  .some(meter => meter.getBoundingClientRect().right > chip.right + 0.5);
+                samples.push({
+                  overlaps: layout.overlaps, maxOverlap: layout.maxOverlap, meterOverflow, primaryWidth: layout.primaryWidth,
+                });
+              }
+              if (samples.length === 8) resolve(samples);
+              else requestAnimationFrame(sample);
+            }
+            requestAnimationFrame(sample);
+          });
+        });
+        await page.setViewportSize({ width: 1181, height: 900 });
+        frames.push(...await page.evaluate(() => window.breakpointFrames));
+      }
+      const overlaps = frames.filter(frame => frame.overlaps).length;
+      const meters = frames.filter(frame => frame.meterOverflow).length;
+      const minWidth = Math.min(...frames.map(frame => frame.primaryWidth));
+      const maxOverlap = Math.max(...frames.map(frame => frame.maxOverlap));
+      console.log(`Issue 87 ${name}: ${frames.length} frames, ${overlaps} with control overlap (max ${maxOverlap.toFixed(1)}px), ${meters} with meter overflow, min next chip at 1181px ${minWidth.toFixed(1)}px`);
+      assert.equal(frames.length, 480);
+      if (overlaps || meters) failures.push({ transition: name, overlaps, maxOverlap, meters, minWidth });
+    }
+
+    locale = 'fr';
+    unsent = 3;
+    state = initialState();
+    while (state.slots.length < 12) {
+      state.slots.push(slot(`claude-slot-${state.slots.length + 1}`, 'oauth', 'ok'));
+    }
+    await page.goto(origin);
+    await waitForHeader();
+    await checkBreakpoint('French, 12 Claude slots');
+    await screenshot('issue87-fr-1181');
+
+    locale = 'ko';
+    unsent = 0;
+    const teamUsage = usage(0.26, cooldown, 0.94, futureCooldown);
+    state = { next: 'claude-team', slots: [
+      slot('claude', 'oauth', 'ok', null, teamUsage),
+      slot('claude-weekly', 'oauth', 'ok', null, { captured_at: now, windows: {
+        seven_day: teamUsage.windows.seven_day,
+      } }),
+      slot('claude-empty', 'oauth', 'ok'),
+      slot('claude-team', 'oauth', 'ok', null, teamUsage),
+    ] };
+    codex = { captured_at: now, windows: [
+      { used_percent: 64, window_minutes: 300, resets_at: cooldown },
+      { used_percent: 91, window_minutes: 10080, resets_at: futureCooldown },
+    ] };
+    await page.goto(origin);
+    await waitForHeader();
+    await page.locator('.slot-chip[data-provider="codex"]').waitFor({ state: 'attached' });
+    await checkBreakpoint('Korean, four Claude slots and Codex');
+    codex = null;
 
     locale = 'ko';
     unsent = 3;
@@ -953,16 +1194,29 @@ async function checkUsageRegressions(browser) {
 }
 
 
+async function checkSlotInteractions(browser) {
+  await checkUsageRegressions(browser);
+  for (const [width, height, theme] of [
+    [1440, 900, 'light'], [1440, 900, 'dark'], [390, 844, 'light'],
+    [844, 390, 'light'], [1280, 900, 'light'], [768, 900, 'light'], [375, 844, 'light'],
+  ]) await check(browser, width, height, theme);
+}
+
 try {
   const browser = await chromium.launch({ headless: true });
   try {
-    const longestLocale = await checkHeaderMatrix(browser);
+    const cooldownTransitions = [
+      { language: 'de', count: 4 },
+      { language: 'de', count: 2 },
+      { language: 'fr', count: 4 },
+    ];
+    const [longestLocale, , ...cooldownFailures] = await Promise.all([
+      checkHeaderMatrix(browser),
+      checkSlotInteractions(browser),
+      ...cooldownTransitions.map(scenario => checkHeaderMatrix(browser, scenario)),
+    ]);
+    assert.deepEqual(cooldownFailures.flat(), []);
     await checkUsageDesign(browser, longestLocale);
-    await checkUsageRegressions(browser);
-    for (const [width, height, theme] of [
-      [1440, 900, 'light'], [1440, 900, 'dark'], [390, 844, 'light'],
-      [844, 390, 'light'], [1280, 900, 'light'], [768, 900, 'light'], [375, 844, 'light'],
-    ]) await check(browser, width, height, theme);
   } finally {
     await browser.close();
   }
