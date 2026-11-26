@@ -4281,18 +4281,25 @@ async def test_cli_notice_send_failure_does_not_loop(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("route", ["initial", "parked", "recovery"])
+@pytest.mark.parametrize("attachment_kind", ["missing", "directory"])
 async def test_permanent_telegram_failure_stops_delivery_with_one_notice(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: str, attachment_kind: str
 ) -> None:
     from ductor_bot.i18n import t
     from ductor_bot.messenger.telegram.transport import TelegramTransport
 
-    report = f"Report ready. <file:{tmp_path / 'missing.txt'}>"
+    unavailable = tmp_path / "unavailable"
+    if attachment_kind == "directory":
+        unavailable.mkdir()
+    available = tmp_path / "report.txt"
+    available.write_text("report", encoding="utf-8")
+    report = f"Report ready. <file:{unavailable}> <file:{available}>"
     ia, message_bus, _transport = _setup_bus(tmp_path, response=report)
     ia._retry_delays = (0, 0)
     bot = MagicMock()
     bot.file_roots.return_value = [tmp_path]
     bot.bot_instance.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+    bot.bot_instance.send_document = AsyncMock()
     message_bus._transports = [TelegramTransport(bot)]
     store = ia._record_store
     assert store is not None
@@ -4319,6 +4326,7 @@ async def test_permanent_telegram_failure_stops_delivery_with_one_notice(
         call.kwargs["message_thread_id"] == task.topic_id
         for call in bot.bot_instance.send_message.await_args_list
     )
+    bot.bot_instance.send_document.assert_not_awaited()
     record = store.load("main", task.task_id)
     assert record["stage"] == "abandoned"
     assert record["redelivery_attempts"] == 0
