@@ -41,8 +41,8 @@ top-level key.
 | `streaming.show_tool_progress` | `bool` | `true` | hot | `true` |
 | `streaming.show_thinking_indicator` | `bool` | `true` | hot | `true` |
 | `heartbeat` | `HeartbeatConfig` | `(nested keys below)` | hot | Background heartbeat config |
-| `heartbeat.enabled` | `bool` | `false` | hot | Master toggle |
-| `heartbeat.interval_minutes` | `int` | `30` | hot | Loop interval |
+| `heartbeat.enabled` | `bool` | `true` | hot | Master toggle |
+| `heartbeat.interval_minutes` | `int` | `20` | hot | Loop interval |
 | `heartbeat.cooldown_minutes` | `int` | `5` | hot | Skip if user active recently |
 | `heartbeat.quiet_start` | `int` | `0` | hot | Quiet start hour in `user_timezone` |
 | `heartbeat.quiet_end` | `int` | `0` | hot | Quiet end hour in `user_timezone` |

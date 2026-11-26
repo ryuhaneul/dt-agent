@@ -84,7 +84,7 @@ Merge behavior:
 - base: main `AgentConfig`
 - override: non-null `SubAgentConfig` fields (nested blocks replace, rather than deep-merge, the main block)
 - `exclude_none=True` retains the default non-null sub-agent heartbeat block, so it replaces main heartbeat settings even when omitted from the entry.
-- sub heartbeat defaults disabled; the recipient inherits `interagent_notify_received` unless explicitly overridden
+- Sub-agent heartbeat defaults to disabled. When enabled, its default interval is 20 minutes. The recipient inherits `interagent_notify_received` unless explicitly overridden.
 - `memory_lint` is the exception to inheritance: a sub never takes main's value; it gets the framework defaults (`mode: "structure"`) plus the optional partial `memory_lint` object of its own `agents.json` entry (for example `"memory_lint": {"mode": "full"}`), and the supervisor mirrors the effective value into the sub's `config.json`. Applying a changed value to a running sub needs `/agent_restart <name>`. See [MemoryLintConfig](../config.md#memorylintconfig)
 - always forced:
   - `ductor_home=<main_home>/agents/<name>/` (default host main home `~/.ductor`)

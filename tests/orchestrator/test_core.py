@@ -992,6 +992,7 @@ async def test_handle_message_notifies_heartbeat_activity(orch: Orchestrator) ->
 
 @pytest.mark.parametrize("changed", ["heartbeat", "allowed_user_ids"])
 def test_hot_reload_resets_heartbeat_suspend_state(orch: Orchestrator, changed: str) -> None:
+    orch._config.heartbeat.enabled = False
     heartbeat = MagicMock()
     heartbeat.running = False
     orch._observers.heartbeat = heartbeat

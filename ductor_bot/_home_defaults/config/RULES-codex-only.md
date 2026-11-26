@@ -107,8 +107,8 @@ Parameters are inserted before the `--` separator in commands.
 
 ### Heartbeat
 
-- `heartbeat.enabled`: `true`/`false` — master switch
-- `heartbeat.interval_minutes`: global tick interval for private chats (default `30`)
+- `heartbeat.enabled`: `true`/`false` — master switch (default `true` for the main agent and `false` for sub-agents)
+- `heartbeat.interval_minutes`: global tick interval for private chats (default `20`)
 - `heartbeat.quiet_start`, `heartbeat.quiet_end`: quiet hours (0-23, in `user_timezone`)
 - `heartbeat.prompt`: the prompt sent to the agent during heartbeat
 - `heartbeat.ack_token`: token the agent replies with when nothing to report (default `HEARTBEAT_OK`)

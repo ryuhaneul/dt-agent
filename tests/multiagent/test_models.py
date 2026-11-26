@@ -178,6 +178,16 @@ class TestMergeSubAgentConfig:
         assert result.api.enabled is False
         assert result.api.port == 8741  # rest inherited
 
+    def test_heartbeat_defaults_off_when_not_overridden(self, tmp_path: Path) -> None:
+        main = self._main_config()
+        main.heartbeat.enabled = True
+        main.heartbeat.interval_minutes = 45
+        sub = SubAgentConfig(name="sub1", telegram_token="sub-token")
+        result = merge_sub_agent_config(main, sub, tmp_path)
+
+        assert result.heartbeat.enabled is False
+        assert result.heartbeat.interval_minutes == 20
+
     def test_api_preserved_when_explicitly_overridden(self) -> None:
         """Sub-agent with explicit api config keeps their settings."""
         main = self._main_config()
