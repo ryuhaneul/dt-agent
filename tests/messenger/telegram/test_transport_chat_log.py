@@ -18,6 +18,7 @@ from ductor_bot.bus.envelope import Envelope, Origin
 from ductor_bot.chat_log.events import EventHub
 from ductor_bot.chat_log.link import OutboxDrainer, TelegramLinkMonitor
 from ductor_bot.chat_log.outbox import Outbox
+from ductor_bot.i18n import t
 from ductor_bot.messenger.telegram import sender
 from ductor_bot.messenger.telegram.transport import TelegramTransport
 from ductor_bot.messenger.telegram.webchat_ops import TelegramWebchatOps
@@ -307,19 +308,25 @@ async def test_disabled_outbox_uses_legacy_sender_without_delivery_lock(tmp_path
     assert not await outbox.has_pending()
 
 
-@pytest.mark.parametrize("blocked", [False, True])
-async def test_unavailable_file_does_not_skip_later_attachment(tmp_path, blocked):
-    """Match legacy missing-file notices and successful attachment delivery."""
+@pytest.mark.parametrize("unavailable_kind", ["missing", "blocked", "directory"])
+async def test_unavailable_file_does_not_skip_later_attachment(tmp_path, unavailable_kind):
+    """Send an unavailable-file notice and continue to the next attachment."""
     allowed = tmp_path / "allowed"
     allowed.mkdir()
     good = allowed / "good.txt"
     good.write_text("Synthetic report")
-    unavailable = tmp_path / "outside.txt" if blocked else allowed / "missing.txt"
-    if blocked:
+    unavailable = allowed / unavailable_kind
+    if unavailable_kind == "blocked":
+        unavailable = tmp_path / "outside.txt"
         unavailable.write_text("Blocked file")
-    counts = []
-    messages = []
-    for enabled in (False, True):
+        notice = t("notice.file_outside", name=unavailable.name)
+    else:
+        if unavailable_kind == "directory":
+            unavailable.mkdir()
+        notice = t("notice.file_not_found", name=unavailable.name, path=unavailable)
+
+    outbox_modes = (True,) if unavailable_kind == "directory" else (False, True)
+    for enabled in outbox_modes:
         transport, bot, outbox, _ = make_transport(tmp_path)
         bot.file_roots.return_value = [allowed]
         bot.bot_instance.send_document = AsyncMock(return_value=SimpleNamespace(message_id=2))
@@ -332,13 +339,13 @@ async def test_unavailable_file_does_not_skip_later_attachment(tmp_path, blocked
                 result_text=f"Synthetic result <file:{unavailable}> <file:{good}>",
             )
         )
-        counts.append(bot.bot_instance.send_document.await_count)
-        messages.append(
-            [call.kwargs["text"] for call in bot.bot_instance.send_message.await_args_list]
-        )
         assert not await outbox.has_pending()
-    assert counts == [1, 1]
-    assert messages[0] == messages[1]
+        assert [call.kwargs["text"] for call in bot.bot_instance.send_message.await_args_list] == [
+            "Synthetic result",
+            notice,
+        ]
+        bot.bot_instance.send_document.assert_awaited_once()
+        assert bot.bot_instance.send_document.await_args.kwargs["document"].path == good
 
 
 async def test_unavailable_file_notice_progress_survives_cancelled_drain(tmp_path):
