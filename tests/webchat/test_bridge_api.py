@@ -21,6 +21,7 @@ import aiohttp
 import pytest
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.methods import DeleteForumTopic
+from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from ductor_bot.bus.envelope import Envelope, Origin
@@ -1328,6 +1329,49 @@ async def test_events_ignore_client_frames_and_disconnect_on_overflow(conversati
     assert message.type == aiohttp.WSMsgType.CLOSE
     assert ws.close_code == 1013
     await h.client.close()
+    assert not h.runtime.events._subscribers
+
+
+@pytest.mark.parametrize("error_type", [OSError, ConnectionResetError])
+async def test_events_disconnect_when_forwarding_fails(
+    conversation, monkeypatch, caplog, error_type
+):
+    h = conversation
+    sensitive = "synthetic forwarding error detail"
+    monkeypatch.setattr(
+        h.runtime.outbox, "mirror_state", AsyncMock(side_effect=error_type(sensitive))
+    )
+    async with h.client.ws_connect(f"{_PREFIX}/events", headers=headers()) as ws:
+        await h.runtime.history.append(h.key, Entry(role="bot", source="telegram", text="reply"))
+        message = await ws.receive(timeout=2)
+        assert message.type == aiohttp.WSMsgType.CLOSE
+        assert ws.close_code == 1013
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "ductor_bot.webchat.bridge" and record.levelno == logging.WARNING
+    ]
+    assert messages == [f"Webchat event forwarding failed: {error_type.__name__}"]
+    assert sensitive not in caplog.text
+    assert not h.runtime.events._subscribers
+
+
+async def test_events_forward_peer_disconnect_without_warning(conversation, monkeypatch, caplog):
+    h = conversation
+    send_json = web.WebSocketResponse.send_json
+
+    async def abort_during_send(socket, event):
+        transport = socket._req.transport
+        assert transport is not None
+        transport.abort()
+        await send_json(socket, event)
+
+    monkeypatch.setattr(web.WebSocketResponse, "send_json", abort_during_send)
+    async with h.client.ws_connect(f"{_PREFIX}/events", headers=headers()) as ws:
+        h.runtime.events.publish({"type": "topics"})
+        message = await ws.receive(timeout=2)
+        assert message.type == aiohttp.WSMsgType.CLOSED
+    assert "Webchat event forwarding failed" not in caplog.text
     assert not h.runtime.events._subscribers
 
 

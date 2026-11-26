@@ -1063,6 +1063,9 @@ async function unreadRecovery(browser, scenario) {
 
 async function reconnectHistory(browser, scenario) {
   const visibility = scenario.startsWith('reconnect-history-visibility-');
+  const topicsRace = scenario === 'reconnect-history-stale-topics-failure';
+  const historyFailure = scenario === 'reconnect-history-messages-failure';
+  const staleHistoryFailure = scenario === 'reconnect-history-stale-messages-failure';
   const width = visibility ? Number(scenario.split('-').at(-1)) : 375;
   const context = await browser.newContext({ viewport: { width, height: 667 } });
   try {
@@ -1071,11 +1074,17 @@ async function reconnectHistory(browser, scenario) {
     const entries = messages.slice(0, 120);
     let socket, failTopics = false, historyReads = 0, holdTopics = false;
     const visibilityGate = visibility ? Promise.withResolvers() : null;
+    const firstTopics = topicsRace ? Promise.withResolvers() : null;
+    const releaseTopics = topicsRace ? Promise.withResolvers() : null;
     await mockChat(page, entries, topic, peer => { socket = peer; });
     await page.route('**/api/topics', async route => {
       if (failTopics) {
         failTopics = false;
         holdTopics = visibility;
+        if (topicsRace) {
+          firstTopics.resolve();
+          await releaseTopics.promise;
+        }
         return route.fulfill({ status: 503, json: { error: 'bot_unreachable' } });
       }
       if (holdTopics) await visibilityGate.promise;
@@ -1092,21 +1101,85 @@ async function reconnectHistory(browser, scenario) {
     // Settle the read cursor and its topic badge update before disconnecting.
     await topicsResponse(200);
 
-    if (visibility) {
+    if (visibility || staleHistoryFailure) {
       await page.waitForFunction(() => document.querySelectorAll('#thread [data-entry-seq]').length === 100);
       await page.evaluate(() => document.fonts.ready);
     }
-    const readingPosition = visibility ? await scrollPosition(page, 64) : null;
-    if (visibility) assert.equal(readingPosition.gap, 64);
+    const readingPosition = visibility || staleHistoryFailure ? await scrollPosition(page, 64) : null;
+    if (readingPosition) assert.equal(readingPosition.gap, 64);
     const beforeReconnect = historyReads;
     const missing = { ...messages[120], text: 'Message received while disconnected' };
-    if (!visibility) entries.push(missing);
-    const succeeds = scenario === 'reconnect-history-success';
+    if (!visibility && !staleHistoryFailure) entries.push(missing);
+    const succeeds = scenario === 'reconnect-history-success' || historyFailure || staleHistoryFailure;
+    const firstHistory = staleHistoryFailure ? Promise.withResolvers() : null;
+    const releaseHistory = staleHistoryFailure ? Promise.withResolvers() : null;
+    if (staleHistoryFailure) {
+      await page.route('**/api/topics/*/messages?*', async route => {
+        firstHistory.resolve();
+        await releaseHistory.promise;
+        return route.fulfill({ status: 503, json: { error: 'history_busy' } });
+      }, { times: 1 });
+    }
+    if (historyFailure) {
+      await page.route('**/api/topics/*/messages?*', route => route.fulfill({
+        status: 503, json: { error: 'history_busy' },
+      }), { times: 1 });
+    }
     failTopics = !succeeds;
     const first = topicsResponse(succeeds ? 200 : 503);
-    await socket.close();
+    await socket.close(staleHistoryFailure ? { code: 1013 } : {});
     await page.clock.fastForward(2000);
+    if (topicsRace) {
+      await firstTopics.promise;
+      try {
+        await page.evaluate(() => {
+          window.reconnectTopicsApplied = new Promise(resolve => {
+            document.addEventListener('topics-updated', () => resolve(), { once: true });
+          });
+        });
+        const newer = topicsResponse(200);
+        socket.send(JSON.stringify({ type: 'topics' }));
+        await newer;
+        await page.evaluate(() => window.reconnectTopicsApplied);
+      } finally {
+        releaseTopics.resolve();
+      }
+    }
     await first;
+    if (staleHistoryFailure) {
+      await firstHistory.promise;
+      const historyResponse = status => page.waitForResponse(response =>
+        response.status() === status && new URL(response.url()).pathname.endsWith('/messages'),
+      { timeout: 4000 });
+      const failed = historyResponse(503);
+      try {
+        const refreshed = historyResponse(200);
+        await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+        await (await refreshed).finished();
+        assert.deepEqual(await scrollPosition(page), readingPosition);
+        assert.equal(historyReads - beforeReconnect, 2);
+      } finally {
+        releaseHistory.resolve();
+      }
+      await (await failed).finished();
+      await scrollPosition(page);
+      await page.clock.runFor(1100);
+      const finalPosition = await scrollPosition(page);
+      assert.deepEqual({ reads: historyReads - beforeReconnect, position: finalPosition },
+        { reads: 2, position: readingPosition });
+      return;
+    }
+    if (topicsRace || historyFailure) {
+      await page.locator('#toasts .toast-error').waitFor({ timeout: 2500 });
+      if (historyFailure) {
+        assert.equal(historyReads - beforeReconnect, 1, 'the first history read should fail');
+        await page.clock.runFor(1000);
+      }
+      await page.locator('[data-entry-seq="121"]').waitFor({ timeout: 2500 })
+        .catch(() => assert.fail(`history recovery did not finish (${historyReads - beforeReconnect} reads)`));
+      assert.equal(historyReads - beforeReconnect, historyFailure ? 3 : 2);
+      return;
+    }
     if (!succeeds) {
       await page.locator('#toasts .toast-error').waitFor({ timeout: 2500 });
       assert.equal(await page.locator('#toasts .toast-error').count(), 1);
@@ -1182,6 +1255,67 @@ async function reconnectHistory(browser, scenario) {
     socket.send(JSON.stringify({ type: 'entry', tid: topic.tid, entry: messages[121] }));
     await page.locator('[data-entry-seq="122"]').waitFor({ timeout: 2500 });
     assert.equal(await page.locator('[data-entry-seq="121"]').count(), 1);
+  } finally {
+    await context.close();
+  }
+}
+
+async function reconnectHistoryRetryWithEntries(browser) {
+  const context = await browser.newContext();
+  try {
+    const page = await context.newPage();
+    await page.clock.install({ time: new Date(today) });
+    await mockChat(page, messages.slice(0, 120));
+    await page.goto(origin);
+    await page.locator('[data-entry-seq="120"]').waitFor();
+    await page.clock.pauseAt(new Date(Date.parse(today) + 5000));
+    await page.locator('#thread').evaluate(thread => {
+      thread.scrollTop = thread.scrollHeight - thread.clientHeight - 200;
+    });
+    await page.route('**/api/topics/*/messages?*', route => route.fulfill({
+      status: 503, json: { error: 'history_busy' },
+    }));
+    await page.evaluate(async () => {
+      const fetch = window.fetch;
+      const start = performance.now();
+      window.recoveryReadTimes = [];
+      window.fetch = (url, options) => {
+        if (String(url).includes('/messages?')) window.recoveryReadTimes.push(performance.now() - start);
+        return fetch(url, options);
+      };
+      const { handleEvent } = await import('/static/js/chat.js');
+      await handleEvent({ type: 'bridge', up: true });
+    });
+    let elapsed = 0;
+    async function advance(ms) {
+      await page.clock.runFor(ms);
+      elapsed += ms;
+    }
+    const times = () => page.evaluate(() => window.recoveryReadTimes);
+    async function expectRetry(due) {
+      while (elapsed <= due + 600) {
+        const read = (await times()).find(time => time >= due);
+        if (read !== undefined) return read;
+        await advance(elapsed < due ? Math.min(100, due - elapsed) : 50);
+        if (elapsed >= due) await page.waitForTimeout(25);
+      }
+      assert.fail(`missing retry at ${due}ms; observed ${await times()}`);
+    }
+    let scheduled = await expectRetry(1000);
+    for (let index = 0; index < 6; index++) {
+      await advance(300);
+      const entry = { ...messages[121 + index], text: 'A live entry arrived during recovery' };
+      await page.evaluate(async entry => {
+        const { handleEvent } = await import('/static/js/chat.js');
+        await handleEvent({ type: 'entry', tid: '1.2', entry });
+      }, entry);
+    }
+    for (const delay of [2000, 4000, 8000]) {
+      scheduled = await expectRetry(scheduled + delay);
+    }
+    const reads = (await times()).length;
+    await page.clock.runFor(10000);
+    assert.equal((await times()).length, reads, 'four scheduled retries should exhaust the backoff');
   } finally {
     await context.close();
   }
@@ -1586,6 +1720,7 @@ try {
   const scenario = process.argv[3] ?? 'dates';
   if (scenario.startsWith('overflow-')) await documentOverflow(browser, scenario);
   else if (scenario.startsWith('unread-') && scenario !== 'unread-badges') await unreadRecovery(browser, scenario);
+  else if (scenario === 'reconnect-history-retry-with-entries') await reconnectHistoryRetryWithEntries(browser);
   else if (scenario.startsWith('reconnect-history-')) await reconnectHistory(browser, scenario);
   else if (scenario.startsWith('busy-resume-scroll-')) await busyResumeScroll(browser, Number(scenario.split('-').at(-1)));
   else if (scenario.startsWith('busy-')) await busyIndicator(browser, scenario);

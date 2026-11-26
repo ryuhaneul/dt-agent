@@ -1071,39 +1071,47 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
             return _error("bad_request", 400)
         return web.json_response({"hits": await runtime.history.search(query)})
 
-    async def events(request: web.Request) -> web.WebSocketResponse:
+    async def events(request: web.Request) -> web.WebSocketResponse:  # noqa: C901
         ws = web.WebSocketResponse()
         queue = runtime.events.subscribe()
         pump: asyncio.Task[None] | None = None
 
         async def forward() -> None:
-            while True:
-                event = await queue.get()
-                if event is None:
-                    await ws.close(code=1013)
-                    return
-                tid = event.get("tid") or event.get("item", {}).get("tid")
-                if event.get("type") == "entry":
-                    mirror = await runtime.outbox.mirror_state(event["entry"]["id"])
-                    event = {
-                        **event,
-                        "entry": {
-                            **event["entry"],
-                            **selector_fields(event["entry"]),
-                            "has_attachments": bool(
-                                await attachments.index.get(tid, event["entry"]["id"])
-                            ),
-                            "mirror": {"state": mirror} if mirror else None,
-                        },
-                    }
-                if event.get("type") == "outbox" and "history_id" in event:
-                    history_id = event["history_id"]
-                    mirror = await runtime.outbox.mirror_state(history_id) if history_id else None
-                    event = {**event, "mirror": mirror}
-                if event.get("type") == "entry_meta":
-                    event = {**event, "meta": {**event["meta"], **selector_fields(event["meta"])}}
-                if tid not in turns.blocked:
-                    await ws.send_json(event)
+            try:
+                while (event := await queue.get()) is not None:
+                    tid = event.get("tid") or event.get("item", {}).get("tid")
+                    if event.get("type") == "entry":
+                        mirror = await runtime.outbox.mirror_state(event["entry"]["id"])
+                        event = {
+                            **event,
+                            "entry": {
+                                **event["entry"],
+                                **selector_fields(event["entry"]),
+                                "has_attachments": bool(
+                                    await attachments.index.get(tid, event["entry"]["id"])
+                                ),
+                                "mirror": {"state": mirror} if mirror else None,
+                            },
+                        }
+                    if event.get("type") == "outbox" and "history_id" in event:
+                        history_id = event["history_id"]
+                        mirror = (
+                            await runtime.outbox.mirror_state(history_id) if history_id else None
+                        )
+                        event = {**event, "mirror": mirror}
+                    if event.get("type") == "entry_meta":
+                        event = {
+                            **event,
+                            "meta": {**event["meta"], **selector_fields(event["meta"])},
+                        }
+                    if tid not in turns.blocked:
+                        try:
+                            await ws.send_json(event)
+                        except ConnectionError:
+                            return
+            except Exception as exc:
+                logger.warning("Webchat event forwarding failed: %s", type(exc).__name__)
+            await ws.close(code=1013)
 
         try:
             await ws.prepare(request)

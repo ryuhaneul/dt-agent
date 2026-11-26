@@ -3025,6 +3025,9 @@ def test_autocompact_dialog_has_labeled_scopes_and_bounded_token_inputs(markup):
         "reconnect-history-retry", "reconnect-history-success", "reconnect-history-auth-change",
         "reconnect-history-topics-event", "reconnect-history-next-resync",
         "reconnect-history-overlap", "reconnect-history-visibility-375", "reconnect-history-visibility-1280",
+        "reconnect-history-stale-topics-failure", "reconnect-history-messages-failure",
+        "reconnect-history-stale-messages-failure",
+        "reconnect-history-retry-with-entries",
     ],
 )
 def test_message_dates_browser(tmp_path: Path, scenario: str) -> None:
