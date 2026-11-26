@@ -111,7 +111,7 @@ async def test_global_value_saved_to_main_config_and_next_request(orch):
     assert orch._cli_service.update_config.call_args.args[0].autocompact == 400000
 
 
-async def test_sub_global_saved_to_both_files_and_independent_after_restart(workspace):
+async def test_sub_global_saved_to_registry_and_independent_after_restart(workspace):
     from ductor_bot.config import AgentConfig
     from ductor_bot.multiagent.models import merge_sub_agent_config
     from ductor_bot.multiagent.registry import AgentRegistry
@@ -123,13 +123,12 @@ async def test_sub_global_saved_to_both_files_and_independent_after_restart(work
     home = root / "agents" / "worker"
     subpaths = DuctorPaths(ductor_home=home)
     subpaths.config_path.parent.mkdir(parents=True)
-    subpaths.config_path.write_text("{}")
     registry = root / "agents.json"
     registry.write_text(json.dumps([{"name": "worker", "transport": "headless"}]))
     cfg.ductor_home = str(home)
     sub = Orchestrator(cfg, subpaths, agent_name="worker")
     await ac.handle_autocompact_callback(sub, SessionKey(chat_id=1), "ac:global:off", user_id=100)
-    assert json.loads(subpaths.config_path.read_text())["autocompact"] == "off"
+    assert not subpaths.config_path.exists()
     assert json.loads(registry.read_text())[0]["autocompact"] == "off"
     restarted = merge_sub_agent_config(
         AgentConfig(autocompact=1000000), AgentRegistry(registry).load()[0], home

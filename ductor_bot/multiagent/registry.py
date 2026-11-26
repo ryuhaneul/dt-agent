@@ -7,6 +7,8 @@ import logging
 from pathlib import Path
 
 from ductor_bot.infra.agent_diagnostics import safe_error
+from ductor_bot.infra.file_lock import exclusive_file_lock
+from ductor_bot.infra.json_store import atomic_json_save
 from ductor_bot.multiagent.models import SubAgentConfig
 
 logger = logging.getLogger(__name__)
@@ -55,32 +57,27 @@ class AgentRegistry:
 def update_agent_fields(agents_path: Path, agent_name: str, **fields: object) -> None:
     """Update specific fields of an agent entry in agents.json.
 
-    Reads the raw JSON, patches the matching entry, and writes back.
+    Holds the registry lock from read through replacement. Raises on a missing
+    or invalid registry, a missing agent, or a write failure.
     A value of ``None`` removes the key from the entry.
-    No-op if the file is missing or the agent is not found.
     """
-    if not agents_path.is_file():
-        return
-    try:
+    with exclusive_file_lock(agents_path):
         raw = json.loads(agents_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        logger.warning("Cannot read agents.json for update: %s", agents_path)
-        return
-    if not isinstance(raw, list):
-        return
+        if not isinstance(raw, list):
+            raise ValueError("agents.json must be a JSON array")  # noqa: TRY004 -- malformed JSON
 
-    for entry in raw:
-        if entry.get("name") == agent_name:
-            for key, value in fields.items():
-                if value is None:
-                    entry.pop(key, None)
-                else:
-                    entry[key] = value
-            break
-    else:
-        return
+        entry = next(
+            (row for row in raw if isinstance(row, dict) and row.get("name") == agent_name),
+            None,
+        )
+        if entry is None:
+            raise ValueError("Agent registry entry unavailable")
 
-    from ductor_bot.infra.json_store import atomic_json_save
+        for key, value in fields.items():
+            if value is None:
+                entry.pop(key, None)
+            else:
+                entry[key] = value
+        atomic_json_save(agents_path, raw)
 
-    atomic_json_save(agents_path, raw)
     logger.info("Updated agent '%s' in agents.json: %s", agent_name, list(fields))

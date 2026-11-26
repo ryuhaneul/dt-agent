@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+from functools import partial
 from pathlib import Path
 
 import pytest
 
+from ductor_bot.infra import file_lock
+from ductor_bot.multiagent import registry
 from ductor_bot.multiagent.registry import AgentRegistry
 
 
@@ -61,3 +64,15 @@ class TestRegistryLoad:
         assert len(agents) == 2
         assert agents[0].name == "sub1"
         assert agents[1].name == "sub3"
+
+
+@pytest.mark.skipif(file_lock.fcntl is None, reason="flock unavailable")
+def test_update_agent_fields_respects_registry_lock(agents_path, monkeypatch):
+    original = '[{"name": "worker", "model": "opus"}]'
+    agents_path.write_text(original)
+    lock = file_lock.exclusive_file_lock
+    monkeypatch.setattr(registry, "exclusive_file_lock", partial(lock, timeout=0))
+    with lock(agents_path), pytest.raises(file_lock.LockTimeoutError):
+        registry.update_agent_fields(agents_path, "worker", model="sonnet")
+
+    assert agents_path.read_text() == original

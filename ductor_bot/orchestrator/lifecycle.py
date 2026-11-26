@@ -116,6 +116,10 @@ async def start_api_server(
     paths: DuctorPaths,
 ) -> None:
     """Initialize and start the direct WebSocket API server."""
+    if not config.api.token and orch._agent_name != "main":
+        logger.error("Sub-agent API requires a token in agents.json; API server skipped")
+        return
+
     try:
         from ductor_bot.api.server import ApiServer
     except ImportError:

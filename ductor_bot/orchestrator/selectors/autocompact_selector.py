@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 from contextlib import nullcontext
@@ -14,9 +13,9 @@ from ductor_bot.cli.autocompact import (
     resolve_autocompact,
     validate_autocompact,
 )
-from ductor_bot.config import transform_config_file, update_config_file_async
+from ductor_bot.config import update_config_file_async
 from ductor_bot.i18n import t
-from ductor_bot.infra.json_store import atomic_json_save
+from ductor_bot.infra.env_secrets import main_home_of
 from ductor_bot.multiagent.registry import update_agent_fields
 from ductor_bot.orchestrator.selectors.autocompact_automation import (
     automation_state,
@@ -27,8 +26,6 @@ from ductor_bot.orchestrator.selectors.autocompact_automation import (
 from ductor_bot.orchestrator.selectors.models import Button, ButtonGrid, SelectorResponse
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from ductor_bot.config import AutocompactValue
     from ductor_bot.orchestrator.core import Orchestrator
     from ductor_bot.session.key import SessionKey
@@ -102,98 +99,13 @@ async def autocompact_selector_start(
     return SelectorResponse(text, ButtonGrid(rows))
 
 
-def _registry_row(path: Path, name: str) -> tuple[list[Any], dict[str, Any]]:
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if isinstance(data, list):
-        for row in data:
-            if isinstance(row, dict) and row.get("name") == name:
-                return data, row
-    raise ValueError("Agent registry entry unavailable")
-
-
-def _restore_setting(row: dict[str, Any], previous: dict[str, Any]) -> None:
-    if not isinstance(row, dict):
-        raise ValueError("Agent config unavailable")  # noqa: TRY004 -- malformed stored JSON
-    if "autocompact" in previous:
-        row["autocompact"] = previous["autocompact"]
-    else:
-        row.pop("autocompact", None)
-
-
-def _same_setting(row: dict[str, Any], previous: dict[str, Any]) -> bool:
-    return ("autocompact" in row, row.get("autocompact")) == (
-        "autocompact" in previous,
-        previous.get("autocompact"),
-    )
-
-
-def _restore_sub_global(
-    config_path: Path,
-    agents_path: Path,
-    name: str,
-    previous_config: dict[str, Any],
-    previous_agent: dict[str, Any],
-) -> None:
-    failed = False
-    try:
-        transform_config_file(config_path, lambda row: _restore_setting(row, previous_config))
-    except (OSError, ValueError):
-        failed = True
-    try:
-        data, row = _registry_row(agents_path, name)
-        if not _same_setting(row, previous_agent):
-            _restore_setting(row, previous_agent)
-            atomic_json_save(agents_path, data)
-    except (OSError, ValueError):
-        failed = True
-    if failed:
-        # Only file labels and state flags; settings and other fields may contain secrets.
-        for label, path, previous in (
-            ("config", config_path, previous_config),
-            ("agents", agents_path, previous_agent),
-        ):
-            try:
-                row = (
-                    json.loads(path.read_text(encoding="utf-8"))
-                    if label == "config"
-                    else _registry_row(path, name)[1]
-                )
-                status = (
-                    ("restored" if _same_setting(row, previous) else "changed")
-                    if isinstance(row, dict)
-                    else "unreadable"
-                )
-            except (OSError, ValueError):
-                status = "unreadable"
-            logger.warning("Autocompact rollback failed: file=%s state=%s", label, status)
-
-
 async def _save_global_autocompact(orch: Orchestrator, value: AutocompactValue) -> None:
-    if orch.paths.ductor_home.parent.name == "agents":
-        previous_runtime = orch._config.autocompact
-        config_path = orch.paths.config_path
-        agents_path = orch.paths.ductor_home.parent.parent / "agents.json"
-        previous_config = json.loads(config_path.read_text(encoding="utf-8"))
-        if not isinstance(previous_config, dict):
-            raise ValueError("Agent config unavailable")
-        _, previous_agent = _registry_row(agents_path, orch._agent_name)
-        try:
-            await update_config_file_async(config_path, autocompact=value)
-            await asyncio.to_thread(
-                update_agent_fields, agents_path, orch._agent_name, autocompact=value
-            )
-        except (OSError, ValueError):
-            await asyncio.to_thread(
-                _restore_sub_global,
-                config_path,
-                agents_path,
-                orch._agent_name,
-                previous_config,
-                previous_agent,
-            )
-            orch._config.autocompact = previous_runtime
-            orch._on_config_hot_reload(orch._config, {"autocompact": previous_runtime})
-            raise
+    home = orch.paths.ductor_home
+    main_home = main_home_of(home)
+    if home != main_home:
+        await asyncio.to_thread(
+            update_agent_fields, main_home / "agents.json", orch._agent_name, autocompact=value
+        )
     else:
         await update_config_file_async(orch.paths.config_path, autocompact=value)
     orch._config.autocompact = value

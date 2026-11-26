@@ -1033,6 +1033,53 @@ async def test_api_streaming_turn_reuses_tg_session_with_api_cli_origin(
     assert env["DUCTOR_TRANSPORT"] == "api"
 
 
+@pytest.mark.parametrize(
+    ("agent_name", "token", "expected_token"),
+    [("main", "", "generated-test-token"), ("worker", "", ""), ("worker", "test-token", "test-token")],
+)
+async def test_api_start_uses_agent_token_policy(
+    tmp_path, caplog, agent_name, token, expected_token,
+):
+    import json
+
+    from ductor_bot.api.server import ApiServer
+    from ductor_bot.orchestrator.lifecycle import start_api_server
+
+    home = tmp_path if agent_name == "main" else tmp_path / "agents" / agent_name
+    paths = DuctorPaths(ductor_home=home)
+    config = AgentConfig(ductor_home=str(home))
+    config.api.enabled = True
+    config.api.token = token
+    if agent_name == "main":
+        paths.config_path.parent.mkdir(parents=True)
+        paths.config_path.write_text("{}")
+    orch = Orchestrator(config, paths, agent_name=agent_name)
+    with (
+        patch.object(ApiServer, "start", new_callable=AsyncMock) as start,
+        patch("ductor_bot.orchestrator.lifecycle.secrets.token_urlsafe", return_value=expected_token) as generate,
+    ):
+        await start_api_server(orch, config, paths)
+
+    assert config.api.token == expected_token
+    if expected_token:
+        start.assert_awaited_once()
+        assert orch._api_stop is not None
+    else:
+        start.assert_not_awaited()
+        assert orch._api_stop is None
+    errors = [
+        record for record in caplog.records
+        if record.name == "ductor_bot.orchestrator.lifecycle" and record.levelname == "ERROR"
+    ]
+    assert len(errors) == (0 if expected_token else 1)
+    if agent_name == "main":
+        generate.assert_called_once()
+        assert json.loads(paths.config_path.read_text())["api"]["token"] == expected_token
+    else:
+        generate.assert_not_called()
+        assert not paths.config_path.exists()
+
+
 async def test_api_named_followup_preserves_tg_routing_for_background(
     orch: Orchestrator,
 ) -> None:

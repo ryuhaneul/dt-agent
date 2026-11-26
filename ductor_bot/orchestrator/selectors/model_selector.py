@@ -18,6 +18,7 @@ from ductor_bot.config import (
     update_config_file_async,
 )
 from ductor_bot.i18n import t
+from ductor_bot.infra.env_secrets import main_home_of
 from ductor_bot.multiagent.registry import update_agent_fields
 from ductor_bot.orchestrator.selectors.models import (
     Button,
@@ -407,6 +408,32 @@ async def _persist_switch_target(
     return _resume_state_for_provider(resume_source, ctx.new_provider)
 
 
+def _default_model_updates(
+    orch: Orchestrator, model_id: str, provider: str, effort: str | None
+) -> tuple[dict[str, object], str | None]:
+    """Re-validate the configured effort independently of the session's effort."""
+    if (
+        effort is None
+        and _validate_reasoning_effort(orch, model_id, orch._config.reasoning_effort) is not None
+    ):
+        effort = "medium"
+    updates: dict[str, object] = {"model": model_id, "provider": provider}
+    if effort is not None:
+        updates["reasoning_effort"] = effort
+    return updates, effort
+
+
+def _apply_model_defaults(
+    orch: Orchestrator, model_id: str, provider: str, effort: str | None
+) -> None:
+    orch._config.model = model_id
+    orch._cli_service.update_default_model(model_id)
+    orch._config.provider = provider
+    if effort is not None:
+        orch._config.reasoning_effort = effort
+        orch._cli_service.update_reasoning_effort(effort)
+
+
 async def switch_model(
     orch: Orchestrator,
     key: SessionKey,
@@ -444,6 +471,22 @@ async def switch_model(
     if validation_error is not None:
         return validation_error
 
+    home = orch.paths.ductor_home
+    main_home = main_home_of(home)
+    sub_global = not is_topic and home != main_home
+    if sub_global:
+        updates, default_effort = _default_model_updates(
+            orch, model_id, new_provider, reasoning_effort
+        )
+        if new_provider not in {"codex", "claude", "grok"} and default_effort is None:
+            updates["reasoning_effort"] = None
+        try:
+            await asyncio.to_thread(
+                update_agent_fields, main_home / "agents.json", orch._agent_name, **updates
+            )
+        except (OSError, ValueError):
+            return t("autocompact.save_error")
+
     resume_session_id, resume_message_count = await _persist_switch_target(
         orch,
         key,
@@ -458,50 +501,14 @@ async def switch_model(
         ),
     )
 
-    if not is_topic:
-        # Global config: update only from main chat / DM (not from topics).
-        orch._config.model = model_id
-        orch._cli_service.update_default_model(model_id)
-        # Always realign provider to the new model's provider so config.model
-        # and config.provider stay consistent. provider_changed is session-based
-        # (used for session effort re-validation above) and can be False here
-        # even when config.provider is stale (config had diverged from session).
-        orch._config.provider = new_provider
-
-        updates: dict[str, object] = {"model": model_id, "provider": new_provider}
-        # Keep config.reasoning_effort consistent with the new config.model. Use
-        # the explicit effort (e.g. /model wizard reasoning step), NOT the
-        # session-mutated ``effort`` whose medium reset is for the session only.
-        # Without an explicit value, re-validate the existing default against
-        # model_id and reset to medium only when it is unsupported (e.g. config
-        # carried Claude ``max`` while switching the default to Codex).
-        if reasoning_effort is not None:
-            orch._config.reasoning_effort = reasoning_effort
-            orch._cli_service.update_reasoning_effort(reasoning_effort)
-            updates["reasoning_effort"] = reasoning_effort
-        elif _validate_reasoning_effort(orch, model_id, orch._config.reasoning_effort) is not None:
-            orch._config.reasoning_effort = "medium"
-            orch._cli_service.update_reasoning_effort("medium")
-            updates["reasoning_effort"] = "medium"
-
+    if sub_global:
+        _apply_model_defaults(orch, model_id, new_provider, default_effort)
+    elif not is_topic:
+        updates, default_effort = _default_model_updates(
+            orch, model_id, new_provider, reasoning_effort
+        )
+        _apply_model_defaults(orch, model_id, new_provider, default_effort)
         await update_config_file_async(orch.paths.config_path, **updates)
-
-        # Sub-agent: also sync model/provider/effort to agents.json so the
-        # registry stays current and survives restarts without merge hacks.
-        if orch.paths.ductor_home.parent.name == "agents":
-            agents_path = orch.paths.ductor_home.parent.parent / "agents.json"
-            agent_name = orch._cli_service._config.agent_name
-            registry_updates = dict(updates)
-            # Codex and Claude both use reasoning_effort — only drop it when
-            # switching to a provider that has no notion of effort.
-            if (
-                new_provider not in {"codex", "claude", "grok"}
-                and "reasoning_effort" not in registry_updates
-            ):
-                registry_updates["reasoning_effort"] = None
-            await asyncio.to_thread(
-                update_agent_fields, agents_path, agent_name, **registry_updates
-            )
 
     is_busy = orch.is_chat_busy(key.chat_id, key.topic_id)
     logger.info("Model switch model=%s provider=%s", model_id, orch._config.provider)
