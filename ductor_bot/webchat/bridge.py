@@ -1071,7 +1071,7 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
             return _error("bad_request", 400)
         return web.json_response({"hits": await runtime.history.search(query)})
 
-    async def events(request: web.Request) -> web.WebSocketResponse:
+    async def events(request: web.Request) -> web.WebSocketResponse:  # noqa: C901
         ws = web.WebSocketResponse()
         queue = runtime.events.subscribe()
         pump: asyncio.Task[None] | None = None
@@ -1106,6 +1106,8 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
                         }
                     if tid not in turns.blocked:
                         await ws.send_json(event)
+            except ConnectionError:
+                return
             except Exception as exc:
                 logger.warning("Webchat event forwarding failed: %s", type(exc).__name__)
             await ws.close(code=1013)

@@ -1260,6 +1260,67 @@ async function reconnectHistory(browser, scenario) {
   }
 }
 
+async function reconnectHistoryRetryWithEntries(browser) {
+  const context = await browser.newContext();
+  try {
+    const page = await context.newPage();
+    await page.clock.install({ time: new Date(today) });
+    await mockChat(page, messages.slice(0, 120));
+    await page.goto(origin);
+    await page.locator('[data-entry-seq="120"]').waitFor();
+    await page.clock.pauseAt(new Date(Date.parse(today) + 5000));
+    await page.locator('#thread').evaluate(thread => {
+      thread.scrollTop = thread.scrollHeight - thread.clientHeight - 200;
+    });
+    await page.route('**/api/topics/*/messages?*', route => route.fulfill({
+      status: 503, json: { error: 'history_busy' },
+    }));
+    await page.evaluate(async () => {
+      const fetch = window.fetch;
+      const start = performance.now();
+      window.recoveryReadTimes = [];
+      window.fetch = (url, options) => {
+        if (String(url).includes('/messages?')) window.recoveryReadTimes.push(performance.now() - start);
+        return fetch(url, options);
+      };
+      const { handleEvent } = await import('/static/js/chat.js');
+      await handleEvent({ type: 'bridge', up: true });
+    });
+    let elapsed = 0;
+    async function advance(ms) {
+      await page.clock.runFor(ms);
+      elapsed += ms;
+    }
+    const times = () => page.evaluate(() => window.recoveryReadTimes);
+    async function expectRetry(due) {
+      while (elapsed <= due + 600) {
+        const read = (await times()).find(time => time >= due);
+        if (read !== undefined) return read;
+        await advance(elapsed < due ? Math.min(100, due - elapsed) : 50);
+        if (elapsed >= due) await page.waitForTimeout(25);
+      }
+      assert.fail(`missing retry at ${due}ms; observed ${await times()}`);
+    }
+    let scheduled = await expectRetry(1000);
+    for (let index = 0; index < 6; index++) {
+      await advance(300);
+      const entry = { ...messages[121 + index], text: 'A live entry arrived during recovery' };
+      await page.evaluate(async entry => {
+        const { handleEvent } = await import('/static/js/chat.js');
+        await handleEvent({ type: 'entry', tid: '1.2', entry });
+      }, entry);
+    }
+    for (const delay of [2000, 4000, 8000]) {
+      scheduled = await expectRetry(scheduled + delay);
+    }
+    const reads = (await times()).length;
+    await page.clock.runFor(10000);
+    assert.equal((await times()).length, reads, 'four scheduled retries should exhaust the backoff');
+  } finally {
+    await context.close();
+  }
+}
+
 async function busyIndicator(browser, scenario) {
   const context = await browser.newContext();
   try {
@@ -1659,6 +1720,7 @@ try {
   const scenario = process.argv[3] ?? 'dates';
   if (scenario.startsWith('overflow-')) await documentOverflow(browser, scenario);
   else if (scenario.startsWith('unread-') && scenario !== 'unread-badges') await unreadRecovery(browser, scenario);
+  else if (scenario === 'reconnect-history-retry-with-entries') await reconnectHistoryRetryWithEntries(browser);
   else if (scenario.startsWith('reconnect-history-')) await reconnectHistory(browser, scenario);
   else if (scenario.startsWith('busy-resume-scroll-')) await busyResumeScroll(browser, Number(scenario.split('-').at(-1)));
   else if (scenario.startsWith('busy-')) await busyIndicator(browser, scenario);

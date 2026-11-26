@@ -11,7 +11,7 @@ import { notify } from './auth.js';
 import { connectEvents } from './ws.js';
 import { md, esc, createMarkdownCache, createMarkdownStream, initMarkdownLinks } from './md.js';
 import {
-  getTopic, getTopics, selectTopic, refreshTopics, scheduleBadgeRefresh, scheduleHistoryRetry,
+  getTopic, getTopics, selectTopic, refreshTopics, scheduleBadgeRefresh, scheduleHistoryRetry, cancelHistoryRetry,
   noteEntry, noteTopicBusy, markSeen, formatTime,
 } from './topics.js';
 
@@ -1007,7 +1007,7 @@ async function reloadSelectedHistory(generation, preserveReading) {
     renderThread({ preserveReading: preserveReading && entries.size === previousCount });
   }
 }
-async function recoverSelectedHistory(generation, preserveReading, attempt = 0) {
+async function recoverSelectedHistory(generation, preserveReading, attempt = 0, retry = null) {
   const topic = getTopic();
   if (!active || generation !== epoch || !topic) return;
   const state = history(topic.tid);
@@ -1015,16 +1015,16 @@ async function recoverSelectedHistory(generation, preserveReading, attempt = 0) 
   try {
     await reloadSelectedHistory(generation, preserveReading);
     state.lastSuccessfulRecovery = Math.max(state.lastSuccessfulRecovery ?? 0, request);
+    cancelHistoryRetry(retry);
   } catch (error) {
     if (!active || generation !== epoch || error.code === 'auth_required') return;
     if ((state.lastSuccessfulRecovery ?? 0) > request) return;
     if (pendingHistoryRecovery) {
       pendingHistoryRecovery.preserveReading ||= preserveReading;
     } else {
-      pendingHistoryRecovery = { preserveReading, attempt: attempt + 1 };
-      scheduleHistoryRetry(attempt);
+      pendingHistoryRecovery = { preserveReading, attempt, retry: scheduleHistoryRetry(attempt, retry) };
     }
-    if (!attempt) errorNotice(error);
+    if (!attempt && !retry) errorNotice(error);
   }
 }
 async function resync({ preserveReading = false } = {}) {
@@ -1470,9 +1470,14 @@ export function initChat() {
   document.addEventListener('topics-updated', () => {
     ++topicUpdates;
     if (!active || !pendingHistoryRecovery) return;
-    const { preserveReading, attempt } = pendingHistoryRecovery;
+    const { preserveReading, attempt, retry } = pendingHistoryRecovery;
     pendingHistoryRecovery = null;
-    resumedHistoryRecovery = recoverSelectedHistory(epoch, preserveReading, attempt);
+    if (retry?.ready) {
+      cancelHistoryRetry(retry);
+      resumedHistoryRecovery = recoverSelectedHistory(epoch, preserveReading, attempt + 1);
+    } else {
+      resumedHistoryRecovery = recoverSelectedHistory(epoch, preserveReading, attempt, retry);
+    }
   });
   document.addEventListener('topic-updated', () => renderHeader());
   document.addEventListener('topic-busy-updated', () => renderThread({ changes: {}, preserveReading: true }));

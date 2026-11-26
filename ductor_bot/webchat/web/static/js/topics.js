@@ -11,6 +11,7 @@ const serverUnread = new Map(), pendingRead = new Map(), awaitingUnread = new Se
 const seen = new Map(), confirmed = new Map(), migrated = new Set();
 const BADGE_DELAY = 150, BADGE_MAX_WAIT = 1000, BADGE_RETRIES = [1000, 2000, 4000, 8000];
 let badgeEpoch = 0, badgeTimer, badgeDue = null, badgeDeadline = null, badgeRetries = 0;
+let historyRetry = null;
 let topicsInFlight = 0, readWrites = 0, badgeNotified = false;
 const busyEvents = new Map();
 let pendingSnapshot = null;
@@ -44,12 +45,17 @@ function syncSeen(cursors) {
 }
 function armBadgeRefresh() {
   clearTimeout(badgeTimer);
-  if (!active || readWrites || topicsInFlight || badgeDue === null) return;
+  if (!active || readWrites || topicsInFlight) return;
+  // Badge updates can run sooner without replacing the history retry deadline.
+  const historyDue = historyRetry && !historyRetry.ready ? historyRetry.due : Infinity;
+  const due = Math.min(badgeDue ?? Infinity, historyDue);
+  if (due === Infinity) return;
   badgeTimer = setTimeout(async () => {
-    badgeDue = badgeDeadline = null;
+    if (badgeDue === due) badgeDue = badgeDeadline = null;
+    if (historyDue === due) historyRetry.ready = true;
     try { await refreshTopics({ badgeRequest: true }); }
     catch { /* refreshTopics handles badge failures and retries. */ }
-  }, Math.max(0, badgeDue - performance.now()));
+  }, Math.max(0, due - performance.now()));
 }
 export function scheduleBadgeRefresh() {
   if (!active) return;
@@ -60,11 +66,17 @@ export function scheduleBadgeRefresh() {
   badgeDue = Math.min(now + BADGE_DELAY, badgeDeadline);
   armBadgeRefresh();
 }
-export function scheduleHistoryRetry(attempt) {
+export function scheduleHistoryRetry(attempt, retry) {
   const delay = BADGE_RETRIES[attempt];
-  if (!active || delay === undefined) return;
-  const due = performance.now() + delay;
-  badgeDue = Math.min(badgeDue ?? due, due);
+  if (!active || delay === undefined) return null;
+  historyRetry = retry ?? { due: performance.now() + delay };
+  historyRetry.ready = false;
+  armBadgeRefresh();
+  return historyRetry;
+}
+export function cancelHistoryRetry(retry) {
+  if (!retry || historyRetry !== retry) return;
+  historyRetry = null;
   armBadgeRefresh();
 }
 function noteBadgeFailure(error, key = 'error.generic', report = true) {
@@ -379,6 +391,7 @@ export function initTopics() {
     ++revision; ++badgeEpoch;
     clearTimeout(badgeTimer);
     badgeDue = badgeDeadline = null;
+    historyRetry = null;
     topicsInFlight = readWrites = badgeRetries = 0;
     badgeNotified = false;
     pendingRead.clear(); awaitingUnread.clear();
