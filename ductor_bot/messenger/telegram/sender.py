@@ -550,7 +550,7 @@ async def _send_ia_file_chunk_outcome(
     try:
         path = path_from_file_tag(file_tag)
         blocked = opts.allowed_roots is not None and not is_path_safe(path, opts.allowed_roots)
-        if blocked or not await asyncio.to_thread(path.exists):
+        if blocked or not await asyncio.to_thread(path.is_file):
             if not opts.skip_unavailable_files:
                 return _ChunkOutcome(ok=False, failure="permanent", error="file_unavailable")
             response = await bot.send_message(
