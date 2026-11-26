@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from ductor_bot.config import (
     AgentConfig,
@@ -77,6 +77,11 @@ class SubAgentConfig(BaseModel):
     claude_system_prompt_snapshot: Literal["off", "on"] | None = None
     # Independent agent setting: None means framework default, never main's value.
     autocompact: AutocompactValue | None = None
+
+    @field_validator("heartbeat", mode="before")
+    @classmethod
+    def _default_heartbeat_disabled(cls, value: object) -> object:
+        return {"enabled": False, **value} if isinstance(value, dict) else value
 
 
 def resolve_sub_transports(sub: SubAgentConfig, agent_home: Path) -> list[str]:

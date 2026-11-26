@@ -306,6 +306,17 @@ def test_update_config_file_does_not_log_values(
     assert "api" in caplog.text
 
 
+def test_heartbeat_enabled_and_interval_defaults_match_example() -> None:
+    heartbeat = HeartbeatConfig()
+    example = Path(__file__).resolve().parents[1] / "config.example.json"
+    example_heartbeat = json.loads(example.read_text(encoding="utf-8"))["heartbeat"]
+
+    assert heartbeat.enabled is True
+    assert heartbeat.interval_minutes == 20
+    assert example_heartbeat["enabled"] is heartbeat.enabled
+    assert example_heartbeat["interval_minutes"] == heartbeat.interval_minutes
+
+
 def test_heartbeat_suspend_on_ack_defaults_on_with_valid_ack_token() -> None:
     heartbeat = HeartbeatConfig()
     assert heartbeat.suspend_on_ack is True

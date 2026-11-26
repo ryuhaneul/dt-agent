@@ -59,7 +59,7 @@
     },
     "heartbeat": {
         "enabled": true,
-        "interval_minutes": 30,
+        "interval_minutes": 20,
         "cooldown_minutes": 5,
         "quiet_start": 0,
         "quiet_end": 0,

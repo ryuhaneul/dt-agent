@@ -109,11 +109,13 @@ User targets (`allowed_user_ids`) are not validated -- only `group_targets` entr
 
 ### Config example
 
+This example shows the main agent's heartbeat configuration.
+
 ```json
 {
   "heartbeat": {
     "enabled": true,
-    "interval_minutes": 30,
+    "interval_minutes": 20,
     "auto_targets": true,
     "suspend_on_ack": true,
     "prompt": "Global heartbeat prompt...",
