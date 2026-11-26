@@ -5908,7 +5908,7 @@ async def test_tool_detail_memory_keeps_activity_when_next_reply_is_missing(
     assert replies[0]["activity"] == first_reply["activity"]
 
 
-@pytest.mark.parametrize(("limit", "replies"), [(None, 51), (3, 5)])
+@pytest.mark.parametrize(("limit", "replies"), [(None, 101), (3, 5)])
 async def test_tool_detail_memory_evicts_oldest_replies(conversation, limit, replies):
     h = conversation
     h.bot.config.webchat.tool_details = "memory"
@@ -5926,8 +5926,8 @@ async def test_tool_detail_memory_evicts_oldest_replies(conversation, limit, rep
         await turns._save_activity(
             _QueuedTurn(tid, "", identity, activities=[{"name": f"tool-{index}"}])
         )
-    retained = 50 if limit is None else limit
-    recorded = await h.runtime.history.read(tid)
+    retained = 100 if limit is None else limit
+    recorded = await h.runtime.history.read(tid, limit=replies)
     assert [turns.activity_for_reply(tid, reply.id) for reply in recorded] == [
         None if index < replies - retained else [{"name": f"tool-{index}"}]
         for index in range(replies)
