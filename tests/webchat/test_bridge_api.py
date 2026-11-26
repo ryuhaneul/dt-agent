@@ -1332,10 +1332,15 @@ async def test_events_ignore_client_frames_and_disconnect_on_overflow(conversati
     assert not h.runtime.events._subscribers
 
 
-async def test_events_disconnect_when_forwarding_fails(conversation, monkeypatch, caplog):
+@pytest.mark.parametrize("error_type", [OSError, ConnectionResetError])
+async def test_events_disconnect_when_forwarding_fails(
+    conversation, monkeypatch, caplog, error_type
+):
     h = conversation
     sensitive = "synthetic forwarding error detail"
-    monkeypatch.setattr(h.runtime.outbox, "mirror_state", AsyncMock(side_effect=OSError(sensitive)))
+    monkeypatch.setattr(
+        h.runtime.outbox, "mirror_state", AsyncMock(side_effect=error_type(sensitive))
+    )
     async with h.client.ws_connect(f"{_PREFIX}/events", headers=headers()) as ws:
         await h.runtime.history.append(h.key, Entry(role="bot", source="telegram", text="reply"))
         message = await ws.receive(timeout=2)
@@ -1346,7 +1351,7 @@ async def test_events_disconnect_when_forwarding_fails(conversation, monkeypatch
         for record in caplog.records
         if record.name == "ductor_bot.webchat.bridge" and record.levelno == logging.WARNING
     ]
-    assert messages == ["Webchat event forwarding failed: OSError"]
+    assert messages == [f"Webchat event forwarding failed: {error_type.__name__}"]
     assert sensitive not in caplog.text
     assert not h.runtime.events._subscribers
 
