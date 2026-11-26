@@ -18,7 +18,6 @@ from ductor_bot.config import (
     update_config_file_async,
 )
 from ductor_bot.i18n import t
-from ductor_bot.infra.env_secrets import main_home_of
 from ductor_bot.multiagent.registry import update_agent_fields
 from ductor_bot.orchestrator.selectors.models import (
     Button,
@@ -445,6 +444,15 @@ async def switch_model(
 
     Shared by ``/model <name>`` text command and the wizard callbacks.
     """
+    if key.topic_id is None and orch._agent_name != "main":
+        async with orch._model_global_lock:
+            return await _switch_model(orch, key, model_id, reasoning_effort)
+    return await _switch_model(orch, key, model_id, reasoning_effort)
+
+
+async def _switch_model(
+    orch: Orchestrator, key: SessionKey, model_id: str, reasoning_effort: str | None
+) -> str:
     is_topic = key.topic_id is not None
     active_session = await orch._sessions.get_active(key)
 
@@ -471,10 +479,11 @@ async def switch_model(
     if validation_error is not None:
         return validation_error
 
-    home = orch.paths.ductor_home
-    main_home = main_home_of(home)
-    sub_global = not is_topic and home != main_home
+    sub_global = not is_topic and orch._agent_name != "main"
     if sub_global:
+        main_home = orch._config._main_home
+        if main_home is None:
+            return t("autocompact.save_error")
         updates, default_effort = _default_model_updates(
             orch, model_id, new_provider, reasoning_effort
         )

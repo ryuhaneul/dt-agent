@@ -457,7 +457,9 @@ def _ensure_required_dirs(paths: DuctorPaths) -> None:
             logger.info("Created missing directory: %s", d)
 
 
-def init_workspace(paths: DuctorPaths, *, is_sub_agent: bool = False) -> None:
+def init_workspace(
+    paths: DuctorPaths, *, is_sub_agent: bool = False, main_home: Path | None = None
+) -> None:
     """Initialize the workspace: defaults deployment, cron rule backfill, config merge, cleanup."""
     logger.info("Workspace init started home=%s", paths.ductor_home)
     _migrate_tasks_to_cron_tasks(paths)
@@ -476,7 +478,8 @@ def init_workspace(paths: DuctorPaths, *, is_sub_agent: bool = False) -> None:
     if not is_sub_agent:
         _smart_merge_config(paths)
     _clean_orphan_symlinks(paths)
-    sync_skills(paths)
+    if not is_sub_agent or main_home is not None:
+        sync_skills(paths, main_home=main_home)
     logger.info("Workspace init completed")
 
 

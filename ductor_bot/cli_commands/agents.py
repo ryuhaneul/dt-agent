@@ -315,7 +315,7 @@ def agents_remove(rest: list[str]) -> None:
 
 def cmd_agents(args: list[str]) -> None:
     """Handle 'ductor agents [subcommand]'."""
-    require_main_home(resolve_paths().ductor_home)
+    require_main_home()
     sub, rest = _parse_agents_subcommand(args)
     if sub is None:
         print_agents_help()

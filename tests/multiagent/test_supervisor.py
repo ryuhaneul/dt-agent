@@ -318,9 +318,9 @@ class TestOnAgentsChanged:
 
         original = supervisor._registry.load
 
-        def slow_load() -> list[SubAgentConfig]:
+        def slow_load(*, strict: bool = False) -> list[SubAgentConfig]:
             call_order.append("enter")
-            result = original()
+            result = original(strict=strict)
             call_order.append("exit")
             return result
 
@@ -986,6 +986,62 @@ async def test_sub_rebuild_loads_current_heartbeat_override(
 
     new_bot.run.assert_awaited_once()
     assert supervisor.stacks[name].config.heartbeat.enabled is False
+
+
+@pytest.mark.parametrize("outcome", ["restart", "crash"])
+@pytest.mark.parametrize("removed", [False, True])
+async def test_sub_rebuild_retries_unreadable_registry_without_rerunning_old_stack(
+    supervisor: AgentSupervisor, tmp_path: Path, outcome: str, removed: bool,
+) -> None:
+    name = "sub1"
+    home = tmp_path / "agents" / name
+    paths = resolve_paths(home)
+    registry_path = tmp_path / "agents.json"
+    repaired = [] if removed else [{"name": name, "transport": "headless"}]
+    registry_path.write_text("{broken")
+
+    old_run = (
+        AsyncMock(return_value=EXIT_RESTART)
+        if outcome == "restart"
+        else AsyncMock(side_effect=RuntimeError("synthetic"))
+    )
+    old_bot = MagicMock(orchestrator=None, run=old_run, shutdown=AsyncMock())
+    old_stack = AgentStack(name, AgentConfig(ductor_home=str(home)), paths, old_bot)
+    new_bot = MagicMock(orchestrator=None, run=AsyncMock(return_value=0))
+    supervisor._stacks[name] = old_stack
+    supervisor._health[name] = AgentHealth(name=name)
+    supervisor._running = True
+    waits = []
+
+    async def backoff(seconds):
+        waits.append(seconds)
+        if len(waits) == 1:
+            with pytest.raises(ValueError):
+                await supervisor._on_agents_changed()
+            assert supervisor.stacks[name] is old_stack
+        else:
+            registry_path.write_text(json.dumps(repaired))
+
+    async def create(name: str, config: AgentConfig, *, is_main: bool) -> AgentStack:
+        return AgentStack(name, config, paths, new_bot, is_main=is_main)
+
+    with (
+        patch.object(AgentStack, "create", side_effect=create) as rebuild,
+        patch("ductor_bot.multiagent.supervisor.asyncio.sleep", side_effect=backoff),
+    ):
+        result = await supervisor._supervised_run(name, old_stack)
+
+    assert waits == [5, 10]
+    old_run.assert_awaited_once()
+    if removed:
+        rebuild.assert_not_awaited()
+        await supervisor._on_agents_changed()
+        assert name not in supervisor.stacks
+    else:
+        assert result == 0
+        rebuild.assert_awaited_once()
+        new_bot.run.assert_awaited_once()
+        assert supervisor.stacks[name] is not old_stack
 
 
 async def test_watcher_continues_after_hot_reload_callback_failure(

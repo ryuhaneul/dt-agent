@@ -18,7 +18,7 @@ import sys
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from _shared import read_user_timezone
+from _shared import SUB_AGENT_NAME, read_user_timezone
 
 _COMMON_ZONES = [
     "Europe/Berlin",
@@ -72,10 +72,11 @@ def main() -> None:
         else:
             result["user_timezone_error"] = f"Invalid timezone: {config_tz}"
     else:
+        source = "agents.json" if SUB_AGENT_NAME is not None else "config.json"
         result["user_timezone_hint"] = (
-            "No user_timezone set in config.json. "
+            f"No user_timezone set in {source}. "
             "Ask the user where they are and set it. "
-            "Example: edit config.json -> \"user_timezone\": \"Europe/Berlin\""
+            f'Example: edit {source} -> "user_timezone": "Europe/Berlin"'
         )
 
     if args.zone:

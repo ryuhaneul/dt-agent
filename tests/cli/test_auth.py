@@ -449,8 +449,16 @@ def test_check_gemini_auth_ductor_config_key(
     ductor_config.write_text('{"gemini_api_key":"from-ductor-config"}')
 
     if sub_agent:
-        sub_home = tmp_path / ".ductor" / "agents" / "worker"
-        monkeypatch.setenv("DUCTOR_HOME", str(sub_home))
+        main_home = tmp_path / ".ductor"
+        sub_home = tmp_path / "physical-home"
+        sub_home.mkdir()
+        link = main_home / "agents" / "worker"
+        link.parent.mkdir()
+        link.symlink_to(sub_home, target_is_directory=True)
+        monkeypatch.setenv("DUCTOR_HOME", str(link.resolve()))
+        monkeypatch.setenv("DUCTOR_AGENT_ROLE", "sub")
+        monkeypatch.setenv("DUCTOR_AGENT_NAME", "worker")
+        monkeypatch.setenv("DUCTOR_MAIN_HOME", str(main_home))
         sub_config = sub_home / "config" / "config.json"
         sub_config.parent.mkdir(parents=True)
         sub_config.write_text('{"gemini_api_key":"null"}')

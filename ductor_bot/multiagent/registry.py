@@ -21,18 +21,22 @@ class AgentRegistry:
         self._path = agents_path
         self._indices: dict[str, int] = {}
 
-    def load(self) -> list[SubAgentConfig]:
-        """Load sub-agent definitions. Returns empty list if file is missing."""
+    def load(self, *, strict: bool = False) -> list[SubAgentConfig]:
+        """Load definitions, raising on file errors when ``strict`` is set."""
         self._indices = {}
-        if not self._path.is_file():
+        if not strict and not self._path.is_file():
             return []
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        except (ValueError, OSError):
+            if strict:
+                raise
             logger.exception("Failed to read agents.json at %s", self._path)
             return []
 
         if not isinstance(raw, list):
+            if strict:
+                raise ValueError("agents.json must be a JSON array")
             logger.warning("agents.json must be a JSON array, got %s", type(raw).__name__)
             return []
 

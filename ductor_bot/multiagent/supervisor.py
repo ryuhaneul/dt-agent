@@ -62,6 +62,10 @@ _GRACEFUL_STOP_SECONDS = 5.0
 _CANCEL_WAIT_SECONDS = 10.0
 
 
+class _SubAgentRemovedError(Exception):
+    """A readable registry no longer contains the sub-agent."""
+
+
 def _is_transient(exc: Exception) -> bool:
     """Classify an exception as a transient (retryable) network failure.
 
@@ -377,8 +381,8 @@ class AgentSupervisor:
     ) -> tuple[AgentStack, bool]:
         """Handle EXIT_RESTART for an agent.
 
-        Returns ``(stack, should_return)`` — when *should_return* is True the
-        caller must ``return EXIT_RESTART``.
+        Returns ``(stack, should_return)``. Stop the task on main restart or
+        when the sub-agent was removed from the registry.
         """
         if name == "main":
             logger.info("Main agent requested full service restart")
@@ -393,7 +397,11 @@ class AgentSupervisor:
             self.begin_shutdown(name)
             self._mark_stopping(name)
             health.mark_starting()
-            new_stack = await self._replace_stack(name, stack)
+            try:
+                new_stack = await self._replace_stack(name, stack)
+            except _SubAgentRemovedError:
+                self._finish_agent(name, health)
+                return stack, True
         return new_stack, False
 
     async def _replace_stack(self, name: str, stack: AgentStack) -> AgentStack:
@@ -451,35 +459,45 @@ class AgentSupervisor:
             )
             return stack, retry_count, False
 
-        logger.error(
-            "Agent '%s' crashed (attempt %d/%d): %s",
-            name,
-            retry_count,
-            _MAX_RESTART_RETRIES,
-            error_msg,
-            exc_info=sys.exc_info(),
-        )
-
-        if retry_count > _MAX_RESTART_RETRIES:
+        while True:
             logger.error(
-                "Agent '%s' exceeded max retries (%d), giving up",
+                "Agent '%s' crashed (attempt %d/%d): %s",
                 name,
+                retry_count,
                 _MAX_RESTART_RETRIES,
+                error_msg,
                 exc_info=sys.exc_info(),
             )
-            await self._notify_main_agent(
-                t(
-                    "supervisor.stopped_after_crashes",
-                    name=name,
-                    max=_MAX_RESTART_RETRIES,
-                    error=show_crash_error(error_msg),
-                )
-            )
-            return stack, retry_count, True
 
-        wait = _RESTART_BACKOFF_BASE * (2 ** (retry_count - 1))
-        stack = await self._backoff_and_rebuild(name, stack, health, wait)
-        return stack, retry_count, False
+            if retry_count > _MAX_RESTART_RETRIES:
+                logger.error(
+                    "Agent '%s' exceeded max retries (%d), giving up",
+                    name,
+                    _MAX_RESTART_RETRIES,
+                    exc_info=sys.exc_info(),
+                )
+                await self._notify_main_agent(
+                    t(
+                        "supervisor.stopped_after_crashes",
+                        name=name,
+                        max=_MAX_RESTART_RETRIES,
+                        error=show_crash_error(error_msg),
+                    )
+                )
+                return stack, retry_count, True
+
+            wait = _RESTART_BACKOFF_BASE * (2 ** (retry_count - 1))
+            try:
+                stack = await self._backoff_and_rebuild(name, stack, health, wait)
+            except _SubAgentRemovedError:
+                self._finish_agent(name, health)
+                return stack, retry_count, True
+            except Exception as rebuild_error:
+                retry_count += 1
+                error_msg = type(rebuild_error).__name__
+                health.mark_crashed(error_msg)
+            else:
+                return stack, retry_count, False
 
     async def _backoff_and_rebuild(
         self, name: str, stack: AgentStack, health: AgentHealth, wait: int
@@ -487,8 +505,8 @@ class AgentSupervisor:
         """Sleep for *wait* seconds, then shut down and rebuild the agent stack.
 
         Shared by the sub-agent recovery path and the main-agent transient-retry
-        path. Rebuild failures are logged and swallowed so the supervised loop
-        retries again on its next iteration.
+        path. Sub-agent failures propagate so recovery retries the rebuild
+        without running the old stack.
         """
         logger.info("Agent '%s' restarting in %ds", name, wait)
         await asyncio.sleep(wait)
@@ -503,6 +521,8 @@ class AgentSupervisor:
                     stack = await self._replace_stack(name, stack)
             health.mark_starting()
         except Exception:
+            if name != "main":
+                raise
             logger.exception("Failed to rebuild agent '%s'", name)
 
         return stack
@@ -542,7 +562,7 @@ class AgentSupervisor:
                 if exit_code == EXIT_RESTART:
                     stack, should_return = await self._handle_restart_exit(name, stack, health)
                     if should_return:
-                        return EXIT_RESTART
+                        return EXIT_RESTART if name == "main" else 0
                     retry_count = 0
                     continue
 
@@ -783,17 +803,25 @@ class AgentSupervisor:
 
         logger.debug("Task hub wired for agent '%s'", name)
 
+    def _sub_config(self, sub_cfg: SubAgentConfig) -> AgentConfig:
+        main_home = self._main_paths.ductor_home
+        config = merge_sub_agent_config(
+            self._main_config, sub_cfg, main_home / "agents" / sub_cfg.name
+        )
+        config._main_home = main_home
+        return config
+
     async def _rebuild_stack(self, name: str, old_stack: AgentStack) -> AgentStack:
         """Rebuild an AgentStack, reloading sub-agent overrides from the registry."""
         if name == "main":
             config = old_stack.config
         else:
-            sub_cfg = next((sub for sub in self._registry.load() if sub.name == name), None)
+            sub_cfg = next(
+                (sub for sub in self._registry.load(strict=True) if sub.name == name), None
+            )
             if sub_cfg is None:
-                msg = f"Sub-agent '{name}' is missing from agents.json"
-                raise ValueError(msg)
-            agent_home = self._main_paths.ductor_home / "agents" / name
-            config = merge_sub_agent_config(self._main_config, sub_cfg, agent_home)
+                raise _SubAgentRemovedError
+            config = self._sub_config(sub_cfg)
 
         new_stack = await AgentStack.create(
             name,
@@ -865,7 +893,7 @@ class AgentSupervisor:
 
         agent_home = self._main_paths.ductor_home / "agents" / name
         try:
-            config = merge_sub_agent_config(self._main_config, sub_cfg, agent_home)
+            config = self._sub_config(sub_cfg)
         except Exception as exc:
             reason = safe_error(self._registry.index_for(name), exc)
             return await self._exclude_sub(name, reason)
@@ -1085,7 +1113,10 @@ class AgentSupervisor:
     async def _on_agents_changed(self) -> None:
         """Called when agents.json mtime changes. Sync running agents."""
         async with self._agents_lock:
-            desired = {a.name: a for a in self._registry.load()}
+            try:
+                desired = {a.name: a for a in self._registry.load(strict=True)}
+            except FileNotFoundError:
+                return
             current_sub = set(self._stacks.keys()) - {"main"}
             desired_names = set(desired.keys())
             self._declared = set(desired_names)

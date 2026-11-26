@@ -287,6 +287,7 @@ async def test_sub_global_uses_independent_registry(api):
     registry = root / "agents.json"
     registry.write_text(json.dumps([{"name": "worker", "transport": "headless"}]))
     cfg = api.bot.config.model_copy(update={"ductor_home": str(subhome), "autocompact": "default"})
+    cfg._main_home = api.paths.ductor_home
     api.bot._orch = Orchestrator(cfg, paths, agent_name="worker", lock_pool=api.pool)
     await api.bot._orch._sessions.update_session(SessionData(chat_id=-123, topic_id=7))
     response = await _put(api, {"global": 400000})
@@ -573,6 +574,7 @@ async def _sub_setting_fixture(api, *, absent=False):
     cfg = api.bot.config.model_copy(
         update={"ductor_home": str(paths.ductor_home), "autocompact": previous}
     )
+    cfg._main_home = api.paths.ductor_home
     api.bot._orch = Orchestrator(cfg, paths, agent_name="worker", lock_pool=api.pool)
     api.bot._orch._cli_service.execute = AsyncMock(return_value=AgentResponse(result="ok"))
     await api.bot._orch._sessions.update_session(SessionData(chat_id=-123, topic_id=7))

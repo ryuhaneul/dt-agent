@@ -30,6 +30,8 @@ from ductor_bot.cli.stream_events import (
 from ductor_bot.cli.types import AgentRequest, AgentResponse, CLIResponse
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from ductor_bot.cli.base import BaseCLI
     from ductor_bot.cli.process_registry import ProcessRegistry
     from ductor_bot.config import AutocompactValue, ModelRegistry
@@ -123,6 +125,7 @@ class CLIServiceConfig:
     # External transcription hooks (#66) — empty strings keep built-in strategies.
     transcribe_command: str = ""
     video_transcribe_command: str = ""
+    main_home: Path | None = None
 
     def cli_parameters_for_provider(self, provider: str) -> list[str]:
         """Return CLI parameters for the given provider."""
@@ -460,6 +463,7 @@ class CLIService:
                 process_label=request.process_label,
                 cli_parameters=cli_parameters,
                 agent_name=self._config.agent_name,
+                main_home=self._config.main_home,
                 interagent_port=self._config.interagent_port,
                 claude_accounts=list(self._config.claude_accounts),
                 user_timezone=self._config.user_timezone,

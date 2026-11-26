@@ -86,7 +86,11 @@ def test_host_management_rejects_sub_agent_home_before_language_or_preflight(
     tmp_path, script, with_parent_segment,
 ):
     home = tmp_path / "agents" / "worker"
-    config = home / "config" / "config.json"
+    target_home = tmp_path / "physical-home"
+    target_home.mkdir()
+    home.parent.mkdir()
+    home.symlink_to(target_home, target_is_directory=True)
+    config = target_home / "config" / "config.json"
     config.parent.mkdir(parents=True)
     config.write_text('{"language": "fr"}')
     (tmp_path / "agents.json").write_text("[]")

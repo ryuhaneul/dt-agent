@@ -15,7 +15,6 @@ from ductor_bot.cli.autocompact import (
 )
 from ductor_bot.config import update_config_file_async
 from ductor_bot.i18n import t
-from ductor_bot.infra.env_secrets import main_home_of
 from ductor_bot.multiagent.registry import update_agent_fields
 from ductor_bot.orchestrator.selectors.autocompact_automation import (
     automation_state,
@@ -100,9 +99,10 @@ async def autocompact_selector_start(
 
 
 async def _save_global_autocompact(orch: Orchestrator, value: AutocompactValue) -> None:
-    home = orch.paths.ductor_home
-    main_home = main_home_of(home)
-    if home != main_home:
+    if orch._agent_name != "main":
+        main_home = orch._config._main_home
+        if main_home is None:
+            raise ValueError("Sub-agent registry path unavailable")
         await asyncio.to_thread(
             update_agent_fields, main_home / "agents.json", orch._agent_name, autocompact=value
         )

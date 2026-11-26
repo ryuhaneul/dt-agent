@@ -34,6 +34,7 @@ async def test_topic_slot_cooldown_timezone_and_structured_title(
     )
     orch = SimpleNamespace(
         paths=SimpleNamespace(ductor_home=home),
+        _agent_name="main",
         _sessions=SimpleNamespace(get_active=AsyncMock(return_value=None)),
         _process_registry=None,
     )

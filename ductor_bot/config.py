@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
 
 # Defined here so config validation never imports the eager cli package.
 AutocompactValue: TypeAlias = (
@@ -578,6 +578,8 @@ class WebchatConfig(BaseModel):
 
 class AgentConfig(BaseModel):
     """Top-level configuration loaded from config.json."""
+
+    _main_home: Path | None = PrivateAttr(default=None)
 
     log_level: str = "INFO"
     provider: str = "claude"

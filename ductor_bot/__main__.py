@@ -365,7 +365,7 @@ _Action = Callable[[], None]
 
 def main() -> None:
     """CLI entry point."""
-    require_main_home(resolve_paths().ductor_home)
+    require_main_home()
     args = sys.argv[1:]
     commands = [a for a in args if not a.startswith("-")]
     verbose = "--verbose" in args or "-v" in args

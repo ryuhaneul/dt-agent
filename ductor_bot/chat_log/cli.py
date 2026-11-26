@@ -123,7 +123,7 @@ def _undo_import(paths: DuctorPaths, history: HistoryStore) -> int:
 
 def cmd_chat_log(args: list[str]) -> None:
     paths = resolve_paths()
-    require_main_home(paths.ductor_home)
+    require_main_home()
     if "chat-log" in args:
         args = args[args.index("chat-log") + 1 :]
     status = args == ["status"]

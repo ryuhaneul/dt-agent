@@ -18,13 +18,16 @@ from ductor_bot._home_defaults.workspace.tools._tool_shared import (
     sanitize_name,
     save_collection,
 )
-from ductor_bot.infra.env_secrets import main_home_of
+from ductor_bot.home import subprocess_settings_home
 from ductor_bot.multiagent.registry import AgentRegistry
 from ductor_bot.workspace.paths import resolve_paths
 
 DUCTOR_HOME = Path(os.environ.get("DUCTOR_HOME", "~/.ductor")).expanduser()
 HOOKS_PATH = DUCTOR_HOME / "webhooks.json"
-MAIN_HOME = main_home_of(DUCTOR_HOME)
+SUB_AGENT_NAME = (
+    os.environ["DUCTOR_AGENT_NAME"] if os.environ.get("DUCTOR_AGENT_ROLE") == "sub" else None
+)
+MAIN_HOME = subprocess_settings_home(DUCTOR_HOME)
 CONFIG_PATH = resolve_paths(MAIN_HOME).config_path
 CRON_TASKS_DIR = DUCTOR_HOME / "workspace" / "cron_tasks"
 
@@ -91,9 +94,9 @@ def reject_wake_overrides(
 
 def load_webhook_config() -> dict[str, Any]:
     """Load the main webhook settings with the sub-agent's override, if set."""
-    if DUCTOR_HOME != MAIN_HOME:
+    if SUB_AGENT_NAME is not None:
         for sub in AgentRegistry(MAIN_HOME / "agents.json").load():
-            if sub.name == DUCTOR_HOME.name and sub.webhooks is not None:
+            if sub.name == SUB_AGENT_NAME and sub.webhooks is not None:
                 return sub.webhooks.model_dump(mode="json")
 
     if not CONFIG_PATH.exists():

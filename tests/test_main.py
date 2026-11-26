@@ -508,7 +508,11 @@ def test_management_entrypoints_reject_sub_agent_home_before_reading_config(
     from ductor_bot.webchat.cli import cmd_webchat
 
     home = tmp_path / "agents" / "worker"
-    config = home / "config" / "config.json"
+    target = tmp_path / "physical-home"
+    target.mkdir()
+    home.parent.mkdir()
+    home.symlink_to(target, target_is_directory=True)
+    config = target / "config" / "config.json"
     config.parent.mkdir(parents=True)
     config.write_text('{"language": "fr"}')
     (tmp_path / "agents.json").write_text("[]")

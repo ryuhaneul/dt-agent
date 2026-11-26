@@ -96,7 +96,7 @@ def _edit_credentials(
 
 def cmd_webchat(args: list[str]) -> None:  # noqa: C901
     paths = resolve_paths()
-    require_main_home(paths.ductor_home)
+    require_main_home()
     if "webchat" in args:
         args = args[args.index("webchat") + 1 :]
     if args not in (

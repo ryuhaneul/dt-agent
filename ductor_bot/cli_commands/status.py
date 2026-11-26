@@ -75,7 +75,7 @@ def print_status() -> None:
     from ductor_bot.cli_commands.agents import load_agents_registry, print_agents_status
 
     paths = resolve_paths()
-    require_main_home(paths.ductor_home)
+    require_main_home()
     try:
         data: dict[str, object] = json.loads(
             paths.config_path.read_text(encoding="utf-8"),
@@ -139,7 +139,7 @@ def print_usage() -> None:
     """Print commands and smart status information."""
     from ductor_bot.__main__ import _is_configured
 
-    require_main_home(resolve_paths().ductor_home)
+    require_main_home()
     _console.print()
     banner_path = Path(__file__).resolve().parent.parent / "_banner.txt"
     try:

@@ -19,7 +19,7 @@ def start_bot(verbose: bool = False) -> None:
     from ductor_bot.logging_config import setup_logging
 
     paths = resolve_paths()
-    require_main_home(paths.ductor_home)
+    require_main_home()
     acquire_instance_lock(paths.ductor_home / "bot.lock")
     setup_logging(verbose=verbose, log_dir=paths.logs_dir)
     config = load_config()
