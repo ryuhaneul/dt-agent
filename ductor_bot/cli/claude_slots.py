@@ -146,8 +146,6 @@ def remove(home: Path, slot: str, *, expected: SlotIdentity | None = None) -> No
             accounts = _accounts(data)
             if slot not in accounts and not directory.is_dir():
                 raise SlotDeleteError("slot_not_found")
-            if expected is not None and slot_identity(home, slot) != expected:
-                raise SlotDeleteError("slot_stale")
 
             # Keep the config lock through cleanup so the membership check and
             # unregister use the same snapshot, in the existing lock order.

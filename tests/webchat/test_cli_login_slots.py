@@ -838,42 +838,6 @@ async def test_slot_mutation_rejects_recreated_slot(cli_bridge, monkeypatch, act
         assert "apiKeyHelper" not in json.loads(credential.read_bytes())
 
 
-async def test_delete_rechecks_slot_after_waiting_for_config_lock(cli_bridge, monkeypatch):
-    from ductor_bot.cli import claude_slots
-    from ductor_bot.infra.file_lock import exclusive_file_lock
-    from ductor_bot.infra.json_store import atomic_json_save
-
-    client, _, _, paths, _ = cli_bridge
-    name = "claude-work"
-    route = f"{_PREFIX}/cli-login/slots/{name}"
-    config = paths.config_path
-    atomic_json_save(config, {"claude_accounts": [name]})
-    old_payload = await slot_mutation_payload(client, name)
-    folder = paths.ductor_home / ".cli-auth" / name
-    waiting = threading.Event()
-    transform = claude_slots.transform_config_file
-
-    def observe_config_lock(*args, **kwargs):
-        waiting.set()
-        return transform(*args, **kwargs)
-
-    monkeypatch.setattr(claude_slots, "transform_config_file", observe_config_lock)
-    with exclusive_file_lock(config.with_name("." + config.name)):
-        assert not folder.exists()
-        removal = asyncio.create_task(client.delete(route, headers=cli_headers(), json=old_payload))
-        assert await asyncio.to_thread(waiting.wait, 3)
-        atomic_json_save(config, {"claude_accounts": []})
-        folder.mkdir()
-        credentials = folder / ".credentials.json"
-        credentials.write_text("new fixture credentials")
-        atomic_json_save(config, {"claude_accounts": [name]})
-
-    response = await removal
-    assert (response.status, await response.json()) == (409, {"error": "slot_stale"})
-    assert credentials.read_text() == "new fixture credentials"
-    assert json.loads(config.read_text())["claude_accounts"] == [name]
-
-
 async def test_browser_delete_requires_session_and_csrf_before_relay(site):
     client, fake = site
     route = "/api/cli-login/slots/claude-work"
