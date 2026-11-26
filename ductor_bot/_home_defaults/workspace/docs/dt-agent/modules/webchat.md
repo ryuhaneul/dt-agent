@@ -265,6 +265,10 @@ activity from history. The saved activity remains on disk and is visible
 again in `"file"` mode. A tab that already received details can retain them
 until it closes.
 
+This setting controls only what web chat shows and retains. With
+`log_level` set to `DEBUG`, the bot log records the start of each provider
+stream line in every mode, which can include tool input.
+
 The bridge finds registered values and recognized token patterns in
 control-stripped text, merges overlapping or adjacent matches, and masks them
 before cutting details to 2,000 characters. This applies to values typed
