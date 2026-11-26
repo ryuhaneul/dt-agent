@@ -445,7 +445,10 @@ class MessageBus:
         if envelope.delivery == DeliveryMode.BROADCAST:
             requested = set(envelope.broadcast_targets or [])
             available = {transport.transport_name for transport in self._transports}
-            missing = set() if envelope.origin == Origin.INTERAGENT else requested - available
+            missing = requested - available
+            # Keep an inter-agent retry pending when none of its saved targets are registered.
+            if envelope.origin == Origin.INTERAGENT and requested & available:
+                missing.clear()
             all_permanent = not missing
             envelope.failed_transports.clear()
             for transport in self._transports:

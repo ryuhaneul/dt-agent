@@ -3217,9 +3217,12 @@ async def test_cron_broadcast_replay_with_removed_transport(tmp_path: Path, case
     )
     restarted_bot.file_roots.return_value = []
     restarted_bot.bot_instance.send_message = sent
-    restarted_bus._transports[:] = (
-        [] if case == "no_transports" else [TelegramTransport(restarted_bot), restarted_transports[2]]
-    )
+    if case == "no_transports":
+        restarted_bus._transports.clear()
+    else:
+        restarted_bus._transports[:] = [TelegramTransport(restarted_bot)]
+        if telegram_fails:
+            restarted_bus.register_transport(restarted_transports[2])
 
     delivered = await restarted.redeliver_undelivered("main")
 
@@ -3230,12 +3233,21 @@ async def test_cron_broadcast_replay_with_removed_transport(tmp_path: Path, case
         assert "could not be delivered" in sent.await_args.kwargs["text"]
     else:
         sent.assert_not_awaited()
-    assert delivered == int(case == "all_removed")
+    assert delivered == 0
     assert not store.path_for("main", task.task_id).exists()
     parked = store.path_for("main", task.task_id, area="undelivered")
-    assert parked.exists() is (case == "no_transports")
-    if case == "no_transports":
+    assert parked.exists() is (case in {"all_removed", "no_transports"})
+    if parked.exists():
         assert store.load("main", task.task_id, area="undelivered")["failed_transports"] == failed
+
+    if case == "all_removed":
+        restarted_bus.register_transport(restarted_transports[1])
+        assert await restarted.redeliver_undelivered("main") == 1
+        restarted_transports[1].deliver_broadcast.assert_awaited_once()
+        assert restarted_transports[1].deliver_broadcast.await_args.args[0].result_text == report
+        sent.assert_not_awaited()
+        assert not parked.exists()
+        assert not store.path_for("main", task.task_id).exists()
 
 
 def test_redelivery_metadata_is_top_level_and_result_unchanged(tmp_path: Path) -> None:
