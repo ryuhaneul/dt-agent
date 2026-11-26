@@ -113,8 +113,8 @@ class HeartbeatTarget(BaseModel):
 class HeartbeatConfig(BaseModel):
     """Settings for the periodic heartbeat system."""
 
-    enabled: bool = False
-    interval_minutes: int = 30
+    enabled: bool = True
+    interval_minutes: int = 20
     cooldown_minutes: int = 5
     quiet_start: int = 0
     quiet_end: int = 0

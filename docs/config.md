@@ -404,8 +404,8 @@ Behavior notes:
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `enabled` | `bool` | `false` | Master toggle |
-| `interval_minutes` | `int` | `30` | Loop interval |
+| `enabled` | `bool` | `true` | Master toggle |
+| `interval_minutes` | `int` | `20` | Loop interval |
 | `cooldown_minutes` | `int` | `5` | Skip if user active recently |
 | `quiet_start` | `int` | `0` | Quiet start hour in `user_timezone` |
 | `quiet_end` | `int` | `0` | Quiet end hour in `user_timezone` |
@@ -874,7 +874,7 @@ Managed via:
 | `reasoning_effort` | `str` | no | inherited | |
 | `file_access` | `str` | no | inherited | |
 | `streaming` | `StreamingConfig` | no | inherited | |
-| `heartbeat` | `HeartbeatConfig` | no | disabled | Omitted: disabled defaults; explicit `null`: inherit main |
+| `heartbeat` | `HeartbeatConfig` | no | disabled | When enabled, the default interval is 20 minutes. Explicit `null` inherits main. |
 | `cleanup` | `CleanupConfig` | no | inherited | |
 | `webhooks` | `WebhookConfig` | no | inherited | |
 | `api` | `ApiConfig` | no | disabled | Disabled by default for sub-agents |

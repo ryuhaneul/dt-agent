@@ -206,7 +206,7 @@ Current transport limitation:
 
 ## Heartbeat
 
-Heartbeat runs only when `heartbeat.enabled=true`. Quiet hours default to disabled (`quiet_start=0`, `quiet_end=0`) in both the model and example configuration; equal start/end hours mean no quiet window. Recent-activity cooldown and the other session/target gates still apply. Group targets inherit each unset quiet-hour field; explicit per-target windows remain effective. Cron and webhook quiet hours use only their own settings.
+The main agent enables heartbeat by default, and sub-agents default to disabled. The default interval is 20 minutes when enabled. Quiet hours default to disabled (`quiet_start=0`, `quiet_end=0`) in both the model and example configuration; equal start/end hours mean no quiet window. Recent-activity cooldown and the other session/target gates still apply. Group targets inherit each unset quiet-hour field; explicit per-target windows remain effective. Cron and webhook quiet hours use only their own settings.
 
 Observer behavior:
 
@@ -248,7 +248,7 @@ Default prompt asks the model to review memory + cron context and either send so
 {
   "heartbeat": {
     "enabled": true,
-    "interval_minutes": 30,
+    "interval_minutes": 20,
     "quiet_start": 0,
     "quiet_end": 0,
     "group_targets": [
@@ -305,8 +305,8 @@ Cleanup also prunes empty subdirectories after deletion, so dated upload folders
 ```json
 {
   "heartbeat": {
-    "enabled": false,
-    "interval_minutes": 30,
+    "enabled": true,
+    "interval_minutes": 20,
     "cooldown_minutes": 5,
     "suspend_on_ack": true,
     "auto_targets": true,
