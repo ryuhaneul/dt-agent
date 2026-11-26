@@ -28,9 +28,13 @@ from ductor_bot._home_defaults.workspace.tools._tool_shared import (
     load_collection_or_default,
     load_collection_strict,
 )
+from ductor_bot.infra.env_secrets import main_home_of
+from ductor_bot.multiagent.registry import AgentRegistry
+from ductor_bot.workspace.paths import resolve_paths
 
 DUCTOR_HOME = Path(os.environ.get("DUCTOR_HOME", "~/.ductor")).expanduser()
-CONFIG_PATH = DUCTOR_HOME / "config" / "config.json"
+MAIN_HOME = main_home_of(DUCTOR_HOME)
+CONFIG_PATH = resolve_paths(MAIN_HOME).config_path
 JOBS_PATH = DUCTOR_HOME / "cron_jobs.json"
 CRON_TASKS_DIR = DUCTOR_HOME / "workspace" / "cron_tasks"
 
@@ -39,7 +43,12 @@ _RULE_FILENAMES = definitions.RULE_FILENAMES
 
 
 def read_user_timezone() -> str:
-    """Read user_timezone from config.json. Returns empty string if not set."""
+    """Read the main timezone with the sub-agent's override, if set."""
+    if DUCTOR_HOME != MAIN_HOME:
+        for sub in AgentRegistry(MAIN_HOME / "agents.json").load():
+            if sub.name == DUCTOR_HOME.name and sub.user_timezone is not None:
+                return sub.user_timezone.strip()
+
     if not CONFIG_PATH.exists():
         return ""
     try:

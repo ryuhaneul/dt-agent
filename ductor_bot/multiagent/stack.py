@@ -47,7 +47,7 @@ class AgentStack:
         import asyncio
 
         paths = resolve_paths(ductor_home=config.ductor_home)
-        await asyncio.to_thread(init_workspace, paths)
+        await asyncio.to_thread(init_workspace, paths, is_sub_agent=not is_main)
 
         from ductor_bot.messenger.registry import create_bot
 

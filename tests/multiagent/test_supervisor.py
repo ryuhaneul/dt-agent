@@ -9,9 +9,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from ductor_bot.cli.auth import AuthResult, AuthStatus
 from ductor_bot.config import AgentConfig, MatrixConfig
+from ductor_bot.infra.restart import EXIT_RESTART
 from ductor_bot.multiagent.health import AgentHealth
-from ductor_bot.multiagent.models import SubAgentConfig
+from ductor_bot.multiagent.models import SubAgentConfig, merge_sub_agent_config
+from ductor_bot.multiagent.stack import AgentStack
 from ductor_bot.multiagent.supervisor import (
     _MAX_RESTART_RETRIES,
     AgentSupervisor,
@@ -19,6 +22,7 @@ from ductor_bot.multiagent.supervisor import (
     _config_changed,
     _is_transient,
 )
+from ductor_bot.workspace.paths import resolve_paths
 
 
 @pytest.fixture
@@ -887,37 +891,101 @@ async def test_manual_start_checks_raw_transport_dependencies(
     supervisor._notify_main_agent.assert_awaited_once()
 
 
-async def test_config_update_failure_cleans_created_stack(
+async def test_invalid_legacy_sub_config_does_not_prevent_startup(
     supervisor: AgentSupervisor, tmp_path: Path,
 ) -> None:
     (tmp_path / "agents.json").write_text(json.dumps([
-        {"name": "sub1", "transport": "telegram", "telegram_token": "tok:1"},
+        {"name": "sub1", "transport": "headless"},
     ]))
     config_path = tmp_path / "agents" / "sub1" / "config" / "config.json"
     config_path.parent.mkdir(parents=True)
-    config_path.write_text("{}")
-    stack = MagicMock()
-    stack.shutdown = AsyncMock()
-    supervisor._stacks["main"] = MagicMock()
-    supervisor._notify_main_agent = AsyncMock()
-
+    config_path.write_text("{invalid")
+    stack = MagicMock(shutdown=AsyncMock())
     with (
-        patch(
-            "ductor_bot.multiagent.supervisor.AgentStack.create",
-            new_callable=AsyncMock, return_value=stack,
-        ),
-        patch(
-            "ductor_bot.multiagent.supervisor.update_config_file_async",
-            new_callable=AsyncMock, side_effect=OSError("synthetic"),
-        ),
+        patch.object(AgentStack, "create", new=AsyncMock(return_value=stack)),
+        patch.object(supervisor, "_supervised_run", new=AsyncMock(return_value=0)),
     ):
         result = await supervisor.start_agent_by_name("sub1")
 
-    assert result == "Agent 'sub1' not started: agent start error (OSError)"
-    stack.shutdown.assert_awaited_once()
-    assert "sub1" not in supervisor._stacks
-    assert "sub1" not in supervisor._tasks
-    assert "OSError" in supervisor._excluded["sub1"]
+    assert result == "Agent 'sub1' started."
+    assert supervisor.stacks["sub1"] is stack
+    assert config_path.read_text() == "{invalid"
+    await supervisor.stop_agent("sub1")
+
+
+async def test_starting_a_new_sub_agent_does_not_create_config(
+    supervisor: AgentSupervisor, tmp_path: Path,
+) -> None:
+    (tmp_path / "agents.json").write_text(json.dumps([
+        {"name": "sub1", "transport": "headless"},
+    ]))
+    with (
+        patch("ductor_bot.workspace.init.sync_skills"),
+        patch.object(supervisor, "_supervised_run", new=AsyncMock(return_value=0)),
+    ):
+        result = await supervisor.start_agent_by_name("sub1")
+
+    assert result == "Agent 'sub1' started."
+    stack = supervisor.stacks["sub1"]
+
+    async def stop_after_startup() -> None:
+        stack.bot.request_stop()
+
+    stack.bot.register_startup_hook(stop_after_startup)
+    auth = {"claude": AuthResult("claude", AuthStatus.AUTHENTICATED)}
+    try:
+        with (
+            patch("ductor_bot.cli.auth.check_all_auth", return_value=auth),
+            patch("ductor_bot.orchestrator.observers.ObserverManager.start_all", new=AsyncMock()),
+        ):
+            assert await asyncio.wait_for(stack.run(), timeout=5) == 0
+        assert stack.paths.workspace.is_dir()
+        assert not stack.paths.config_path.exists()
+    finally:
+        await supervisor.stop_agent("sub1")
+
+
+@pytest.mark.parametrize("outcome", ["restart", "crash"])
+async def test_sub_rebuild_loads_current_heartbeat_override(
+    supervisor: AgentSupervisor, main_config: AgentConfig, tmp_path: Path, outcome: str,
+) -> None:
+    name = "sub1"
+    paths = resolve_paths(tmp_path / "agents" / name)
+    registry_path = tmp_path / "agents.json"
+    entry = {"name": name, "transport": "headless", "heartbeat": {"enabled": True}}
+    registry_path.write_text(json.dumps([entry]))
+    old_config = merge_sub_agent_config(
+        main_config, SubAgentConfig.model_validate(entry), paths.ductor_home
+    )
+    assert old_config.heartbeat.enabled
+
+    async def run_old_stack() -> int:
+        entry["heartbeat"] = {"enabled": False}
+        registry_path.write_text(json.dumps([entry]))
+        if outcome == "crash":
+            raise RuntimeError("synthetic crash")
+        return EXIT_RESTART
+
+    old_bot = MagicMock(
+        orchestrator=None, run=AsyncMock(side_effect=run_old_stack), shutdown=AsyncMock()
+    )
+    old_stack = AgentStack(name, old_config, paths, old_bot)
+    new_bot = MagicMock(orchestrator=None, run=AsyncMock(return_value=0))
+    supervisor._stacks[name] = old_stack
+    supervisor._health[name] = AgentHealth(name=name)
+    supervisor._running = True
+
+    async def create(name: str, config: AgentConfig, *, is_main: bool) -> AgentStack:
+        return AgentStack(name, config, paths, new_bot, is_main=is_main)
+
+    with (
+        patch.object(AgentStack, "create", side_effect=create),
+        patch("ductor_bot.multiagent.supervisor._RESTART_BACKOFF_BASE", 0),
+    ):
+        assert await supervisor._supervised_run(name, old_stack) == 0
+
+    new_bot.run.assert_awaited_once()
+    assert supervisor.stacks[name].config.heartbeat.enabled is False
 
 
 async def test_watcher_continues_after_hot_reload_callback_failure(
@@ -1041,7 +1109,7 @@ async def test_restart_replaces_async_result_handler(
     assert supervisor._bus.has_async_result_handler("sub1")
 
 
-async def test_effective_memory_lint_is_written_to_the_sub_config_file(
+async def test_effective_memory_lint_ignores_legacy_sub_config(
     supervisor: AgentSupervisor, tmp_path: Path,
 ) -> None:
     (tmp_path / "agents.json").write_text(json.dumps([
@@ -1052,7 +1120,8 @@ async def test_effective_memory_lint_is_written_to_the_sub_config_file(
     ]))
     config_path = tmp_path / "agents" / "sub1" / "config" / "config.json"
     config_path.parent.mkdir(parents=True)
-    config_path.write_text("{}")
+    legacy = '{"memory_lint": {"mode": "off"}}'
+    config_path.write_text(legacy)
     stack = MagicMock()
     stack.shutdown = AsyncMock()
     supervisor._stacks["main"] = MagicMock()
@@ -1062,21 +1131,22 @@ async def test_effective_memory_lint_is_written_to_the_sub_config_file(
         patch(
             "ductor_bot.multiagent.supervisor.AgentStack.create",
             new_callable=AsyncMock, return_value=stack,
-        ),
-        patch(
-            "ductor_bot.multiagent.supervisor.update_config_file_async",
-            new_callable=AsyncMock, side_effect=OSError("synthetic"),
-        ) as update,
+        ) as create,
+        patch.object(supervisor, "_supervised_run", new=AsyncMock(return_value=0)),
     ):
-        await supervisor.start_agent_by_name("sub1")
+        result = await supervisor.start_agent_by_name("sub1")
 
-    lint = update.await_args.kwargs["memory_lint"]
-    assert (lint["mode"], lint["schedule"], lint["every_hours"]) == ("full", "0 9 * * 1", 168)
+    assert result == "Agent 'sub1' started."
+    config = create.await_args.args[1]
+    lint = config.memory_lint
+    assert (lint.mode, lint.schedule, lint.every_hours) == ("full", "0 9 * * 1", 168)
+    assert config_path.read_text() == legacy
+    await supervisor.stop_agent("sub1")
 
 
 
 @pytest.mark.parametrize("value", [None, "off", 300000])
-async def test_autocompact_written_to_sub_config_and_survives_restart(tmp_path, value):
+async def test_effective_autocompact_ignores_legacy_sub_config(tmp_path, value):
     from ductor_bot.multiagent.registry import AgentRegistry
 
     registry_path = tmp_path / "agents.json"
@@ -1086,7 +1156,8 @@ async def test_autocompact_written_to_sub_config_and_survives_restart(tmp_path, 
     registry_path.write_text(json.dumps([entry]))
     config_path = tmp_path / "agents" / "worker" / "config" / "config.json"
     config_path.parent.mkdir(parents=True)
-    config_path.write_text("{}")
+    legacy = '{"autocompact": 900000}'
+    config_path.write_text(legacy)
     expected = "default" if value is None else value
     for main_value in ["off", 1000000]:
         supervisor = AgentSupervisor(AgentConfig(ductor_home=str(tmp_path), autocompact=main_value))
@@ -1100,5 +1171,5 @@ async def test_autocompact_written_to_sub_config_and_survives_restart(tmp_path, 
             result = await supervisor._start_sub_agent(AgentRegistry(registry_path).load()[0])
         assert result.ok
         assert create.await_args.args[1].autocompact == expected
-        assert json.loads(config_path.read_text())["autocompact"] == expected
+        assert config_path.read_text() == legacy
         await supervisor.stop_agent("worker")

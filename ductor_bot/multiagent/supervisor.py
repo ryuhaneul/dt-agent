@@ -13,7 +13,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from ductor_bot.cli.process_registry import ProcessRegistry
-from ductor_bot.config import AgentConfig, update_config_file_async
+from ductor_bot.config import AgentConfig
 from ductor_bot.i18n import t
 from ductor_bot.infra.agent_diagnostics import (
     Reason,
@@ -386,8 +386,7 @@ class AgentSupervisor:
             self._finish_agent(name, health)
             return stack, True
 
-        # Sub-agent: in-process hot-reload (rebuild stack only)
-        logger.info("Sub-agent '%s' requested restart (hot-reload)", name)
+        logger.info("Sub-agent '%s' requested restart", name)
         # Waiting for the lock is cancellable: a stop or restart that gets it first cancels this
         # task instead of waiting for it, so the old stack is never run again.
         async with self._agents_lock:
@@ -519,7 +518,7 @@ class AgentSupervisor:
         On clean exit: return the exit code.
         On restart request (exit code 42):
           - Main agent: propagate EXIT_RESTART to trigger full service restart.
-          - Sub-agents: rebuild stack in-process (hot-reload).
+          - Sub-agents: rebuild stack in process.
         """
         from ductor_bot.log_context import set_log_context
 
@@ -785,10 +784,20 @@ class AgentSupervisor:
         logger.debug("Task hub wired for agent '%s'", name)
 
     async def _rebuild_stack(self, name: str, old_stack: AgentStack) -> AgentStack:
-        """Rebuild an AgentStack from its config."""
+        """Rebuild an AgentStack, reloading sub-agent overrides from the registry."""
+        if name == "main":
+            config = old_stack.config
+        else:
+            sub_cfg = next((sub for sub in self._registry.load() if sub.name == name), None)
+            if sub_cfg is None:
+                msg = f"Sub-agent '{name}' is missing from agents.json"
+                raise ValueError(msg)
+            agent_home = self._main_paths.ductor_home / "agents" / name
+            config = merge_sub_agent_config(self._main_config, sub_cfg, agent_home)
+
         new_stack = await AgentStack.create(
             name,
-            old_stack.config,
+            config,
             is_main=old_stack.is_main,
         )
         self._stacks[name] = new_stack
@@ -872,21 +881,6 @@ class AgentSupervisor:
             return await self._exclude_sub(name, create_error(exc))
 
         try:
-            # Workspace init creates config.json from config.example (main defaults).
-            # Overwrite model/provider/effort so the on-disk config matches agents.json.
-            config_path = agent_home / "config" / "config.json"
-            if config_path.exists():
-                await update_config_file_async(
-                    config_path,
-                    provider=config.provider,
-                    model=config.model,
-                    reasoning_effort=config.reasoning_effort,
-                    memory_lint=config.memory_lint.model_dump(mode="json"),
-                    interagent=config.interagent.model_dump(mode="json"),
-                    claude_system_prompt_snapshot=config.claude_system_prompt_snapshot,
-                    autocompact=config.autocompact,
-                )
-
             self._stacks[name] = stack
             self._health[name] = AgentHealth(name=name)
             if self._bus:

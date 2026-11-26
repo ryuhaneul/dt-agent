@@ -22,7 +22,8 @@ from pathlib import Path
 
 import yaml
 
-from ductor_bot.workspace.paths import DuctorPaths
+from ductor_bot.infra.env_secrets import main_home_of
+from ductor_bot.workspace.paths import DuctorPaths, resolve_paths
 
 logger = logging.getLogger(__name__)
 
@@ -309,7 +310,8 @@ def sync_skills(paths: DuctorPaths) -> None:
     Honors the ``skills`` config block (#141): a global ``sync_enabled=false``
     skips entirely, and per-provider toggles drop individual CLI directories.
     """
-    sync_enabled, enabled_providers = _load_skill_sync_config(paths.config_path)
+    main_paths = resolve_paths(main_home_of(paths.ductor_home))
+    sync_enabled, enabled_providers = _load_skill_sync_config(main_paths.config_path)
     if not sync_enabled:
         logger.debug("Cross-tool skill sync disabled via config; skipping")
         return

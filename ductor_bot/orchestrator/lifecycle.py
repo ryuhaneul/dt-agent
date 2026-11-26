@@ -99,12 +99,13 @@ async def create_orchestrator(
     if config.api.enabled:
         await start_api_server(orch, config, paths)
 
-    await orch._observers.start_config_reloader(
-        on_hot_reload=orch._on_config_hot_reload,
-        on_restart_needed=lambda fields: logger.warning(
-            "Config changed but requires restart: %s", ", ".join(fields)
-        ),
-    )
+    if agent_name == "main":
+        await orch._observers.start_config_reloader(
+            on_hot_reload=orch._on_config_hot_reload,
+            on_restart_needed=lambda fields: logger.warning(
+                "Config changed but requires restart: %s", ", ".join(fields)
+            ),
+        )
 
     return orch
 
