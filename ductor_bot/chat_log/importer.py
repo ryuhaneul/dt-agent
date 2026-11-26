@@ -18,7 +18,7 @@ from typing import Any
 
 from ductor_bot.chat_log.history import Entry, HistoryStore
 from ductor_bot.chat_log.ids import history_filename, to_tid
-from ductor_bot.config import AgentConfig, MemoryReflectionConfig
+from ductor_bot.config import AgentConfig
 from ductor_bot.heartbeat.models import HeartbeatStatus
 from ductor_bot.infra.atomic_io import atomic_text_save
 from ductor_bot.infra.file_lock import exclusive_file_lock
@@ -39,44 +39,45 @@ _INJECTION = re.compile(
 )
 
 
-# Complete historical prompts from before memory-change reporting.
-_LEGACY_MAINMEMORY_REMINDER = (
-    "## MEMORY CHECK\n"
-    "Silently review: memory_system/MAINMEMORY.md, user_tools/, cron_tasks/.\n"
-    "Compare what you already know with this conversation so far.\n"
-    "If something important is missing from memory (personality, preferences, decisions, "
-    "facts) -- save it silently in the workspace memory (memory_system/) if it matters "
-    "regardless of the model you run on; use a model's built-in memory (for example Claude "
-    "auto-memory) only for notes that apply to that model alone.\n"
-    "MAINMEMORY.md holds only what you must always know plus an index; put details in "
-    "separate topic files under memory_system/ and link them from that index. Prefer merging "
-    "into an existing page over creating a new file, and when a fact changes, update the "
-    "essentials at the top in the same edit. After editing files in memory_system/, run "
-    "`python3 tools/memory_tools/memory_lint.py check` and fix its findings; to look "
-    "something up, use memory_search.py instead of searching recursively.\n"
-    "If you notice a gap that only the user can fill, ask ONE natural follow-up question that "
-    "fits the current conversation. Do not interrogate."
-)
-_LEGACY_MEMORY_REFLECTION = (
-    "## MEMORY REFLECTION\n"
-    "Review the last several messages in this conversation.\n"
-    "Check: were there any new decisions, corrections, error solutions, user preferences, or "
-    "important facts that you did NOT yet write to memory?\n"
-    "If yes -- update memory_system/MAINMEMORY.md silently.\n"
-    "If everything is already recorded -- do nothing."
+# MessageHookRegistry.apply and named-session setup append these after "\n\n".
+_HOOK_HEADINGS = frozenset(
+    {
+        "## FIRST-RUN SETUP",
+        "## MEMORY CHECK",
+        "## BACKGROUND TASKS",
+        "## TASK REMINDER",
+        "## MEMORY REFLECTION",
+    }
 )
 _HOOK_SUFFIXES = tuple(
-    "\n\n" + suffix
-    for suffix in (
-        hooks.PERSONA_SETUP.suffix,
-        hooks.MAINMEMORY_REMINDER.suffix,
-        hooks.DELEGATION_BRIEF.suffix,
-        hooks.DELEGATION_REMINDER.suffix,
-        MemoryReflectionConfig().prompt,
-        _LEGACY_MAINMEMORY_REMINDER,
-        _LEGACY_MEMORY_REFLECTION,
+    "\n\n" + hook.suffix
+    for hook in (
+        hooks.PERSONA_SETUP,
+        hooks.MAINMEMORY_REMINDER,
+        hooks.DELEGATION_BRIEF,
+        hooks.DELEGATION_REMINDER,
     )
 )
+_CODE_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+
+
+def _without_hook_suffix(text: str) -> str:
+    lines = text.split("\n")
+    fence = ""
+    for index, line in enumerate(lines):
+        match = _CODE_FENCE.match(line)
+        if match is not None:
+            marker, rest = match.groups()
+            if not fence:
+                fence = marker
+            elif marker.startswith(fence) and not rest.strip():
+                fence = ""
+        elif not fence and index >= 2 and lines[index - 1] == "" and line in _HOOK_HEADINGS:
+            return "\n".join(lines[: index - 1])
+    if fence:
+        while suffix := next((suffix for suffix in _HOOK_SUFFIXES if text.endswith(suffix)), ""):
+            text = text.removesuffix(suffix)
+    return text
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,12 +148,10 @@ class TranscriptImporter:
     def _clean_user(self, text: str) -> tuple[str | None, str | None]:
         text = without_queue_context(text)
         prompt = self.config.memory_reflection.prompt
-        suffixes = (*_HOOK_SUFFIXES, "\n\n" + prompt) if prompt else _HOOK_SUFFIXES
-        while suffix := max(
-            (suffix for suffix in suffixes if text.endswith(suffix)), key=len, default=""
-        ):
+        suffix = "\n\n" + prompt
+        while prompt and text.endswith(suffix):
             text = text.removesuffix(suffix)
-        text = text.strip()
+        text = _without_hook_suffix(text).strip()
         ack = self._heartbeats.get(text)
         if not text or ack is not None or _INJECTION.match(text) or text.startswith("<"):
             return None, ack

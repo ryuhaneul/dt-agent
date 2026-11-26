@@ -1111,52 +1111,24 @@ async def test_short_bot_reply_is_not_consumed_by_unrelated_live_prefix(
 
 
 @pytest.mark.parametrize(
-    ("suffix", "removed"),
+    "suffix",
     [
-        (hooks.MAINMEMORY_REMINDER.suffix, True),
-        (AgentConfig().memory_reflection.prompt, True),
-        ("## MEMORY CHECK\nSave it silently in the workspace memory (memory_system/).", False),
-        ("## MEMORY REFLECTION\nIf yes -- update memory_system/MAINMEMORY.md silently.", False),
-        ("## MEMORY CHECK\nChanged wording.\n\n## MEMORY REFLECTION\nAnother update.", False),
+        hooks.MAINMEMORY_REMINDER.suffix,
+        AgentConfig().memory_reflection.prompt,
+        "## MEMORY CHECK\nSave it silently in the workspace memory (memory_system/).",
+        "## MEMORY REFLECTION\nIf yes -- update memory_system/MAINMEMORY.md silently.",
+        "## MEMORY CHECK\nChanged wording.\n\n## MEMORY REFLECTION\nAnother update.",
     ],
-    ids=[
-        "current-check", "current-reflection", "partial-check", "partial-reflection",
-        "unrecognized-prompts",
-    ],
+    ids=["current-check", "current-reflection", "old-check", "old-reflection", "changed-multiple"],
 )
-def test_import_strips_only_complete_known_memory_hooks(setup_import, suffix, removed) -> None:
+def test_import_strips_memory_hooks_by_heading(setup_import, suffix) -> None:
     paths, config = setup_import
     importer = TranscriptImporter(paths, config)
     source = next(file.path for file in importer.plan() if file.provider == "claude")
     add_rows(source, [{"type": "user", "message": {"content": "Old question\n\n" + suffix}}])
 
     entries = next(file.entries for file in importer.plan() if file.provider == "claude")
-    assert entries[-1].text == ("Old question" if removed else "Old question\n\n" + suffix)
-
-
-@pytest.mark.parametrize("provider", ["claude", "codex"])
-def test_import_preserves_user_heading_before_complete_hooks(setup_import, provider) -> None:
-    paths, config = setup_import
-    importer = TranscriptImporter(paths, config)
-    source = next(file.path for file in importer.plan() if file.provider == provider)
-    body = "Question\n\n## MEMORY CHECK\nA section of the user's message."
-    legacy_reflection = (
-        "## MEMORY REFLECTION\n"
-        "Review the last several messages in this conversation.\n"
-        "Check: were there any new decisions, corrections, error solutions, user preferences, or "
-        "important facts that you did NOT yet write to memory?\n"
-        "If yes -- update memory_system/MAINMEMORY.md silently.\n"
-        "If everything is already recorded -- do nothing."
-    )
-    text = "\n\n".join((body, hooks.MAINMEMORY_REMINDER.suffix, legacy_reflection))
-    if provider == "claude":
-        row = {"type": "user", "message": {"content": text}}
-    else:
-        row = {"type": "event_msg", "payload": {"type": "user_message", "message": text}}
-    add_rows(source, [row])
-
-    entries = next(file.entries for file in importer.plan() if file.provider == provider)
-    assert entries[-1].text == body
+    assert entries[-1].text == "Old question"
 
 
 @pytest.mark.parametrize(
@@ -1176,8 +1148,7 @@ def test_import_preserves_user_content_near_hook_boundaries(setup_import, body) 
     paths, config = setup_import
     importer = TranscriptImporter(paths, config)
     assert importer._clean_user(body) == (body, None)
-    user_text = body + "\n\n## TASK REMINDER\nMore user text."
-    assert importer._clean_user(user_text) == (user_text, None)
+    assert importer._clean_user(body + "\n\n## TASK REMINDER\nFramework text.") == (body, None)
 
 
 @pytest.mark.parametrize("suffix", [
