@@ -252,10 +252,10 @@ Set `webchat.tool_details` in `config.json` and restart to apply changes.
   details or retaining completed activity.
 - `"memory"` shows masked details and keeps completed activity in process
   memory until restart. `webchat.tool_details_memory_limit` sets the number
-  of retained replies (default 50, range 1–5000). The oldest replies are
+  of retained replies (default 100, range 1–5000). The oldest replies are
   evicted first. Deleting a topic removes its retained activity. Each reply
   holds up to 64 KiB of serialized activity, so memory use grows with the
-  limit (a few MiB at 50, up to hundreds of MiB at 5000).
+  limit (a few MiB at 100, up to hundreds of MiB at 5000).
 - `"file"` shows masked details and saves completed activity in the reply's
   history sidecar. It preserves the behavior of v1.5.6.
 
@@ -634,7 +634,7 @@ The browser app relays bridge JSON statuses and error codes. Bridge routes use
     "attach_max_files_per_message": 10,
     "upload_chunk_bytes": 8388608,
     "tool_details": "off",
-    "tool_details_memory_limit": 50
+    "tool_details_memory_limit": 100
   }
 }
 ```

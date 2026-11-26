@@ -568,7 +568,7 @@ class WebchatConfig(BaseModel):
     attach_max_files_per_message: int = Field(default=10, ge=1, strict=True)
     upload_chunk_bytes: int = Field(default=8 * 1024**2, ge=1024**2, le=8 * 1024**2, strict=True)
     tool_details: Literal["off", "memory", "file"] = "off"
-    tool_details_memory_limit: int = Field(default=50, ge=1, le=5000, strict=True)
+    tool_details_memory_limit: int = Field(default=100, ge=1, le=5000, strict=True)
 
     @field_validator("domain")
     @classmethod

@@ -61,7 +61,7 @@ def test_defaults_and_disabled_validation(tmp_path: Path) -> None:
         "attach_max_files_per_message": 10,
         "upload_chunk_bytes": 8 * 1024**2,
         "tool_details": "off",
-        "tool_details_memory_limit": 50,
+        "tool_details_memory_limit": 100,
     }
     assert validate_chat_log(config) == []
     assert validate_webchat(config) == []
@@ -81,7 +81,7 @@ def test_check_config_reports_tool_detail_defaults(tmp_path: Path, monkeypatch, 
     cli.cmd_webchat(["check-config", "--json"])
     webchat = json.loads(capsys.readouterr().out)["webchat"]
     assert webchat["tool_details"] == "off"
-    assert webchat["tool_details_memory_limit"] == 50
+    assert webchat["tool_details_memory_limit"] == 100
 
 
 @pytest.mark.parametrize(
