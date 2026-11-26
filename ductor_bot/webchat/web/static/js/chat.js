@@ -20,6 +20,7 @@ let active = false, epoch = 0, stopEvents = null, telegram = { state: 'unknown' 
 let botUp = false, webSessions = null, releaseVersion = '', pending = 0, outbox = [], sending = false;
 let slots = null, stateRequest = null;
 let pendingHistoryRecovery = null, resumedHistoryRecovery = null;
+let historyRecoveryRequest = 0;
 let topicUpdates = 0;
 let view = 'chat', selection = 0, commandMenu = null, secretDialog = null, autocompactDialog = null, cronDialog = null;
 let streamFrame = null, historyRender = null, composerFiles = null, attachmentView = null;
@@ -1007,10 +1008,16 @@ async function reloadSelectedHistory(generation, preserveReading) {
   }
 }
 async function recoverSelectedHistory(generation, preserveReading, attempt = 0) {
+  const topic = getTopic();
+  if (!active || generation !== epoch || !topic) return;
+  const state = history(topic.tid);
+  const request = ++historyRecoveryRequest;
   try {
     await reloadSelectedHistory(generation, preserveReading);
+    state.lastSuccessfulRecovery = Math.max(state.lastSuccessfulRecovery ?? 0, request);
   } catch (error) {
     if (!active || generation !== epoch || error.code === 'auth_required') return;
+    if ((state.lastSuccessfulRecovery ?? 0) > request) return;
     if (pendingHistoryRecovery) {
       pendingHistoryRecovery.preserveReading ||= preserveReading;
     } else {

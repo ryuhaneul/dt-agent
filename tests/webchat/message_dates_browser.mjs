@@ -1065,6 +1065,7 @@ async function reconnectHistory(browser, scenario) {
   const visibility = scenario.startsWith('reconnect-history-visibility-');
   const topicsRace = scenario === 'reconnect-history-stale-topics-failure';
   const historyFailure = scenario === 'reconnect-history-messages-failure';
+  const staleHistoryFailure = scenario === 'reconnect-history-stale-messages-failure';
   const width = visibility ? Number(scenario.split('-').at(-1)) : 375;
   const context = await browser.newContext({ viewport: { width, height: 667 } });
   try {
@@ -1100,16 +1101,25 @@ async function reconnectHistory(browser, scenario) {
     // Settle the read cursor and its topic badge update before disconnecting.
     await topicsResponse(200);
 
-    if (visibility) {
+    if (visibility || staleHistoryFailure) {
       await page.waitForFunction(() => document.querySelectorAll('#thread [data-entry-seq]').length === 100);
       await page.evaluate(() => document.fonts.ready);
     }
-    const readingPosition = visibility ? await scrollPosition(page, 64) : null;
-    if (visibility) assert.equal(readingPosition.gap, 64);
+    const readingPosition = visibility || staleHistoryFailure ? await scrollPosition(page, 64) : null;
+    if (readingPosition) assert.equal(readingPosition.gap, 64);
     const beforeReconnect = historyReads;
     const missing = { ...messages[120], text: 'Message received while disconnected' };
-    if (!visibility) entries.push(missing);
-    const succeeds = scenario === 'reconnect-history-success' || historyFailure;
+    if (!visibility && !staleHistoryFailure) entries.push(missing);
+    const succeeds = scenario === 'reconnect-history-success' || historyFailure || staleHistoryFailure;
+    const firstHistory = staleHistoryFailure ? Promise.withResolvers() : null;
+    const releaseHistory = staleHistoryFailure ? Promise.withResolvers() : null;
+    if (staleHistoryFailure) {
+      await page.route('**/api/topics/*/messages?*', async route => {
+        firstHistory.resolve();
+        await releaseHistory.promise;
+        return route.fulfill({ status: 503, json: { error: 'history_busy' } });
+      }, { times: 1 });
+    }
     if (historyFailure) {
       await page.route('**/api/topics/*/messages?*', route => route.fulfill({
         status: 503, json: { error: 'history_busy' },
@@ -1117,7 +1127,7 @@ async function reconnectHistory(browser, scenario) {
     }
     failTopics = !succeeds;
     const first = topicsResponse(succeeds ? 200 : 503);
-    await socket.close();
+    await socket.close(staleHistoryFailure ? { code: 1013 } : {});
     await page.clock.fastForward(2000);
     if (topicsRace) {
       await firstTopics.promise;
@@ -1136,6 +1146,29 @@ async function reconnectHistory(browser, scenario) {
       }
     }
     await first;
+    if (staleHistoryFailure) {
+      await firstHistory.promise;
+      const historyResponse = status => page.waitForResponse(response =>
+        response.status() === status && new URL(response.url()).pathname.endsWith('/messages'),
+      { timeout: 4000 });
+      const failed = historyResponse(503);
+      try {
+        const refreshed = historyResponse(200);
+        await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+        await (await refreshed).finished();
+        assert.deepEqual(await scrollPosition(page), readingPosition);
+        assert.equal(historyReads - beforeReconnect, 2);
+      } finally {
+        releaseHistory.resolve();
+      }
+      await (await failed).finished();
+      await scrollPosition(page);
+      await page.clock.runFor(1100);
+      const finalPosition = await scrollPosition(page);
+      assert.deepEqual({ reads: historyReads - beforeReconnect, position: finalPosition },
+        { reads: 2, position: readingPosition });
+      return;
+    }
     if (topicsRace || historyFailure) {
       await page.locator('#toasts .toast-error').waitFor({ timeout: 2500 });
       if (historyFailure) {
