@@ -53,11 +53,12 @@ from ductor_bot.multiagent.shared_knowledge import _sync_agent_io
 from ductor_bot.orchestrator.registry import OrchestratorResult
 from ductor_bot.session.key import SessionKey
 from ductor_bot.session.manager import SessionData, SessionManager
+from ductor_bot.text.tool_detail import build_detail
 from ductor_bot.webchat.auth import PASSWORD_KEY, hash_password, totp_code
 from ductor_bot.webchat.bridge import create_bridge_app, start_bridge
 from ductor_bot.webchat.files import WebFileError, WebFiles
 from ductor_bot.webchat.topics import WebTopics
-from ductor_bot.webchat.turns import WebTurns
+from ductor_bot.webchat.turns import WebTurns, _QueuedTurn
 from ductor_bot.workspace.paths import DuctorPaths
 
 _PREFIX = "/webchat/v1"
@@ -5412,6 +5413,7 @@ async def test_activity_payload_and_snapshot_only_expose_redacted_details(
     monkeypatch,
 ):
     h = conversation
+    h.bot.config.webchat.tool_details = "file"
     tool_ready, text_ready, release_tool, release_text = (asyncio.Event() for _ in range(4))
     canary = "private-activity-input-canary"
     token = "ghp_" + "A" * 36
@@ -5544,9 +5546,11 @@ async def test_activity_payload_and_snapshot_only_expose_redacted_details(
         (False, "Read", "file", "Read"),
     ],
 )
+@pytest.mark.parametrize("mode", ["memory", "file"])
 async def test_activity_fixed_names_survive_locked_vault_and_short_values(
-    conversation, activity_vault, locked, tool_name, kind, expected,
+    conversation, activity_vault, locked, tool_name, kind, expected, mode,
 ):
+    conversation.bot.config.webchat.tool_details = mode
     if locked:
         await activity_vault.setup("synthetic-activity-master-key")
         await activity_vault.lock()
@@ -5584,6 +5588,7 @@ async def test_activity_snapshot_enforces_count_and_byte_limits(
     detail_length,
 ):
     h = conversation
+    h.bot.config.webchat.tool_details = "file"
     ready = asyncio.Event()
     release = asyncio.Event()
     tool = ToolUseEvent(
@@ -5638,6 +5643,7 @@ async def test_activity_snapshot_enforces_count_and_byte_limits(
 @pytest.mark.parametrize("reply_text", ["answer [button:Next]", "answer", ""])
 async def test_web_turn_activity_metadata_follows_reply(conversation, activity_vault, reply_text):
     h = conversation
+    h.bot.config.webchat.tool_details = "file"
     tid = "-123.7"
     canary = "private-history-activity-canary"
     await activity_vault.set("TOKEN", canary)
@@ -5716,6 +5722,235 @@ async def test_web_turn_activity_metadata_follows_reply(conversation, activity_v
     )
     assert response.status == 200
     assert not sidecar.exists()
+
+
+@pytest.mark.parametrize("mode", ["off", "memory"])
+async def test_tool_detail_modes_for_live_and_completed_turns(
+    conversation, activity_vault, monkeypatch, caplog, mode
+):
+    h = conversation
+    tid = "-123.7"
+    h.bot.config.webchat.tool_details = mode
+    canary = "synthetic-registered-value"
+    await activity_vault.set("TOKEN", canary)
+    ready, release = asyncio.Event(), asyncio.Event()
+    build = AsyncMock(wraps=build_detail)
+    monkeypatch.setattr("ductor_bot.webchat.turns.build_detail", build)
+
+    async def handle(key, text, **callbacks):
+        dispatch = SimpleNamespace(
+            key=key, text=text, transport_override=None, counts_as_activity=True
+        )
+        await h.recorder.begin(dispatch)
+        await callbacks["on_tool_activity"](
+            ToolUseEvent(
+                tool_name="Bash",
+                type="tool_use",
+                kind="shell",
+                parameters={"command": f"sample-command {canary}"},
+            )
+        )
+        ready.set()
+        await release.wait()
+        result = OrchestratorResult(text="answer")
+        await h.recorder.finish(dispatch, result, status="ok")
+        return result
+
+    h.bot._orch.handle_message_streaming.side_effect = handle
+    ws = await h.client.ws_connect(f"{_PREFIX}/events", headers=headers())
+    try:
+        response = await post_message(h)
+        assert response.status == 202
+        turn_id = (await response.json())["turn_id"]
+        await asyncio.wait_for(ready.wait(), 3)
+        tool = (await receive_until(ws, lambda event: event.get("type") == "tool"))[-1]
+        response = await h.client.get(f"{_PREFIX}/topics", headers=headers())
+        state = (await response.json())["topics"][0]["turns"][0]
+        indicator = {"type": "tool", "name": "Shell", "seq": tool["seq"]}
+        assert state["activity"] == indicator
+        assert tool["name"] == "Shell"
+        activity = {**indicator, "offset": 0}
+        if mode == "memory":
+            detail = {"kind": "shell", "text": "sample-command ***", "truncated": False}
+            assert tool["detail"] == detail
+            activity["detail"] = detail
+            build.assert_awaited_once()
+        else:
+            assert "detail" not in tool
+            build.assert_not_called()
+        assert state["activities"] == [activity]
+        release.set()
+        await receive_until(
+            ws, lambda event: event.get("phase") == "done" and event.get("turn_id") == turn_id
+        )
+    finally:
+        release.set()
+        await ws.close()
+
+    url = f"{_PREFIX}/topics/{tid}/messages"
+    response = await h.client.get(url, headers=headers())
+    user, reply = (await response.json())["entries"]
+    assert "activity" not in user
+    if mode == "memory":
+        assert reply["activity"] == state["activities"]
+        async with TestClient(TestServer(create_bridge_app(h.bot, h.runtime, _TOKEN))) as restarted:
+            response = await restarted.get(url, headers=headers())
+            assert response.status == 200
+            restarted_reply = (await response.json())["entries"][-1]
+            assert restarted_reply["id"] == reply["id"]
+            assert "activity" not in restarted_reply
+    else:
+        assert "activity" not in reply
+    sidecar = h.runtime.history.directory / f"{tid}.meta.jsonl"
+    if sidecar.exists():
+        assert all("activity" not in json.loads(line) for line in sidecar.read_text().splitlines())
+    assert canary not in caplog.text
+    assert "sample-command" not in caplog.text
+
+
+@pytest.mark.parametrize("mode", ["off", "memory"])
+async def test_tool_detail_modes_hide_existing_sidecar_activity(conversation, mode):
+    h = conversation
+    tid = "-123.7"
+    h.bot.config.webchat.tool_details = mode
+    reply = await h.runtime.history.append(tid, Entry(role="bot", source="web", text="saved"))
+    activity = [
+        {
+            "type": "tool",
+            "name": "Shell",
+            "seq": 1,
+            "offset": 0,
+            "detail": {"kind": "shell", "text": "echo sample", "truncated": False},
+        },
+    ]
+    await h.runtime.history.record_activity(tid, reply.id, activity)
+    sidecar = h.runtime.history.directory / f"{tid}.meta.jsonl"
+    saved = sidecar.read_bytes()
+    url = f"{_PREFIX}/topics/{tid}/messages"
+    response = await h.client.get(url, headers=headers())
+    assert response.status == 200
+    assert "activity" not in (await response.json())["entries"][0]
+    assert sidecar.read_bytes() == saved
+
+    if mode == "off":
+        ws = await h.client.ws_connect(f"{_PREFIX}/events", headers=headers())
+        try:
+            response = await post_message(h)
+            assert response.status == 202
+            turn_id = (await response.json())["turn_id"]
+            await receive_until(
+                ws, lambda event: event.get("phase") == "done" and event.get("turn_id") == turn_id
+            )
+        finally:
+            await ws.close()
+        assert sidecar.read_bytes() == saved
+        h.bot.config.webchat.tool_details = "file"
+        async with TestClient(TestServer(create_bridge_app(h.bot, h.runtime, _TOKEN))) as restarted:
+            response = await restarted.get(url, headers=headers())
+            assert response.status == 200
+            entries = (await response.json())["entries"]
+            assert entries[0]["id"] == reply.id
+            assert entries[0]["activity"] == activity
+            assert all("activity" not in entry for entry in entries[1:])
+
+
+@pytest.mark.parametrize("second_fails", [True, False], ids=["error", "empty"])
+async def test_tool_detail_memory_keeps_activity_when_next_reply_is_missing(
+    conversation, second_fails
+):
+    h = conversation
+    h.bot.config.webchat.tool_details = "memory"
+    h.bot.config.webchat.tool_details_memory_limit = 1
+    tid = "-123.7"
+    url = f"{_PREFIX}/topics/{tid}/messages"
+
+    async def handle(key, text, **callbacks):
+        dispatch = SimpleNamespace(
+            key=key, text=text, transport_override=None, counts_as_activity=True
+        )
+        await h.recorder.begin(dispatch)
+        await callbacks["on_tool_activity"](
+            ToolUseEvent(type="tool_use", tool_name="Bash", kind="shell")
+        )
+        if text == "second" and second_fails:
+            raise RuntimeError("synthetic turn failure")
+        result = OrchestratorResult(text="answer" if text == "first" else "")
+        await h.recorder.finish(dispatch, result, status="ok")
+        return result
+
+    h.bot._orch.handle_message_streaming.side_effect = handle
+    async with h.client.ws_connect(f"{_PREFIX}/events", headers=headers()) as ws:
+        first = await post_message(h, text="first", client_id="first")
+        assert first.status == 202
+        first_id = (await first.json())["turn_id"]
+        await receive_until(
+            ws, lambda event: event.get("turn_id") == first_id and event.get("phase") == "done"
+        )
+        response = await h.client.get(url, headers=headers())
+        assert response.status == 200
+        first_reply = (await response.json())["entries"][-1]
+        assert first_reply["activity"] == [
+            {"type": "tool", "name": "Shell", "seq": 1, "offset": 0}
+        ]
+
+        second = await post_message(h, text="second", client_id="second")
+        assert second.status == 202
+        second_id = (await second.json())["turn_id"]
+        phase = "error" if second_fails else "done"
+        await receive_until(
+            ws, lambda event: event.get("turn_id") == second_id and event.get("phase") == phase
+        )
+
+    response = await h.client.get(url, headers=headers())
+    assert response.status == 200
+    replies = [entry for entry in (await response.json())["entries"] if entry["role"] == "bot"]
+    assert [reply["id"] for reply in replies] == [first_reply["id"]]
+    assert replies[0]["activity"] == first_reply["activity"]
+
+
+@pytest.mark.parametrize(("limit", "replies"), [(None, 101), (3, 5)])
+async def test_tool_detail_memory_evicts_oldest_replies(conversation, limit, replies):
+    h = conversation
+    h.bot.config.webchat.tool_details = "memory"
+    if limit is not None:
+        h.bot.config.webchat.tool_details_memory_limit = limit
+    turns = WebTurns(h.bot, h.runtime)
+    tid = "-123.7"
+    for index in range(replies):
+        reply = await h.runtime.history.append(tid, Entry(role="bot", source="web", text="answer"))
+        identity = {
+            "turn_id": f"turn-{index}",
+            "user_entry_id": "",
+            "reply_entry_id": reply.id,
+        }
+        await turns._save_activity(
+            _QueuedTurn(tid, "", identity, activities=[{"name": f"tool-{index}"}])
+        )
+    retained = 100 if limit is None else limit
+    recorded = await h.runtime.history.read(tid, limit=replies)
+    assert [turns.activity_for_reply(tid, reply.id) for reply in recorded] == [
+        None if index < replies - retained else [{"name": f"tool-{index}"}]
+        for index in range(replies)
+    ]
+
+
+async def test_tool_detail_memory_is_removed_on_topic_delete(conversation):
+    h = conversation
+    h.bot.config.webchat.tool_details = "memory"
+    turns = WebTurns(h.bot, h.runtime)
+    topics = WebTopics(h.bot, h.runtime, turns)
+    activity = [{"name": "Shell"}]
+    tid, other_tid = "-123.7", "-123.8"
+    for topic in (tid, other_tid):
+        await h.runtime.history.append(
+            topic, Entry(role="bot", source="web", text="answer", id="reply")
+        )
+        identity = {"turn_id": "turn", "user_entry_id": "user", "reply_entry_id": "reply"}
+        await turns._save_activity(_QueuedTurn(topic, "", identity, activities=activity))
+    assert turns.activity_for_reply(tid, "reply") == activity
+    assert (await topics.delete(tid))["telegram_deleted"]
+    assert turns.activity_for_reply(tid, "reply") is None
+    assert turns.activity_for_reply(other_tid, "reply") == activity
 
 
 async def test_admission_fsync_is_off_loop_and_precedes_202(conversation, monkeypatch):

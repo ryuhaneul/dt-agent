@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ from pydantic import ValidationError
 
 from ductor_bot.chat_log.settings import chat_log_active, validate_chat_log
 from ductor_bot.config import AgentConfig, ChatLogConfig, WebchatConfig, deep_merge_config
+from ductor_bot.webchat import cli
 from ductor_bot.webchat.settings import (
     resolve_default_chat_id,
     validate_webchat,
@@ -58,6 +60,8 @@ def test_defaults_and_disabled_validation(tmp_path: Path) -> None:
         "attach_max_file_bytes": 2 * 1024**3,
         "attach_max_files_per_message": 10,
         "upload_chunk_bytes": 8 * 1024**2,
+        "tool_details": "off",
+        "tool_details_memory_limit": 100,
     }
     assert validate_chat_log(config) == []
     assert validate_webchat(config) == []
@@ -68,6 +72,30 @@ def test_defaults_and_disabled_validation(tmp_path: Path) -> None:
     assert paths.webchat_dir == tmp_path / "webchat"
     assert not paths.chat_log_dir.exists()
     assert not paths.webchat_dir.exists()
+
+
+def test_check_config_reports_tool_detail_defaults(tmp_path: Path, monkeypatch, capsys) -> None:
+    paths = DuctorPaths(ductor_home=tmp_path)
+    monkeypatch.setattr(cli, "resolve_paths", lambda: paths)
+    monkeypatch.setattr(cli, "store_path", lambda _home: tmp_path / "secrets.env")
+    cli.cmd_webchat(["check-config", "--json"])
+    webchat = json.loads(capsys.readouterr().out)["webchat"]
+    assert webchat["tool_details"] == "off"
+    assert webchat["tool_details_memory_limit"] == 100
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("tool_details", "always"),
+        ("tool_details_memory_limit", 0),
+        ("tool_details_memory_limit", 5001),
+        ("tool_details_memory_limit", "10"),
+    ],
+)
+def test_tool_detail_settings_reject_invalid_values(field, value) -> None:
+    with pytest.raises(ValidationError, match=field):
+        WebchatConfig.model_validate({field: value})
 
 
 def test_new_defaults_merge_without_overwriting_user_settings() -> None:

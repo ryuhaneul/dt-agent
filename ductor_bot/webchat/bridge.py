@@ -591,7 +591,8 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
         mirrors = await runtime.outbox.mirror_states([entry.id for entry in entries])
         indexed = await attachments.index.get_many(tid, [entry.id for entry in entries])
         rendered = []
-        metadata = await runtime.history.metadata(tid, include_activity=True)
+        tool_details = bot.config.webchat.tool_details
+        metadata = await runtime.history.metadata(tid, include_activity=tool_details == "file")
         for entry in entries:
             mirror = mirrors[entry.id]
             legacy: dict[str, Any] = {}
@@ -600,6 +601,10 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
                 legacy = {"text": text}
                 if buttons is not None:
                     legacy["buttons"] = buttons
+            if tool_details == "memory" and entry.role == "bot":
+                activity = turns.activity_for_reply(tid, entry.id)
+                if activity is not None:
+                    legacy["activity"] = activity
             rendered.append(
                 {
                     **asdict(entry),

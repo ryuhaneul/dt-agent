@@ -655,9 +655,11 @@ async def test_close_kills_running_native_probe_group(rig, tmp_path, monkeypatch
         ),
     )
     manager.status(OWNER)
-    await until(lambda: all(Path(str(pid_file) + suffix).exists() for suffix in ("True", "False")))
+    pid_files = [Path(str(pid_file) + suffix) for suffix in ("True", "False")]
+    # A pid file exists before its content is written.
+    await until(lambda: all(path.exists() and path.read_text() for path in pid_files))
     process = manager._probe_process
-    pids = [int(Path(str(pid_file) + suffix).read_text()) for suffix in ("True", "False")]
+    pids = [int(path.read_text()) for path in pid_files]
     await asyncio.wait_for(manager.close(), 0.5)
     assert process.returncode is not None
     for pid in pids:
@@ -666,7 +668,8 @@ async def test_close_kills_running_native_probe_group(rig, tmp_path, monkeypatch
             state = Path(f"/proc/{pid}/stat").read_text().split()[2]
         except (FileNotFoundError, ProcessLookupError):
             continue
-        assert state == "Z"
+        # A killed process is a zombie (Z) or already being released (X).
+        assert state in {"Z", "X"}
 
 
 @pytest.mark.parametrize(
