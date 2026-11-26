@@ -713,6 +713,12 @@ async def test_active_login_and_turn_share_slot_but_refuse_deletion(paths, manag
     assert not directory.exists()
 
 
+async def slot_mutation_payload(client, slot):
+    listing = await client.get(f"{_PREFIX}/cli-login/status", headers=cli_headers())
+    assert listing.status == 200
+    return {"expected": (await listing.json())["claude_slot_identities"][slot]}
+
+
 async def test_delete_route_enforces_bridge_auth_and_live_inventory(cli_bridge, monkeypatch):
     from ductor_bot.cli import claude_slots
     from ductor_bot.cli.claude_accounts import SlotRegistry, SlotSnapshot, state_file_path
@@ -734,10 +740,12 @@ async def test_delete_route_enforces_bridge_auth_and_live_inventory(cli_bridge, 
         response = await client.delete(route, headers=headers)
         assert response.status == 403
         assert "WWW-Authenticate" not in response.headers
-    response = await client.delete(f"{target}/claude", headers=cli_headers())
+    default_payload = await slot_mutation_payload(client, "claude")
+    response = await client.delete(f"{target}/claude", headers=cli_headers(), json=default_payload)
+    payload = await slot_mutation_payload(client, folder.name)
     assert (response.status, await response.json()) == (400, {"error": "slot_default"})
     with slot_use_lock(folder.parent, folder.name):
-        response = await client.delete(route, headers=cli_headers())
+        response = await client.delete(route, headers=cli_headers(), json=payload)
         assert (response.status, await response.json()) == (409, {"error": "slot_busy"})
 
     def refuse(directory):
@@ -746,7 +754,7 @@ async def test_delete_route_enforces_bridge_auth_and_live_inventory(cli_bridge, 
 
     with monkeypatch.context() as patcher:
         patcher.setattr(claude_slots.shutil, "rmtree", refuse)
-        response = await client.delete(route, headers=cli_headers())
+        response = await client.delete(route, headers=cli_headers(), json=payload)
     assert response.status == 500
     assert await response.json() == {
         "error": "slot_delete_failed", "path": ".cli-auth/claude-work", "reason": "Denied",
@@ -759,13 +767,75 @@ async def test_delete_route_enforces_bridge_auth_and_live_inventory(cli_bridge, 
     assert (await listing.json())["claude_slots"][-1]["priority"] is None
     assert bot.config.claude_accounts == ["claude", "claude-work"]
 
-    response = await client.delete(route, headers=cli_headers())
+    response = await client.delete(route, headers=cli_headers(), json=payload)
     assert (response.status, await response.json()) == (200, {"ok": True})
     assert not folder.exists()
     listing = await client.get(f"{_PREFIX}/cli-login/status", headers=cli_headers())
     assert [slot["name"] for slot in (await listing.json())["claude_slots"]] == ["claude"]
-    response = await client.delete(route, headers=cli_headers())
+    response = await client.delete(route, headers=cli_headers(), json=payload)
     assert (response.status, await response.json()) == (404, {"error": "slot_not_found"})
+
+
+@pytest.mark.parametrize("action", ["delete", "logout", "disconnect"])
+async def test_slot_mutation_rejects_recreated_slot(cli_bridge, monkeypatch, action):
+    from ductor_bot.cli import claude_slots
+
+    client, _, _, paths, _ = cli_bridge
+    home = paths.ductor_home
+    name = "claude-work"
+    folder = home / ".cli-auth" / name
+    folder.mkdir()
+    retained = folder.with_name("replacement")
+    retained.mkdir()
+    credential = retained / (".credentials.json" if action != "disconnect" else "settings.json")
+    credential.write_text('{"apiKeyHelper":"helper.sh"}' if action == "disconnect" else "fixture")
+    method = "DELETE" if action == "delete" else "POST"
+    route = f"{_PREFIX}/cli-login/slots/{name}"
+    if action != "delete":
+        route += f"/{action}"
+
+    listing = await client.get(f"{_PREFIX}/cli-login/status", headers=cli_headers())
+    old_status = await listing.json()
+    old_identity = ":".join(map(str, claude_slots.slot_identity(home, name)))
+    claude_slots.remove(home, name)
+    retained.rename(folder)
+    credential = folder / credential.name
+    original = tree(folder)
+    configured = paths.config_path.read_bytes()
+    logout_calls = []
+
+    def logout_cli(*_args, **_kwargs):
+        logout_calls.append(name)
+        credential.unlink()
+        return subprocess.CompletedProcess([], 0)
+
+    monkeypatch.setattr(claude_slots.subprocess, "run", logout_cli)
+    response = await client.request(
+        method, route, headers=cli_headers(), json={"expected": old_identity}
+    )
+    assert (response.status, await response.json()) == (409, {"error": "slot_stale"})
+    assert tree(folder) == original
+    assert paths.config_path.read_bytes() == configured
+    assert not logout_calls
+    assert old_status["claude_slot_identities"][name] == old_identity
+
+    listing = await client.get(f"{_PREFIX}/cli-login/status", headers=cli_headers())
+    current = (await listing.json())["claude_slot_identities"][name]
+    assert isinstance(current, str)
+    assert current != old_identity
+    response = await client.request(method, route, headers=cli_headers(), json={})
+    assert (response.status, await response.json()) == (400, {"error": "bad_request"})
+    response = await client.request(
+        method, route, headers=cli_headers(), json={"expected": current}
+    )
+    assert (response.status, await response.json()) == (200, {"ok": True})
+    if action == "delete":
+        assert not folder.exists()
+    elif action == "logout":
+        assert logout_calls == [name]
+        assert not credential.exists()
+    else:
+        assert "apiKeyHelper" not in json.loads(credential.read_bytes())
 
 
 async def test_browser_delete_requires_session_and_csrf_before_relay(site):
@@ -800,6 +870,7 @@ async def test_delete_preserves_unreadable_cooldowns_and_allows_retry(
     folder = paths.ductor_home / ".cli-auth" / "claude-work"
     if has_directory:
         folder.mkdir()
+    payload = await slot_mutation_payload(client, folder.name)
     config_before = paths.config_path.read_bytes()
     config_inode = paths.config_path.stat().st_ino
     state = state_file_path(paths.ductor_home)
@@ -820,7 +891,7 @@ async def test_delete_preserves_unreadable_cooldowns_and_allows_retry(
             patcher.setattr(Path, "read_text", deny_read)
         state.chmod(0)
         try:
-            response = await client.delete(route, headers=cli_headers())
+            response = await client.delete(route, headers=cli_headers(), json=payload)
             assert (response.status, await response.json()) == (
                 500, {"error": "slot_delete_error"}
             )
@@ -834,7 +905,7 @@ async def test_delete_preserves_unreadable_cooldowns_and_allows_retry(
     assert paths.config_path.stat().st_ino == config_inode
     assert folder.is_dir() == has_directory
 
-    response = await client.delete(route, headers=cli_headers())
+    response = await client.delete(route, headers=cli_headers(), json=payload)
     assert (response.status, await response.json()) == (200, {"ok": True})
     assert registry.load().cooldowns == {"claude-other": 200}
     assert json.loads(paths.config_path.read_text())["claude_accounts"] == ["claude-other"]
@@ -854,7 +925,10 @@ async def test_delete_recovers_corrupt_cooldown_state(cli_bridge, contents):
     state = state_file_path(paths.ductor_home)
     state.write_text(contents)
 
-    response = await client.delete(f"{_PREFIX}/cli-login/slots/{slot}", headers=cli_headers())
+    payload = await slot_mutation_payload(client, slot)
+    response = await client.delete(
+        f"{_PREFIX}/cli-login/slots/{slot}", headers=cli_headers(), json=payload
+    )
     assert (response.status, await response.json()) == (200, {"ok": True})
     assert json.loads(state.read_text()) == {"cooldowns": {}}
     assert json.loads(paths.config_path.read_text())["claude_accounts"] == [other]
@@ -968,7 +1042,8 @@ if trigger.exists():
         else:
             assert alive(leader)
         assert os.getpgid(child) == child
-        response = await client.delete(route, headers=cli_headers())
+        payload = await slot_mutation_payload(client, slot)
+        response = await client.delete(route, headers=cli_headers(), json=payload)
         assert (response.status, await response.json()) == (409, {"error": "slot_busy"})
 
         if mode == "cancel":
@@ -986,7 +1061,8 @@ if trigger.exists():
             else:
                 assert result.is_error and result.result == "__TIMEOUT__1"
 
-        response = await client.delete(route, headers=cli_headers())
+        payload = await slot_mutation_payload(client, slot)
+        response = await client.delete(route, headers=cli_headers(), json=payload)
         assert (response.status, await response.json()) == (200, {"ok": True})
         assert not folder.exists()
 
@@ -1000,7 +1076,8 @@ if trigger.exists():
         listing = await client.get(f"{_PREFIX}/cli-login/status", headers=cli_headers())
         slots = (await listing.json())["claude_slots"]
         assert next(item for item in slots if item["name"] == slot)["priority"] is None
-        response = await client.delete(route, headers=cli_headers())
+        payload = await slot_mutation_payload(client, slot)
+        response = await client.delete(route, headers=cli_headers(), json=payload)
         assert (response.status, await response.json()) == (200, {"ok": True})
         assert not folder.exists()
     finally:
@@ -1066,16 +1143,22 @@ async def test_slot_auth_mutations_enforce_bridge_auth_and_map_errors(
     from ductor_bot.cli import claude_slots
 
     client, _, _, paths, _ = cli_bridge
-    route = f"{_PREFIX}/cli-login/slots/claude-work/{action}"
+    name = "claude" if action == "logout" else "claude-work"
+    folder = paths.ductor_home / ".cli-auth" / name
+    folder.mkdir(exist_ok=True)
+    payload = await slot_mutation_payload(client, name)
+    info = folder.lstat()
+    route = f"{_PREFIX}/cli-login/slots/{name}/{action}"
     count = 0
     expected_error = None
     event_loop_thread = threading.get_ident()
 
-    def mutate(home, slot):
+    def mutate(home, slot, *, expected):
         nonlocal count
         assert threading.get_ident() != event_loop_thread
         assert home == paths.ductor_home
-        assert slot == "claude-work"
+        assert slot == name
+        assert expected == (info.st_dev, info.st_ino, info.st_ctime_ns)
         count += 1
         if expected_error is not None:
             raise claude_slots.SlotDeleteError(expected_error)
@@ -1092,11 +1175,11 @@ async def test_slot_auth_mutations_enforce_bridge_auth_and_map_errors(
         ("slot_not_found", 404), ("slot_busy", 409), ("invalid_slot", 400),
         (wrong_kind, 400), (failure, 500),
     ]:
-        response = await client.post(route, headers=cli_headers())
+        response = await client.post(route, headers=cli_headers(), json=payload)
         assert response.status == status
         assert await response.json() == {"error": expected_error}
     expected_error = None
-    response = await client.post(route, headers=cli_headers())
+    response = await client.post(route, headers=cli_headers(), json=payload)
     assert response.status == 200
     assert await response.json() == {"ok": True}
     assert count == 6
@@ -1138,7 +1221,10 @@ async def test_disconnect_updates_kind_in_slot_status(cli_bridge):
         return {slot["name"]: slot for slot in (await response.json())["claude_slots"]}
 
     assert (await inventory())["claude-manual"]["kind"] == "api_key"
-    response = await client.post(f"{base}/slots/claude-manual/disconnect", headers=headers)
+    payload = await slot_mutation_payload(client, target.name)
+    response = await client.post(
+        f"{base}/slots/claude-manual/disconnect", headers=headers, json=payload
+    )
     assert response.status == 200
     slot = (await inventory())["claude-manual"]
     assert slot["kind"] == "api_key_detached"

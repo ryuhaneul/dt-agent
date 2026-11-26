@@ -7,6 +7,7 @@ import contextlib
 import hmac
 import json
 import logging
+import re
 import secrets
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import asdict
@@ -96,7 +97,9 @@ _PREFIX = "/webchat/v1"
 CLI_LOGIN = web.AppKey("cli_login_manager", CliLoginManager)
 
 
-def _login_slot_rows(home: Path, configured: list[str]) -> list[dict[str, object]]:
+def _login_slot_rows(
+    home: Path, configured: list[str], *, identities: dict[str, str] | None = None
+) -> list[dict[str, object]]:
     priority = list(dict.fromkeys(name for name in configured if claude_slots.is_slot_name(name)))
     if not configured:
         priority = [DEFAULT_SLOT]
@@ -105,16 +108,24 @@ def _login_slot_rows(home: Path, configured: list[str]) -> list[dict[str, object
     # Expiration metadata must not prevent listing existing login slots.
     with contextlib.suppress(Exception):
         expired_slots = set(SlotRegistry(state_file_path(home)).load().auth_failures)
-    return [
-        {
-            "name": name,
-            "kind": slot_kind(host_slot_config_dir(home, name)),
-            "auth_expired": name in expired_slots,
-            "priority": priority.index(name) + 1 if name in priority else None,
-            "authenticated": slot_is_authenticated(host_slot_config_dir(home, name)),
-        }
-        for name in names
-    ]
+    rows: list[dict[str, object]] = []
+    for name in names:
+        if identities is not None:
+            # Capture the identity before reading the slot data shown to the user.
+            with contextlib.suppress(FileNotFoundError, claude_slots.SlotDeleteError):
+                identity = claude_slots.slot_identity(home, name, include_default=True)
+                identities[name] = ":".join(map(str, identity))
+        directory = host_slot_config_dir(home, name)
+        rows.append(
+            {
+                "name": name,
+                "kind": slot_kind(directory),
+                "auth_expired": name in expired_slots,
+                "priority": priority.index(name) + 1 if name in priority else None,
+                "authenticated": slot_is_authenticated(directory),
+            }
+        )
+    return rows
 
 
 def _claude_slot_rows(home: Path, accounts: list[str]) -> list[dict[str, object]]:
@@ -1202,9 +1213,11 @@ def _register_cli_login_routes(app: web.Application, bot: TelegramBot) -> None: 
 
     app.on_cleanup.append(close)
 
-    def list_slots() -> list[dict[str, object]]:
+    def list_slots() -> dict[str, object]:
         home = paths.ductor_home
-        return _login_slot_rows(home, claude_slots.read_accounts(home))
+        identities: dict[str, str] = {}
+        rows = _login_slot_rows(home, claude_slots.read_accounts(home), identities=identities)
+        return {"claude_slots": rows, "claude_slot_identities": identities}
 
     async def handle(request: web.Request) -> web.Response:  # noqa: C901, PLR0911, PLR0912
         owner = request.headers.get("X-Dtw-Owner", "")
@@ -1228,7 +1241,7 @@ def _register_cli_login_routes(app: web.Application, bot: TelegramBot) -> None: 
                 return web.json_response(
                     {
                         **manager.status(owner, active_owners=active_owners),
-                        "claude_slots": await asyncio.to_thread(list_slots),
+                        **await asyncio.to_thread(list_slots),
                     }
                 )
             if resource == "/jobs":
@@ -1268,6 +1281,16 @@ def _register_cli_login_routes(app: web.Application, bot: TelegramBot) -> None: 
     async def mutate_slot(request: web.Request) -> web.Response:
         if not request.headers.get("X-Dtw-Owner", ""):
             return _error("forbidden", 403)
+        value = (await _body(request)).get("expected")
+        identity = (
+            re.fullmatch(r"([0-9]{1,20}):([0-9]{1,20}):(-?[0-9]{1,20})", value)
+            if isinstance(value, str)
+            else None
+        )
+        if identity is None:
+            return _error("bad_request", 400)
+        device, inode, changed = identity.groups()
+        expected = (int(device), int(inode), int(changed))
         action = request.match_info.get("action", "delete")
         operation, failure = {
             "delete": (claude_slots.remove, "slot_delete_error"),
@@ -1275,7 +1298,9 @@ def _register_cli_login_routes(app: web.Application, bot: TelegramBot) -> None: 
             "disconnect": (claude_slots.disconnect_api_key, "disconnect_failed"),
         }[action]
         try:
-            await asyncio.to_thread(operation, paths.ductor_home, request.match_info["slot"])
+            await asyncio.to_thread(
+                operation, paths.ductor_home, request.match_info["slot"], expected=expected
+            )
         except claude_slots.SlotDirectoryError as exc:
             return web.json_response(
                 {
@@ -1290,6 +1315,7 @@ def _register_cli_login_routes(app: web.Application, bot: TelegramBot) -> None: 
             status = {
                 "slot_not_found": 404,
                 "slot_busy": 409,
+                "slot_stale": 409,
                 "logout_failed": 500,
                 "disconnect_failed": 500,
             }.get(code, 400)

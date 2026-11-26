@@ -108,16 +108,16 @@ class SlotDirectoryError(SlotDeleteError):
         self.reason = cause.strerror or str(cause)
 
 
-def slot_identity(home: Path, slot: str) -> SlotIdentity:
-    """Identify the folder, or the config revision for a slot with no folder."""
-    if slot == DEFAULT_SLOT:
+def slot_identity(home: Path, slot: str, *, include_default: bool = False) -> SlotIdentity:
+    """Identify the folder, or the config revision for a named slot with no folder."""
+    if slot == DEFAULT_SLOT and not include_default:
         raise SlotDeleteError("slot_default")
     if not is_slot_name(slot):
         raise SlotDeleteError("invalid_slot")
     directory = host_slot_config_dir(home, slot)
     if directory.is_dir():
         status = directory.lstat()
-    elif slot in read_accounts(home):
+    elif slot != DEFAULT_SLOT and slot in read_accounts(home):
         status = (home / "config" / "config.json").stat()
     else:
         raise SlotDeleteError("slot_not_found")
