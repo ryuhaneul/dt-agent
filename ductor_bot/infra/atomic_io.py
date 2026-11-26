@@ -16,10 +16,13 @@ from pathlib import Path
 from typing import ParamSpec, TypeVar
 
 
-def atomic_text_save(path: Path, content: str, *, encoding: str = "utf-8") -> None:
+def atomic_text_save(
+    path: Path, content: str, *, encoding: str = "utf-8", mode: int | None = None
+) -> None:
     """Write *content* to *path* atomically via temp file + rename.
 
-    Creates parent directories if they don't exist.
+    Creates parent directories if they don't exist. An explicit mode is applied
+    to the temporary file before replacement.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_str = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
@@ -27,6 +30,9 @@ def atomic_text_save(path: Path, content: str, *, encoding: str = "utf-8") -> No
     try:
         with os.fdopen(fd, "w", encoding=encoding) as f:
             f.write(content)
+            if mode is not None:
+                f.flush()
+                os.fchmod(f.fileno(), mode)
         tmp.replace(path)
     except BaseException:
         with contextlib.suppress(OSError):

@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 from pathlib import Path
+from stat import S_IMODE
 from typing import TYPE_CHECKING
 
 from ductor_bot.infra.atomic_io import atomic_text_save
@@ -60,17 +61,18 @@ def _sync_agent_io(shared_path: Path, mainmemory_path: Path) -> bool:
     """
     if not mainmemory_path.is_file():
         return False
-    with exclusive_file_lock(mainmemory_path):
-        if not shared_path.is_file() or not mainmemory_path.is_file():
+    target = mainmemory_path.resolve()
+    with exclusive_file_lock(target):
+        if not shared_path.is_file() or not target.is_file():
             return False
         shared_content = shared_path.read_text(encoding="utf-8").strip()
         if not shared_content:
             return False
 
-        current = mainmemory_path.read_text(encoding="utf-8")
+        current = target.read_text(encoding="utf-8")
         new_content = render_shared_knowledge(current, shared_content)
         if new_content != current:
-            atomic_text_save(mainmemory_path, new_content)
+            atomic_text_save(target, new_content, mode=S_IMODE(target.stat().st_mode))
             return True
     return False
 
@@ -151,7 +153,7 @@ class SharedKnowledgeSync:
 
     async def _sync_all(self) -> None:
         """Inject into all registered agents' MAINMEMORY.md files."""
-        for name, stack in self._supervisor.stacks.items():
+        for name, stack in tuple(self._supervisor.stacks.items()):
             try:
                 await self.sync_agent(stack.paths.mainmemory_path)
             except Exception:
