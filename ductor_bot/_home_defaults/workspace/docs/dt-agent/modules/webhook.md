@@ -73,7 +73,7 @@ Validation order for POST:
 
 When `webhooks.enabled=true`:
 
-1. auto-generate global webhook token if empty and persist to config
+1. If the token is empty, generate and save one for the main agent. Skip webhook startup for a sub-agent with an empty token.
 2. start server
 3. start watcher loop
 

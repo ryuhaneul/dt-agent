@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,8 @@ def onboarding(tmp_path: Path):
         shutil.copy2(SOURCE / "scripts" / name, scripts / name)
     shutil.copy2(SOURCE / "config.example.json", repo / "config.example.json")
     shutil.copytree(SOURCE / "ductor_bot/i18n", repo / "ductor_bot/i18n")
+    for filename in ("__init__.py", "home.py"):
+        shutil.copy2(SOURCE / "ductor_bot" / filename, repo / "ductor_bot" / filename)
     shutil.copytree(SOURCE / "scripts/onboard_i18n", scripts / "onboard_i18n")
     shutil.copy2(SOURCE / "compose.yaml", repo / "compose.yaml")
     fake_bin = tmp_path / "fake-bin"
@@ -54,6 +57,69 @@ def onboarding(tmp_path: Path):
             cwd=repo, env=environment, capture_output=True, text=True,
         )
     return repo, home, run
+
+
+@pytest.mark.parametrize("explicit_home", [True, False])
+def test_python_onboard_rejects_sub_agent_home_before_argument_errors(tmp_path, explicit_home):
+    home = tmp_path / "agents" / "worker"
+    config = home / "config" / "config.json"
+    config.parent.mkdir(parents=True)
+    config.write_text('{"language": "fr"}')
+    (tmp_path / "agents.json").write_text("[]")
+    env = {**os.environ, "DUCTOR_HOME": str(tmp_path if explicit_home else home)}
+    args = ["--home", str(home)] if explicit_home else []
+    result = subprocess.run(
+        [sys.executable, str(SOURCE / "scripts/onboard.py"), *args, "--invalid"],
+        env=env, capture_output=True, text=True, check=False,
+    )
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert result.stderr == "Run this command from the main agent home.\n"
+
+
+@pytest.mark.parametrize(
+    ("script", "with_parent_segment"),
+    [("login.sh", False), ("logout.sh", False), ("onboard.sh", False), ("onboard.sh", True)],
+)
+def test_host_management_rejects_sub_agent_home_before_language_or_preflight(
+    tmp_path, script, with_parent_segment,
+):
+    home = tmp_path / "agents" / "worker"
+    config = home / "config" / "config.json"
+    config.parent.mkdir(parents=True)
+    config.write_text('{"language": "fr"}')
+    (tmp_path / "agents.json").write_text("[]")
+    env = {**os.environ, "DUCTOR_HOME": str(home)}
+    args = ["--invalid"]
+    if script == "onboard.sh":
+        env.update(PATH=str(tmp_path / "empty-path"), DUCTOR_HOME=str(tmp_path))
+        target = f"{tmp_path}/missing/../agents/worker/." if with_parent_segment else str(home)
+        args.insert(0, f"--home={target}")
+    result = subprocess.run(
+        ["/bin/bash", str(SOURCE / "scripts" / script), *args],
+        env=env, capture_output=True, text=True, check=False,
+    )
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert result.stderr == "Run this command from the main agent home.\n"
+
+
+def test_shell_guard_allows_home_under_agents_without_registry(tmp_path):
+    home = tmp_path / "agents" / "standalone"
+    home.mkdir(parents=True)
+    result = subprocess.run(
+        [
+            "/bin/bash", "-c", 'source "$1"; require_main_home "$2"',
+            "guard", str(SOURCE / "scripts/_home.sh"), str(home),
+        ],
+        env={**os.environ, "PATH": str(tmp_path / "empty-path")},
+        capture_output=True, text=True, check=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == result.stderr == ""
 
 
 def parse_env(path: Path) -> dict[str, str]:

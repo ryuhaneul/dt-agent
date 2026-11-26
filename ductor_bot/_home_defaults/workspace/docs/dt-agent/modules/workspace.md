@@ -21,7 +21,7 @@ Important runtime paths:
 
 - `ductor_home`: `/ductor` (container default; host DUCTOR_HOME mount)
 - `workspace`: `~/.ductor/workspace`
-- `config_path`: `~/.ductor/config/config.json`
+- `config_path`: `~/.ductor/config/config.json` (main home only)
 - `sessions_path`: `~/.ductor/sessions.json`
 - `named_sessions_path`: `~/.ductor/named_sessions.json`
 - `env_file`: `~/.ductor/.env`
@@ -48,7 +48,7 @@ Important runtime paths:
 4. ensure required directories
 5. `RulesSelector(paths).deploy_rules()`
 6. `ensure_task_rule_files(paths.cron_tasks_dir)`
-7. `_smart_merge_config(paths)`
+7. `_smart_merge_config(paths)` for the main home only
 8. `_clean_orphan_symlinks(paths)`
 9. `sync_skills(paths)`
 

@@ -37,6 +37,7 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 dc() { docker compose --project-directory "$PROJECT_DIR" "$@"; }
 source "$SCRIPT_DIR/_home.sh"
 DUCTOR_HOME_HOST="$(resolve_ductor_home "$PROJECT_DIR")"
+require_main_home "$DUCTOR_HOME_HOST"
 AUTH_DIR_HOST="${DUCTOR_HOME_HOST}/.cli-auth"
 SHARED_PROJECTS_HOST="${AUTH_DIR_HOST}/_shared-projects"
 

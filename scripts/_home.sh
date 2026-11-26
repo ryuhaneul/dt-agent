@@ -8,6 +8,37 @@ supported_language() {
     case "$1" in de | en | es | fr | id | ko | nl | pt | ru) return 0 ;; *) return 1 ;; esac
 }
 
+# Reject sub-agent homes before looking for a config or running preflight checks.
+require_main_home() {
+    local path="${1:-${DUCTOR_HOME:-${HOME-}/.ductor}}" home="" part resolved parent
+    path="${path/#\~/${HOME-}}"
+    [[ $path == /* ]] || path="$PWD/$path"
+    # Resolve existing directories physically and normalize the remaining components.
+    # Standard external tools may be missing during onboarding preflight.
+    while [[ -n $path ]]; do
+        part="${path%%/*}"
+        case "$path" in
+            */*) path="${path#*/}" ;;
+            *) path="" ;;
+        esac
+        case "$part" in
+            "" | .) ;;
+            ..) home="${home%/*}" ;;
+            *)
+                home="${home%/}/$part"
+                if [[ -d $home ]] && resolved="$(CDPATH= cd -P -- "$home" 2>/dev/null && pwd -P)"; then
+                    home="$resolved"
+                fi
+                ;;
+        esac
+    done
+    parent="${home%/*}"
+    if [[ ${parent##*/} == agents && -f ${parent%/*}/agents.json ]]; then
+        printf '%s\n' 'Run this command from the main agent home.' >&2
+        return 2
+    fi
+}
+
 saved_language() {
     local home="${1:-${DUCTOR_HOME-}}" file content
     home="${home:-${HOME-}/.ductor}"

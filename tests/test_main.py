@@ -493,6 +493,66 @@ class TestCountLogErrors:
         assert count_log_errors(log_dir) == 0
 
 
+@pytest.mark.parametrize(
+    "entrypoint",
+    ["ductor", "start", "status", "help", "agents", "claude-slots", "chat-log", "webchat"],
+)
+def test_management_entrypoints_reject_sub_agent_home_before_reading_config(
+    tmp_path, monkeypatch, capsys, entrypoint,
+) -> None:
+    from ductor_bot.chat_log.cli import cmd_chat_log
+    from ductor_bot.cli.claude_slots import main as claude_slots
+    from ductor_bot.cli_commands.agents import cmd_agents
+    from ductor_bot.cli_commands.lifecycle import start_bot
+    from ductor_bot.cli_commands.status import print_status, print_usage
+    from ductor_bot.webchat.cli import cmd_webchat
+
+    home = tmp_path / "agents" / "worker"
+    config = home / "config" / "config.json"
+    config.parent.mkdir(parents=True)
+    config.write_text('{"language": "fr"}')
+    (tmp_path / "agents.json").write_text("[]")
+    monkeypatch.setenv("DUCTOR_HOME", str(home))
+    monkeypatch.setattr(sys, "argv", ["ductor", "--invalid"])
+    read_text = Path.read_text
+
+    def check_read(path, *args, **kwargs):
+        assert path != config
+        return read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", check_read)
+    actions = {
+        "ductor": main,
+        "start": start_bot,
+        "status": print_status,
+        "help": print_usage,
+        "agents": lambda: cmd_agents(["invalid"]),
+        "claude-slots": lambda: claude_slots(["invalid"]),
+        "chat-log": lambda: cmd_chat_log(["invalid"]),
+        "webchat": lambda: cmd_webchat(["invalid"]),
+    }
+    with pytest.raises(SystemExit) as exc:
+        actions[entrypoint]()
+
+    assert exc.value.code != 0
+    result = capsys.readouterr()
+    assert result.out == ""
+    assert result.err == "Run this command from the main agent home.\n"
+
+
+def test_management_allows_home_under_agents_without_registry(tmp_path, monkeypatch, capsys):
+    home = tmp_path / "agents" / "standalone"
+    home.mkdir(parents=True)
+    monkeypatch.setenv("DUCTOR_HOME", str(home))
+    monkeypatch.setattr(sys, "argv", ["ductor", "--version"])
+
+    main()
+
+    result = capsys.readouterr()
+    assert result.out.startswith("DT Agent ")
+    assert result.err == ""
+
+
 class TestMainDispatch:
     def test_removed_command_shows_usage_and_exits_2(self) -> None:
         from ductor_bot.__main__ import main

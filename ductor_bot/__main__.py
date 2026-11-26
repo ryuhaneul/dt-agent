@@ -31,6 +31,7 @@ from ductor_bot.config import (
     AgentConfig,
     deep_merge_config,
 )
+from ductor_bot.home import require_main_home
 from ductor_bot.i18n import init as init_i18n
 from ductor_bot.i18n import t_rich
 from ductor_bot.infra.atomic_io import atomic_bytes_save
@@ -364,6 +365,7 @@ _Action = Callable[[], None]
 
 def main() -> None:
     """CLI entry point."""
+    require_main_home(resolve_paths().ductor_home)
     args = sys.argv[1:]
     commands = [a for a in args if not a.startswith("-")]
     verbose = "--verbose" in args or "-v" in args

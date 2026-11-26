@@ -24,6 +24,7 @@ CONTAINER="${DUCTOR_CONTAINER:-ductor-bot}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/_home.sh"
 DUCTOR_HOME_HOST="$(resolve_ductor_home "$(dirname "$SCRIPT_DIR")")"
+require_main_home "$DUCTOR_HOME_HOST"
 AUTH_DIR_HOST="${DUCTOR_HOME_HOST}/.cli-auth"
 CONFIG_HOST="${DUCTOR_HOME_HOST}/config/config.json"
 

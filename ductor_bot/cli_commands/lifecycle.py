@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import sys
 
+from ductor_bot.home import require_main_home
 from ductor_bot.infra.restart import EXIT_RESTART
 from ductor_bot.workspace.paths import resolve_paths
 
@@ -18,6 +19,7 @@ def start_bot(verbose: bool = False) -> None:
     from ductor_bot.logging_config import setup_logging
 
     paths = resolve_paths()
+    require_main_home(paths.ductor_home)
     acquire_instance_lock(paths.ductor_home / "bot.lock")
     setup_logging(verbose=verbose, log_dir=paths.logs_dir)
     config = load_config()

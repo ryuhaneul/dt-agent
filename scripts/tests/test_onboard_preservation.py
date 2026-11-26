@@ -28,6 +28,8 @@ class OnboardPreservationTests(unittest.TestCase):
         shutil.copy2(ROOT / 'scripts/onboard.py', self.repo / 'scripts/onboard.py')
         shutil.copy2(ROOT / 'config.example.json', self.repo / 'config.example.json')
         shutil.copytree(ROOT / 'ductor_bot/i18n', self.repo / 'ductor_bot/i18n')
+        for filename in ('__init__.py', 'home.py'):
+            shutil.copy2(ROOT / 'ductor_bot' / filename, self.repo / 'ductor_bot' / filename)
         shutil.copytree(ROOT / 'scripts/onboard_i18n', self.repo / 'scripts/onboard_i18n')
         self.home = Path(temp.name) / 'home'
         self.path = self.home / 'config/config.json'
