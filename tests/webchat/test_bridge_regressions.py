@@ -9,6 +9,7 @@ import inspect
 import json
 import stat
 from datetime import UTC, datetime, timedelta
+from threading import Event
 from types import MethodType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -29,8 +30,10 @@ from ductor_bot.cli.process_registry import ProcessRegistry
 from ductor_bot.cli.types import AgentRequest, AgentResponse
 from ductor_bot.config import AgentConfig
 from ductor_bot.i18n.loader import TranslationStore
+from ductor_bot.infra import file_lock
 from ductor_bot.messenger.telegram.topic import TopicNameCache
 from ductor_bot.messenger.telegram.transport import TelegramTransport
+from ductor_bot.multiagent import shared_knowledge
 from ductor_bot.multiagent.shared_knowledge import _sync_agent_io
 from ductor_bot.orchestrator.core import Orchestrator
 from ductor_bot.orchestrator.flows import _finalize_turn
@@ -165,41 +168,80 @@ async def test_other_topic_save_cannot_resurrect_deleted_session(tmp_path, monke
 
 
 @pytest.mark.asyncio
-async def test_mainmemory_save_cannot_restore_stale_shared_block(tmp_path, monkeypatch):
-    """Reject a sync update before replacement without writing the web draft."""
-    paths = DuctorPaths(ductor_home=tmp_path)
-    memory = paths.mainmemory_path
-    memory.parent.mkdir(parents=True)
-    shared = paths.ductor_home / "SHAREDMEMORY.md"
-    shared.write_text("old shared\n")
-    memory.write_text(
-        "personal\n\n--- SHARED KNOWLEDGE START ---\nold shared\n--- SHARED KNOWLEDGE END ---\n"
-    )
-    editor = WebFiles(paths)
-    base = (await editor.get("MAINMEMORY.md"))["sha256"]
-    original = files_module.atomic_bytes_save
+@pytest.mark.parametrize("first", ["web", "sync"])
+async def test_mainmemory_save_serializes_with_shared_sync(tmp_path, monkeypatch, first):
+    editor, memory, shared, base = await seed_memory(tmp_path)
+    if first == "sync":
+        shared.write_text("shared 1\n")
+    first_at_write = Event()
+    second_progressed = Event()
+    release_first = Event()
+    save = files_module.atomic_bytes_save
+    render = shared_knowledge.render_shared_knowledge
+    flock = file_lock.fcntl.flock
 
-    writes = 0
+    def pause_first():
+        first_at_write.set()
+        assert release_first.wait(3)
 
-    def concurrent_sync(path, data):
-        nonlocal writes
-        original(path, data)
+    def pause_web(path, data):
         if path == memory:
-            writes += 1
-        else:
-            # Backup I/O finishes before the final conflict check.
-            shared.write_text("NEW SHARED CONTENT\n")
-            assert _sync_agent_io(shared, memory)
-            assert "NEW SHARED CONTENT" in memory.read_text()
+            pause_first()
+        save(path, data)
 
-    monkeypatch.setattr(files_module, "atomic_bytes_save", concurrent_sync)
-    with pytest.raises(WebFileError) as caught:
-        await editor.put("MAINMEMORY.md", "edited personal", base)
-    assert caught.value.status == 409
-    assert writes == 0
-    assert "NEW SHARED CONTENT" in memory.read_text()
-    personal, _ = _split_shared(memory.read_text())
-    assert personal.strip() == "personal"
+    def pause_sync(current, shared_content):
+        pause_first()
+        return render(current, shared_content)
+
+    def observe_contention(fd, operation):
+        try:
+            return flock(fd, operation)
+        except BlockingIOError:
+            second_progressed.set()
+            raise
+
+    monkeypatch.setattr(file_lock.fcntl, "flock", observe_contention)
+    if first == "web":
+        monkeypatch.setattr(files_module, "atomic_bytes_save", pause_web)
+    else:
+        monkeypatch.setattr(shared_knowledge, "render_shared_knowledge", pause_sync)
+
+    async def write(writer):
+        if writer == "web":
+            return await editor.put("MAINMEMORY.md", "edited personal", base)
+        return await asyncio.to_thread(_sync_agent_io, shared, memory)
+
+    async def write_second(writer):
+        try:
+            return await write(writer)
+        finally:
+            second_progressed.set()
+
+    first_task = asyncio.create_task(write(first))
+    second_task = None
+    try:
+        assert await asyncio.to_thread(first_at_write.wait, 2)
+        if first == "web":
+            shared.write_text("shared 1\n")
+        second_task = asyncio.create_task(write_second("sync" if first == "web" else "web"))
+        assert await asyncio.to_thread(second_progressed.wait, 2)
+    finally:
+        release_first.set()
+        tasks = [first_task, second_task] if second_task is not None else [first_task]
+        outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+
+    first_outcome, second_outcome = outcomes
+    personal, blocks = _split_shared(memory.read_text())
+    assert "shared 1" in blocks[0]
+    if first == "web":
+        assert isinstance(first_outcome, dict)
+        assert second_outcome is True
+        assert personal.strip() == "edited personal"
+    else:
+        assert first_outcome is True
+        assert isinstance(second_outcome, WebFileError)
+        assert second_outcome.status == 409
+        assert personal.strip() == "ORIGINAL PERSONAL"
 
 
 @pytest.mark.parametrize("delete_fails", [False, True])

@@ -669,9 +669,10 @@ The response contains the stored `sha256` and relative `backup` path:
 for collisions. Reload after a conflict and review changes again before saving.
 
 Per-file locks serialize web saves and the latest bytes are checked before replace.
-A noncooperating external writer, including shared-memory synchronization, can
-still race after that check and before replacement. Coordinate external edits
-with web saves and retain backups for recovery. This limitation also applies to
-MAINMEMORY saves, which perform a single comparison and atomic replacement.
+MAINMEMORY web saves and shared-memory synchronization share a file lock.
+A noncooperating external writer can still race after that check and before
+replacement. Coordinate external edits with web saves and retain backups for
+recovery. This limitation also applies to MAINMEMORY saves, which perform a
+single comparison and atomic replacement.
 
 Credential diagnostics use `storage: encrypted|legacy|unconfigured`; a corrupt new credential file adds `credentials_invalid` to `errors`. The report never contains the hash, seed or values.

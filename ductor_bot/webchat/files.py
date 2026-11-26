@@ -6,11 +6,13 @@ import asyncio
 import hashlib
 import os
 import re
+from contextlib import nullcontext
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 from ductor_bot.infra.atomic_io import atomic_bytes_save, complete_write
+from ductor_bot.infra.file_lock import LockTimeoutError, exclusive_file_lock
 from ductor_bot.multiagent.shared_knowledge import (
     _END_MARKER,
     _LEGACY_END,
@@ -155,7 +157,15 @@ class WebFiles:
             raise WebFileError("too_large", 413)
         return encoded
 
-    def _put(self, name: str, content: str, base_sha256: str) -> dict[str, str]:  # noqa: C901
+    def _put(self, name: str, content: str, base_sha256: str) -> dict[str, str]:
+        lock = exclusive_file_lock(self._path(name)) if name == "MAINMEMORY.md" else nullcontext()
+        try:
+            with lock:
+                return self._save(name, content, base_sha256)
+        except LockTimeoutError:
+            raise WebFileError("conflict", 409) from None
+
+    def _save(self, name: str, content: str, base_sha256: str) -> dict[str, str]:  # noqa: C901
         path, original, _ = self._snapshot(name)
         if hashlib.sha256(original).hexdigest() != base_sha256:
             raise WebFileError("conflict", 409)

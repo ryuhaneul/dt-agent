@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ductor_bot.infra.atomic_io import atomic_text_save
+from ductor_bot.infra.file_lock import LockTimeoutError, exclusive_file_lock
 from ductor_bot.infra.file_watcher import FileWatcher
 
 if TYPE_CHECKING:
     from ductor_bot.multiagent.supervisor import AgentSupervisor
 
 logger = logging.getLogger(__name__)
+
+_SYNC_INTERVAL = 5.0
 
 _START_MARKER = "--- SHARED KNOWLEDGE START ---"
 _END_MARKER = "--- SHARED KNOWLEDGE END ---"
@@ -53,20 +58,20 @@ def _sync_agent_io(shared_path: Path, mainmemory_path: Path) -> bool:
 
     Returns True if the file was written.
     """
-    if not shared_path.is_file():
-        return False
-    shared_content = shared_path.read_text(encoding="utf-8").strip()
-    if not shared_content:
-        return False
     if not mainmemory_path.is_file():
         return False
+    with exclusive_file_lock(mainmemory_path):
+        if not shared_path.is_file() or not mainmemory_path.is_file():
+            return False
+        shared_content = shared_path.read_text(encoding="utf-8").strip()
+        if not shared_content:
+            return False
 
-    current = mainmemory_path.read_text(encoding="utf-8")
-    new_content = render_shared_knowledge(current, shared_content)
-
-    if new_content != current:
-        mainmemory_path.write_text(new_content, encoding="utf-8")
-        return True
+        current = mainmemory_path.read_text(encoding="utf-8")
+        new_content = render_shared_knowledge(current, shared_content)
+        if new_content != current:
+            atomic_text_save(mainmemory_path, new_content)
+            return True
     return False
 
 
@@ -86,7 +91,9 @@ class SharedKnowledgeSync:
     def __init__(self, shared_path: Path, supervisor: AgentSupervisor) -> None:
         self._path = shared_path
         self._supervisor = supervisor
-        self._watcher = FileWatcher(self._path, self._on_changed)
+        self._watcher = FileWatcher(self._path, self._on_changed, interval=_SYNC_INTERVAL)
+        self._retry_task: asyncio.Task[None] | None = None
+        self._retry_requested = False
 
     async def start(self) -> None:
         """Start watching and perform an initial sync.
@@ -109,6 +116,12 @@ class SharedKnowledgeSync:
 
     async def stop(self) -> None:
         await self._watcher.stop()
+        if self._retry_task is not None:
+            self._retry_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._retry_task
+            self._retry_task = None
+        self._retry_requested = False
 
     async def _on_changed(self) -> None:
         """FileWatcher callback — SHAREDMEMORY.md was modified."""
@@ -117,9 +130,24 @@ class SharedKnowledgeSync:
 
     async def sync_agent(self, mainmemory_path: Path) -> None:
         """Inject shared knowledge into a single agent's MAINMEMORY.md."""
-        written = await asyncio.to_thread(_sync_agent_io, self._path, mainmemory_path)
+        try:
+            written = await asyncio.to_thread(_sync_agent_io, self._path, mainmemory_path)
+        except LockTimeoutError:
+            self._retry_requested = True
+            if self._retry_task is None:
+                self._retry_task = asyncio.create_task(self._retry_sync())
+            return
         if written:
             logger.info("Synced shared knowledge to %s", mainmemory_path)
+
+    async def _retry_sync(self) -> None:
+        try:
+            while self._retry_requested:
+                await asyncio.sleep(_SYNC_INTERVAL)
+                self._retry_requested = False
+                await self._sync_all()
+        finally:
+            self._retry_task = None
 
     async def _sync_all(self) -> None:
         """Inject into all registered agents' MAINMEMORY.md files."""
