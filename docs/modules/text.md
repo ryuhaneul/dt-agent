@@ -5,6 +5,7 @@ Shared user-facing response text helpers used across bot and orchestrator layers
 ## Files
 
 - `text/response_format.py`: formatter helpers, status/error text builders, startup/recovery text
+- `text/tool_detail.py` extracts and redacts detail text for web tool activity.
 
 ## Public API (`response_format.py`)
 
@@ -25,6 +26,28 @@ Shared user-facing response text helpers used across bot and orchestrator layers
 - `startup_notification_text(kind)`
 - `recovery_notification_text(kind, prompt_preview, session_name="")`
 
+## Public API (`tool_detail.py`)
+
+- `tool_detail(event)` reads the first allowed key present for the event kind.
+  Shell uses `command` or `cmd`, file uses `file_path`, `path` or
+  `notebook_path`, search uses `pattern` or `query`, and web uses `url` or
+  `query`. Missing or non-string values produce no detail.
+- `strip_controls(text)` removes ANSI escapes and C0/C1 controls, preserving
+  newlines and tabs.
+- `build_detail(event, vault)` finds registered secret values and token shapes
+  independently in control-stripped text. The vault provides position ranges
+  for original, JSON-escaped and control-stripped forms of registered values.
+  The helper combines these with ranges for recognized GitHub, OpenAI, Slack
+  and AWS tokens, Bearer credentials and PEM private key blocks. Overlapping
+  or adjacent ranges share a single `***` mask. Unclosed private key blocks
+  are masked through the end of the text. It returns `{kind, text, truncated}`
+  after cutting the masked text to 2,000 characters. Empty details, vault
+  errors and a registered form shorter than four characters matching either
+  the original or control-stripped input leave no detail.
+- `redact_tool_name(name, vault)` applies the same range masking to
+  provider-supplied web tool names. A short-value match or vault error
+  falls back to `tool`. With no vault, it uses token ranges alone.
+
 ## Integration points
 
 - `messenger/telegram/handlers.py`: `/new`, `/stop`
@@ -37,6 +60,7 @@ Shared user-facing response text helpers used across bot and orchestrator layers
 - `messenger/matrix/bot.py`: appends technical footer for Matrix responses
 - `messenger/telegram/edit_streaming.py`, `messenger/telegram/streaming.py`, `messenger/matrix/streaming.py`: use `normalize_tool_name()` for tool activity rendering
 - `api/server.py`: uses `normalize_tool_name()` for `tool_activity` WebSocket events
+- `webchat/turns.py` uses `build_detail()` for supported built-in tool calls.
 
 ## Behavior notes
 

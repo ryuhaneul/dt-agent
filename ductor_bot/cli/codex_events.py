@@ -12,6 +12,7 @@ from ductor_bot.cli.stream_events import (
     StreamEvent,
     SystemInitEvent,
     ThinkingEvent,
+    ToolKind,
     ToolUseEvent,
 )
 
@@ -19,10 +20,13 @@ logger = logging.getLogger(__name__)
 
 
 def _tool_parameters(item: dict[str, Any]) -> dict[str, Any] | None:
+    query = item.get("query") if item.get("type") == "web_search" else None
     for key in ("arguments", "parameters", "input"):
         value = item.get(key)
         if isinstance(value, dict):
-            return value
+            return {**value, "query": query} if isinstance(query, str) else value
+    if isinstance(query, str):
+        return {"query": query}
     if isinstance(item.get("command"), str):
         return {"command": item["command"]}
     if isinstance(item.get("path"), str):
@@ -157,6 +161,13 @@ _CODEX_ITEM_TOOL_MAP: dict[str, str] = {
 }
 
 
+_CODEX_TOOL_KINDS: dict[str, ToolKind] = {
+    "command_execution": "shell",
+    "file_change": "file",
+    "web_search": "web",
+}
+
+
 def parse_codex_stream_event(line: str) -> list[StreamEvent]:
     """Parse a single Codex JSONL line into normalised stream events."""
     stripped = line.strip()
@@ -250,6 +261,7 @@ def _parse_tool_item(item: dict[str, Any], item_type: str, event_type: str) -> l
                 tool_name=tool_name,
                 tool_id=item.get("id"),
                 parameters=_tool_parameters(item),
+                kind=_CODEX_TOOL_KINDS.get(item_type),
             )
         ]
         if tool_name

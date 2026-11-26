@@ -591,7 +591,7 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
         mirrors = await runtime.outbox.mirror_states([entry.id for entry in entries])
         indexed = await attachments.index.get_many(tid, [entry.id for entry in entries])
         rendered = []
-        metadata = await runtime.history.metadata(tid)
+        metadata = await runtime.history.metadata(tid, include_activity=True)
         for entry in entries:
             mirror = mirrors[entry.id]
             legacy: dict[str, Any] = {}

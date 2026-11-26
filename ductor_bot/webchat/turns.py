@@ -22,7 +22,11 @@ from ductor_bot.i18n.loader import TranslationStore
 from ductor_bot.infra.atomic_io import complete_write
 from ductor_bot.infra.file_lock import exclusive_file_lock
 from ductor_bot.infra.input_context import received_at
+from ductor_bot.infra.secret_runtime import get_secret_vault
+from ductor_bot.infra.secret_store import store_path
+from ductor_bot.infra.secret_vault import VaultError
 from ductor_bot.text.response_format import normalize_tool_name, system_status_label
+from ductor_bot.text.tool_detail import build_detail, redact_tool_name
 
 if TYPE_CHECKING:
     from ductor_bot.chat_log.recorder import TurnStatus
@@ -32,9 +36,12 @@ if TYPE_CHECKING:
     from ductor_bot.orchestrator.flows import StreamingCallbacks
     from ductor_bot.orchestrator.registry import OrchestratorResult
     from ductor_bot.session.key import SessionKey
+    from ductor_bot.text.tool_detail import ToolDetail
     from ductor_bot.webchat.attachments import AttachmentMessage
 
 logger = logging.getLogger(__name__)
+_MAX_ACTIVITIES = 200
+_MAX_ACTIVITY_BYTES = 64 * 1024
 
 
 def user_mirror_fields(text: str, strings: TranslationStore) -> tuple[str, str]:
@@ -56,9 +63,32 @@ class _QueuedTurn:
     started_at: str | None = None
     activity: dict[str, Any] | None = None
     activity_seq: int = 0
+    activities: list[dict[str, Any]] = field(default_factory=list)
+    activities_bytes: int = 2
     prepared: asyncio.Event = field(default_factory=asyncio.Event)
     cancellation: asyncio.Task[None] | None = None
     transition: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    def _drop_oldest_activity(self) -> None:
+        removed = self.activities.pop(0)
+        self.activities_bytes -= len(json.dumps(removed)) + (2 if self.activities else 0)
+
+    def add_activity(self, activity: dict[str, Any]) -> None:
+        # Match the default JSON encoder used by snapshots, including list separators.
+        self.activities_bytes += len(json.dumps(activity)) + (2 if self.activities else 0)
+        self.activities.append(activity)
+        while len(self.activities) > _MAX_ACTIVITIES:
+            self._drop_oldest_activity()
+        for i, previous in enumerate(self.activities):
+            if self.activities_bytes <= _MAX_ACTIVITY_BYTES:
+                break
+            if "detail" in previous:
+                reduced = previous.copy()
+                reduced.pop("detail")
+                self.activities[i] = reduced
+                self.activities_bytes -= len(json.dumps(previous)) - len(json.dumps(reduced))
+        while self.activities_bytes > _MAX_ACTIVITY_BYTES:
+            self._drop_oldest_activity()
 
 
 class _QueueJournal:
@@ -294,6 +324,7 @@ class WebTurns:
                 "received": state.received,
                 "started_at": state.started_at,
                 "activity": state.activity,
+                "activities": state.activities.copy(),
             }
             for turn_id in self._queues.get(tid, [])
             if (state := self._turns.get(turn_id)) is not None
@@ -314,12 +345,24 @@ class WebTurns:
                 }
             )
 
-    def _activity(self, state: _QueuedTurn, kind: str, **fields: str | None) -> None:
+    def _activity(
+        self,
+        state: _QueuedTurn,
+        kind: str,
+        *,
+        offset: int = 0,
+        detail: ToolDetail | None = None,
+        **fields: str | None,
+    ) -> None:
         if state.tid in self.blocked:
             return
         state.activity_seq += 1
-        activity = {"type": kind, "seq": state.activity_seq, **fields}
+        activity: dict[str, Any] = {"type": kind, "seq": state.activity_seq, **fields}
         state.activity = None if fields.get("status", "present") is None else activity
+        if kind == "tool":
+            if detail is not None:
+                activity = {**activity, "detail": detail}
+            state.add_activity({**activity, "offset": offset})
         self.runtime.events.publish(
             {"tid": state.tid, "turn_id": state.identity["turn_id"], **activity}
         )
@@ -691,6 +734,16 @@ class WebTurns:
                     )
         self.runtime.drainer.wake()
 
+    async def _save_activity(self, state: _QueuedTurn) -> None:
+        if not state.activities or state.tid in self.blocked:
+            return
+        try:
+            await self.runtime.history.record_activity(
+                state.tid, state.identity["reply_entry_id"], state.activities
+            )
+        except (OSError, UnicodeError) as exc:
+            logger.warning("Web turn activity could not be persisted: %s", type(exc).__name__)
+
     async def _run(  # noqa: C901, PLR0912, PLR0915 -- turn lifecycle, FIFO admission and named target
         self,
         tid: str,
@@ -740,7 +793,22 @@ class WebTurns:
                         )
 
                 async def tool(event: ToolUseEvent) -> None:
-                    self._activity(state, "tool", name=normalize_tool_name(event.tool_name))
+                    offset = len(partial)
+                    name = (
+                        normalize_tool_name(event.tool_name) if event.kind is not None else "tool"
+                    )
+                    detail = None
+                    try:
+                        vault = get_secret_vault(store_path(self.bot._orch.paths.ductor_home))
+                        if event.kind is None:
+                            name = await redact_tool_name(
+                                normalize_tool_name(event.tool_name), vault
+                            )
+                        elif vault is not None:
+                            detail = await build_detail(event, vault)
+                    except (VaultError, OSError):
+                        pass
+                    self._activity(state, "tool", name=name, offset=offset, detail=detail)
 
                 async def system_status(value: str | None) -> None:
                     # Fixed status enums only: never stream arbitrary provider status values.
@@ -820,6 +888,7 @@ class WebTurns:
                     await complete_write(self._journal.mark, turn["turn_id"], "completed")
                 except OSError:
                     logger.warning("Web queue completion receipt could not be persisted")
+                await self._save_activity(state)
             if state.phase != "cancelled":
                 self._publish(tid, turn["turn_id"], "done" if status == "ok" else status)
 

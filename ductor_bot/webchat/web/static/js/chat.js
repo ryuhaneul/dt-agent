@@ -204,28 +204,71 @@ const systemLabels = {
   recovering: 'stream.label_recovering', timeout_warning: 'stream.label_timeout_warning',
   timeout_extended: 'stream.label_timeout_extended',
 };
-function addActivity(turn, event) {
+function addActivity(turn, event, offset = turn.text.length) {
   if (event.type === 'system_status' && !Object.hasOwn(systemLabels, event.status)) return;
   if (event.type === 'tool' && (typeof event.name !== 'string' || !event.name)) return;
-  const items = turn.activities ||= [], last = items.at(-1);
-  // Snapshot recovery may contain the last event already received over the live socket.
+  const items = turn.activities ||= [];
   if (event.seq !== undefined && items.some(item => item.seq === event.seq)) return;
-  const offset = turn.text.length, value = event.type === 'tool' ? event.name : event.status;
-  if (last && last.type === event.type && last.value === value && last.offset === offset) {
-    last.count++; last.seq = event.seq;
-  } else items.push({ type: event.type, value, offset, count: 1, seq: event.seq });
+  const tool = event.type === 'tool';
+  const detail = tool && typeof event.detail?.text === 'string' ? event.detail : null;
+  const item = { type: event.type, value: tool ? event.name : event.status, offset, seq: event.seq, detail };
+  const next = Number.isInteger(event.seq) ? items.findIndex(other => other.seq > event.seq) : -1;
+  if (next === -1) items.push(item);
+  else items.splice(next, 0, item);
   turn.activityRevision = (turn.activityRevision || 0) + 1;
 }
-function activityLine(item) {
-  const text = item.type === 'tool' ? `TOOL: ${item.value}` : t(systemLabels[item.value]);
-  const tag = item.type === 'tool' ? 'b' : 'i', count = item.count > 1 ? ` x${item.count}` : '';
-  return `<div class="activity-line"><${tag}>[${esc(text)}]${count}</${tag}></div>`;
+function restoreActivities(turn, records, replyText) {
+  if (!records.length) return;
+  // Snapshots use Unicode code-point offsets. A new tab has no earlier deltas to place.
+  const text = replyText ?? turn.text, offsets = [0];
+  for (const char of text) offsets.push(offsets.at(-1) + char.length);
+  const complete = replyText !== undefined && !['queued', 'started'].includes(turn.phase);
+  for (const record of records) {
+    if (record?.type !== 'tool' || !Number.isInteger(record.seq)) continue;
+    const offset = offsets[record.offset] ?? text.length;
+    const existing = complete && turn.activities?.find(item => item.seq === record.seq);
+    if (existing) existing.offset = offset;
+    else addActivity(turn, record, offset);
+  }
+}
+function restoreTurnActivities(turn, snapshot, stable = true) {
+  if (Array.isArray(snapshot.activities)) restoreActivities(turn, snapshot.activities);
+  if (stable && snapshot.activity && (!Array.isArray(snapshot.activities) || snapshot.activity.type === 'system_status')) {
+    addActivity(turn, snapshot.activity);
+  }
+}
+function activityRows(turn) {
+  const rows = [];
+  for (const item of turn.activities || []) {
+    const last = rows.at(-1);
+    if (last && !item.detail && !last.detail && last.type === item.type
+        && last.value === item.value && last.offset === item.offset) last.count++;
+    else rows.push({ ...item, count: 1 });
+  }
+  return rows;
+}
+function activityLine(turn, item) {
+  const count = item.count > 1 ? ` x${item.count}` : '';
+  if (item.type !== 'tool') {
+    return `<div class="activity-line"><i>[${esc(t(systemLabels[item.value]))}]${count}</i></div>`;
+  }
+  const label = `TOOL: ${esc(item.value)}${count}`;
+  if (!item.detail) return `<div class="activity-line activity-no-detail"><b>${label}</b></div>`;
+  const open = turn.openActivities?.has(String(item.seq)) ? ' open' : '';
+  const truncated = item.detail.truncated
+    ? `<span class="activity-truncated">… ${esc(t('chat.activity_truncated'))}</span>` : '';
+  return `<details class="activity-line activity-disclosure" data-activity-turn="${esc(turn.id)}" data-activity-seq="${esc(item.seq)}"${open}>
+    <summary><b>${label}</b><span class="activity-chevron" aria-hidden="true"></span></summary>
+    <div class="activity-detail"><code class="activity-command">${esc(item.detail.text)}</code>${truncated}</div>
+  </details>`;
 }
 function activitySummary(turn) {
   if (!turn?.activities?.length) return '';
-  const seconds = Math.max(0, ((Date.parse(turn.finished) || Date.now()) - (Date.parse(turn.startedAt) || Date.now())) / 1000).toFixed(1);
-  const label = turn.phase === 'aborted' ? t('chat.stopped') : turn.phase === 'error' ? t('error.generic') : t('stream.done', { secs: seconds });
-  return `<details class="activity-trace" data-activity-turn="${esc(turn.id)}"${turn.activityOpen ? ' open' : ''}><summary>${esc(label)}<span class="sr-only"> · ${esc(t('chat.activity'))}</span></summary><div class="activity-lines" role="group" aria-label="${esc(t('chat.activity'))}">${turn.activities.map(activityLine).join('')}</div></details>`;
+  const start = Date.parse(turn.startedAt), end = Date.parse(turn.finished);
+  const timed = ['done', 'aborted', 'error'].includes(turn.lastEventPhase) && Number.isFinite(start) && Number.isFinite(end);
+  const label = turn.phase === 'aborted' ? t('chat.stopped') : turn.phase === 'error' ? t('error.generic')
+    : timed ? t('stream.done', { secs: Math.max(0, (end - start) / 1000).toFixed(1) }) : t('chat.activity_done');
+  return `<details class="activity-trace" data-activity-turn="${esc(turn.id)}"${turn.activityOpen ? ' open' : ''}><summary>${esc(label)}<span class="sr-only"> · ${esc(t('chat.activity'))}</span></summary><div class="activity-lines" role="group" aria-label="${esc(t('chat.activity'))}">${activityRows(turn).map(item => activityLine(turn, item)).join('')}</div></details>`;
 }
 function streamContent(turn, live) {
   if (!live) {
@@ -233,9 +276,10 @@ function streamContent(turn, live) {
     return activitySummary(turn) + turn.markdown.render(turn.text, true);
   }
   let html = '', offset = 0;
-  for (const item of turn.activities || []) {
-    html += md(turn.text.slice(offset, item.offset), { scope: `turn:${turn.id}:activity:${offset}` }) + activityLine(item);
-    offset = item.offset;
+  for (const item of activityRows(turn)) {
+    const next = Math.max(offset, item.offset);
+    html += md(turn.text.slice(offset, next), { scope: `turn:${turn.id}:activity:${offset}` }) + activityLine(turn, item);
+    offset = next;
   }
   if (turn.markdownOffset !== offset) turn.markdown = createMarkdownStream(`turn:${turn.id}`);
   turn.markdownOffset = offset;
@@ -343,7 +387,7 @@ function scheduleStreamRender(turnId) {
         if (copyIndex !== -1 && !focused.isConnected) {
           element.querySelectorAll('[data-copy-code]')[copyIndex]?.focus({ preventScroll: true });
         }
-      } else if (!history(topic.tid).range?.newer && !hasTurnEntry(turn, 'bot')) {
+      } else if (!history(topic.tid).range?.newer && (turn.phase === 'started' || !hasTurnEntry(turn, 'bot'))) {
         updateTurn(turn);
       }
     }
@@ -518,7 +562,11 @@ function nodeKey(node) {
 function rememberActivity(node) {
   for (const element of node.querySelectorAll('details[data-activity-turn]')) {
     const turn = turns.get(element.dataset.activityTurn);
-    if (turn) turn.activityOpen = element.open;
+    if (!turn) continue;
+    const seq = element.dataset.activitySeq;
+    if (seq === undefined) turn.activityOpen = element.open;
+    else if (element.open) (turn.openActivities ||= new Set()).add(seq);
+    else turn.openActivities?.delete(seq);
   }
 }
 function patchThread(thread, groups, changes) {
@@ -631,9 +679,15 @@ function orderedMessages(entries, liveTurns, topicTurns) {
   const rows = [], waiting = [], userTurns = new Set(), botTurns = new Set();
   for (const entry of entries) {
     if (entry.role === 'user') userTurns.add(entry.turn_id);
-    if (entry.role === 'bot') botTurns.add(entry.turn_id);
-    const row = { kind: 'entry', entry, key: `entry:${entry.seq}` };
     const turn = turns.get(entry.turn_id);
+    if (entry.role === 'bot') {
+      botTurns.add(entry.turn_id);
+      if (turn?.phase === 'started') {
+        rows.push({ kind: 'stream', turn, key: `stream:${turn.id}` });
+        continue;
+      }
+    }
+    const row = { kind: 'entry', entry, key: `entry:${entry.seq}` };
     if (entry.role === 'user' && boundary !== null && (
       turn?.phase === 'queued' || (entry.status === 'cancelled' && Date.parse(entry.ts) >= boundary)
     )) {
@@ -835,11 +889,18 @@ async function loadHistory(tid, { older = false, target = null, turnId = null } 
     }
     mergeHistory(state, incoming);
     for (const entry of incoming) {
-      const turn = turns.get(entry.turn_id);
+      let turn = turns.get(entry.turn_id);
+      if (entry.role === 'bot' && entry.turn_id && Array.isArray(entry.activity) && entry.activity.length) {
+        if (!turn) {
+          turn = { id: entry.turn_id, tid, text: '', phase: 'done' };
+          turns.set(turn.id, turn);
+        }
+        restoreActivities(turn, entry.activity, entry.text || '');
+      }
       if (turn && entry.role === 'user' && entry.status === 'cancelled') turn.phase = 'cancelled';
-      if (turn && entry.role === 'bot') {
+      if (turn && entry.role === 'bot' && !['queued', 'started'].includes(turn.phase)) {
         turn.phase = entry.status === 'aborted' ? 'aborted' : entry.status === 'error' ? 'error' : 'done';
-        turn.finished = entry.ts;
+        turn.finished ??= entry.ts;
       }
     }
     if (turnId !== null) {
@@ -979,7 +1040,7 @@ async function resync({ preserveReading = false } = {}) {
           if (state.text !== undefined) turn.userText = state.text;
           turn.received = state.received ?? turn.received;
           turn.startedAt = state.started_at ?? turn.startedAt;
-          if (stable && state.activity) addActivity(turn, state.activity);
+          restoreTurnActivities(turn, state, stable);
           turns.set(turn.id, turn);
           if (item.tid === selected) changed.add(turn.id);
         }
@@ -1085,7 +1146,7 @@ export async function handleEvent(event) {
         if (snapshot) {
           turn.userText ??= snapshot.text;
           turn.received ??= snapshot.received;
-          if (turn.phase === 'queued' && snapshot.activity) addActivity(turn, snapshot.activity);
+          if (turn.phase === 'queued') restoreTurnActivities(turn, snapshot);
         }
       }
       const terminal = !['queued', 'started'].includes(event.phase);

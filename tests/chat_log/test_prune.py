@@ -438,6 +438,28 @@ async def test_metadata_retention_counts_bytes_and_keeps_pending_keyboards(paths
 
 
 @time_machine.travel(NOW, tick=False)
+async def test_activity_metadata_follows_history_retention(paths):
+    history = HistoryStore(paths.chat_log_dir / "history")
+    old = await history.append("1", Entry("bot", "web", "old", ts="2020-01-01T00:00:00Z"))
+    current = await history.append("1", Entry("bot", "web", "current"))
+    activities = [{"type": "tool", "name": "Read", "seq": 1, "offset": 0}]
+    await history.record_activity("1", old.id, activities)
+    await history.record_activity("1", current.id, activities)
+
+    retention = pruner(paths, history)
+    preview = await retention.prune(history_days=7, dry_run=True)
+    assert set(await history.metadata("1", include_activity=True)) == {old.id, current.id}
+    assert await retention.prune(history_days=7) == preview
+    assert await history.metadata("1", include_activity=True) == {
+        current.id: {"activity": activities}
+    }
+    stored_ids = {
+        json.loads(line)["id"] for line in history._metadata_path("1").read_text().splitlines()
+    }
+    assert stored_ids == {current.id}
+
+
+@time_machine.travel(NOW, tick=False)
 async def test_metadata_after_last_history_entry_is_pruned_when_delivery_finishes(paths):
     history = HistoryStore(paths.chat_log_dir / "history")
     outbox = Outbox(paths.chat_log_dir / "outbox")

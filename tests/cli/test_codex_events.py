@@ -171,6 +171,7 @@ def test_stream_command_execution() -> None:
     assert len(events) == 1
     assert isinstance(events[0], ToolUseEvent)
     assert events[0].tool_name == "Bash"
+    assert events[0].kind == "shell"
 
 
 def test_stream_file_change() -> None:
@@ -184,6 +185,41 @@ def test_stream_file_change() -> None:
     assert len(events) == 1
     assert isinstance(events[0], ToolUseEvent)
     assert events[0].tool_name == "Edit"
+    assert events[0].kind == "file"
+
+
+def test_stream_web_search_reads_string_query() -> None:
+    item = {"type": "web_search", "query": "search example"}
+    events = parse_codex_stream_event(json.dumps({"type": "item.started", "item": item}))
+    assert len(events) == 1
+    assert isinstance(events[0], ToolUseEvent)
+    assert events[0].tool_name == "WebSearch"
+    assert events[0].kind == "web"
+    assert events[0].parameters == {"query": "search example"}
+
+    item["query"] = ["search example"]
+    events = parse_codex_stream_event(json.dumps({"type": "item.started", "item": item}))
+    assert isinstance(events[0], ToolUseEvent)
+    assert events[0].kind == "web"
+    assert events[0].parameters is None
+
+
+def test_stream_web_search_keeps_nested_parameters_with_top_level_query() -> None:
+    item = {"type": "web_search", "query": "search example", "parameters": {"mode": "default"}}
+    events = parse_codex_stream_event(json.dumps({"type": "item.started", "item": item}))
+    assert isinstance(events[0], ToolUseEvent)
+    assert events[0].parameters == {"mode": "default", "query": "search example"}
+
+
+def test_stream_todo_list_has_no_tool_kind() -> None:
+    events = parse_codex_stream_event('{"type":"item.started","item":{"type":"todo_list"}}')
+    assert len(events) == 1
+    assert isinstance(events[0], ToolUseEvent)
+    assert events[0].kind is None
+
+
+def test_stream_unknown_item_returns_empty() -> None:
+    assert parse_codex_stream_event('{"type":"item.started","item":{"type":"unknown"}}') == []
 
 
 def test_stream_mcp_tool_call() -> None:
@@ -202,6 +238,7 @@ def test_stream_mcp_tool_call() -> None:
     assert len(events) == 1
     assert isinstance(events[0], ToolUseEvent)
     assert events[0].tool_name == "search_docs"
+    assert events[0].kind is None
     assert events[0].tool_id == "mcp-1"
     assert events[0].parameters == {"query": "slack plan block"}
 

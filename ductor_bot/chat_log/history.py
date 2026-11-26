@@ -96,6 +96,7 @@ class HistoryStore:
         self._locks: dict[str, asyncio.Lock] = {}
         self._sequences: dict[str, tuple[int, int]] = {}
         self._indexes: dict[str, _HistoryIndex] = {}
+        self._metadata_compacted_sizes: dict[str, int] = {}
         self._selector_locks: dict[tuple[str, str], asyncio.Lock] = {}
 
     def _lock(self, tid: str) -> asyncio.Lock:
@@ -121,11 +122,14 @@ class HistoryStore:
             if (
                 not isinstance(item, dict)
                 or not isinstance(item.get("id"), str)
-                or not isinstance(item.get("buttons"), list)
+                or not (
+                    isinstance(item.get("buttons"), list)
+                    or (item.keys() == {"id", "activity"} and isinstance(item["activity"], list))
+                )
             ):
                 logger.warning("Skipping corrupt history metadata %s:%d", path.name, line_no)
                 continue
-            result[item["id"]] = {
+            metadata = {
                 key: item[key]
                 for key in (
                     "buttons",
@@ -139,6 +143,9 @@ class HistoryStore:
                 )
                 if key in item
             }
+            if isinstance(item.get("activity"), list):
+                metadata["activity"] = item["activity"]
+            result[item["id"]] = metadata
         return result
 
     def _append_metadata(
@@ -198,9 +205,12 @@ class HistoryStore:
         with exclusive_file_lock(path):
             records = self._read_metadata(path)
             current = records.get(entry_id)
-            if only_if_missing and current is not None:
+            if only_if_missing and current is not None and "buttons" in current:
+                current.pop("activity", None)
                 return current
-            if claim and (current is None or current.get("answered") is not None):
+            if claim and (
+                current is None or "buttons" not in current or current.get("answered") is not None
+            ):
                 return None
             if (
                 binding_revision is not None
@@ -211,12 +221,15 @@ class HistoryStore:
                     for key, value in updates.items()
                     if key not in {"buttons", "telegram_html_text"}
                 }
-            metadata = {"buttons": [], **(current or {}), **updates}
+            metadata = {**(current or {}), **updates}
+            if "activity" not in updates:
+                metadata = {"buttons": [], **metadata}
             if "text" in updates:
                 metadata["selector_revision"] = (current or {}).get("selector_revision", 0) + 1
             self._write_metadata(path, entry_id, metadata)
             try:
-                if path.stat().st_size >= _METADATA_COMPACT_BYTES:
+                limit = max(_METADATA_COMPACT_BYTES, 2 * self._metadata_compacted_sizes.get(tid, 0))
+                if path.stat().st_size >= limit:
                     records[entry_id] = metadata
                     self._save_compacted_metadata(
                         path,
@@ -225,8 +238,11 @@ class HistoryStore:
                             for ident, record in records.items()
                         ),
                     )
+                    self._metadata_compacted_sizes[tid] = path.stat().st_size
             except OSError as exc:
                 logger.warning("History metadata compaction failed: %s", type(exc).__name__)
+            # Keep the metadata returned to existing callers and event publishers unchanged.
+            metadata.pop("activity", None)
             return metadata
 
     def _publish_metadata(self, tid: str, entry_id: str, metadata: dict[str, Any]) -> None:
@@ -234,6 +250,23 @@ class HistoryStore:
             self._events.publish(
                 {"type": "entry_meta", "tid": tid, "entry_id": entry_id, "meta": metadata}
             )
+
+    def _record_activity(self, tid: str, entry_id: str, activity: list[dict[str, Any]]) -> None:
+        path = self._path(tid)
+        # Keep the existence check and sidecar write together across prune and delete.
+        with exclusive_file_lock(path):
+            if any(
+                entry.id == entry_id and entry.role == "bot" and not entry.imported
+                for entry in reversed(self._read(path))
+            ):
+                self._update_metadata(tid, entry_id, {"activity": activity})
+
+    async def record_activity(
+        self, tid: str, entry_id: str, activity: list[dict[str, Any]]
+    ) -> None:
+        """Save activity in the sidecar for an existing, non-imported reply."""
+        async with self._lock(tid):
+            await complete_write(self._record_activity, tid, entry_id, activity)
 
     async def record_display_markdown(self, tid: str, entry_id: str, value: str) -> None:
         async with self._lock(tid):
@@ -409,9 +442,19 @@ class HistoryStore:
                 return entry_id
         return None
 
-    async def metadata(self, tid: str) -> dict[str, dict[str, Any]]:
+    async def metadata(
+        self, tid: str, *, include_activity: bool = False
+    ) -> dict[str, dict[str, Any]]:
+        """Read selector and mirror metadata, with activity available to message history."""
         async with self._lock(tid):
-            return await asyncio.to_thread(self._read_metadata, self._metadata_path(tid))
+            records = await asyncio.to_thread(self._read_metadata, self._metadata_path(tid))
+        if include_activity:
+            return records
+        return {
+            entry_id: {key: value for key, value in metadata.items() if key != "activity"}
+            for entry_id, metadata in records.items()
+            if "buttons" in metadata
+        }
 
     def metadata_tids(self) -> list[str]:
         tids = []
@@ -648,6 +691,7 @@ class HistoryStore:
             self._sequence_path(tid).unlink(missing_ok=True)
             self._metadata_path(tid).unlink(missing_ok=True)
             self._sequences.pop(tid, None)
+            self._metadata_compacted_sizes.pop(tid, None)
             self._indexes.pop(tid, None)
             return count
 

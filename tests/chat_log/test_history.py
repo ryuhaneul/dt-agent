@@ -456,6 +456,55 @@ async def test_button_metadata_keeps_old_entry_reader_and_events_compatible(tmp_
     assert not (tmp_path / "1.7.meta.jsonl").exists()
 
 
+async def test_activity_metadata_survives_button_update_and_compaction(tmp_path, monkeypatch):
+    store = HistoryStore(tmp_path)
+    tid = "1.7"
+    saved = await store.append(tid, Entry("bot", "web", "Reply"))
+    activities = [{"type": "tool", "name": "Read", "seq": 1, "offset": 0}]
+    original = store._path(tid).read_bytes()
+    await store.record_activity(tid, saved.id, activities)
+    assert await store.metadata(tid) == {}
+    assert await store.metadata(tid, include_activity=True) == {saved.id: {"activity": activities}}
+    assert json.loads(store._metadata_path(tid).read_text()) == {
+        "id": saved.id,
+        "activity": activities,
+    }
+
+    buttons = [[{"text": "Next", "callback_data": "Next"}]]
+    assert await store.record_buttons(tid, saved.id, buttons, only_if_missing=True) == {
+        "buttons": buttons,
+    }
+    assert await store.metadata(tid) == {saved.id: {"buttons": buttons}}
+    assert await store.metadata(tid, include_activity=True) == {
+        saved.id: {"buttons": buttons, "activity": activities},
+    }
+
+    monkeypatch.setattr("ductor_bot.chat_log.history._METADATA_COMPACT_BYTES", 1)
+    await store.record_mirror_revision(tid, saved.id, 2)
+    expected = {"buttons": buttons, "activity": activities, "mirror_revision": 2}
+    assert await HistoryStore(tmp_path).metadata(tid, include_activity=True) == {saved.id: expected}
+    assert json.loads(store._metadata_path(tid).read_text()) == {"id": saved.id, **expected}
+    assert store._path(tid).read_bytes() == original
+
+
+@pytest.mark.parametrize("invalid", [None, "activity", {"type": "tool"}])
+async def test_metadata_ignores_non_list_activity(tmp_path, invalid):
+    store = HistoryStore(tmp_path)
+    saved = await store.append("1", Entry("bot", "web", "Reply"))
+    buttons = [[{"text": "Next", "callback_data": "Next"}]]
+    store._metadata_path("1").write_text(
+        json.dumps({"id": saved.id, "buttons": buttons, "activity": invalid}) + "\n"
+    )
+    assert await store.metadata("1", include_activity=True) == {saved.id: {"buttons": buttons}}
+
+
+async def test_record_activity_skips_imported_entries(tmp_path):
+    store = HistoryStore(tmp_path)
+    imported = await store.append("1", Entry("bot", "import", "Reply", seq=-1, imported=True))
+    await store.record_activity("1", imported.id, [{"type": "tool", "name": "Read"}])
+    assert not store._metadata_path("1").exists()
+
+
 async def test_code_display_metadata_preserves_v154_readers(tmp_path: Path) -> None:
     hub = EventHub()
     queue = hub.subscribe()
@@ -670,6 +719,20 @@ async def test_metadata_compaction_preserves_latest_records_and_read_results(tmp
         for record in records
     } == before
     assert path.stat().st_size < 256 * 1024
+
+
+async def test_large_metadata_sidecar_waits_for_growth_after_compaction(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    store = HistoryStore(tmp_path)
+    save = Mock(wraps=store._save_compacted_metadata)
+    monkeypatch.setattr(store, "_save_compacted_metadata", save)
+    await store.record_display_markdown("1", "large", "x" * (256 * 1024))
+    assert store._metadata_path("1").stat().st_size >= 256 * 1024
+    for revision in range(10):
+        await store.record_mirror_revision("1", "small", revision)
+    assert save.call_count <= 1
+    assert (await store.metadata("1"))["small"]["mirror_revision"] == 9
 
 
 @pytest.mark.parametrize("failure", ["temp_creation", "replace"])

@@ -52,6 +52,83 @@ async def test_unconfigured_keeps_plaintext_access(vault: SecretVault) -> None:
     assert (await vault.status()).state is VaultState.UNCONFIGURED
 
 
+async def test_redaction_spans_masks_original_normalized_and_json_escaped_forms(
+    vault: SecretVault,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    controlled = "ab\x01cd"
+    escaped = json.dumps(controlled)[1:-1]
+    vault.plaintext_path.write_text(f"TOKEN={controlled}\nOTHER={VALUE}\nEMPTY=\n")
+    with caplog.at_level("DEBUG"):
+        result = await vault.redaction_spans(
+            f"cmd {controlled} {escaped} abcd {VALUE}", lambda text: text.replace("\x01", "")
+        )
+    normalized = f"cmd abcd {escaped} abcd {VALUE}"
+    expected = [(i, i + len(form)) for i, form in (
+        (4, "abcd"), (9, escaped), (10 + len(escaped), "abcd"), (15 + len(escaped), VALUE),
+    )]
+    assert result is not None
+    assert sorted(result) == expected
+    assert [normalized[start:end] for start, end in sorted(result)] == ["abcd", escaped, "abcd", VALUE]
+    for form in (controlled, escaped, "abcd", VALUE):
+        assert form not in caplog.text
+
+
+async def test_redaction_spans_masks_both_json_encodings_of_non_ascii_value(vault: SecretVault) -> None:
+    value = f'synthetic-{chr(233)}-"quoted"-value'
+    vault.plaintext_path.write_text(f"TOKEN={value}\n", encoding="utf-8")
+    ascii_json = json.dumps(value)[1:-1]
+    unicode_json = json.dumps(value, ensure_ascii=False)[1:-1]
+    result = await vault.redaction_spans(f"cmd {ascii_json} {unicode_json}", str)
+    assert result is not None
+    assert sorted(result) == [(4, 4 + len(ascii_json)), (5 + len(ascii_json), 5 + len(ascii_json) + len(unicode_json))]
+
+
+async def test_redaction_spans_includes_overlapping_occurrences(vault: SecretVault) -> None:
+    vault.plaintext_path.write_text("VALUE=aaaa\nOTHER=aaaaaa\n")
+    result = await vault.redaction_spans("aaaaaa", str)
+    assert result is not None
+    assert sorted(result) == [(0, 4), (0, 6), (1, 5), (2, 6)]
+
+
+async def test_redaction_spans_suppresses_short_forms_before_and_after_normalization(
+    vault: SecretVault,
+) -> None:
+    vault.plaintext_path.write_text("SHORT=ab\nNORMALIZED=x\x01yz\n")
+
+    def normalize(text: str) -> str:
+        return text.replace("\x01", "")
+
+    assert await vault.redaction_spans("cmd ab", normalize) is None
+    assert await vault.redaction_spans("cmd x\x01yz", normalize) is None
+    assert await vault.redaction_spans("cmd x\x01\x01yz", normalize) is None
+    assert await vault.redaction_spans("cmd other", normalize) == []
+
+
+async def test_redaction_spans_io_error_contains_no_values(
+    vault: SecretVault,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    vault.plaintext_path.write_text(f"TOKEN={VALUE}\n")
+    monkeypatch.setattr(Path, "read_bytes", Mock(side_effect=OSError(VALUE)))
+    with caplog.at_level("DEBUG"), pytest.raises(VaultError, match=r"^SECRETS_IO_ERROR$") as error:
+        await vault.redaction_spans(f"cmd {VALUE}", str)
+    assert VALUE not in str(error.value)
+    assert VALUE not in caplog.text
+
+
+async def test_redaction_spans_expired_store_raises_locked(tmp_path: Path) -> None:
+    clock = Clock()
+    vault = SecretVault(tmp_path / "secrets.env", ttl_seconds=1, clock=clock)
+    vault.plaintext_path.write_text(f"TOKEN={VALUE}\n")
+    await vault.setup(MASTER)
+    assert await vault.redaction_spans(f"cmd {VALUE}", str) == [(4, 4 + len(VALUE))]
+    clock.now += 1
+    with pytest.raises(VaultError, match=r"^SECRETS_LOCKED$"):
+        await vault.redaction_spans(f"cmd {VALUE}", str)
+
+
 async def test_setup_preserves_text_authenticates_header_and_restarts_locked(
     vault: SecretVault,
 ) -> None:

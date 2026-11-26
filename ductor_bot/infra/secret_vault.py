@@ -443,6 +443,38 @@ class SecretVault:
                 raise VaultError("SECRET_NOT_SET")
             return values[key]
 
+    async def redaction_spans(
+        self, text: str, normalize: Callable[[str], str]
+    ) -> list[tuple[int, int]] | None:
+        """Return positions of stored values in normalized text."""
+        async with self._mutex:
+            values = await self._read_values()
+            forms = {
+                form
+                for value in values.values()
+                if value
+                for form in (
+                    value,
+                    json.dumps(value)[1:-1],
+                    json.dumps(value, ensure_ascii=False)[1:-1],
+                    normalize(value),
+                )
+                if form
+            }
+            # Check short forms on original and normalized input only, before adding masks.
+            normalized = normalize(text)
+            if any(len(form) < 4 and (form in text or form in normalized) for form in forms):
+                return None
+
+            spans = []
+            for form in forms:
+                if len(form) >= 4:
+                    start = normalized.find(form)
+                    while start != -1:
+                        spans.append((start, start + len(form)))
+                        start = normalized.find(form, start + 1)
+            return spans
+
     async def list_keys(self) -> list[str]:
         """Return names only; a locked encrypted store does not expose its names."""
         async with self._mutex:
