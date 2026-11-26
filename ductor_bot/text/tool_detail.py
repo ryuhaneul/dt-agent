@@ -59,14 +59,14 @@ def strip_controls(text: str) -> str:
 def _pem_spans(text: str) -> list[tuple[int, int]]:
     spans = []
     cursor = 0
-    for opening in _PEM_BEGIN.finditer(text):
-        if opening.start() < cursor:
-            continue
+    while opening := _PEM_BEGIN.search(text, cursor):
         closing = _PEM_END.search(text, opening.end())
-        cursor = closing.end() if closing else len(text)
-        spans.append((opening.start(), cursor))
         if closing is None:
+            spans.append((opening.start(), len(text)))
             break
+        spans.append((opening.start(), closing.end()))
+        # The next opening may share the closing marker's trailing hyphens.
+        cursor = closing.start()
     return spans
 
 

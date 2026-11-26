@@ -323,12 +323,54 @@ async def test_activity_token_boundaries_and_unclosed_key(
     assert await redact_tool_name(text, vault) == expected
 
 
-async def test_activity_large_unclosed_key_input(tmp_path: Path) -> None:
+_PEM_OPENING = "-----BEGIN " + "PRIVATE KEY-----\n"
+_PEM_CLOSING = "\n-----END " + "PRIVATE KEY-----"
+
+
+@pytest.mark.parametrize("count", [2, 3])
+async def test_activity_masks_keys_with_shared_markers(tmp_path: Path, count: int) -> None:
     vault = SecretVault(tmp_path / "secrets.env")
-    opening = "-----BEGIN " + "PRIVATE KEY-----\n"
-    text = opening * (1024 * 1024 // len(opening) + 1)
-    start = perf_counter()
+    blocks = [_PEM_OPENING + f"synthetic-key-body-{index}" + _PEM_CLOSING for index in range(count)]
+    text = blocks[0] + "".join(block[5:] for block in blocks[1:])
     assert await build_detail(_shell_event(text), vault) == {
+        "kind": "shell",
+        "text": "***",
+        "truncated": False,
+    }
+    assert await redact_tool_name(text, vault) == "***"
+
+
+@pytest.mark.parametrize("closed", [True, False], ids=["closed", "unclosed"])
+async def test_activity_masks_keys_separated_by_newline(tmp_path: Path, closed: bool) -> None:
+    vault = SecretVault(tmp_path / "secrets.env")
+    first = _PEM_OPENING + "synthetic-first-key-body" + _PEM_CLOSING
+    second = _PEM_OPENING + "synthetic-second-key-body"
+    if closed:
+        second += _PEM_CLOSING
+    text = first + "\n" + second
+    assert await build_detail(_shell_event(text), vault) == {
+        "kind": "shell",
+        "text": "***\n***",
+        "truncated": False,
+    }
+    assert await redact_tool_name(text, vault) == "***\n***"
+
+
+@pytest.mark.parametrize(
+    ("prefix", "unit"),
+    [
+        ("", _PEM_OPENING),
+        ("", _PEM_OPENING + "synthetic-key-body" + _PEM_CLOSING),
+        ("-----", _PEM_OPENING[5:] + "synthetic-key-body" + _PEM_CLOSING),
+    ],
+    ids=["unclosed-markers", "closed-blocks", "shared-markers"],
+)
+async def test_activity_large_key_input(tmp_path: Path, prefix: str, unit: str) -> None:
+    vault = SecretVault(tmp_path / "secrets.env")
+    text = prefix + unit * (1024 * 1024 // len(unit) + 1)
+    event = _shell_event(text)
+    start = perf_counter()
+    assert await build_detail(event, vault) == {
         "kind": "shell",
         "text": "***",
         "truncated": False,
