@@ -746,6 +746,8 @@ Hot-reloadable top-level fields:
 - `allowed_user_ids`, `allowed_group_ids`, `group_mention_only`
 - `telegram_dm_topic_auto_name`, `persona_setup_prompt`, `memory_lint`
 
+Sub-agents ignore changes to `heartbeat` in their own `config.json` during hot-reload.
+
 Bundled config rules now match `ConfigReloader`: the removed `docker` key is absent from restart-required instructions. `allowed_channel_ids`, `api`, `append_system_prompt_files`, `claude_system_prompt_snapshot`, `cron_delivery_retry`, `cron_preflight`, `ductor_home`, `gemini_api_key`, `interagent`, `interagent_notify_received`, `interagent_port`, `log_level`, `matrix`, `memory_compaction`, `memory_flush`, `memory_reflection`, `notifications`, `skills`, `slack`, `tasks`, `telegram_token`, `timeouts`, `transcription`, `transport`, `transports`, `webhooks`, and unknown/new keys require `/restart`. This is an application restart, not a Compose rebuild.
 
 Current non-hot fields that often surprise people:

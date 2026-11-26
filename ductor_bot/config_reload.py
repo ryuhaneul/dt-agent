@@ -121,11 +121,13 @@ class ConfigReloader:
         *,
         on_hot_reload: Callable[[AgentConfig, dict[str, Any]], None] | None = None,
         on_restart_needed: Callable[[list[str]], None] | None = None,
+        ignored_fields: frozenset[str] = frozenset(),
     ) -> None:
         self._path = config_path
         self._config = current_config
         self._on_hot_reload = on_hot_reload
         self._on_restart_needed = on_restart_needed
+        self._ignored_fields = ignored_fields
         self._last_mtime: float = 0.0
         self._task: asyncio.Task[None] | None = None
         self._init_mtime()
@@ -178,6 +180,8 @@ class ConfigReloader:
             return
 
         changes = diff_configs(self._config, new_config)
+        for field in self._ignored_fields:
+            changes.pop(field, None)
         if not changes:
             logger.debug("Config file changed but no field differences detected")
             return

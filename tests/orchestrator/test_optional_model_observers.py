@@ -1,11 +1,20 @@
-"""Tests for optional provider model-cache observers."""
+"""Tests for the observer manager."""
 
 from __future__ import annotations
 
+import asyncio
+import json
+import os
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from ductor_bot.cli.codex_cache import CodexModelCache
+from ductor_bot.config import AgentConfig, update_config_file
+from ductor_bot.orchestrator.core import Orchestrator
 from ductor_bot.orchestrator.observers import ObserverManager
+from ductor_bot.workspace.paths import DuctorPaths
 
 
 def _manager() -> ObserverManager:
@@ -97,3 +106,52 @@ async def test_installed_but_unauthenticated_provider_still_gets_observer() -> N
     gemini_cls.assert_not_called()
     grok_cls.assert_not_called()
     codex_observer.start.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("agent_name", "heartbeat_block", "expected_enabled"),
+    [
+        ("worker", "example", False),
+        ("worker", "missing", False),
+        ("worker", "partial", False),
+        ("main", "example", True),
+    ],
+)
+async def test_agent_heartbeat_config_reload(
+    tmp_path: Path, agent_name: str, heartbeat_block: str, expected_enabled: bool
+) -> None:
+    paths = DuctorPaths(tmp_path)
+    disk_config = json.loads(paths.config_example_path.read_text(encoding="utf-8"))
+    disk_config["model"] = "sonnet"
+    cfg = AgentConfig.model_validate({**disk_config, "heartbeat": {"enabled": False}})
+    if heartbeat_block == "missing":
+        disk_config.pop("heartbeat")
+    elif heartbeat_block == "partial":
+        disk_config["heartbeat"] = {"interval_minutes": 60}
+    paths.config_path.parent.mkdir()
+    paths.config_path.write_text(json.dumps(disk_config), encoding="utf-8")
+
+    orch = Orchestrator(cfg, paths, agent_name=agent_name)
+    manager = orch._observers
+    heartbeat = manager.heartbeat
+    heartbeat.set_heartbeat_handler(AsyncMock())
+    await heartbeat._ensure_loaded()
+    on_hot = MagicMock(wraps=orch._on_config_hot_reload)
+    await manager.start_config_reloader(on_hot_reload=on_hot, on_restart_needed=MagicMock())
+    try:
+        reloader = manager._config_reloader
+        assert reloader is not None
+        assert not heartbeat.running
+        update_config_file(paths.config_path, model="opus")
+        new_mtime = reloader._last_mtime + 1
+        os.utime(paths.config_path, (new_mtime, new_mtime))
+        await reloader._check()
+        await asyncio.sleep(0)
+
+        assert cfg.model == "opus"
+        assert heartbeat.running is expected_enabled
+        assert cfg.heartbeat.enabled is expected_enabled
+        on_hot.assert_called_once()
+        assert ("heartbeat" in on_hot.call_args.args[1]) is expected_enabled
+    finally:
+        await manager.stop_all()

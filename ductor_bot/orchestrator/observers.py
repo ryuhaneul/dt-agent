@@ -208,6 +208,7 @@ class ObserverManager:
             self._config,
             on_hot_reload=on_hot_reload,
             on_restart_needed=on_restart_needed,
+            ignored_fields=frozenset({"heartbeat"}) if self._agent_name != "main" else frozenset(),
         )
         await self._config_reloader.start()
 

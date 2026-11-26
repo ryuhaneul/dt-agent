@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
+import pytest
+
 from ductor_bot.config import AgentConfig
 from ductor_bot.config_reload import (
     ConfigReloader,
@@ -124,6 +126,33 @@ class TestConfigReloader:
         call_config, call_hot = on_hot.call_args[0]
         assert isinstance(call_config, AgentConfig)
         assert "model" in call_hot
+
+    @pytest.mark.parametrize("change_model", [True, False], ids=["with-model", "heartbeat-only"])
+    async def test_ignored_heartbeat(self, tmp_path: Path, change_model: bool) -> None:
+        config_path = tmp_path / "config.json"
+        cfg = self._write_config(config_path, model="sonnet", heartbeat={"enabled": False})
+        on_hot = MagicMock()
+        on_restart = MagicMock()
+        reloader = ConfigReloader(
+            config_path,
+            cfg,
+            ignored_fields=frozenset({"heartbeat"}),
+            on_hot_reload=on_hot,
+            on_restart_needed=on_restart,
+        )
+
+        expected_model = "opus" if change_model else "sonnet"
+        self._write_config(config_path, model=expected_model, heartbeat={"enabled": True})
+        os.utime(config_path, (reloader._last_mtime + 1, reloader._last_mtime + 1))
+        await reloader._check()
+
+        assert cfg.heartbeat.enabled is False
+        assert cfg.model == expected_model
+        if change_model:
+            on_hot.assert_called_once_with(cfg, {"model": "opus"})
+        else:
+            on_hot.assert_not_called()
+        on_restart.assert_not_called()
 
     async def test_restart_callback(self, tmp_path: Path) -> None:
         config_path = tmp_path / "config.json"
