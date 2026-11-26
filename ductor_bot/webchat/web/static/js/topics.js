@@ -60,6 +60,13 @@ export function scheduleBadgeRefresh() {
   badgeDue = Math.min(now + BADGE_DELAY, badgeDeadline);
   armBadgeRefresh();
 }
+export function scheduleHistoryRetry(attempt) {
+  const delay = BADGE_RETRIES[attempt];
+  if (!active || delay === undefined) return;
+  const due = performance.now() + delay;
+  badgeDue = Math.min(badgeDue ?? due, due);
+  armBadgeRefresh();
+}
 function noteBadgeFailure(error, key = 'error.generic', report = true) {
   if (badgeNotified || error?.code === 'auth_required') return;
   if (report) notify(key);

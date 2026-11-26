@@ -212,8 +212,9 @@ fails before the list recovers, the error notice can appear twice.
 
 Badge refreshes after new entries or read-state changes normally start within
 150 ms. Reconnects and topic-list events request the list immediately.
-If the topic list fails to load on reconnect, the next successful list update
-reloads the open conversation to recover messages missed while disconnected.
+After a reconnect, a successful topic list update lets the browser reload the
+open conversation, even if the reconnect's own list request fails. A failed
+history reload uses the existing retry delays to try again.
 A reconnect that overlaps an ongoing history recovery may request the same
 history twice.
 A continuous stream can delay the start up to one second when no read write or

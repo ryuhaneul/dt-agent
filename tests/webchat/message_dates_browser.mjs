@@ -1063,6 +1063,8 @@ async function unreadRecovery(browser, scenario) {
 
 async function reconnectHistory(browser, scenario) {
   const visibility = scenario.startsWith('reconnect-history-visibility-');
+  const topicsRace = scenario === 'reconnect-history-stale-topics-failure';
+  const historyFailure = scenario === 'reconnect-history-messages-failure';
   const width = visibility ? Number(scenario.split('-').at(-1)) : 375;
   const context = await browser.newContext({ viewport: { width, height: 667 } });
   try {
@@ -1071,11 +1073,17 @@ async function reconnectHistory(browser, scenario) {
     const entries = messages.slice(0, 120);
     let socket, failTopics = false, historyReads = 0, holdTopics = false;
     const visibilityGate = visibility ? Promise.withResolvers() : null;
+    const firstTopics = topicsRace ? Promise.withResolvers() : null;
+    const releaseTopics = topicsRace ? Promise.withResolvers() : null;
     await mockChat(page, entries, topic, peer => { socket = peer; });
     await page.route('**/api/topics', async route => {
       if (failTopics) {
         failTopics = false;
         holdTopics = visibility;
+        if (topicsRace) {
+          firstTopics.resolve();
+          await releaseTopics.promise;
+        }
         return route.fulfill({ status: 503, json: { error: 'bot_unreachable' } });
       }
       if (holdTopics) await visibilityGate.promise;
@@ -1101,12 +1109,44 @@ async function reconnectHistory(browser, scenario) {
     const beforeReconnect = historyReads;
     const missing = { ...messages[120], text: 'Message received while disconnected' };
     if (!visibility) entries.push(missing);
-    const succeeds = scenario === 'reconnect-history-success';
+    const succeeds = scenario === 'reconnect-history-success' || historyFailure;
+    if (historyFailure) {
+      await page.route('**/api/topics/*/messages?*', route => route.fulfill({
+        status: 503, json: { error: 'history_busy' },
+      }), { times: 1 });
+    }
     failTopics = !succeeds;
     const first = topicsResponse(succeeds ? 200 : 503);
     await socket.close();
     await page.clock.fastForward(2000);
+    if (topicsRace) {
+      await firstTopics.promise;
+      try {
+        await page.evaluate(() => {
+          window.reconnectTopicsApplied = new Promise(resolve => {
+            document.addEventListener('topics-updated', () => resolve(), { once: true });
+          });
+        });
+        const newer = topicsResponse(200);
+        socket.send(JSON.stringify({ type: 'topics' }));
+        await newer;
+        await page.evaluate(() => window.reconnectTopicsApplied);
+      } finally {
+        releaseTopics.resolve();
+      }
+    }
     await first;
+    if (topicsRace || historyFailure) {
+      await page.locator('#toasts .toast-error').waitFor({ timeout: 2500 });
+      if (historyFailure) {
+        assert.equal(historyReads - beforeReconnect, 1, 'the first history read should fail');
+        await page.clock.runFor(1000);
+      }
+      await page.locator('[data-entry-seq="121"]').waitFor({ timeout: 2500 })
+        .catch(() => assert.fail(`history recovery did not finish (${historyReads - beforeReconnect} reads)`));
+      assert.equal(historyReads - beforeReconnect, historyFailure ? 3 : 2);
+      return;
+    }
     if (!succeeds) {
       await page.locator('#toasts .toast-error').waitFor({ timeout: 2500 });
       assert.equal(await page.locator('#toasts .toast-error').count(), 1);

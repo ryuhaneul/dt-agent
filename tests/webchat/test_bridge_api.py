@@ -1331,6 +1331,25 @@ async def test_events_ignore_client_frames_and_disconnect_on_overflow(conversati
     assert not h.runtime.events._subscribers
 
 
+async def test_events_disconnect_when_forwarding_fails(conversation, monkeypatch, caplog):
+    h = conversation
+    sensitive = "synthetic forwarding error detail"
+    monkeypatch.setattr(h.runtime.outbox, "mirror_state", AsyncMock(side_effect=OSError(sensitive)))
+    async with h.client.ws_connect(f"{_PREFIX}/events", headers=headers()) as ws:
+        await h.runtime.history.append(h.key, Entry(role="bot", source="telegram", text="reply"))
+        message = await ws.receive(timeout=2)
+        assert message.type == aiohttp.WSMsgType.CLOSE
+        assert ws.close_code == 1013
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "ductor_bot.webchat.bridge" and record.levelno == logging.WARNING
+    ]
+    assert messages == ["Webchat event forwarding failed: OSError"]
+    assert sensitive not in caplog.text
+    assert not h.runtime.events._subscribers
+
+
 async def test_delete_waits_for_telegram_finally_before_removing_history(conversation):
     h = conversation
     lock = h.pool.get(h.key.lock_key)

@@ -11,7 +11,7 @@ import { notify } from './auth.js';
 import { connectEvents } from './ws.js';
 import { md, esc, createMarkdownCache, createMarkdownStream, initMarkdownLinks } from './md.js';
 import {
-  getTopic, getTopics, selectTopic, refreshTopics, scheduleBadgeRefresh,
+  getTopic, getTopics, selectTopic, refreshTopics, scheduleBadgeRefresh, scheduleHistoryRetry,
   noteEntry, noteTopicBusy, markSeen, formatTime,
 } from './topics.js';
 
@@ -20,6 +20,7 @@ let active = false, epoch = 0, stopEvents = null, telegram = { state: 'unknown' 
 let botUp = false, webSessions = null, releaseVersion = '', pending = 0, outbox = [], sending = false;
 let slots = null, stateRequest = null;
 let pendingHistoryRecovery = null, resumedHistoryRecovery = null;
+let topicUpdates = 0;
 let view = 'chat', selection = 0, commandMenu = null, secretDialog = null, autocompactDialog = null, cronDialog = null;
 let streamFrame = null, historyRender = null, composerFiles = null, attachmentView = null;
 const streamUpdates = new Set();
@@ -1005,11 +1006,26 @@ async function reloadSelectedHistory(generation, preserveReading) {
     renderThread({ preserveReading: preserveReading && entries.size === previousCount });
   }
 }
+async function recoverSelectedHistory(generation, preserveReading, attempt = 0) {
+  try {
+    await reloadSelectedHistory(generation, preserveReading);
+  } catch (error) {
+    if (!active || generation !== epoch || error.code === 'auth_required') return;
+    if (pendingHistoryRecovery) {
+      pendingHistoryRecovery.preserveReading ||= preserveReading;
+    } else {
+      pendingHistoryRecovery = { preserveReading, attempt: attempt + 1 };
+      scheduleHistoryRetry(attempt);
+    }
+    if (!attempt) errorNotice(error);
+  }
+}
 async function resync({ preserveReading = false } = {}) {
   attachmentView?.markStale();
   for (const state of histories.values()) state.loaded = false;
   const generation = epoch, versions = new Map(topicVersions);
   const previousRecovery = resumedHistoryRecovery;
+  const previousTopicUpdates = topicUpdates;
   if (preserveReading && pendingHistoryRecovery) pendingHistoryRecovery.preserveReading = true;
   let waitingForTopics = true;
   const auxiliary = Promise.all([refreshState(), refreshOutbox()]).catch(error => {
@@ -1051,13 +1067,17 @@ async function resync({ preserveReading = false } = {}) {
     if (!active || generation !== epoch) return;
     // The successful list may already have resumed a deferred recovery.
     if (resumedHistoryRecovery !== previousRecovery) await resumedHistoryRecovery;
-    else if (!pendingHistoryRecovery) await reloadSelectedHistory(generation, preserveReading);
+    else if (!pendingHistoryRecovery) await recoverSelectedHistory(generation, preserveReading);
   } catch (error) {
     if (active && generation === epoch) {
-      if (waitingForTopics && resumedHistoryRecovery === previousRecovery) {
-        pendingHistoryRecovery ??= { preserveReading };
-      }
       errorNotice(error);
+      if (waitingForTopics && resumedHistoryRecovery === previousRecovery) {
+        if (topicUpdates !== previousTopicUpdates) {
+          await recoverSelectedHistory(generation, preserveReading);
+        } else {
+          pendingHistoryRecovery ??= { preserveReading, attempt: 0 };
+        }
+      }
     }
   } finally { await auxiliary; }
 }
@@ -1441,12 +1461,11 @@ export function initChat() {
     } catch (error) { if (active && generation === epoch) errorNotice(error); }
   });
   document.addEventListener('topics-updated', () => {
+    ++topicUpdates;
     if (!active || !pendingHistoryRecovery) return;
-    const { preserveReading } = pendingHistoryRecovery, generation = epoch;
+    const { preserveReading, attempt } = pendingHistoryRecovery;
     pendingHistoryRecovery = null;
-    resumedHistoryRecovery = reloadSelectedHistory(generation, preserveReading).catch(error => {
-      if (active && generation === epoch) errorNotice(error);
-    });
+    resumedHistoryRecovery = recoverSelectedHistory(epoch, preserveReading, attempt);
   });
   document.addEventListener('topic-updated', () => renderHeader());
   document.addEventListener('topic-busy-updated', () => renderThread({ changes: {}, preserveReading: true }));
