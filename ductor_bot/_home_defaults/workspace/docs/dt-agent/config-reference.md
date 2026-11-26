@@ -128,7 +128,7 @@ top-level key.
 | `webchat.attach_max_files_per_message` | `int` | `10` | restart | Server hard maximum attachments per message; positive; web preferences are clamped to this cap |
 | `webchat.upload_chunk_bytes` | `int` | `8388608` | restart | Binary upload chunk size in bytes, from 1048576 to 8388608; match proxy/WAF limits and restart after changes |
 | `webchat.tool_details` | `"off" or "memory" or "file"` | `"off"` | restart | Web tool activity mode. Off shows names for live turns, memory retains recent replies until restart, and file saves activity with the reply |
-| `webchat.tool_details_memory_limit` | `int` | `50` | restart | Maximum replies with activity retained in memory mode, from 1 to 5000. Oldest replies are evicted first |
+| `webchat.tool_details_memory_limit` | `int` | `50` | restart | Maximum replies retained in memory mode (1 to 5000), oldest evicted first. At up to 64 KiB of serialized activity per reply, memory use scales with the limit (a few MiB at 50, up to hundreds of MiB at 5000). |
 | `cli_parameters` | `CLIParametersConfig` | `(nested keys below)` | hot | Provider-specific extra CLI flags |
 | `cli_parameters.claude` | `list[str]` | `[]` | hot | Extra args appended to Claude CLI command |
 | `cli_parameters.codex` | `list[str]` | `[]` | hot | Extra args appended to Codex CLI command |

@@ -740,18 +740,21 @@ class WebTurns:
         config = self.bot.config.webchat
         if config.tool_details == "off" or not state.activities or state.tid in self.blocked:
             return
-        if config.tool_details == "memory":
-            key = (state.tid, state.identity["reply_entry_id"])
-            self._memory_activity[key] = state.activities.copy()
-            while len(self._memory_activity) > config.tool_details_memory_limit:
-                self._memory_activity.popitem(last=False)
-            return
+        tid = state.tid
+        reply_id = state.identity["reply_entry_id"]
+        history = self.runtime.history
         try:
-            await self.runtime.history.record_activity(
-                state.tid, state.identity["reply_entry_id"], state.activities
-            )
+            if config.tool_details == "memory":
+                reply = await history.get_entry(tid, reply_id)
+                if reply is None or reply.role != "bot" or reply.imported or tid in self.blocked:
+                    return
+                self._memory_activity[(tid, reply_id)] = state.activities.copy()
+                while len(self._memory_activity) > config.tool_details_memory_limit:
+                    self._memory_activity.popitem(last=False)
+            else:
+                await history.record_activity(tid, reply_id, state.activities)
         except (OSError, UnicodeError) as exc:
-            logger.warning("Web turn activity could not be persisted: %s", type(exc).__name__)
+            logger.warning("Web turn activity could not be retained: %s", type(exc).__name__)
 
     def activity_for_reply(self, tid: str, entry_id: str) -> list[dict[str, Any]] | None:
         """Return the activity retained in memory for a recorded reply."""

@@ -5854,6 +5854,60 @@ async def test_tool_detail_modes_hide_existing_sidecar_activity(conversation, mo
             assert all("activity" not in entry for entry in entries[1:])
 
 
+@pytest.mark.parametrize("second_fails", [True, False], ids=["error", "empty"])
+async def test_tool_detail_memory_keeps_activity_when_next_reply_is_missing(
+    conversation, second_fails
+):
+    h = conversation
+    h.bot.config.webchat.tool_details = "memory"
+    h.bot.config.webchat.tool_details_memory_limit = 1
+    tid = "-123.7"
+    url = f"{_PREFIX}/topics/{tid}/messages"
+
+    async def handle(key, text, **callbacks):
+        dispatch = SimpleNamespace(
+            key=key, text=text, transport_override=None, counts_as_activity=True
+        )
+        await h.recorder.begin(dispatch)
+        await callbacks["on_tool_activity"](
+            ToolUseEvent(type="tool_use", tool_name="Bash", kind="shell")
+        )
+        if text == "second" and second_fails:
+            raise RuntimeError("synthetic turn failure")
+        result = OrchestratorResult(text="answer" if text == "first" else "")
+        await h.recorder.finish(dispatch, result, status="ok")
+        return result
+
+    h.bot._orch.handle_message_streaming.side_effect = handle
+    async with h.client.ws_connect(f"{_PREFIX}/events", headers=headers()) as ws:
+        first = await post_message(h, text="first", client_id="first")
+        assert first.status == 202
+        first_id = (await first.json())["turn_id"]
+        await receive_until(
+            ws, lambda event: event.get("turn_id") == first_id and event.get("phase") == "done"
+        )
+        response = await h.client.get(url, headers=headers())
+        assert response.status == 200
+        first_reply = (await response.json())["entries"][-1]
+        assert first_reply["activity"] == [
+            {"type": "tool", "name": "Shell", "seq": 1, "offset": 0}
+        ]
+
+        second = await post_message(h, text="second", client_id="second")
+        assert second.status == 202
+        second_id = (await second.json())["turn_id"]
+        phase = "error" if second_fails else "done"
+        await receive_until(
+            ws, lambda event: event.get("turn_id") == second_id and event.get("phase") == phase
+        )
+
+    response = await h.client.get(url, headers=headers())
+    assert response.status == 200
+    replies = [entry for entry in (await response.json())["entries"] if entry["role"] == "bot"]
+    assert [reply["id"] for reply in replies] == [first_reply["id"]]
+    assert replies[0]["activity"] == first_reply["activity"]
+
+
 @pytest.mark.parametrize(("limit", "replies"), [(None, 51), (3, 5)])
 async def test_tool_detail_memory_evicts_oldest_replies(conversation, limit, replies):
     h = conversation
@@ -5863,16 +5917,18 @@ async def test_tool_detail_memory_evicts_oldest_replies(conversation, limit, rep
     turns = WebTurns(h.bot, h.runtime)
     tid = "-123.7"
     for index in range(replies):
+        reply = await h.runtime.history.append(tid, Entry(role="bot", source="web", text="answer"))
         identity = {
             "turn_id": f"turn-{index}",
             "user_entry_id": "",
-            "reply_entry_id": str(index),
+            "reply_entry_id": reply.id,
         }
         await turns._save_activity(
             _QueuedTurn(tid, "", identity, activities=[{"name": f"tool-{index}"}])
         )
     retained = 50 if limit is None else limit
-    assert [turns.activity_for_reply(tid, str(index)) for index in range(replies)] == [
+    recorded = await h.runtime.history.read(tid)
+    assert [turns.activity_for_reply(tid, reply.id) for reply in recorded] == [
         None if index < replies - retained else [{"name": f"tool-{index}"}]
         for index in range(replies)
     ]
@@ -5886,6 +5942,9 @@ async def test_tool_detail_memory_is_removed_on_topic_delete(conversation):
     activity = [{"name": "Shell"}]
     tid, other_tid = "-123.7", "-123.8"
     for topic in (tid, other_tid):
+        await h.runtime.history.append(
+            topic, Entry(role="bot", source="web", text="answer", id="reply")
+        )
         identity = {"turn_id": "turn", "user_entry_id": "user", "reply_entry_id": "reply"}
         await turns._save_activity(_QueuedTurn(topic, "", identity, activities=activity))
     assert turns.activity_for_reply(tid, "reply") == activity
