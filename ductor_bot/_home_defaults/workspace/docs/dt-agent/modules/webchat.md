@@ -592,7 +592,6 @@ The browser app relays bridge JSON statuses and error codes. Bridge routes use
 | Operation | Status and response |
 |---|---|
 | Read state (`GET /state`) | 200 with `telegram`, `outbox`, `claude` (`{next, slots}` or `null`), and `codex` (`{captured_at, windows}` or `null`). The browser relay adds `bot`, `web_sessions`, and `version`. |
-| Delete (`DELETE /cli-login/slots/{slot}`), log out (`POST /cli-login/slots/{slot}/logout`), or disconnect a key (`POST /cli-login/slots/{slot}/disconnect`) | Send JSON with `expected`, the slot's string identity from `claude_slot_identities` in `GET /cli-login/status`. 200 `{"ok":true}`; 409 `slot_stale` if the identity changed; 400 `bad_request` for a missing or invalid identity. |
 | Swap Claude slots (`POST /cli-login/slots/{slot}/swap/{other}`) | Send JSON with `view` (`login` or `usage`) and `expected` (the full ordered list of ranked Claude slots shown in that view). 200 `{"ok":true}`; 409 `slot_order_changed` if the order differs, including if a slot was deleted; 400 `invalid_swap` if the slots are not adjacent in the matching order; 400 `bad_request` for an invalid body. |
 | Delete topic while its session lock remains held beyond 30 seconds | 409 `topic_busy`; retry after the topic finishes stopping |
 | Send to or abort Unknown topic | 409 `read_only`; select a real topic |
