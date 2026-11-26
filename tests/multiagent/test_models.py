@@ -178,15 +178,54 @@ class TestMergeSubAgentConfig:
         assert result.api.enabled is False
         assert result.api.port == 8741  # rest inherited
 
-    def test_heartbeat_defaults_off_when_not_overridden(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        ("settings", "expected"),
+        [
+            pytest.param({}, {"enabled": False, "interval_minutes": 20}, id="omitted"),
+            pytest.param(
+                {"heartbeat": {}},
+                {"enabled": False, "interval_minutes": 20},
+                id="empty",
+            ),
+            pytest.param(
+                {"heartbeat": {"interval_minutes": 60}},
+                {"enabled": False, "interval_minutes": 60},
+                id="interval-only",
+            ),
+            pytest.param(
+                {"heartbeat": {"quiet_start": 23, "quiet_end": 7}},
+                {"enabled": False, "interval_minutes": 20, "quiet_start": 23, "quiet_end": 7},
+                id="quiet-hours-only",
+            ),
+            pytest.param(
+                {"heartbeat": {"enabled": False, "interval_minutes": 60}},
+                {"enabled": False, "interval_minutes": 60},
+                id="explicit-off",
+            ),
+            pytest.param(
+                {"heartbeat": {"enabled": True}},
+                {"enabled": True, "interval_minutes": 20},
+                id="explicit-on",
+            ),
+            pytest.param(
+                {"heartbeat": None},
+                {"enabled": True, "interval_minutes": 45},
+                id="inherit-main",
+            ),
+        ],
+    )
+    def test_heartbeat_overrides(
+        self, tmp_path: Path, settings: dict[str, object], expected: dict[str, object]
+    ) -> None:
         main = self._main_config()
         main.heartbeat.enabled = True
         main.heartbeat.interval_minutes = 45
-        sub = SubAgentConfig(name="sub1", telegram_token="sub-token")
+        sub = SubAgentConfig.model_validate(
+            {"name": "sub1", "telegram_token": "sub-token", **settings}
+        )
         result = merge_sub_agent_config(main, sub, tmp_path)
 
-        assert result.heartbeat.enabled is False
-        assert result.heartbeat.interval_minutes == 20
+        assert result.heartbeat.model_dump(include=set(expected)) == expected
 
     def test_api_preserved_when_explicitly_overridden(self) -> None:
         """Sub-agent with explicit api config keeps their settings."""
