@@ -246,6 +246,23 @@ Web chat shows tool names for turns sent from the browser. Supported Claude and
 Codex built-in tools can show one expandable detail per call. Gemini, Grok, MCP
 and unclassified tools show names only.
 
+Set `webchat.tool_details` in `config.json` and restart to apply changes.
+
+- `"off"` (default) shows tool names in live turns and skips generating
+  details or retaining completed activity.
+- `"memory"` shows masked details and keeps completed activity in process
+  memory until restart. `webchat.tool_details_memory_limit` sets the number
+  of retained replies (default 50, range 1–5000). The oldest replies are
+  evicted first. Deleting a topic removes its retained activity.
+- `"file"` shows masked details and saves completed activity in the reply's
+  history sidecar. It preserves the behavior of v1.5.6.
+
+Upgrading from v1.5.6 defaults to `"off"`. Choose `"memory"` or `"file"` to
+keep showing details. Switching away from `"file"` hides previously saved
+activity from history. The saved activity remains on disk and is visible
+again in `"file"` mode. A tab that already received details can retain them
+until it closes.
+
 The bridge finds registered values and recognized token patterns in
 control-stripped text, merges overlapping or adjacent matches, and masks them
 before cutting details to 2,000 characters. This applies to values typed
@@ -278,18 +295,17 @@ limit is still exceeded, it removes the oldest details, then the oldest items
 as needed. Live events still go out in full, and a tab keeps the activity it
 has already received when it reconnects.
 
-At turn completion, retained activity is saved with the recorded reply.
-`GET /topics/{tid}/messages` includes it as `activity` on that reply. A turn
-without tool calls or a recorded reply has no activity to save. Dropped items
-are absent from the saved history. See [recording and recovery](chat_log.md#runtime-and-storage)
-for sidecar and rollback behavior.
+In `"memory"` and `"file"` modes, `GET /topics/{tid}/messages` includes
+retained activity as `activity` on the recorded reply. A turn without tool
+calls or a reply has no activity in message history. See
+[recording and recovery](chat_log.md#runtime-and-storage) for sidecar and
+rollback behavior.
 
 Reloading during a turn restores the activity list from the snapshot. Because
 the browser lacks the previously streamed answer text, restored rows appear
-before newly received text. Once the completed reply is available in history,
-the browser uses the saved offsets with the full reply to restore activity in
-the completion summary. A completed summary restored from history omits the
-elapsed time.
+before newly received text. If the completed reply has retained activity, the
+browser uses the saved offsets with the full reply to restore the completion
+summary. A completed summary restored from history omits the elapsed time.
 
 ## Web commands
 
@@ -614,7 +630,9 @@ The browser app relays bridge JSON statuses and error codes. Bridge routes use
     "default_chat_id": 0,
     "attach_max_file_bytes": 2147483648,
     "attach_max_files_per_message": 10,
-    "upload_chunk_bytes": 8388608
+    "upload_chunk_bytes": 8388608,
+    "tool_details": "off",
+    "tool_details_memory_limit": 50
   }
 }
 ```

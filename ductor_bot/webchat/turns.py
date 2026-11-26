@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import tempfile
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -300,6 +301,7 @@ class WebTurns:
         self._started: set[str] = set()
         self._settled: set[str] = set()
         self._turns: dict[str, _QueuedTurn] = {}
+        self._memory_activity: OrderedDict[tuple[str, str], list[dict[str, Any]]] = OrderedDict()
         self._queues: dict[str, list[str]] = {}
         self._fifo_locks: dict[str, asyncio.Lock] = {}
         self._admission_lock = asyncio.Lock()
@@ -735,7 +737,14 @@ class WebTurns:
         self.runtime.drainer.wake()
 
     async def _save_activity(self, state: _QueuedTurn) -> None:
-        if not state.activities or state.tid in self.blocked:
+        config = self.bot.config.webchat
+        if config.tool_details == "off" or not state.activities or state.tid in self.blocked:
+            return
+        if config.tool_details == "memory":
+            key = (state.tid, state.identity["reply_entry_id"])
+            self._memory_activity[key] = state.activities.copy()
+            while len(self._memory_activity) > config.tool_details_memory_limit:
+                self._memory_activity.popitem(last=False)
             return
         try:
             await self.runtime.history.record_activity(
@@ -743,6 +752,10 @@ class WebTurns:
             )
         except (OSError, UnicodeError) as exc:
             logger.warning("Web turn activity could not be persisted: %s", type(exc).__name__)
+
+    def activity_for_reply(self, tid: str, entry_id: str) -> list[dict[str, Any]] | None:
+        """Return the activity retained in memory for a recorded reply."""
+        return self._memory_activity.get((tid, entry_id))
 
     async def _run(  # noqa: C901, PLR0912, PLR0915 -- turn lifecycle, FIFO admission and named target
         self,
@@ -783,6 +796,8 @@ class WebTurns:
                     self._started.add(turn["turn_id"])
                     self._publish(tid, turn["turn_id"], "started")
 
+                tool_details = self.bot.config.webchat.tool_details
+
                 async def delta(value: str) -> None:
                     nonlocal partial
                     partial += value
@@ -804,7 +819,7 @@ class WebTurns:
                             name = await redact_tool_name(
                                 normalize_tool_name(event.tool_name), vault
                             )
-                        elif vault is not None:
+                        elif tool_details != "off" and vault is not None:
                             detail = await build_detail(event, vault)
                     except (VaultError, OSError):
                         pass
@@ -930,6 +945,9 @@ class WebTurns:
         return killed
 
     async def discard_topic(self, tid: str) -> None:
+        for key in list(self._memory_activity):
+            if key[0] == tid:
+                del self._memory_activity[key]
         await complete_write(self._journal.drop_topic, tid)
 
     async def stop(self) -> None:

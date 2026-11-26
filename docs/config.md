@@ -670,6 +670,8 @@ restart. Both `chat_log.enabled` and `webchat.enabled` default to `false`.
 | `attach_max_file_bytes` | `int` | `2147483648` | Server hard maximum per web attachment in bytes; positive; web preferences are clamped to this cap |
 | `attach_max_files_per_message` | `int` | `10` | Server hard maximum attachments per message; positive; web preferences are clamped to this cap |
 | `upload_chunk_bytes` | `int` | `8388608` | Binary upload chunk size in bytes, from 1048576 to 8388608; match proxy/WAF limits and restart after changes |
+| `tool_details` | `"off"` or `"memory"` or `"file"` | `"off"` | Web tool activity mode. Off shows names for live turns, memory retains recent replies until restart, and file saves activity with the reply |
+| `tool_details_memory_limit` | `int` | `50` | Maximum replies with activity retained in memory mode, from 1 to 5000. Oldest replies are evicted first |
 
 `validate_webchat(config)` returns `[]` when disabled. When enabled, it returns
 all applicable error codes below. Operational checks (including port ranges)
