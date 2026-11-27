@@ -432,14 +432,14 @@ def test_check_gemini_auth_selected_type_gemini_api_key(
     assert result.auth_file == settings
 
 
-def test_subprocess_settings_home_uses_supplied_home_if_main_home_is_missing(
+def test_subprocess_settings_home_derives_main_home_if_env_is_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     home = tmp_path / "agents" / "worker"
     monkeypatch.setenv("DUCTOR_AGENT_ROLE", "sub")
     monkeypatch.delenv("DUCTOR_MAIN_HOME", raising=False)
 
-    assert subprocess_settings_home(home) == home
+    assert subprocess_settings_home(home) == tmp_path
 
 
 @pytest.mark.parametrize("sub_agent", [False, True])

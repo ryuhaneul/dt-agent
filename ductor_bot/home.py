@@ -28,7 +28,7 @@ def require_main_home(ductor_home: Path | None = None) -> Path:
 
 def subprocess_settings_home(ductor_home: Path) -> Path:
     """Read the settings home supplied by the launcher for sub-agent CLI turns."""
+    if os.environ.get("DUCTOR_AGENT_ROLE") != "sub":
+        return ductor_home
     main_home = os.environ.get("DUCTOR_MAIN_HOME")
-    if os.environ.get("DUCTOR_AGENT_ROLE") == "sub" and main_home is not None:
-        return Path(main_home)
-    return ductor_home
+    return Path(main_home) if main_home is not None else main_home_of(ductor_home)
