@@ -47,7 +47,9 @@ export function initAttachmentView({changed}) {
     document.querySelector('#attachmentViewerTitle').textContent=item.name;
     document.querySelector('#attachmentViewerMeta').textContent=sizeLabel(item.size)+' · '+item.mime;
     document.querySelector('#attachmentViewerError').hidden=true;
-    image.alt=item.name;image.classList.remove('zoomed');image.src=item.original_url;
+    image.alt=item.name;image.classList.remove('zoomed');
+    image.style.removeProperty('--attachment-zoom-max-width');
+    image.src=item.original_url;
     document.querySelector('#attachmentOriginalTab').href=item.original_url;
     document.querySelector('#attachmentOriginalDownload').href=item.download_url;
     document.querySelector('#attachmentZoom').textContent=t('attach.zoom');
@@ -57,6 +59,7 @@ export function initAttachmentView({changed}) {
   document.querySelector('#closeAttachmentViewer').addEventListener('click',()=>dialog.close());
   dialog.addEventListener('close',restore);
   document.querySelector('#attachmentZoom').addEventListener('click',event=>{zoom=!zoom;image.classList.toggle('zoomed',zoom);event.currentTarget.textContent=t(zoom?'attach.fit':'attach.zoom');event.currentTarget.setAttribute('aria-pressed',String(zoom));});
+  image.addEventListener('load',()=>{image.style.setProperty('--attachment-zoom-max-width',`${image.naturalWidth*2}px`);});
   image.addEventListener('error',()=>{document.querySelector('#attachmentViewerError').hidden=false;});
   thread.addEventListener('click',event=>{const button=event.target.closest('[data-open-attachment]');if(button)open(button);});
   thread.addEventListener('error',event=>{if(event.target.matches('.message-attachment img')){const button=event.target.closest('[data-open-attachment]');if(button)button.textContent=t('attach.open_original');}},true);

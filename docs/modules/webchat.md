@@ -82,9 +82,12 @@ After password verification, a preauthentication token lasts 300 seconds and is 
 to the credential generation at issuance. Credential changes invalidate it.
 First setup accepts a new QR code or an existing Base32 seed; confirmation saves it.
 TOTP uses six digits, a 30-second period, a one-step clock window and replay checks.
-Five failed attempts per client IP or 20 globally within 15 minutes lock login.
-The global lock also blocks correct credentials until it expires, so the login
-page is meant to be reachable only from the gateway allowlist or a trusted proxy.
+Five failed attempts from one client IP within 15 minutes lock login for that IP.
+Incorrect authentication codes submitted after the password is accepted count across
+all client IPs. This applies to the login code step and to password changes after the
+current password is accepted. Twenty such failures within 15 minutes lock login for
+all client IPs. Password verification failures count only toward the per-IP lock.
+The login page is meant to be reachable only from the gateway allowlist or a trusted proxy.
 Browser sessions have a 12-hour absolute lifetime and a two-hour idle timeout.
 Cookies are Secure, HttpOnly and SameSite=Strict. Mutations use `X-Dtw-Client`
 and `X-Dtw-Csrf`; authentication failures return 403.
@@ -596,7 +599,7 @@ The browser app relays bridge JSON statuses and error codes. Bridge routes use
 | Swap Claude slots (`POST /cli-login/slots/{slot}/swap/{other}`) | Send JSON with `view` (`login` or `usage`) and `expected` (the full ordered list of ranked Claude slots shown in that view). 200 `{"ok":true}`; 409 `slot_order_changed` if the order differs, including if a slot was deleted; 400 `invalid_swap` if the slots are not adjacent in the matching order; 400 `bad_request` for an invalid body. |
 | Delete topic while its session lock remains held beyond 30 seconds | 409 `topic_busy`; retry after the topic finishes stopping |
 | Send to or abort Unknown topic | 409 `read_only`; select a real topic |
-| List topics (`GET /topics`) | 200 with `topics`, including each topic’s `seen` cursor and `unread` count. If the stored read state cannot be read, both fields are `null`. A history lock timeout returns 503 `history_busy`. |
+| List topics (`GET /topics`) | 200 with `topics`, including each topic’s `seen` cursor, `unread` count, and `busy_kind` (`task` for background tasks only, `answering` for other busy topics, or `null` when idle). If the stored read state cannot be read, `seen` and `unread` are `null`. A history lock timeout returns 503 `history_busy`. |
 | List commands (`GET /commands`, optional allowed `lang`) | 200 `{ "commands": [...] }`; invalid language: 400 `bad_request` |
 | Execute a supported command | 200 `{ "text": "...", "buttons": [...] }` (`buttons` may be null) |
 | Send a normal message | 202 `{ "turn_id": "..." }` |

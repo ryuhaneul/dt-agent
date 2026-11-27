@@ -704,6 +704,7 @@ async def conversation(tmp_path, monkeypatch):
         _lock_pool=pool,
         _process_registry=registry,
         is_topic_busy=lambda key: pool.is_locked(key.lock_key),
+        topic_busy_kind=lambda _key: "answering",
         abort=AsyncMock(),
     )
     calls = []
@@ -780,6 +781,47 @@ async def test_general_topic_busy_only_counts_general_work(conversation):
             assert orch.is_chat_busy(general.chat_id)
         finally:
             orch._process_registry.unregister(process)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        (("task:example",), False, False, "task"),
+        (("task:example", "main"), False, False, "answering"),
+        (("task_result:example",), False, False, "answering"),
+        (("task:example",), True, False, "answering"),
+        (("task:example",), False, True, "answering"),
+        ((), False, False, None),
+    ],
+)
+async def test_topic_list_busy_kind(conversation, monkeypatch, case):
+    from ductor_bot.orchestrator.core import Orchestrator
+    from tests.cli.test_process_registry import _mock_process
+
+    labels, locked, web_busy, expected = case
+    h = conversation
+    tid = f"{h.key.chat_id}.{h.key.topic_id}"
+    orch = Orchestrator(h.bot.config, h.paths, lock_pool=h.pool)
+    orch._sessions = h.bot._orch._sessions
+    h.bot._orch = orch
+    for label in labels:
+        orch._process_registry.register(
+            h.key.chat_id, _mock_process(), label, topic_id=h.key.topic_id
+        )
+    if web_busy:
+        monkeypatch.setattr(WebTurns, "busy", lambda _self, candidate: candidate == tid)
+    lock = h.pool.get(h.key.lock_key)
+    if locked:
+        await lock.acquire()
+    try:
+        response = await h.client.get(f"{_PREFIX}/topics", headers=headers())
+        assert response.status == 200
+        topic = next(item for item in (await response.json())["topics"] if item["tid"] == tid)
+        assert topic["busy"] is (expected is not None)
+        assert topic["busy_kind"] == expected
+    finally:
+        if locked:
+            lock.release()
 
 
 async def receive_until(ws, predicate):

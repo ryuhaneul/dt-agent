@@ -180,6 +180,11 @@ class WebTopics:
                 if summary.last is not None
                 else ""
             )
+            web_busy = key is not None and self.turns.busy(tid)
+            busy = key is not None and (web_busy or self.bot._orch.is_topic_busy(key))
+            busy_kind = None
+            if key is not None and busy:
+                busy_kind = "answering" if web_busy else self.bot._orch.topic_busy_kind(key)
             topics.append(
                 {
                     "tid": tid,
@@ -195,9 +200,8 @@ class WebTopics:
                     "created_at": session.created_at if session else saved.get("created_at"),
                     "turn_id": self.turns.active_turn_id(tid),
                     "turns": self.turns.snapshot(tid),
-                    "busy": False
-                    if key is None
-                    else self.turns.busy(tid) or self.bot._orch.is_topic_busy(key),
+                    "busy": busy,
+                    "busy_kind": busy_kind,
                     "renamable": bool(key and key.topic_id is not None),
                     "deletable": bool(key and key.topic_id is not None),
                     "read_only": unknown,
