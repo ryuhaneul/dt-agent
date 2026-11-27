@@ -55,7 +55,10 @@ await page.route('**/api/**',async route=>{
   if(p.endsWith('/seen')&&method==='PUT')return response(route,{seen:request.postDataJSON().seq});
   const attachmentPath=p.match(/^\/topics\/123\.7\/messages\/([^/]+)\/attachments(?:\/([a-f0-9]{32})(?:\/preview)?)?$/);
   if(attachmentPath){
-    if(attachmentPath[2])return route.fulfill({contentType:attachmentPath[1]==='bbbbbbbbbbbb'?'application/pdf':'image/png',body:await fs.readFile(path.join(cfg.directory,'sample.png'))});
+    if(attachmentPath[2]){
+      const imageFile = url.searchParams.get('inline') === '1' ? 'scale-small.png' : 'sample.png';
+      return route.fulfill({contentType:attachmentPath[1]==='bbbbbbbbbbbb'?'application/pdf':'image/png',body:await fs.readFile(path.join(cfg.directory,imageFile))});
+    }
     return response(route,{attachments:attachmentPath[1]==='aaaaaaaaaaaa'?[{...cardMeta(attachmentPath[1],'a'.repeat(32),'photo.png','image/png',true),...(expiredPhoto?{status:'expired',inline_allowed:false,original_url:null,preview_url:null}:{})}]:attachmentPath[1]==='bbbbbbbbbbbb'?[cardMeta(attachmentPath[1],'b'.repeat(32),longName,'application/pdf',false)]:attachmentPath[1]==='dddddddddddd'?[cardMeta(attachmentPath[1],'d'.repeat(32),'web-notes.txt','text/plain',false)]:attachmentPath[1]==='eeeeeeeeeeee'?[cardMeta(attachmentPath[1],'e'.repeat(32),'attachment-only.txt','text/plain',false)]:attachmentPath[1]==='ffffffffffff'&&backgroundReady?[cardMeta(attachmentPath[1],'f'.repeat(32),'background.txt','text/plain',false)]:[]});
   }
   if(p.endsWith('/messages') && method==='GET')return response(route,{entries:emptyHistoryEnabled?Array.from({length:100},(_,i)=>({id:i.toString(16).padStart(12,'0'),seq:i+1,role:'bot',source:'web',text:'Plain message '+i,has_attachments:false,ts:'2026-11-18T10:00:00Z'})):historyEnabled?entries.map(entry=>({...entry,has_attachments:['aaaaaaaaaaaa','bbbbbbbbbbbb','dddddddddddd','eeeeeeeeeeee'].includes(entry.id)||(entry.id==='ffffffffffff'&&backgroundReady)})):[],has_more:false});
@@ -699,7 +702,18 @@ try{
         await page.locator('.message-attachment').filter({hasText:longName}).evaluate(node=>node.scrollIntoView({block:'center'}));
         await page.screenshot({path:path.join(cfg.shots,`4b-cards-${width}-${theme}.png`)});
         const trigger=page.locator('[data-open-attachment]').first();await trigger.click();await page.waitForSelector('#attachmentViewer[open]');
-        await page.locator('#attachmentZoom').click();assert.equal(await page.locator('#attachmentZoom').getAttribute('aria-pressed'),'true');await page.locator('#attachmentZoom').click();
+        const viewer = await page.locator('#attachmentViewer').boundingBox();
+        assert.deepEqual([viewer.width, viewer.height], [width - 24, height - 24]);
+        const original = page.locator('#attachmentOriginal');
+        await original.evaluate(image => image.decode());
+        await page.locator('#attachmentZoom').click();
+        assert.equal(await page.locator('#attachmentZoom').getAttribute('aria-pressed'),'true');
+        const zoomed = await original.evaluate(image => ({
+          width: image.getBoundingClientRect().width,
+          originalWidth: image.naturalWidth,
+        }));
+        assert(zoomed.width <= zoomed.originalWidth * 2);
+        await page.locator('#attachmentZoom').click();
         await page.screenshot({path:path.join(cfg.shots,`4b-viewer-${width}-${theme}.png`)});
         await page.keyboard.press('Escape');await page.waitForFunction(()=>document.activeElement.hasAttribute('data-open-attachment'));
         await page.locator('#accountButton').click();await page.locator('#openAttachSettings').click();await page.waitForFunction(()=>!document.querySelector('#attachmentMaxSize').disabled);await page.screenshot({path:path.join(cfg.shots,`4b-settings-${width}-${theme}.png`)});await page.keyboard.press('Escape');
