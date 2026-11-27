@@ -21,12 +21,13 @@ from ductor_bot.cli.claude_accounts import (
 from ductor_bot.cli.claude_slots import is_slot_name
 from ductor_bot.cli.slot_rotation import slot_use_lock
 from ductor_bot.config import transform_config_file
+from ductor_bot.infra.file_lock import exclusive_file_lock
 from ductor_bot.infra.json_store import atomic_json_save
 from ductor_bot.workspace.paths import DuctorPaths
 
 logger = logging.getLogger(__name__)
 
-_PRIVATE_FILES = frozenset({".credentials.json", "credentials.json", ".claude.json"})
+_PRIVATE_FILES = frozenset({".credentials.json", "credentials.json", ".claude.json", ".dt-slot-id"})
 
 
 def resolve_slot_name(name: str | None, *, allow_api_key: bool = False) -> str:
@@ -191,7 +192,8 @@ class ClaudeLoginSlots:
         """Never remove pre-existing slots, credentials or targets of shared symlinks."""
         if not prepared.created:
             return
-        if prepared.path.is_symlink():
-            prepared.path.unlink()
-        elif prepared.path.is_dir() and not slot_is_authenticated(prepared.path):
-            shutil.rmtree(prepared.path)
+        with exclusive_file_lock(prepared.path.parent / ".slot-identity"):
+            if prepared.path.is_symlink():
+                prepared.path.unlink()
+            elif prepared.path.is_dir() and not slot_is_authenticated(prepared.path):
+                shutil.rmtree(prepared.path)

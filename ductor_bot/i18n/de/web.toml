@@ -333,6 +333,7 @@ delete_busy = "Der Slot {name} wird gerade verwendet und kann nicht gelöscht we
 delete_missing = "Der Slot {name} ist nicht mehr vorhanden."
 delete_failed = "Der verbleibende Anmeldeordner {path} konnte nicht gelöscht werden: {reason}"
 delete_error = "Der Slot {name} konnte nicht gelöscht werden. Versuche es erneut."
+slot_stale = "Der Slot {name} hat sich geändert, seit die Bestätigung geöffnet wurde. Die Liste wurde aktualisiert. Prüfe sie und versuche es erneut."
 slot_more = "Weitere Aktionen für {name}"
 logged_out = "Abgemeldet"
 key_connected = "Schlüssel verbunden"

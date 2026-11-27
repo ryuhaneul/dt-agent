@@ -896,3 +896,56 @@ def test_auth_changes_allow_a_linked_auth_root(home, monkeypatch):
     assert not credentials.exists()
     assert slot_kind(api) == "api_key_detached"
     assert json.loads(settings.read_text()) == {"keep": True}
+
+
+def test_concurrent_first_slot_identity_reads_publish_one_id(home, monkeypatch):
+    import stat
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from ductor_bot.cli import claude_slots
+
+    folder = home / ".cli-auth" / "claude-a"
+    folder.mkdir(parents=True)
+    assert claude_slots.current_slot_identity(home, folder.name) is None
+    assert list(folder.parent.iterdir()) == [folder]
+    lock = claude_slots.exclusive_file_lock
+    both_need_id = Barrier(2)
+
+    def enter_lock(path):
+        both_need_id.wait(timeout=3)
+        return lock(path)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(claude_slots, "exclusive_file_lock", enter_lock)
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            first = workers.submit(claude_slots.slot_identity, home, folder.name)
+            second = workers.submit(claude_slots.slot_identity, home, folder.name)
+            identity = first.result(timeout=10)
+            assert second.result(timeout=10) == identity
+
+    identity_file = folder / ".dt-slot-id"
+    assert json.loads(identity_file.read_text()) == {
+        "id": identity.removeprefix("id:"),
+        "auth": ["oauth", "0", "", ""],
+    }
+    assert stat.S_IMODE(identity_file.stat().st_mode) == 0o600
+    assert claude_slots.slot_identity(home, folder.name) == identity
+    assert claude_slots.current_slot_identity(home, folder.name) == identity
+
+
+def test_identity_issuance_does_not_recreate_a_removed_directory(home, monkeypatch):
+    from ductor_bot.cli import claude_slots
+
+    folder = home / ".cli-auth" / "claude-a"
+    folder.mkdir(parents=True)
+    write_marker = claude_slots._write_slot_marker
+
+    def remove_before_write(path, value, auth):
+        assert path.parent == folder
+        folder.rmdir()
+        write_marker(path, value, auth)
+
+    monkeypatch.setattr(claude_slots, "_write_slot_marker", remove_before_write)
+    assert claude_slots.slot_identity(home, folder.name).startswith("cfg:")
+    assert not folder.exists()

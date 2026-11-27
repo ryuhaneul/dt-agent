@@ -43,7 +43,7 @@ async function run(width, theme) {
     page.on('pageerror', error => errors.push(error.message));
     await page.routeWebSocket('**/api/ws', () => {});
     let blockWork = true, blockCooldownRead = true, blockLogout = true, blockDisconnect = true;
-    let refreshes = 0;
+    let refreshes = 0, blockStale = true;
     let slots = [
       { name: 'claude', kind: 'oauth', authenticated: true, priority: 1 },
       { name: 'claude-work', kind: 'oauth', authenticated: true, priority: 2 },
@@ -51,6 +51,9 @@ async function run(width, theme) {
       { name: 'claude-api', kind: 'api_key', authenticated: true, priority: 3 },
       { name: 'claude-key', kind: 'api_key_detached', authenticated: false, priority: 4 },
     ];
+    const identities = Object.fromEntries(slots.map((slot, index) => [
+      slot.name, 'id:' + String(index + 1).padStart(32, '0'),
+    ]));
     await page.route('**/api/**', async route => {
       const request = route.request();
       const endpoint = new URL(request.url()).pathname.slice(4);
@@ -63,7 +66,7 @@ async function run(width, theme) {
         refreshes++;
         return reply({
           providers: { claude: 'authenticated', codex: 'installed', grok: 'installed' },
-          claude_slots: slots, running: false,
+          claude_slots: slots, claude_slot_identities: identities, running: false,
         });
       }
       if (endpoint.startsWith('/cli-login/slots/')) {
@@ -71,6 +74,7 @@ async function run(width, theme) {
         assert.equal(request.method(), action === 'delete' ? 'DELETE' : 'POST');
         assert.equal(request.headers()['x-dtw-client'], 'web');
         assert.equal(request.headers()['x-dtw-csrf'], 'fixture-csrf');
+        assert.deepEqual(request.postDataJSON(), { expected: identities[name] });
         mutations.push([name, action]);
         const slot = slots.find(slot => slot.name === name);
         if (action === 'logout') {
@@ -82,6 +86,11 @@ async function run(width, theme) {
           slot.kind = 'api_key_detached';
           slot.authenticated = false;
         } else {
+          if (name === 'claude-work' && blockStale) {
+            blockStale = false;
+            identities[name] = 'id:' + 'a'.repeat(32);
+            return reply({ error: 'slot_stale' }, 409);
+          }
           if (name === 'claude-work' && blockWork) return reply({ error: 'slot_busy' }, 409);
           if (name === 'claude-work' && blockCooldownRead) {
             return reply({ error: 'slot_delete_error' }, 500);
@@ -271,6 +280,13 @@ async function run(width, theme) {
 
     await item('claude-work', 'delete');
     await submit();
+    assert.equal(await row('claude-work').locator('+ .slot-error').textContent(),
+      t('slot_stale').replace('{name}', 'claude-work'));
+    await verifyLayout();
+    await shot('stale');
+
+    await item('claude-work', 'delete');
+    await submit();
     assert.equal(await row('claude-work').locator('.badge').textContent(), t('slot_in_use'));
     assert.equal(await row('claude-work').locator('+ .slot-error').textContent(), t('delete_busy').replace('{name}', 'claude-work'));
     await focused(trigger('claude-work'));
@@ -294,6 +310,7 @@ async function run(width, theme) {
     assert.deepEqual(mutations, [
       ['claude', 'logout'], ['claude', 'logout'], ['claude-api', 'disconnect'], ['claude-api', 'disconnect'],
       ['claude-work', 'delete'], ['claude-work', 'delete'], ['claude-work', 'delete'],
+      ['claude-work', 'delete'],
       ['claude-unused', 'delete'], ['claude-api', 'delete'],
     ]);
     assert.deepEqual(errors, []);

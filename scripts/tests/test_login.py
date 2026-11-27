@@ -663,6 +663,22 @@ os.execv(sys.executable, [sys.executable] + args)
             self.assertTrue(self.value not in self.log.read_text(), 'Docker log exposed a value')
         return result
 
+    def test_api_slot_does_not_share_the_default_slot_marker(self):
+        marker = self.default / '.dt-slot-id'
+        marker.write_text(json.dumps({'id': 'a' * 32, 'auth': ['oauth', '0', '', '']}))
+        result = self.run_login('claude-api')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.slot / 'skills').is_symlink())
+        slot_marker = self.slot / marker.name
+        self.assertFalse(os.path.lexists(slot_marker))
+
+        slot_marker.write_text(json.dumps({'id': 'b' * 32, 'auth': ['api_key', 'fixture']}))
+        result = self.run_login('claude-api')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(slot_marker.is_symlink())
+        self.assertEqual(json.loads(slot_marker.read_text())['id'], 'b' * 32)
+        self.assertEqual(json.loads(marker.read_text())['id'], 'a' * 32)
+
     def test_api_registration_order_modes_files_and_idempotence(self):
         for current, expected in (([], ['claude', 'claude-api']),
                                   (['claude-sub', 'claude'], ['claude-sub', 'claude', 'claude-api']),

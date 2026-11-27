@@ -964,7 +964,7 @@ PY
 # symlinked).  Everything else is shared with the default slot to keep user
 # configuration (settings, skills, plugins, sessions, cache, history) unified
 # across accounts.
-SLOT_CREDENTIAL_FILES=(".credentials.json" "credentials.json" ".claude.json")
+SLOT_CREDENTIAL_FILES=(".credentials.json" "credentials.json" ".claude.json" ".dt-slot-id")
 
 _is_slot_credential() {
     # $1: filename (basename)
