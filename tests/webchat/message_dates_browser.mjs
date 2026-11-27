@@ -1385,6 +1385,7 @@ async function taskBusyIndicator(browser) {
         const refreshing = refresh();
         try {
           await held.promise;
+          row.busy_kind = 'answering';
           send(true);
           await answering.waitFor();
         } finally {
@@ -1393,6 +1394,7 @@ async function taskBusyIndicator(browser) {
         }
         await refreshing;
         assert.equal(await answering.isVisible(), true, 'a delayed task snapshot must preserve a live reply');
+        row.busy_kind = 'task';
         send(false);
         await busy.waitFor({ state: 'hidden' });
         await refresh();

@@ -595,7 +595,7 @@ The browser app relays bridge JSON statuses and error codes. Bridge routes use
 | Swap Claude slots (`POST /cli-login/slots/{slot}/swap/{other}`) | Send JSON with `view` (`login` or `usage`) and `expected` (the full ordered list of ranked Claude slots shown in that view). 200 `{"ok":true}`; 409 `slot_order_changed` if the order differs, including if a slot was deleted; 400 `invalid_swap` if the slots are not adjacent in the matching order; 400 `bad_request` for an invalid body. |
 | Delete topic while its session lock remains held beyond 30 seconds | 409 `topic_busy`; retry after the topic finishes stopping |
 | Send to or abort Unknown topic | 409 `read_only`; select a real topic |
-| List topics (`GET /topics`) | 200 with `topics`, including each topic’s `seen` cursor, `unread` count, and `busy_kind` (`task` for background tasks only, `answering` for other busy topics, or `null` when idle). If the stored read state cannot be read, both fields are `null`. A history lock timeout returns 503 `history_busy`. |
+| List topics (`GET /topics`) | 200 with `topics`, including each topic’s `seen` cursor, `unread` count, and `busy_kind` (`task` for background tasks only, `answering` for other busy topics, or `null` when idle). If the stored read state cannot be read, `seen` and `unread` are `null`. A history lock timeout returns 503 `history_busy`. |
 | List commands (`GET /commands`, optional allowed `lang`) | 200 `{ "commands": [...] }`; invalid language: 400 `bad_request` |
 | Execute a supported command | 200 `{ "text": "...", "buttons": [...] }` (`buttons` may be null) |
 | Send a normal message | 202 `{ "turn_id": "..." }` |

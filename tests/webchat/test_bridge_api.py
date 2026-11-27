@@ -783,7 +783,7 @@ async def test_general_topic_busy_only_counts_general_work(conversation):
 
 
 @pytest.mark.parametrize(
-    ("labels", "locked", "web_busy", "expected"),
+    "case",
     [
         (("task:example",), False, False, "task"),
         (("task:example", "main"), False, False, "answering"),
@@ -793,10 +793,11 @@ async def test_general_topic_busy_only_counts_general_work(conversation):
         ((), False, False, None),
     ],
 )
-async def test_topic_list_busy_kind(conversation, monkeypatch, labels, locked, web_busy, expected):
+async def test_topic_list_busy_kind(conversation, monkeypatch, case):
     from ductor_bot.orchestrator.core import Orchestrator
     from tests.cli.test_process_registry import _mock_process
 
+    labels, locked, web_busy, expected = case
     h = conversation
     tid = f"{h.key.chat_id}.{h.key.topic_id}"
     orch = Orchestrator(h.bot.config, h.paths, lock_pool=h.pool)
