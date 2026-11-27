@@ -427,7 +427,7 @@ def test_sub_inherits_main_and_overrides_key_by_key(tmp_path: Path) -> None:
     assert "interagent" not in SubAgentConfig(name="w").model_dump(exclude_none=True)
 
 
-async def test_the_effective_values_are_mirrored_into_the_sub_config_file(tmp_path: Path) -> None:
+async def test_effective_interagent_limits_ignore_legacy_sub_config(tmp_path: Path) -> None:
     supervisor = AgentSupervisor(AgentConfig(ductor_home=str(tmp_path), interagent_port=0))
     (tmp_path / "agents.json").write_text(
         json.dumps(
@@ -443,7 +443,8 @@ async def test_the_effective_values_are_mirrored_into_the_sub_config_file(tmp_pa
     )
     config_path = tmp_path / "agents" / "sub1" / "config" / "config.json"
     config_path.parent.mkdir(parents=True)
-    config_path.write_text("{}")
+    legacy = '{"interagent": {"max_parallel_sessions": 7}}'
+    config_path.write_text(legacy)
     supervisor._stacks["main"] = MagicMock()
     supervisor._notify_main_agent = AsyncMock()  # type: ignore[method-assign]
     with (
@@ -451,18 +452,17 @@ async def test_the_effective_values_are_mirrored_into_the_sub_config_file(tmp_pa
             "ductor_bot.multiagent.supervisor.AgentStack.create",
             new_callable=AsyncMock,
             return_value=MagicMock(shutdown=AsyncMock()),
-        ),
-        patch(
-            "ductor_bot.multiagent.supervisor.update_config_file_async",
-            new_callable=AsyncMock,
-            side_effect=OSError("synthetic"),
-        ) as update,
+        ) as create,
+        patch.object(supervisor, "_supervised_run", new=AsyncMock(return_value=0)),
     ):
-        await supervisor.start_agent_by_name("sub1")
-    assert update.await_args.kwargs["interagent"] == {
-        "max_parallel_sessions": 2,
-        "max_queue_wait_seconds": 3600.0,
-    }
+        result = await supervisor.start_agent_by_name("sub1")
+
+    assert result == "Agent 'sub1' started."
+    config = create.await_args.args[1]
+    assert config.interagent.max_parallel_sessions == 2
+    assert config.interagent.max_queue_wait_seconds == 3600.0
+    assert config_path.read_text() == legacy
+    await supervisor.stop_agent("sub1")
 
 
 def test_mirroring_keeps_every_other_key_of_the_config_file(tmp_path: Path) -> None:

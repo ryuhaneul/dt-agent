@@ -89,6 +89,55 @@ class TestWebhookObserverLifecycle:
         assert observer._watcher._task is None
         await observer.stop()
 
+    @pytest.mark.parametrize(
+        ("agent_name", "token", "expected_token"),
+        [("main", "", "generated-test-token"), ("worker", "", ""), ("worker", "test-token", "test-token")],
+    )
+    async def test_start_uses_agent_token_policy(
+        self, tmp_path, caplog, agent_name, token, expected_token,
+    ):
+        import json
+
+        home = tmp_path if agent_name == "main" else tmp_path / "agents" / agent_name
+        paths = DuctorPaths(ductor_home=home)
+        config = AgentConfig(webhooks=WebhookConfig(enabled=True, token=token))
+        if agent_name == "main":
+            paths.config_path.parent.mkdir(parents=True)
+            paths.config_path.write_text("{}")
+        observer = WebhookObserver(
+            paths, _make_manager(paths), config=config,
+            codex_cache=_make_codex_cache(), agent_name=agent_name,
+        )
+        with (
+            patch("ductor_bot.webhook.observer.WebhookServer") as server_class,
+            patch("ductor_bot.webhook.observer.secrets.token_urlsafe", return_value=expected_token) as generate,
+        ):
+            server = server_class.return_value
+            server.start = AsyncMock()
+            server.stop = AsyncMock()
+            try:
+                await observer.start()
+                assert config.webhooks.token == expected_token
+                if expected_token:
+                    server.start.assert_awaited_once()
+                else:
+                    server_class.assert_not_called()
+                    assert observer._watcher._task is None
+            finally:
+                await observer.stop()
+
+        errors = [
+            record for record in caplog.records
+            if record.name == "ductor_bot.webhook.observer" and record.levelname == "ERROR"
+        ]
+        assert len(errors) == (0 if expected_token else 1)
+        if agent_name == "main":
+            generate.assert_called_once()
+            assert json.loads(paths.config_path.read_text())["webhooks"]["token"] == expected_token
+        else:
+            generate.assert_not_called()
+            assert not paths.config_path.exists()
+
     async def test_stop_cleans_up(self, tmp_path: Path) -> None:
         paths = _make_paths(tmp_path)
         mgr = _make_manager(paths)

@@ -70,13 +70,16 @@ def _origin_env(config: CLIConfig) -> dict[str, str | None]:
     }
 
 
-def framework_identity_env(agent_name: str, interagent_port: int) -> dict[str, str]:
+def framework_identity_env(
+    agent_name: str, interagent_port: int, main_home: Path | None = None
+) -> dict[str, str]:
     """Identity and internal API address shared by interactive and one-shot turns."""
     return {
         "DUCTOR_INTERAGENT_HOST": "127.0.0.1",
         "DUCTOR_INTERAGENT_PORT": str(interagent_port),
         "DUCTOR_AGENT_NAME": agent_name,
         "DUCTOR_AGENT_ROLE": "main" if agent_name == "main" else "sub",
+        **({"DUCTOR_MAIN_HOME": str(main_home)} if main_home is not None else {}),
     }
 
 
@@ -119,7 +122,8 @@ def build_subprocess_env(
     # provider-specific extra variables.
     env.pop("DUCTOR_SECRETS_TOKEN", None)
     env.pop("DUCTOR_SECRETS_VAULT_FILE", None)
-    env.update(framework_identity_env(config.agent_name, config.interagent_port))
+    env.pop("DUCTOR_MAIN_HOME", None)
+    env.update(framework_identity_env(config.agent_name, config.interagent_port, config.main_home))
     from ductor_bot.infra.secret_runtime import secret_environment
 
     env.update(secret_environment(ductor_home))

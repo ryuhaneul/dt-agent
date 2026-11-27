@@ -52,6 +52,7 @@ _ROUTING_KEYS = (
     "DUCTOR_IA_TURN",
     "DUCTOR_AGENT_NAME",
     "DUCTOR_AGENT_ROLE",
+    "DUCTOR_MAIN_HOME",
     "DUCTOR_INTERAGENT_HOST",
     "DUCTOR_INTERAGENT_PORT",
 )
@@ -386,7 +387,11 @@ async def execute_in_task_folder(  # noqa: PLR0913
         route = dict(routing_env or {})
         from ductor_bot.cli.executor import framework_identity_env
 
-        route.update(framework_identity_env(observer._agent_name, observer._config.interagent_port))
+        route.update(
+            framework_identity_env(
+                observer._agent_name, observer._config.interagent_port, observer._config._main_home
+            )
+        )
 
         result = await run_oneshot_task(
             exec_config,

@@ -841,7 +841,12 @@ class CronObserver(BaseTaskObserver):
         from ductor_bot.infra.secret_runtime import secret_environment
         from ductor_bot.infra.secret_store import store_path
 
-        env.update(framework_identity_env(self._agent_name, self._config.interagent_port))
+        env.pop("DUCTOR_MAIN_HOME", None)
+        env.update(
+            framework_identity_env(
+                self._agent_name, self._config.interagent_port, self._config._main_home
+            )
+        )
         env.update(secret_environment(self._paths.ductor_home))
         env["DUCTOR_SECRETS_FILE"] = str(store_path(self._paths.ductor_home))
         try:

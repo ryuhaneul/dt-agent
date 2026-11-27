@@ -56,6 +56,7 @@ def wired(tmp_path, monkeypatch):
     session = SimpleNamespace(provider="codex", model="gpt-5.5")
     orch = SimpleNamespace(
         paths=SimpleNamespace(ductor_home=tmp_path, workspace=tmp_path),
+        _agent_name="main",
         _sessions=SimpleNamespace(get_active=AsyncMock(return_value=session)),
         _process_registry=Mock(),
         handle_message=AsyncMock(return_value=OrchestratorResult(text="첫 답변 요약")),

@@ -32,7 +32,7 @@ See [installation](../installation.md).
 | `enabled` | `false` | start API server |
 | `host` | `0.0.0.0` | bind address |
 | `port` | `8741` | API port |
-| `token` | `""` | auth token (generated at API startup when empty) |
+| `token` | `""` | auth token (generated at main API startup when empty) |
 | `chat_id` | `0` | default chat scope (`0` -> fallback to first `allowed_user_ids`, else `1`) |
 | `allow_public` | `false` | suppress tailscale warning |
 

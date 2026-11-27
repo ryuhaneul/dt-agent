@@ -20,6 +20,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
+
+from ductor_bot.home import require_main_home
+
 # One JSON file per language: the texts a person reads (questions, errors, the final notice).
 MESSAGES_DIR = Path(__file__).resolve().parent / "onboard_i18n"
 SSH_REMOVED = "ssh extra was removed; openssh-client is included in the image by default"
@@ -378,6 +382,7 @@ def early_language(arguments: list[str]) -> str:
     raw arguments (abbreviated spellings of them are not).
     """
     home = selected(option_value(arguments, "--home"), "DUCTOR_HOME", str(Path.home() / ".ductor"))
+    require_main_home(Path(home))
     return decide_language(
         argparse.Namespace(language=option_value(arguments, "--language")), saved_config(home)
     )
@@ -393,7 +398,7 @@ def collect(args: argparse.Namespace) -> tuple[Path, dict, str, str]:
     home_value = selected(args.home, "DUCTOR_HOME", str(Path.home() / ".ductor"))
     if prompt and args.home is None and "DUCTOR_HOME" not in os.environ:
         home_value = ask(message("q_home"), "", default=home_value)
-    home = Path(home_value).expanduser().resolve()
+    home = require_main_home(Path(home_value))
     if not home.is_absolute():
         raise InputError(message("err_home_absolute"))
 

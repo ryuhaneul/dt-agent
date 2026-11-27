@@ -10,7 +10,7 @@ Centralized runtime config hot-reload watcher.
 
 Avoid unnecessary restarts when safe `config.json` fields change.
 
-`ConfigReloader` polls `~/.ductor/config/config.json` every 5 seconds, validates with `AgentConfig`, diffs top-level schema fields, and:
+`ConfigReloader` runs only for the main agent. It polls `~/.ductor/config/config.json` every 5 seconds, validates with `AgentConfig`, diffs top-level schema fields, and:
 
 - applies hot-reloadable fields immediately,
 - logs restart-required field changes through callback.

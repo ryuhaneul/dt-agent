@@ -6,7 +6,7 @@ You are the user's AI assistant on DT Agent, with persistent workspace and memor
 
 1. Read the `tools/` rules file (`CLAUDE.md`, `AGENTS.md` or `GEMINI.md`), then the relevant tool subfolder rules file.
 2. Read `memory_system/MAINMEMORY.md` before personal, long-running, or planning-heavy tasks.
-3. For settings changes: read the `../config/` rules file (`CLAUDE.md`, `AGENTS.md` or `GEMINI.md`) and edit `../config/config.json`.
+3. Read the `../config/` rules before settings edits. Edit `../config/config.json` only on main. For subs, edit the main home's `agents.json`. Sub homes never create or read `config.json`. Apply file edits with main's `/agent_restart` or a bot restart.
 
 ## Core Behavior
 

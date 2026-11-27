@@ -295,7 +295,7 @@ def _link_skill_everywhere(
             logger.warning("Failed to sync skill %s in %s", skill_name, loc_name, exc_info=True)
 
 
-def sync_skills(paths: DuctorPaths) -> None:
+def sync_skills(paths: DuctorPaths, *, main_home: Path | None = None) -> None:
     """Multi-way skill directory sync: ductor workspace <-> CLI skill dirs.
 
     Syncs between ductor workspace, ~/.claude/skills, ~/.codex/skills,
@@ -309,7 +309,8 @@ def sync_skills(paths: DuctorPaths) -> None:
     Honors the ``skills`` config block (#141): a global ``sync_enabled=false``
     skips entirely, and per-provider toggles drop individual CLI directories.
     """
-    sync_enabled, enabled_providers = _load_skill_sync_config(paths.config_path)
+    config_path = DuctorPaths(ductor_home=main_home).config_path if main_home else paths.config_path
+    sync_enabled, enabled_providers = _load_skill_sync_config(config_path)
     if not sync_enabled:
         logger.debug("Cross-tool skill sync disabled via config; skipping")
         return
@@ -497,6 +498,7 @@ async def watch_skill_sync(
     paths: DuctorPaths,
     *,
     interval: float = _SKILL_SYNC_INTERVAL,
+    main_home: Path | None = None,
 ) -> None:
     """Continuously sync skill directories across all agents.
 
@@ -506,6 +508,6 @@ async def watch_skill_sync(
     while True:
         await asyncio.sleep(interval)
         try:
-            await asyncio.to_thread(sync_skills, paths)
+            await asyncio.to_thread(sync_skills, paths, main_home=main_home)
         except Exception:
             logger.exception("Skill sync failed")

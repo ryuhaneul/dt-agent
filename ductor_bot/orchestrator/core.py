@@ -162,6 +162,7 @@ def _make_cli_service_config(
         gemini_cli_parameters=tuple(config.cli_parameters.gemini),
         grok_cli_parameters=tuple(config.cli_parameters.grok),
         agent_name=agent_name,
+        main_home=config._main_home,
         interagent_port=interagent_port,
         claude_accounts=tuple(config.claude_accounts),
         transcribe_command=config.transcription.audio_command,
@@ -190,6 +191,7 @@ class Orchestrator:
         self._sessions = SessionManager(paths.sessions_path, config)
         self._autocompact_inputs: dict[tuple[SessionKey, int], tuple[str, float]] = {}
         self._autocompact_global_lock = asyncio.Lock()
+        self._model_global_lock = asyncio.Lock()
         self._named_sessions = NamedSessionRegistry(paths.named_sessions_path)
         # Set by the supervisor: the bus-owned FIFO gates for inter-agent sessions.
         self._session_gates: SessionGateRegistry | None = None

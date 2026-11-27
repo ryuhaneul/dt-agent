@@ -208,7 +208,7 @@ A crash (no orderly shutdown) leaves the record as before. Sub-agents behave the
 Observer manager owns lifecycle for:
 
 - background, cron, webhook, heartbeat, cleanup
-- config reloader
+- config reloader for the main agent
 - rule sync watcher
 - skill sync watcher
 
@@ -230,7 +230,7 @@ Restart-required fields are surfaced via reloader callback logging.
 
 `lifecycle.start_api_server(...)`:
 
-- generates API token when missing
+- generates a missing token for the main API and skips sub-agent API startup if its token is missing
 - computes default chat fallback from `api.chat_id` or first allowed user
 - wires streaming message handler, abort handler, file context, provider metadata, active-state getter
 

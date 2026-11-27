@@ -12,18 +12,25 @@ SCRIPT_DIR="."
 SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)"
 source "$SCRIPT_DIR/_home.sh"
 
-decide_language() {
-    local option_language="" option_home="" index args=("$@")
+read_early_options() {
+    local index args=("$@")
     for ((index = 0; index < ${#args[@]}; index++)); do
         case "${args[index]}" in
             --language) option_language="${args[index + 1]-}" ;;
             --language=*) option_language="${args[index]#--language=}" ;;
-            --home) option_home="${args[index + 1]-}" ;;
+            --home)
+                option_home="${args[index + 1]-}"
+                [[ $option_home != -* ]] || option_home=""
+                ;;
             --home=*) option_home="${args[index]#--home=}" ;;
         esac
     done
-    host_language "$option_language" "$option_home"
 }
+
+option_language=""
+option_home=""
+read_early_options "$@"
+require_main_home "$option_home"
 
 # Preflight problems: python3, docker, compose, uid, python_version.
 preflight_text() {
@@ -89,12 +96,12 @@ preflight_text_ko() {
 # hangul-allowed-end
 
 preflight_fail() {
-    echo "onboard: $(preflight_text "$(decide_language "$@")" "$PREFLIGHT_PROBLEM")" >&2
+    echo "onboard: $(preflight_text "$(host_language "$option_language" "$option_home")" "$PREFLIGHT_PROBLEM")" >&2
     exit 1
 }
 
 if ! command -v python3 >/dev/null 2>&1; then
-    PREFLIGHT_PROBLEM=python3 preflight_fail "$@"
+    PREFLIGHT_PROBLEM=python3 preflight_fail
 fi
 for option in "$@"; do
     case "$option" in
@@ -102,21 +109,21 @@ for option in "$@"; do
     esac
 done
 if ! command -v docker >/dev/null 2>&1; then
-    PREFLIGHT_PROBLEM=docker preflight_fail "$@"
+    PREFLIGHT_PROBLEM=docker preflight_fail
 fi
 compose_version="$(docker compose version --short 2>/dev/null || true)"
 compose_major="${compose_version#v}"
 compose_major="${compose_major%%.*}"
 if [[ ! "$compose_major" =~ ^[0-9]+$ ]] || ((compose_major < 2)); then
-    PREFLIGHT_PROBLEM=compose preflight_fail "$@"
+    PREFLIGHT_PROBLEM=compose preflight_fail
 fi
 
 current_uid="$(id -u)"
 if [[ $current_uid == 0 ]]; then
-    PREFLIGHT_PROBLEM=uid PREFLIGHT_VALUE="$current_uid" preflight_fail "$@"
+    PREFLIGHT_PROBLEM=uid PREFLIGHT_VALUE="$current_uid" preflight_fail
 fi
 if ! current_python_version="$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:3]))); sys.exit(0 if sys.version_info >= (3, 9) else 1)')"; then
-    PREFLIGHT_PROBLEM=python_version PREFLIGHT_VALUE="$current_python_version" preflight_fail "$@"
+    PREFLIGHT_PROBLEM=python_version PREFLIGHT_VALUE="$current_python_version" preflight_fail
 fi
 
 exec python3 "$SCRIPT_DIR/onboard.py" "$@"
