@@ -451,11 +451,13 @@ export function initCliLogin() {
 
   function askSlotChange(action, name) {
     if (busy || loading) return;
-    target = { slot: name }; confirmMode = action; renderConfirmation();
+    target = { slot: name, expected: status.claude_slot_identities?.[name] };
+    confirmMode = action; renderConfirmation();
     confirmation.showModal(); $('cliConfirmNo').focus();
   }
   async function mutateSlot() {
-    const version = generation, name = target.slot, action = confirmMode;
+    const version = generation, action = confirmMode;
+    const { slot: name, expected } = target;
     const deleting = action === 'delete', currentSlots = status.claude_slots;
     const index = currentSlots.findIndex(slot => slot.name === name);
     const live = () => version === generation && dialog.open;
@@ -463,7 +465,9 @@ export function initCliLogin() {
     let focusSlot = name;
     busy = true; render();
     try {
-      await api(deleting ? route : `${route}/${action}`, { method: deleting ? 'DELETE' : 'POST' });
+      await api(deleting ? route : `${route}/${action}`, {
+        method: deleting ? 'DELETE' : 'POST', body: { expected },
+      });
       if (!live()) return;
       slotError = null;
       const slots = deleting ? currentSlots.filter(slot => slot.name !== name)
