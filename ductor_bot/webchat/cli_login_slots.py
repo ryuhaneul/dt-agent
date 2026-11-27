@@ -192,9 +192,8 @@ class ClaudeLoginSlots:
         """Never remove pre-existing slots, credentials or targets of shared symlinks."""
         if not prepared.created:
             return
-        if prepared.path.is_symlink():
-            with exclusive_file_lock(prepared.path.parent / ".slot-identity"):
+        with exclusive_file_lock(prepared.path.parent / ".slot-identity"):
+            if prepared.path.is_symlink():
                 prepared.path.unlink()
-        elif prepared.path.is_dir() and not slot_is_authenticated(prepared.path):
-            with exclusive_file_lock(prepared.path.parent / ".slot-identity"):
+            elif prepared.path.is_dir() and not slot_is_authenticated(prepared.path):
                 shutil.rmtree(prepared.path)

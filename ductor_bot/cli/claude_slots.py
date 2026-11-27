@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import TypedDict
 from uuid import uuid4
@@ -37,7 +37,7 @@ from ductor_bot.cli.slot_rotation import slot_use_lock
 from ductor_bot.config import AgentConfig, transform_config_file
 from ductor_bot.home import require_main_home
 from ductor_bot.infra.atomic_io import atomic_text_save
-from ductor_bot.infra.file_lock import exclusive_file_lock
+from ductor_bot.infra.file_lock import LockTimeoutError, exclusive_file_lock
 from ductor_bot.infra.json_store import atomic_json_save
 
 logger = logging.getLogger(__name__)
@@ -142,28 +142,32 @@ def _config_identity(home: Path, slot: str) -> SlotIdentity:
     return f"cfg:{status.st_dev}:{status.st_ino}:{status.st_ctime_ns}"
 
 
+def _api_key_slot_auth(directory: Path) -> list[str] | None:
+    try:
+        settings = json.loads((directory / "settings.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        return None
+    helper = settings.get("apiKeyHelper") if isinstance(settings, dict) else None
+    if not isinstance(helper, str) or not helper:
+        return None
+    try:
+        slot_name = directory.resolve().name
+    except (OSError, RuntimeError):
+        return ["api_key", helper]
+    if not is_slot_name(slot_name) or helper != (
+        f"{container_slot_config_dir(slot_name)}/api-key-helper.sh"
+    ):
+        return ["api_key", helper]
+    status = _lstat_if_present(directory / "api-key-helper.sh")
+    if status is None:
+        return ["api_key", helper, "", "", ""]
+    return ["api_key", helper, str(status.st_ino), str(status.st_mtime_ns), str(status.st_size)]
+
+
 def _slot_auth(directory: Path) -> list[str] | None:
     kind = slot_kind(directory)
     if kind == "api_key":
-        try:
-            settings = json.loads((directory / "settings.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError, RecursionError):
-            return None
-        helper = settings.get("apiKeyHelper") if isinstance(settings, dict) else None
-        if not isinstance(helper, str) or not helper:
-            return None
-        try:
-            slot_name = directory.resolve().name
-        except (OSError, RuntimeError):
-            return [kind, helper]
-        if not is_slot_name(slot_name) or helper != (
-            f"{container_slot_config_dir(slot_name)}/api-key-helper.sh"
-        ):
-            return [kind, helper]
-        status = _lstat_if_present(directory / "api-key-helper.sh")
-        if status is None:
-            return [kind, helper, "", "", ""]
-        return [kind, helper, str(status.st_ino), str(status.st_mtime_ns), str(status.st_size)]
+        return _api_key_slot_auth(directory)
 
     authenticated = "1" if slot_is_authenticated(directory) else "0"
     try:
@@ -255,6 +259,18 @@ def current_slot_identity(
     return None if auth is None else _read_slot_marker(directory / ".dt-slot-id", auth)
 
 
+@contextmanager
+def _lock_slot_removal(root: Path, slot: str) -> Iterator[None]:
+    with ExitStack() as locks:
+        try:
+            locks.enter_context(exclusive_file_lock(root / ".slot-identity"))
+        except LockTimeoutError as exc:
+            raise SlotDeleteError("slot_busy") from exc
+        except OSError as exc:
+            raise SlotDirectoryError(root / slot, exc) from exc
+        yield
+
+
 def remove(home: Path, slot: str, *, expected: SlotIdentity | None = None) -> None:
     """Remove a named slot while excluding turn execution and web login."""
     if slot == DEFAULT_SLOT:
@@ -262,32 +278,33 @@ def remove(home: Path, slot: str, *, expected: SlotIdentity | None = None) -> No
     if not is_slot_name(slot):
         raise SlotDeleteError("invalid_slot")
 
-    with slot_use_lock(host_cli_auth_dir(home), slot, deleting=True) as reserved:
+    root = host_cli_auth_dir(home)
+    with slot_use_lock(root, slot, deleting=True) as reserved:
         if not reserved:
             raise SlotDeleteError("slot_busy")
-        if expected is not None and current_slot_identity(home, slot) != expected:
-            raise SlotDeleteError("slot_stale")
-        root = host_cli_auth_dir(home)
-        candidate = os.path.normpath(os.path.join(root, slot))  # noqa: PTH118 -- explicit boundary
-        if not candidate.startswith(os.fspath(root) + os.sep):
-            raise SlotDeleteError("invalid_slot")
-        directory = Path(candidate)
-
-        def unregister(data: dict[str, object]) -> None:
-            accounts = _accounts(data)
-            if slot not in accounts and not directory.is_dir():
-                raise SlotDeleteError("slot_not_found")
+        with _lock_slot_removal(root, slot):
             if expected is not None and current_slot_identity(home, slot) != expected:
                 raise SlotDeleteError("slot_stale")
+            candidate = os.path.normpath(os.path.join(root, slot))  # noqa: PTH118 -- explicit boundary
+            if not candidate.startswith(os.fspath(root) + os.sep):
+                raise SlotDeleteError("invalid_slot")
+            directory = Path(candidate)
 
-            # Keep the config lock through cleanup so the membership check and
-            # unregister use the same snapshot, in the existing lock order.
-            _clear_slot_state(home, slot)
-            if slot in accounts:
-                data["claude_accounts"] = [name for name in accounts if name != slot]
+            def unregister(data: dict[str, object]) -> None:
+                accounts = _accounts(data)
+                if slot not in accounts and not directory.is_dir():
+                    raise SlotDeleteError("slot_not_found")
+                if expected is not None and current_slot_identity(home, slot) != expected:
+                    raise SlotDeleteError("slot_stale")
 
-        unregistered = transform_config_file(home / "config" / "config.json", unregister)
-        _remove_directory(directory, unregistered=unregistered)
+                # Keep the config lock through cleanup so the membership check and
+                # unregister use the same snapshot, in the existing lock order.
+                _clear_slot_state(home, slot)
+                if slot in accounts:
+                    data["claude_accounts"] = [name for name in accounts if name != slot]
+
+            unregistered = transform_config_file(home / "config" / "config.json", unregister)
+            _remove_directory(directory, unregistered=unregistered)
     logger.info("Claude slot deleted: %s", slot)
 
 
@@ -418,11 +435,9 @@ def _clear_slot_state(home: Path, slot: str) -> None:
 def _remove_directory(directory: Path, *, unregistered: bool) -> None:
     try:
         if directory.is_symlink():
-            with exclusive_file_lock(directory.parent / ".slot-identity"):
-                directory.unlink()
+            directory.unlink()
         elif directory.is_dir():
-            with exclusive_file_lock(directory.parent / ".slot-identity"):
-                shutil.rmtree(directory)
+            shutil.rmtree(directory)
     except OSError as exc:
         if unregistered:
             logger.warning(

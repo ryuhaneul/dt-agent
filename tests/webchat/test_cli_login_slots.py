@@ -882,6 +882,82 @@ async def test_delete_rechecks_slot_after_waiting_for_config_lock(cli_bridge, mo
     assert json.loads(config.read_text())["claude_accounts"] == [name]
 
 
+@pytest.mark.parametrize("change", ["recreate", "account"])
+async def test_delete_rechecks_slot_after_waiting_for_marker_lock(cli_bridge, monkeypatch, change):
+    from ductor_bot.cli import claude_slots
+    from ductor_bot.infra.file_lock import exclusive_file_lock
+
+    client, _, _, paths, _ = cli_bridge
+    folder = paths.ductor_home / ".cli-auth" / "claude-work"
+    folder.mkdir()
+    credentials = folder / ".credentials.json"
+    credentials.write_text("original fixture credentials")
+    account = folder / ".claude.json"
+    account.write_text('{"oauthAccount":{"accountUuid":"fixture-original"}}')
+    config = paths.config_path
+    config.write_text(json.dumps({"claude_accounts": ["claude", folder.name]}))
+    configured = config.read_bytes()
+    payload = await slot_mutation_payload(client, folder.name)
+    route = f"{_PREFIX}/cli-login/slots/{folder.name}"
+    marker_lock = folder.parent / ".slot-identity"
+    waiting = threading.Event()
+
+    def observe_marker_lock(target):
+        assert target == marker_lock
+        waiting.set()
+        return exclusive_file_lock(target)
+
+    monkeypatch.setattr(claude_slots, "exclusive_file_lock", observe_marker_lock)
+    with exclusive_file_lock(marker_lock):
+        removal = asyncio.create_task(client.delete(route, headers=cli_headers(), json=payload))
+        assert await asyncio.to_thread(waiting.wait, 3)
+        if change == "recreate":
+            original_account = account.read_bytes()
+            shutil.rmtree(folder)
+            folder.mkdir()
+            account.write_bytes(original_account)
+        else:
+            account.write_text('{"oauthAccount":{"accountUuid":"fixture-replacement"}}')
+        replacement = folder / "replacement"
+        replacement.write_text("replacement fixture credentials")
+        replacement.replace(credentials)
+        updated = tree(folder)
+
+    response = await removal
+    assert (response.status, await response.json()) == (409, {"error": "slot_stale"})
+    assert folder.is_dir()
+    assert tree(folder) == updated
+    assert config.read_bytes() == configured
+
+
+async def test_cleanup_preserves_credentials_created_while_waiting_for_marker_lock(paths, monkeypatch):
+    from ductor_bot.infra.file_lock import exclusive_file_lock
+    from ductor_bot.webchat import cli_login_slots
+
+    slots = ClaudeLoginSlots(paths)
+    waiting = threading.Event()
+    with slots.reserve("claude-work") as reserved:
+        assert reserved
+        prepared = slots.prepare("work", new_slot=True)
+        marker_lock = prepared.path.parent / ".slot-identity"
+        credentials = prepared.path / ".credentials.json"
+
+        def observe_marker_lock(target):
+            assert target == marker_lock
+            waiting.set()
+            return exclusive_file_lock(target)
+
+        monkeypatch.setattr(cli_login_slots, "exclusive_file_lock", observe_marker_lock)
+        with exclusive_file_lock(marker_lock):
+            cleanup = asyncio.create_task(asyncio.to_thread(slots.cleanup, prepared))
+            assert await asyncio.to_thread(waiting.wait, 3)
+            credentials.write_text("fixture credentials")
+        await cleanup
+
+    assert prepared.path.is_dir()
+    assert credentials.read_text() == "fixture credentials"
+
+
 async def test_browser_delete_requires_session_and_csrf_before_relay(site):
     client, fake = site
     route = "/api/cli-login/slots/claude-work"
