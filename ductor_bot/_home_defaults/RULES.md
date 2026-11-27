@@ -29,7 +29,7 @@ You are one agent in a multi-agent system managed by a central Supervisor.
 
 - The main home's `agents.json` is the single source for sub-agent settings, including
   bot tokens, allowed users, and model overrides. The supervisor merges these settings
-  at startup and restart. Sub-agent homes never create or read `config/config.json`.
+  at startup and on main's `/agent_restart`. Sub-agent homes never create or read `config/config.json`.
 - Never hardcode or copy bot tokens from other agents. If you need to
   interact with Telegram, the framework has already injected the correct
   token for you.
