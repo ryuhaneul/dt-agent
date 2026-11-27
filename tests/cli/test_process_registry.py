@@ -51,6 +51,24 @@ def test_unregister_idempotent() -> None:
     reg.unregister(tracked)  # no error
 
 
+def test_has_only_tasks_in_topic() -> None:
+    reg = ProcessRegistry()
+    reg.register(2, _mock_process(), "answer")
+    reg.register(1, _mock_process(), "answer", topic_id=7)
+    reg.register(1, _mock_process(returncode=0), "answer")
+    assert not reg.has_only_tasks_in_topic(1, None)
+
+    reg.register(1, _mock_process(), "task:first")
+    reg.register(1, _mock_process(), "task:second")
+    assert reg.has_only_tasks_in_topic(1, None)
+    assert not reg.has_only_tasks_in_topic(1, 7)
+
+    result = reg.register(1, _mock_process(), "task_result:first")
+    assert not reg.has_only_tasks_in_topic(1, None)
+    reg.unregister(result)
+    assert reg.has_only_tasks_in_topic(1, None)
+
+
 async def test_kill_all() -> None:
     reg = ProcessRegistry()
     proc = _mock_process(pid=10)

@@ -3017,7 +3017,7 @@ def test_autocompact_dialog_has_labeled_scopes_and_bounded_token_inputs(markup):
         "telegram-code", "telegram-code-boundaries", "user-line-breaks", "tool-activity", "unread-badges",
         "unread-topics-overlap", "unread-direct-overlap", "unread-overlapping-puts", "unread-remote-null",
         "unread-post-notice", "unread-put-notice", "unread-entry-null",
-        "busy-refresh", "busy-recheck", "busy-terminal", "busy-reconnect",
+        "busy-refresh", "busy-recheck", "busy-terminal", "busy-reconnect", "task-busy",
         "busy-terminal-held-done", "busy-terminal-held-cancelled", "busy-terminal-held-entry",
         "busy-reconnect-overlap-200", "busy-reconnect-overlap-503",
         "busy-reconnect-held-list",
@@ -3039,6 +3039,8 @@ def test_message_dates_browser(tmp_path: Path, scenario: str) -> None:
         "shots": os.environ.get("DTW_DATES_SHOTS", str(tmp_path / "shots")),
         "locales": {locale: load_web_strings(locale) for locale in ("en", "de", "ko")},
     }
+    if scenario == "task-busy":
+        settings["chromium"] = os.environ.get("DTW_CHROMIUM_EXECUTABLE")
     if scenario == "telegram-code":
         from aiogram.types import MessageEntity
 
