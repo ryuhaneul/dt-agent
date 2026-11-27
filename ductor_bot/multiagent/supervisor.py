@@ -62,10 +62,6 @@ _GRACEFUL_STOP_SECONDS = 5.0
 _CANCEL_WAIT_SECONDS = 10.0
 
 
-class _SubAgentRemovedError(Exception):
-    """A readable registry no longer contains the sub-agent."""
-
-
 def _is_transient(exc: Exception) -> bool:
     """Classify an exception as a transient (retryable) network failure.
 
@@ -381,8 +377,8 @@ class AgentSupervisor:
     ) -> tuple[AgentStack, bool]:
         """Handle EXIT_RESTART for an agent.
 
-        Returns ``(stack, should_return)``. Stop the task on main restart or
-        when the sub-agent was removed from the registry.
+        Returns ``(stack, should_return)`` — when *should_return* is True the
+        caller must ``return EXIT_RESTART``.
         """
         if name == "main":
             logger.info("Main agent requested full service restart")
@@ -390,17 +386,15 @@ class AgentSupervisor:
             self._finish_agent(name, health)
             return stack, True
 
-        logger.info("Sub-agent '%s' requested restart", name)
+        # Sub-agent: in-process hot-reload (rebuild stack only)
+        logger.info("Sub-agent '%s' requested restart (hot-reload)", name)
         # Waiting for the lock is cancellable: a stop or restart that gets it first cancels this
         # task instead of waiting for it, so the old stack is never run again.
         async with self._agents_lock:
             self.begin_shutdown(name)
             self._mark_stopping(name)
             health.mark_starting()
-            try:
-                new_stack = await self._replace_stack(name, stack)
-            except _SubAgentRemovedError:
-                return stack, True
+            new_stack = await self._replace_stack(name, stack)
         return new_stack, False
 
     async def _replace_stack(self, name: str, stack: AgentStack) -> AgentStack:
@@ -411,12 +405,7 @@ class AgentSupervisor:
         except Exception as exc:
             logger.warning("Agent '%s': old stack shutdown failed (%s)", name, type(exc).__name__)
         await self._retire_stack(name, stack, budget)
-        try:
-            return await self._rebuild_stack(name, stack)
-        except _SubAgentRemovedError:
-            self._declared.discard(name)
-            await self._stop_agent_locked(name, budget, stack_retired=True)
-            raise
+        return await self._rebuild_stack(name, stack)
 
     async def _handle_crash(
         self,
@@ -463,44 +452,35 @@ class AgentSupervisor:
             )
             return stack, retry_count, False
 
-        while True:
+        logger.error(
+            "Agent '%s' crashed (attempt %d/%d): %s",
+            name,
+            retry_count,
+            _MAX_RESTART_RETRIES,
+            error_msg,
+            exc_info=sys.exc_info(),
+        )
+
+        if retry_count > _MAX_RESTART_RETRIES:
             logger.error(
-                "Agent '%s' crashed (attempt %d/%d): %s",
+                "Agent '%s' exceeded max retries (%d), giving up",
                 name,
-                retry_count,
                 _MAX_RESTART_RETRIES,
-                error_msg,
                 exc_info=sys.exc_info(),
             )
-
-            if retry_count > _MAX_RESTART_RETRIES:
-                logger.error(
-                    "Agent '%s' exceeded max retries (%d), giving up",
-                    name,
-                    _MAX_RESTART_RETRIES,
-                    exc_info=sys.exc_info(),
+            await self._notify_main_agent(
+                t(
+                    "supervisor.stopped_after_crashes",
+                    name=name,
+                    max=_MAX_RESTART_RETRIES,
+                    error=show_crash_error(error_msg),
                 )
-                await self._notify_main_agent(
-                    t(
-                        "supervisor.stopped_after_crashes",
-                        name=name,
-                        max=_MAX_RESTART_RETRIES,
-                        error=show_crash_error(error_msg),
-                    )
-                )
-                return stack, retry_count, True
+            )
+            return stack, retry_count, True
 
-            wait = _RESTART_BACKOFF_BASE * (2 ** (retry_count - 1))
-            try:
-                stack = await self._backoff_and_rebuild(name, stack, health, wait)
-            except _SubAgentRemovedError:
-                return stack, retry_count, True
-            except Exception as rebuild_error:
-                retry_count += 1
-                error_msg = type(rebuild_error).__name__
-                health.mark_crashed(error_msg)
-            else:
-                return stack, retry_count, False
+        wait = _RESTART_BACKOFF_BASE * (2 ** (retry_count - 1))
+        stack = await self._backoff_and_rebuild(name, stack, health, wait)
+        return stack, retry_count, False
 
     async def _backoff_and_rebuild(
         self, name: str, stack: AgentStack, health: AgentHealth, wait: int
@@ -508,8 +488,8 @@ class AgentSupervisor:
         """Sleep for *wait* seconds, then shut down and rebuild the agent stack.
 
         Shared by the sub-agent recovery path and the main-agent transient-retry
-        path. Sub-agent failures propagate so recovery retries the rebuild
-        without running the old stack.
+        path. Rebuild failures are logged and swallowed so the supervised loop
+        retries again on its next iteration.
         """
         logger.info("Agent '%s' restarting in %ds", name, wait)
         await asyncio.sleep(wait)
@@ -524,8 +504,6 @@ class AgentSupervisor:
                     stack = await self._replace_stack(name, stack)
             health.mark_starting()
         except Exception:
-            if name != "main":
-                raise
             logger.exception("Failed to rebuild agent '%s'", name)
 
         return stack
@@ -541,7 +519,7 @@ class AgentSupervisor:
         On clean exit: return the exit code.
         On restart request (exit code 42):
           - Main agent: propagate EXIT_RESTART to trigger full service restart.
-          - Sub-agents: rebuild stack in process.
+          - Sub-agents: rebuild stack in-process (hot-reload).
         """
         from ductor_bot.log_context import set_log_context
 
@@ -565,7 +543,7 @@ class AgentSupervisor:
                 if exit_code == EXIT_RESTART:
                     stack, should_return = await self._handle_restart_exit(name, stack, health)
                     if should_return:
-                        return EXIT_RESTART if name == "main" else 0
+                        return EXIT_RESTART
                     retry_count = 0
                     continue
 
@@ -815,20 +793,10 @@ class AgentSupervisor:
         return config
 
     async def _rebuild_stack(self, name: str, old_stack: AgentStack) -> AgentStack:
-        """Rebuild an AgentStack, reloading sub-agent overrides from the registry."""
-        if name == "main":
-            config = old_stack.config
-        else:
-            sub_cfg = next(
-                (sub for sub in self._registry.load(strict=True) if sub.name == name), None
-            )
-            if sub_cfg is None:
-                raise _SubAgentRemovedError
-            config = self._sub_config(sub_cfg)
-
+        """Rebuild an AgentStack from its config."""
         new_stack = await AgentStack.create(
             name,
-            config,
+            old_stack.config,
             is_main=old_stack.is_main,
         )
         self._stacks[name] = new_stack
@@ -1029,14 +997,11 @@ class AgentSupervisor:
             if not await _wait_ended(task, _cancel_wait(budget)):
                 logger.warning("Agent '%s': task did not end within the shutdown budget", name)
 
-    async def _stop_agent_locked(
-        self, name: str, budget: ShutdownBudget | None = None, *, stack_retired: bool = False
-    ) -> None:
+    async def _stop_agent_locked(self, name: str, budget: ShutdownBudget | None = None) -> None:
         """Stop a sub-agent: end its task, shut the stack down (lock held).
 
         *budget* is the shared shutdown budget when several agents are stopped one after
         another; a single stop gets its own.
-        The supervised task sets *stack_retired* after it has shut down its own stack.
         """
         budget = budget or ShutdownBudget()
         self.begin_shutdown(name)
@@ -1046,13 +1011,13 @@ class AgentSupervisor:
         self._stopping_names.add(name)
         try:
             task = self._tasks.pop(name, None)
-            if not stack_retired and task and not task.done():
+            if task and not task.done():
                 await self._end_agent_task(name, task, self._stacks.get(name), budget)
         finally:
             self._stopping_names.discard(name)
 
         stack = self._stacks.pop(name, None)
-        if stack and not stack_retired:
+        if stack:
             try:
                 await stack.shutdown(budget)
             except Exception as exc:

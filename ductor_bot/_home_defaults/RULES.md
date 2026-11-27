@@ -64,7 +64,7 @@ synced into every agent's `MAINMEMORY.md` by the Supervisor.
 - Use tool scripts in `workspace/tools/` for cron/webhook lifecycle changes.
 Do not manually edit `cron_jobs.json` or `webhooks.json` for normal operations.
 - Edit requested keys in the main home's `config/config.json` for main or `agents.json` for subs.
-Apply sub-agent file edits with main's `/agent_restart` or a sub-agent restart. For main, follow
+Apply sub-agent file edits with main's `/agent_restart` or a bot restart. For main, follow
 **Bot Restart** in the workspace rules if a restart is required.
 - Save user-facing generated files in `workspace/output_to_user/` and send with
 `<file:/absolute/path/to/output_to_user/...>`.

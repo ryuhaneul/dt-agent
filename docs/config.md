@@ -185,7 +185,7 @@ Host paths written as `~/.ductor` below mean the default home; substitute the co
 | `transport` | `str` | `"telegram"` | Main messaging transport: `"telegram"`, `"matrix"`, or `"slack"`; `"headless"` is sub-agent only |
 | `transports` | `list[str]` | `[]` | List of transports to run in parallel (e.g. `["telegram", "matrix"]`). When empty, falls back to single `transport` value. |
 | `telegram_token` | `str` | `""` | Telegram bot token (required when `transport=telegram`). Onboarding trims surrounding whitespace and rejects internal whitespace or a token outside ASCII digits:letters/digits/underscore/hyphen, without echoing the value. |
-| `telegram_dm_topic_auto_name` | `bool` | `true` | Telegram-only once-per-topic naming of confirmed implicit DM topics from received user messages, alongside the conversation; main and bot-backed subs. Subject-only output; a null or rejected model title names the topic from the start of the message at once, while a plain greeting or a failed rename shares up to three message opportunities. Hot-reloaded on main. Subs pick up the main value at restart. No onboarding question. User-edited/custom, group and unknown-origin topics are excluded. |
+| `telegram_dm_topic_auto_name` | `bool` | `true` | Telegram-only once-per-topic naming of confirmed implicit DM topics from received user messages, alongside the conversation; main and bot-backed subs. Subject-only output; a null or rejected model title names the topic from the start of the message at once, while a plain greeting or a failed rename shares up to three message opportunities. Hot-reloaded on main. Subs inherit it after the main agent's `/agent_restart <name>` or a bot restart. No onboarding question. User-edited/custom, group and unknown-origin topics are excluded. |
 | `allowed_user_ids` | `list[int]` | `[]` | Telegram user allowlist (applies in both private and group chats) |
 | `allowed_group_ids` | `list[int]` | `[]` | Telegram group allowlist (which groups the bot can operate in; default `[]` = no groups, fail-closed). In groups, both the group and the user must be allowlisted |
 | `allowed_channel_ids` | `list[int]` | `[]` | Telegram channel allowlist for join/audit behavior; unauthorized channels are auto-left |
@@ -947,7 +947,7 @@ A headless entry has no direct chat or bot credentials. Users ask main to delega
 1. main agent config (`config.json`) as base
 2. explicit non-null overrides from `agents.json` (highest priority)
 
-`interagent` is merged key by key over main's value, and `claude_system_prompt_snapshot` is inherited or overridden as a whole. Changes to these fields take effect at the next sub-agent restart.
+`interagent` is merged key by key over main's value, and `claude_system_prompt_snapshot` is inherited or overridden as a whole. Apply manual changes to these fields with the main agent's `/agent_restart <name>` or a bot restart.
 
 **Exception: `memory_lint` is never taken from main.** A sub's effective `memory_lint` is the framework default plus the keys given in its own `agents.json` entry (all optional, partial), so a main set to `full`, `off`, a `schedule` or a `model` does not reach any sub: a sub without the field runs the default `structure` lint (an agent turn only when the check finds problems). Example: `{"name": "coder", "telegram_token": "SET_IN_PRIVATE_REGISTRY", "allowed_user_ids": [12345678], "memory_lint": {"mode": "full", "schedule": "0 9 * * 1"}}`. Values are validated like any other `agents.json` field (an invalid `mode` excludes that entry with a diagnostic); `schedule`, `model` and the like follow the rules of [`MemoryLintConfig`](#memorylintconfig).
 
@@ -973,7 +973,7 @@ Notes:
   - Matrix identity changed (`homeserver`, `user_id`, `password`, `access_token`, `device_id`, or `store_path`)
 - other field changes currently do not auto-restart running agents
 
-For other manual edits, run `/agent_restart <name>` on the main agent or restart the sub-agent to apply the updated values.
+For other manual edits, run `/agent_restart <name>` on the main agent or restart the bot to apply the updated values.
 
 Source of the schema/default tables: [config.py](../ductor_bot/config.py).
 Sub-agent merge and transport rules: [models.py](../ductor_bot/multiagent/models.py);

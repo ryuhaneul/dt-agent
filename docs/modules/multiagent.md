@@ -51,7 +51,7 @@ Watcher polls `agents.json` every 5s.
   - `transport` or `transports` changed
   - Telegram identity changed (`telegram_token`)
   - Matrix identity changed (`homeserver`, `user_id`, `password`, `access_token`, `device_id`, or `store_path`)
-- other manual field changes take effect after the main agent's `/agent_restart <name>` or a sub-agent restart
+- other manual field changes take effect after the main agent's `/agent_restart <name>` or a bot restart
 
 ## Crash/restart policy
 
@@ -60,9 +60,11 @@ Per agent `_supervised_run` behavior:
 - clean exit -> stop
 - exit code `42`:
   - main -> propagate full process/service restart
-  - sub-agent -> rebuild its stack in-process using the latest `agents.json` entry
+  - sub-agent -> rebuild its stack in-process
 - main fatal crash -> terminate supervisor; transient connection/timeout or Telegram network/server errors -> retry indefinitely with 5/10/20/40/60-second capped backoff
 - sub-agent crash -> up to 5 retries with exponential backoff, then leave health `crashed` until manual action
+
+A sub-agent that restarts itself or recovers from a crash uses its previous runtime settings.
 
 ## Sub-agent config (`agents.json`)
 

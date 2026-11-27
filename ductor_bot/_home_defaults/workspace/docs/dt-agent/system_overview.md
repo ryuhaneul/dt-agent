@@ -169,7 +169,7 @@ Ownership checks are enforced for resume/cancel/delete when `from=<agent>` is su
 - `webchat/share/bridge.token`, `webchat/auth_state.json`, `webchat/backups/`, `webchat/gateway/` (optional web state)
 - `workspace/` (rules, tools, files, tasks, cron_tasks, skills)
 
-The sub-agent home at `<main_home>/agents/<name>/` has its own workspace and session files. Edit its settings in the main home's `agents.json` and apply them with the main agent's `/agent_restart <name>` or a sub-agent restart. Sub-agent homes never create or read `config.json`.
+The sub-agent home at `<main_home>/agents/<name>/` has its own workspace and session files. Edit its settings in the main home's `agents.json` and apply them with the main agent's `/agent_restart <name>` or a bot restart. Sub-agent homes never create or read `config.json`.
 
 ## 8) Where to read code first
 
