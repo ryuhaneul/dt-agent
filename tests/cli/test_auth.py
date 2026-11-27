@@ -14,6 +14,7 @@ from ductor_bot.cli.auth import (
     format_age,
     gemini_uses_api_key_mode,
 )
+from ductor_bot.home import subprocess_settings_home
 
 
 def test_auth_status_values() -> None:
@@ -429,6 +430,16 @@ def test_check_gemini_auth_selected_type_gemini_api_key(
 
     assert result.status == AuthStatus.AUTHENTICATED
     assert result.auth_file == settings
+
+
+def test_subprocess_settings_home_uses_supplied_home_if_main_home_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "agents" / "worker"
+    monkeypatch.setenv("DUCTOR_AGENT_ROLE", "sub")
+    monkeypatch.delenv("DUCTOR_MAIN_HOME", raising=False)
+
+    assert subprocess_settings_home(home) == home
 
 
 @pytest.mark.parametrize("sub_agent", [False, True])

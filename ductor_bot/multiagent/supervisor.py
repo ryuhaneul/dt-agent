@@ -400,7 +400,6 @@ class AgentSupervisor:
             try:
                 new_stack = await self._replace_stack(name, stack)
             except _SubAgentRemovedError:
-                self._finish_agent(name, health)
                 return stack, True
         return new_stack, False
 
@@ -412,7 +411,12 @@ class AgentSupervisor:
         except Exception as exc:
             logger.warning("Agent '%s': old stack shutdown failed (%s)", name, type(exc).__name__)
         await self._retire_stack(name, stack, budget)
-        return await self._rebuild_stack(name, stack)
+        try:
+            return await self._rebuild_stack(name, stack)
+        except _SubAgentRemovedError:
+            self._declared.discard(name)
+            await self._stop_agent_locked(name, budget, stack_retired=True)
+            raise
 
     async def _handle_crash(
         self,
@@ -490,7 +494,6 @@ class AgentSupervisor:
             try:
                 stack = await self._backoff_and_rebuild(name, stack, health, wait)
             except _SubAgentRemovedError:
-                self._finish_agent(name, health)
                 return stack, retry_count, True
             except Exception as rebuild_error:
                 retry_count += 1
@@ -1026,11 +1029,14 @@ class AgentSupervisor:
             if not await _wait_ended(task, _cancel_wait(budget)):
                 logger.warning("Agent '%s': task did not end within the shutdown budget", name)
 
-    async def _stop_agent_locked(self, name: str, budget: ShutdownBudget | None = None) -> None:
+    async def _stop_agent_locked(
+        self, name: str, budget: ShutdownBudget | None = None, *, stack_retired: bool = False
+    ) -> None:
         """Stop a sub-agent: end its task, shut the stack down (lock held).
 
         *budget* is the shared shutdown budget when several agents are stopped one after
         another; a single stop gets its own.
+        The supervised task sets *stack_retired* after it has shut down its own stack.
         """
         budget = budget or ShutdownBudget()
         self.begin_shutdown(name)
@@ -1040,13 +1046,13 @@ class AgentSupervisor:
         self._stopping_names.add(name)
         try:
             task = self._tasks.pop(name, None)
-            if task and not task.done():
+            if not stack_retired and task and not task.done():
                 await self._end_agent_task(name, task, self._stacks.get(name), budget)
         finally:
             self._stopping_names.discard(name)
 
         stack = self._stacks.pop(name, None)
-        if stack:
+        if stack and not stack_retired:
             try:
                 await stack.shutdown(budget)
             except Exception as exc:

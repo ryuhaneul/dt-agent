@@ -1044,6 +1044,49 @@ async def test_sub_rebuild_retries_unreadable_registry_without_rerunning_old_sta
         assert supervisor.stacks[name] is not old_stack
 
 
+async def test_watcher_restarts_a_sub_agent_removed_during_restart(
+    supervisor: AgentSupervisor, tmp_path: Path
+) -> None:
+    name = "sub1"
+    paths = resolve_paths(tmp_path / "agents" / name)
+    registry_path = tmp_path / "agents.json"
+    registration = json.dumps([{"name": name, "transport": "headless"}])
+    registry_path.write_text(registration)
+
+    async def run_old_stack() -> int:
+        registry_path.write_text("[]")
+        return EXIT_RESTART
+
+    old_bot = MagicMock(
+        orchestrator=None, run=AsyncMock(side_effect=run_old_stack), shutdown=AsyncMock()
+    )
+    new_bot = MagicMock(orchestrator=None, run=AsyncMock(return_value=0), shutdown=AsyncMock())
+    supervisor._running = True
+
+    async def create(name: str, config: AgentConfig) -> AgentStack:
+        return AgentStack(name, config, paths, next(bots))
+
+    bots = iter((old_bot, new_bot))
+    try:
+        with patch.object(AgentStack, "create", side_effect=create):
+            await supervisor._on_agents_changed()
+            old_task = supervisor._tasks[name]
+            assert await asyncio.wait_for(old_task, timeout=1) == 0
+            assert not supervisor.is_agent_expected(name)
+
+            registry_path.write_text(registration)
+            await supervisor._on_agents_changed()
+            new_task = supervisor._tasks[name]
+            assert new_task is not old_task
+            assert await asyncio.wait_for(new_task, timeout=1) == 0
+
+        assert supervisor.stacks[name].bot is new_bot
+        old_bot.shutdown.assert_awaited_once()
+        new_bot.run.assert_awaited_once()
+    finally:
+        await supervisor.stop_agent(name)
+
+
 async def test_watcher_continues_after_hot_reload_callback_failure(
     supervisor: AgentSupervisor, tmp_path: Path, caplog: pytest.LogCaptureFixture,
 ) -> None:
