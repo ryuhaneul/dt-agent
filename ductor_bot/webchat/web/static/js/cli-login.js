@@ -482,6 +482,7 @@ export function initCliLogin() {
       const inUse = error.code === 'slot_busy';
       let key = `cli_login.${action}_${inUse ? 'busy' : 'error'}`, args = { name };
       if (error.code === 'slot_not_found') key = 'cli_login.delete_missing';
+      if (error.code === 'slot_stale') key = 'cli_login.slot_stale';
       if (deleting && error.code === 'slot_delete_failed') {
         key = 'cli_login.delete_failed';
         args = { path: error.details?.path || name, reason: error.details?.reason || '' };

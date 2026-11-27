@@ -924,9 +924,28 @@ def test_concurrent_first_slot_identity_reads_publish_one_id(home, monkeypatch):
             identity = first.result(timeout=10)
             assert second.result(timeout=10) == identity
 
-    (identity_file,) = folder.parent.glob(".slot-*.id")
-    info = folder.lstat()
-    assert identity_file.read_text() == f"{identity.removeprefix('id:')} {info.st_dev} {info.st_ino}\n"
+    identity_file = folder / ".dt-slot-id"
+    assert json.loads(identity_file.read_text()) == {
+        "id": identity.removeprefix("id:"),
+        "auth": ["oauth", "0", "", ""],
+    }
     assert stat.S_IMODE(identity_file.stat().st_mode) == 0o600
     assert claude_slots.slot_identity(home, folder.name) == identity
     assert claude_slots.current_slot_identity(home, folder.name) == identity
+
+
+def test_identity_issuance_does_not_recreate_a_removed_directory(home, monkeypatch):
+    from ductor_bot.cli import claude_slots
+
+    folder = home / ".cli-auth" / "claude-a"
+    folder.mkdir(parents=True)
+    write_marker = claude_slots._write_slot_marker
+
+    def remove_before_write(path, value, auth):
+        assert path.parent == folder
+        folder.rmdir()
+        write_marker(path, value, auth)
+
+    monkeypatch.setattr(claude_slots, "_write_slot_marker", remove_before_write)
+    assert claude_slots.slot_identity(home, folder.name).startswith("cfg:")
+    assert not folder.exists()

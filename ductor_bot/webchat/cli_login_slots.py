@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
@@ -17,19 +18,16 @@ from ductor_bot.cli.claude_accounts import (
     slot_is_authenticated,
     slot_kind,
 )
-from ductor_bot.cli.claude_slots import (
-    invalidate_slot_identity,
-    is_slot_name,
-    remove_slot_directory,
-)
+from ductor_bot.cli.claude_slots import is_slot_name
 from ductor_bot.cli.slot_rotation import slot_use_lock
 from ductor_bot.config import transform_config_file
+from ductor_bot.infra.file_lock import exclusive_file_lock
 from ductor_bot.infra.json_store import atomic_json_save
 from ductor_bot.workspace.paths import DuctorPaths
 
 logger = logging.getLogger(__name__)
 
-_PRIVATE_FILES = frozenset({".credentials.json", "credentials.json", ".claude.json"})
+_PRIVATE_FILES = frozenset({".credentials.json", "credentials.json", ".claude.json", ".dt-slot-id"})
 
 
 def resolve_slot_name(name: str | None, *, allow_api_key: bool = False) -> str:
@@ -164,8 +162,7 @@ class ClaudeLoginSlots:
         return prepared
 
     def finish(self, prepared: PreparedClaudeSlot, *, succeeded: bool) -> None:
-        """Invalidate the ID, then share and register on success or clean up on failure."""
-        invalidate_slot_identity(prepared.path)
+        """Share settings and append config only on success; otherwise remove new empties."""
         if not succeeded:
             self.cleanup(prepared)
             return
@@ -195,7 +192,9 @@ class ClaudeLoginSlots:
         """Never remove pre-existing slots, credentials or targets of shared symlinks."""
         if not prepared.created:
             return
-        if prepared.path.is_symlink() or (
-            prepared.path.is_dir() and not slot_is_authenticated(prepared.path)
-        ):
-            remove_slot_directory(prepared.path)
+        if prepared.path.is_symlink():
+            with exclusive_file_lock(prepared.path.parent / ".slot-identity"):
+                prepared.path.unlink()
+        elif prepared.path.is_dir() and not slot_is_authenticated(prepared.path):
+            with exclusive_file_lock(prepared.path.parent / ".slot-identity"):
+                shutil.rmtree(prepared.path)

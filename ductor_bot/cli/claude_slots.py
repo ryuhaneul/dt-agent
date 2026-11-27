@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -36,7 +35,7 @@ from ductor_bot.cli.claude_accounts import (
 from ductor_bot.cli.claude_usage import UsageStore, usage_file_path
 from ductor_bot.cli.slot_rotation import slot_use_lock
 from ductor_bot.config import AgentConfig, transform_config_file
-from ductor_bot.infra.atomic_io import atomic_bytes_save, atomic_text_save
+from ductor_bot.infra.atomic_io import atomic_text_save
 from ductor_bot.infra.file_lock import exclusive_file_lock
 from ductor_bot.infra.json_store import atomic_json_save
 
@@ -142,68 +141,117 @@ def _config_identity(home: Path, slot: str) -> SlotIdentity:
     return f"cfg:{status.st_dev}:{status.st_ino}:{status.st_ctime_ns}"
 
 
-def _identity_path(directory: Path) -> Path:
-    key = hashlib.sha256(directory.name.encode()).hexdigest()
-    return directory.with_name(f".slot-{key}.id")
+def _slot_auth(directory: Path) -> list[str] | None:
+    kind = slot_kind(directory)
+    if kind == "api_key":
+        try:
+            settings = json.loads((directory / "settings.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError, RecursionError):
+            return None
+        helper = settings.get("apiKeyHelper") if isinstance(settings, dict) else None
+        if not isinstance(helper, str) or not helper:
+            return None
+        try:
+            slot_name = directory.resolve().name
+        except (OSError, RuntimeError):
+            return [kind, helper]
+        if not is_slot_name(slot_name) or helper != (
+            f"{container_slot_config_dir(slot_name)}/api-key-helper.sh"
+        ):
+            return [kind, helper]
+        status = _lstat_if_present(directory / "api-key-helper.sh")
+        if status is None:
+            return [kind, helper, "", "", ""]
+        return [kind, helper, str(status.st_ino), str(status.st_mtime_ns), str(status.st_size)]
 
-
-def _read_identity_file(path: Path) -> bytes | None:
+    authenticated = "1" if slot_is_authenticated(directory) else "0"
     try:
-        return path.read_bytes()
+        data = json.loads((directory / ".claude.json").read_text(encoding="utf-8"))
     except FileNotFoundError:
+        return [kind, authenticated, "", ""]
+    except (OSError, ValueError, RecursionError):
         return None
+    if not isinstance(data, dict):
+        return None
+    account = data.get("oauthAccount")
+    account_id = account.get("accountUuid") if isinstance(account, dict) else None
+    org_id = account.get("organizationUuid") if isinstance(account, dict) else None
+    return [
+        kind,
+        authenticated,
+        account_id if isinstance(account_id, str) else "",
+        org_id if isinstance(org_id, str) else "",
+    ]
 
 
-def _matching_identity(content: bytes | None, status: os.stat_result) -> SlotIdentity | None:
-    if content is None:
+def _read_slot_marker(path: Path, auth: list[str]) -> SlotIdentity | None:
+    status = _lstat_if_present(path)
+    if status is None or not stat.S_ISREG(status.st_mode):
         return None
-    match = re.fullmatch(rb"([0-9a-f]{32}) ([0-9]+) ([0-9]+)\n?", content)
-    if match is not None and match.groups()[1:] == (
-        str(status.st_dev).encode(),
-        str(status.st_ino).encode(),
-    ):
-        return f"id:{match[1].decode()}"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError, RecursionError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    value = data.get("id")
+    if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{32}", value) and data.get("auth") == auth:
+        return f"id:{value}"
     return None
 
 
+def _write_slot_marker(path: Path, value: str, auth: list[str]) -> None:
+    status = _lstat_if_present(path)
+    if status is not None and not stat.S_ISREG(status.st_mode):
+        path.unlink(missing_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+    with os.fdopen(os.open(path, flags, 0o600), "w", encoding="utf-8") as handle:
+        os.fchmod(handle.fileno(), 0o600)
+        json.dump({"id": value, "auth": auth}, handle)
+
+
+def _require_slot_auth(directory: Path) -> list[str]:
+    auth = _slot_auth(directory)
+    if auth is None:
+        raise SlotDeleteError("slot_stale")
+    return auth
+
+
 def slot_identity(home: Path, slot: str, *, include_default: bool = False) -> SlotIdentity:
-    """Read or create an identity for the slot's current directory."""
+    """Read or issue an identity for the slot's current authentication state."""
     directory = _identity_directory(home, slot, include_default=include_default)
-    status = _slot_directory_stat(directory)
-    if status is None:
+    if _slot_directory_stat(directory) is None:
         return _config_identity(home, slot)
-    path = _identity_path(directory)
-    identity = _matching_identity(_read_identity_file(path), status)
+    path = directory / ".dt-slot-id"
+    identity = _read_slot_marker(path, _require_slot_auth(directory))
     if identity is not None:
         return identity
-    with exclusive_file_lock(path):
-        status = _slot_directory_stat(directory)
-        if status is not None:
-            identity = _matching_identity(_read_identity_file(path), status)
-            if identity is None:
-                value = uuid4().hex
-                atomic_bytes_save(path, f"{value} {status.st_dev} {status.st_ino}\n".encode())
-                identity = f"id:{value}"
-            return identity
+
+    with exclusive_file_lock(directory.parent / ".slot-identity"):
+        if _slot_directory_stat(directory) is not None:
+            auth = _require_slot_auth(directory)
+            identity = _read_slot_marker(path, auth)
+            if identity is not None:
+                return identity
+            value = uuid4().hex
+            try:
+                _write_slot_marker(path, value, auth)
+            except FileNotFoundError:
+                pass
+            else:
+                return f"id:{value}"
     return _config_identity(home, slot)
 
 
 def current_slot_identity(
     home: Path, slot: str, *, include_default: bool = False
 ) -> SlotIdentity | None:
-    """Read an identity for comparison without creating or locking the ID file."""
+    """Read the current identity without writing files or taking locks."""
     directory = _identity_directory(home, slot, include_default=include_default)
-    status = _slot_directory_stat(directory)
-    if status is None:
+    if _slot_directory_stat(directory) is None:
         return _config_identity(home, slot)
-    return _matching_identity(_read_identity_file(_identity_path(directory)), status)
-
-
-def invalidate_slot_identity(directory: Path) -> None:
-    """Invalidate confirmations issued before a slot's login completed."""
-    path = _identity_path(directory)
-    with exclusive_file_lock(path):
-        path.unlink(missing_ok=True)
+    auth = _slot_auth(directory)
+    return None if auth is None else _read_slot_marker(directory / ".dt-slot-id", auth)
 
 
 def remove(home: Path, slot: str, *, expected: SlotIdentity | None = None) -> None:
@@ -366,31 +414,14 @@ def _clear_slot_state(home: Path, slot: str) -> None:
         raise OSError(msg) from exc
 
 
-def remove_slot_directory(directory: Path) -> None:
-    """Remove the slot and its ID while excluding identity creation."""
-    path = _identity_path(directory)
-    with exclusive_file_lock(path):
-        content = _read_identity_file(path)
-        path.unlink(missing_ok=True)
-        try:
-            if directory.is_symlink():
-                directory.unlink()
-            elif directory.is_dir():
-                shutil.rmtree(directory)
-        except OSError:
-            if content is not None:
-                try:
-                    status = _lstat_if_present(directory)
-                    if status is not None and _matching_identity(content, status) is not None:
-                        atomic_bytes_save(path, content)
-                except OSError:
-                    logger.warning("Could not restore the Claude slot ID: %s", directory.name)
-            raise
-
-
 def _remove_directory(directory: Path, *, unregistered: bool) -> None:
     try:
-        remove_slot_directory(directory)
+        if directory.is_symlink():
+            with exclusive_file_lock(directory.parent / ".slot-identity"):
+                directory.unlink()
+        elif directory.is_dir():
+            with exclusive_file_lock(directory.parent / ".slot-identity"):
+                shutil.rmtree(directory)
     except OSError as exc:
         if unregistered:
             logger.warning(

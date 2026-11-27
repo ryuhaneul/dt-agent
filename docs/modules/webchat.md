@@ -614,9 +614,12 @@ The browser app relays bridge JSON statuses and error codes. Bridge routes use
 | File content exceeds 262144 UTF-8 bytes, including preserved blocks | 413 `too_large` |
 | Unapproved, missing or unsafe file path | 404 `not_found` |
 
-Slot directories use an `id:` identity stored alongside the slot directories. Registered slots without a directory use a `cfg:` identity based on the config file revision.
-Finishing a web login job or running the host login script invalidates earlier confirmations for that slot. A login run directly through the CLI can change credentials without invalidating those confirmations.
-Deleting and recreating a slot outside the bot can preserve its identity if the filesystem reuses the same device and inode numbers.
+Each slot directory stores an `id:` identity in its `.dt-slot-id` marker along
+with the signed-in account or API key helper state at issuance. Recreating a slot
+directory or changing its account or key makes earlier confirmations fail with
+`slot_stale`. Account change detection uses the account and organization IDs
+Claude CLI records in the slot. Registered slots without a directory use a
+`cfg:` identity based on the config file revision.
 
 `ductor webchat check-config --json` prints exactly this structure, with every
 `WebchatConfig` field in `webchat` and error-code strings in `errors`:

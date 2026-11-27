@@ -963,7 +963,7 @@ PY
 # symlinked).  Everything else is shared with the default slot to keep user
 # configuration (settings, skills, plugins, sessions, cache, history) unified
 # across accounts.
-SLOT_CREDENTIAL_FILES=(".credentials.json" "credentials.json" ".claude.json")
+SLOT_CREDENTIAL_FILES=(".credentials.json" "credentials.json" ".claude.json" ".dt-slot-id")
 
 _is_slot_credential() {
     # $1: filename (basename)
@@ -1108,18 +1108,6 @@ with (path.parent / ".config.json.lock").open("a") as lock:
 PYREGISTER
 }
 
-invalidate_slot_identity() {
-    python3 - "$AUTH_DIR_HOST" "$1" <<'PYSLOTID'
-import hashlib
-import sys
-from pathlib import Path
-
-root = Path(sys.argv[1])
-key = hashlib.sha256(sys.argv[2].encode()).hexdigest()
-(root / f".slot-{key}.id").unlink(missing_ok=True)
-PYSLOTID
-}
-
 login_claude_api() {
     local key_name="${1-ANTHROPIC_CREDIT_API_KEY}"
     if [ $# -gt 1 ] || [[ ! "$key_name" =~ ^[A-Z][A-Z0-9_]{0,55}$ ]]; then
@@ -1146,10 +1134,8 @@ login_claude_api() {
     fi
     ensure_shared_projects || return 1
     ensure_slot_dir "$slot" || return 1
-    invalidate_slot_identity "$slot" || return 1
     write_api_slot_helper "$slot" "$key_name" || return 1
     write_api_slot_settings "$slot" "/ductor/.cli-auth/claude-api/api-key-helper.sh" || return 1
-    invalidate_slot_identity "$slot" || return 1
     share_slot_from_default "$slot" || return 1
     local position
     position="$(register_api_slot)" || return 1
@@ -1208,7 +1194,6 @@ login_claude_slot() {
 
     local slot_container_path="/ductor/.cli-auth/${slot}"
 
-    invalidate_slot_identity "$slot" || return 1
     if [ "$slot" = "claude" ]; then
         say login_default
         dc exec -e "CLAUDE_CONFIG_DIR=${slot_container_path}" "$SERVICE" claude /login || true
@@ -1219,8 +1204,6 @@ login_claude_slot() {
             -e "CLAUDE_CONFIG_DIR=${slot_container_path}" \
             "$SERVICE" claude /login || true
     fi
-
-    invalidate_slot_identity "$slot" || return 1
 
     local host_dir="${AUTH_DIR_HOST}/${slot}"
     if [ ! -f "${host_dir}/credentials.json" ] && [ ! -f "${host_dir}/.credentials.json" ]; then

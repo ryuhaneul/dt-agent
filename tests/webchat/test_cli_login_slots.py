@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -721,8 +721,7 @@ async def slot_mutation_payload(client, slot):
 
 
 def _slot_id_file(folder):
-    key = hashlib.sha256(folder.name.encode()).hexdigest()
-    return folder.with_name(f".slot-{key}.id")
+    return folder / ".dt-slot-id"
 
 
 async def test_delete_route_enforces_bridge_auth_and_live_inventory(cli_bridge, monkeypatch):
@@ -1284,16 +1283,29 @@ async def test_slot_mutation_accepts_identity_after_changes_inside_slot(cli_brid
     folder.mkdir()
     credentials = folder / ".credentials.json"
     credentials.write_text("old credentials")
+    account_file = folder / ".claude.json"
+    account = {"accountUuid": "fixture-account", "organizationUuid": "fixture-org"}
+    account_file.write_text(json.dumps({"oauthAccount": account, "sessionCount": 1}))
     if action == "disconnect":
-        (folder / "settings.json").write_text('{"apiKeyHelper":"helper.sh"}')
+        from ductor_bot.cli.claude_accounts import container_slot_config_dir
+
+        helper = f"{container_slot_config_dir(folder.name)}/api-key-helper.sh"
+        (folder / "settings.json").write_text(json.dumps({"apiKeyHelper": helper}))
+        (folder / "api-key-helper.sh").write_text("fixture helper")
     payload = await slot_mutation_payload(client, folder.name)
 
+    unrelated = folder / "unrelated"
+    unrelated.touch()
     refresh_lock = folder / ".oauth_refresh.lock"
     refresh_lock.touch()
+    assert await slot_mutation_payload(client, folder.name) == payload
     replacement = folder / "replacement"
     replacement.write_text("new credentials")
     replacement.replace(credentials)
+    replacement.write_text(json.dumps({"oauthAccount": account, "sessionCount": 2}))
+    replacement.replace(account_file)
     refresh_lock.unlink()
+    unrelated.unlink()
     assert await slot_mutation_payload(client, folder.name) == payload
 
     def logout_cli(*_args, **_kwargs):
@@ -1309,28 +1321,34 @@ async def test_slot_mutation_accepts_identity_after_changes_inside_slot(cli_brid
     assert (response.status, await response.json()) == (200, {"ok": True})
 
 
-def test_shared_slots_keep_separate_ids_outside_their_directories(paths):
-    from ductor_bot.cli.claude_slots import slot_identity
+def test_shared_slots_keep_separate_markers(paths):
+    from ductor_bot.cli.claude_slots import current_slot_identity, slot_identity
 
     home = paths.ductor_home
     slots = ClaudeLoginSlots(paths)
     default = home / ".cli-auth" / "claude"
+    (default / ".claude.json").write_text("{}")
     default_id = slot_identity(home, default.name, include_default=True)
     with slots.reserve("claude-work") as reserved:
         assert reserved
         prepared = slots.prepare("work", new_slot=True)
         slots.finish(prepared, succeeded=True)
-    other_id = slot_identity(home, prepared.name)
     assert (prepared.path / "settings.json").is_symlink()
+    default_marker = _slot_id_file(default)
+    marker = _slot_id_file(prepared.path)
+    assert not os.path.lexists(marker)
+
+    marker.symlink_to(default_marker)
+    assert current_slot_identity(home, prepared.name) is None
+    other_id = slot_identity(home, prepared.name)
+    assert marker.is_file()
+    assert not marker.is_symlink()
     assert other_id != default_id
-    assert _slot_id_file(default).is_file()
-    assert _slot_id_file(prepared.path).is_file()
-    assert not list(default.glob(".slot-*.id*"))
-    assert not list(prepared.path.glob(".slot-*.id*"))
+    assert slot_identity(home, default.name, include_default=True) == default_id
 
 
 @pytest.mark.parametrize("cleanup", [False, True])
-async def test_slot_removal_discards_id_before_recreation(cli_bridge, cleanup):
+async def test_slot_removal_discards_marker_before_recreation(cli_bridge, cleanup):
     from ductor_bot.cli.claude_slots import remove
 
     client, _, _, paths, _ = cli_bridge
@@ -1362,11 +1380,10 @@ async def test_slot_removal_discards_id_before_recreation(cli_bridge, cleanup):
 
     new_payload = await slot_mutation_payload(client, folder.name)
     assert new_payload != old_payload
-    new_id_file = identity_file.read_bytes()
+    new_tree = tree(folder)
     response = await client.delete(route, headers=cli_headers(), json=old_payload)
     assert (response.status, await response.json()) == (409, {"error": "slot_stale"})
-    assert identity_file.read_bytes() == new_id_file
-    assert tree(folder) == before
+    assert tree(folder) == new_tree
     assert paths.config_path.read_bytes() == config
 
 
@@ -1408,54 +1425,109 @@ async def test_delete_rejects_reregistered_slot_without_directory(cli_bridge):
     assert not (paths.ductor_home / ".cli-auth" / name).exists()
 
 
-@pytest.mark.parametrize("succeeded", [True, False])
-async def test_web_relogin_invalidates_web_and_telegram_logout_confirmations(cli_bridge, succeeded):
+@pytest.mark.parametrize("changed_field", ["accountUuid", "organizationUuid", None])
+async def test_oauth_change_stales_web_and_telegram_confirmations(cli_bridge, changed_field):
     from ductor_bot.cli import claude_slots
     from ductor_bot.i18n import t
     from ductor_bot.orchestrator.selectors.account_selector import handle_account_callback
-    from tests.webchat.test_bridge_api import cli_poll
 
-    client, bot, _, paths, manager = cli_bridge
+    client, bot, _, paths, _ = cli_bridge
     home = paths.ductor_home
-    folder = home / ".cli-auth" / "claude"
+    folder = home / ".cli-auth" / "claude-work"
+    folder.mkdir()
     credentials = folder / ".credentials.json"
-    credentials.write_text("original account")
-    original_inode = folder.stat().st_ino
+    credentials.write_text("fixture credentials")
+    account_file = folder / ".claude.json"
+    account = {"accountUuid": "fixture-account", "organizationUuid": "fixture-org"}
+    account_file.write_text(json.dumps({"oauthAccount": account}))
     payload = await slot_mutation_payload(client, folder.name)
-    prompt = await handle_account_callback(home, bot.config, "acs:l:claude")
-    confirm = prompt.buttons.rows[0][1].callback_data
-    assert confirm.startswith("acs:y:")
+    confirmations = []
+    for action in ("l", "x"):
+        prompt = await handle_account_callback(home, bot.config, f"acs:{action}:{folder.name}")
+        confirmation = prompt.buttons.rows[0][1].callback_data
+        assert confirmation.startswith("acs:y:")
+        confirmations.append(confirmation)
 
-    executable = Path(manager._env["PATH"]) / "claude"
-    executable.write_text(
-        f"#!{sys.executable}\n"
-        "import os\n"
-        "from pathlib import Path\n"
-        "slot = Path(os.environ['CLAUDE_CONFIG_DIR'])\n"
-        "replacement = slot / 'replacement'\n"
-        "replacement.write_text('different account')\n"
-        "replacement.replace(slot / '.credentials.json')\n"
-        + ("print('Login successful')\n" if succeeded else "raise SystemExit(1)\n")
-    )
-    response = await client.post(
-        f"{_PREFIX}/cli-login/jobs", headers=cli_headers(),
-        json={"provider": "claude", "slot": folder.name},
-    )
-    assert response.status == 202
-    job = (await response.json())["job_id"]
-    result = await cli_poll(client, job, finished=True)
-    assert result["state"] == ("succeeded" if succeeded else "failed")
-    assert folder.stat().st_ino == original_inode
-    assert not _slot_id_file(folder).exists()
-    assert credentials.read_text() == "different account"
-
+    if changed_field is None:
+        account_file.write_text("{}")
+    else:
+        account[changed_field] = "fixture-replacement"
+        account_file.write_text(json.dumps({"oauthAccount": account}))
+    route = f"{_PREFIX}/cli-login/slots/{folder.name}"
+    before = tree(folder)
     with patch.object(claude_slots.subprocess, "run") as logout_cli:
-        response = await client.post(
-            f"{_PREFIX}/cli-login/slots/{folder.name}/logout", headers=cli_headers(), json=payload
-        )
+        response = await client.post(f"{route}/logout", headers=cli_headers(), json=payload)
         assert (response.status, await response.json()) == (409, {"error": "slot_stale"})
-        result = await handle_account_callback(home, bot.config, confirm)
-        assert t("accounts.stale") in result.text
+        response = await client.delete(route, headers=cli_headers(), json=payload)
+        assert (response.status, await response.json()) == (409, {"error": "slot_stale"})
+        for confirmation in confirmations:
+            result = await handle_account_callback(home, bot.config, confirmation)
+            assert t("accounts.stale") in result.text
     logout_cli.assert_not_called()
-    assert credentials.read_text() == "different account"
+    assert credentials.read_text() == "fixture credentials"
+    assert tree(folder) == before
     assert await slot_mutation_payload(client, folder.name) != payload
+
+
+async def test_delete_rejects_slot_recreated_outside_bot(cli_bridge):
+    client, _, _, paths, _ = cli_bridge
+    folder = paths.ductor_home / ".cli-auth" / "claude-work"
+    folder.mkdir()
+    payload = await slot_mutation_payload(client, folder.name)
+    shutil.rmtree(folder)
+    folder.mkdir()
+    (folder / "settings.json").write_text("{}")
+    before = tree(folder)
+    config = paths.config_path.read_bytes()
+
+    route = f"{_PREFIX}/cli-login/slots/{folder.name}"
+    response = await client.delete(route, headers=cli_headers(), json=payload)
+    assert (response.status, await response.json()) == (409, {"error": "slot_stale"})
+    assert tree(folder) == before
+    assert paths.config_path.read_bytes() == config
+    assert not _slot_id_file(folder).exists()
+
+
+async def test_delete_rejects_slot_after_only_credentials_are_renamed(cli_bridge):
+    client, _, _, paths, _ = cli_bridge
+    folder = paths.ductor_home / ".cli-auth" / "claude-work"
+    folder.mkdir()
+    credentials = folder / ".credentials.json"
+    credentials.write_text("fixture credentials")
+    account = folder / ".claude.json"
+    account.write_text('{"oauthAccount":{"accountUuid":"fixture-account"}}')
+    payload = await slot_mutation_payload(client, folder.name)
+
+    credentials.rename(folder / ".credentials.json.signed-out")
+    before = tree(folder)
+    route = f"{_PREFIX}/cli-login/slots/{folder.name}"
+    response = await client.delete(route, headers=cli_headers(), json=payload)
+    assert (response.status, await response.json()) == (409, {"error": "slot_stale"})
+    assert tree(folder) == before
+
+
+async def test_disconnect_rejects_replaced_standard_api_key_helper(cli_bridge):
+    from ductor_bot.cli.claude_accounts import container_slot_config_dir
+    from ductor_bot.cli.claude_slots import current_slot_identity, slot_identity
+
+    client, _, _, paths, _ = cli_bridge
+    folder = paths.ductor_home / ".cli-auth" / "claude-api"
+    folder.mkdir()
+    helper = folder / "api-key-helper.sh"
+    command = f"{container_slot_config_dir(folder.name)}/{helper.name}"
+    (folder / "settings.json").write_text(json.dumps({"apiKeyHelper": command}))
+    helper.write_text("fixture helper 1")
+    payload = await slot_mutation_payload(client, folder.name)
+    alias = folder.with_name("claude-api-alias")
+    alias.symlink_to(folder.name, target_is_directory=True)
+    assert slot_identity(paths.ductor_home, alias.name) == payload["expected"]
+
+    replacement = folder / "replacement"
+    replacement.write_text("fixture helper 2")
+    replacement.replace(helper)
+    assert current_slot_identity(paths.ductor_home, alias.name) is None
+    before = tree(folder)
+    route = f"{_PREFIX}/cli-login/slots/{folder.name}/disconnect"
+    response = await client.post(route, headers=cli_headers(), json=payload)
+    assert (response.status, await response.json()) == (409, {"error": "slot_stale"})
+    assert tree(folder) == before
