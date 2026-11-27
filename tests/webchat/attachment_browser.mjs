@@ -699,6 +699,8 @@ try{
         await page.locator('.message-attachment').filter({hasText:longName}).evaluate(node=>node.scrollIntoView({block:'center'}));
         await page.screenshot({path:path.join(cfg.shots,`4b-cards-${width}-${theme}.png`)});
         const trigger=page.locator('[data-open-attachment]').first();await trigger.click();await page.waitForSelector('#attachmentViewer[open]');
+        const viewer = await page.locator('#attachmentViewer').boundingBox();
+        assert.deepEqual([viewer.width, viewer.height], [width - 24, height - 24]);
         await page.locator('#attachmentZoom').click();assert.equal(await page.locator('#attachmentZoom').getAttribute('aria-pressed'),'true');await page.locator('#attachmentZoom').click();
         await page.screenshot({path:path.join(cfg.shots,`4b-viewer-${width}-${theme}.png`)});
         await page.keyboard.press('Escape');await page.waitForFunction(()=>document.activeElement.hasAttribute('data-open-attachment'));
