@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -15,6 +16,7 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TypedDict
+from uuid import uuid4
 
 from ductor_bot.cli.claude_accounts import (
     CONTAINER_DUCTOR_MOUNT,
@@ -34,7 +36,8 @@ from ductor_bot.cli.claude_accounts import (
 from ductor_bot.cli.claude_usage import UsageStore, usage_file_path
 from ductor_bot.cli.slot_rotation import slot_use_lock
 from ductor_bot.config import AgentConfig, transform_config_file
-from ductor_bot.infra.atomic_io import atomic_text_save
+from ductor_bot.infra.atomic_io import atomic_bytes_save, atomic_text_save
+from ductor_bot.infra.file_lock import exclusive_file_lock
 from ductor_bot.infra.json_store import atomic_json_save
 
 logger = logging.getLogger(__name__)
@@ -92,7 +95,7 @@ def unregistered_slots(home: Path, accounts: Sequence[str]) -> list[str]:
     ]
 
 
-SlotIdentity = tuple[int, int, int]
+SlotIdentity = str
 
 
 class SlotDeleteError(ValueError):
@@ -108,20 +111,92 @@ class SlotDirectoryError(SlotDeleteError):
         self.reason = cause.strerror or str(cause)
 
 
-def slot_identity(home: Path, slot: str, *, include_default: bool = False) -> SlotIdentity:
-    """Identify the folder, or the config revision for a named slot with no folder."""
+def _identity_directory(home: Path, slot: str, *, include_default: bool) -> Path:
     if slot == DEFAULT_SLOT and not include_default:
         raise SlotDeleteError("slot_default")
     if not is_slot_name(slot):
         raise SlotDeleteError("invalid_slot")
-    directory = host_slot_config_dir(home, slot)
-    if directory.is_dir():
-        status = directory.lstat()
-    elif slot != DEFAULT_SLOT and slot in read_accounts(home):
-        status = (home / "config" / "config.json").stat()
-    else:
+    return host_slot_config_dir(home, slot)
+
+
+def _lstat_if_present(directory: Path) -> os.stat_result | None:
+    try:
+        return directory.lstat()
+    except FileNotFoundError:
+        return None
+
+
+def _slot_directory_stat(directory: Path) -> os.stat_result | None:
+    status = _lstat_if_present(directory)
+    if status is None:
+        return None
+    if stat.S_ISDIR(status.st_mode) or (stat.S_ISLNK(status.st_mode) and directory.is_dir()):
+        return status
+    return None
+
+
+def _config_identity(home: Path, slot: str) -> SlotIdentity:
+    if slot == DEFAULT_SLOT or slot not in read_accounts(home):
         raise SlotDeleteError("slot_not_found")
-    return status.st_dev, status.st_ino, status.st_ctime_ns
+    status = (home / "config" / "config.json").stat()
+    return f"cfg:{status.st_dev}:{status.st_ino}:{status.st_ctime_ns}"
+
+
+def _identity_path(directory: Path) -> Path:
+    key = hashlib.sha256(directory.name.encode()).hexdigest()
+    return directory.with_name(f".slot-{key}.id")
+
+
+def _read_identity_file(path: Path) -> bytes | None:
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return None
+
+
+def _matching_identity(content: bytes | None, status: os.stat_result) -> SlotIdentity | None:
+    if content is None:
+        return None
+    match = re.fullmatch(rb"([0-9a-f]{32}) ([0-9]+) ([0-9]+)\n?", content)
+    if match is not None and match.groups()[1:] == (
+        str(status.st_dev).encode(),
+        str(status.st_ino).encode(),
+    ):
+        return f"id:{match[1].decode()}"
+    return None
+
+
+def slot_identity(home: Path, slot: str, *, include_default: bool = False) -> SlotIdentity:
+    """Read or create an identity for the slot's current directory."""
+    directory = _identity_directory(home, slot, include_default=include_default)
+    status = _slot_directory_stat(directory)
+    if status is None:
+        return _config_identity(home, slot)
+    path = _identity_path(directory)
+    identity = _matching_identity(_read_identity_file(path), status)
+    if identity is not None:
+        return identity
+    with exclusive_file_lock(path):
+        status = _slot_directory_stat(directory)
+        if status is not None:
+            identity = _matching_identity(_read_identity_file(path), status)
+            if identity is None:
+                value = uuid4().hex
+                atomic_bytes_save(path, f"{value} {status.st_dev} {status.st_ino}\n".encode())
+                identity = f"id:{value}"
+            return identity
+    return _config_identity(home, slot)
+
+
+def current_slot_identity(
+    home: Path, slot: str, *, include_default: bool = False
+) -> SlotIdentity | None:
+    """Read an identity for comparison without creating or locking the ID file."""
+    directory = _identity_directory(home, slot, include_default=include_default)
+    status = _slot_directory_stat(directory)
+    if status is None:
+        return _config_identity(home, slot)
+    return _matching_identity(_read_identity_file(_identity_path(directory)), status)
 
 
 def remove(home: Path, slot: str, *, expected: SlotIdentity | None = None) -> None:
@@ -134,7 +209,7 @@ def remove(home: Path, slot: str, *, expected: SlotIdentity | None = None) -> No
     with slot_use_lock(host_cli_auth_dir(home), slot, deleting=True) as reserved:
         if not reserved:
             raise SlotDeleteError("slot_busy")
-        if expected is not None and slot_identity(home, slot) != expected:
+        if expected is not None and current_slot_identity(home, slot) != expected:
             raise SlotDeleteError("slot_stale")
         root = host_cli_auth_dir(home)
         candidate = os.path.normpath(os.path.join(root, slot))  # noqa: PTH118 -- explicit boundary
@@ -146,7 +221,7 @@ def remove(home: Path, slot: str, *, expected: SlotIdentity | None = None) -> No
             accounts = _accounts(data)
             if slot not in accounts and not directory.is_dir():
                 raise SlotDeleteError("slot_not_found")
-            if expected is not None and slot_identity(home, slot) != expected:
+            if expected is not None and current_slot_identity(home, slot) != expected:
                 raise SlotDeleteError("slot_stale")
 
             # Keep the config lock through cleanup so the membership check and
@@ -190,7 +265,10 @@ def _reserve_auth_change(home: Path, slot: str, expected: SlotIdentity | None) -
             raise SlotDeleteError("invalid_slot")
         if not stat.S_ISDIR(status.st_mode):
             raise SlotDeleteError(missing)
-        if expected is not None and (status.st_dev, status.st_ino, status.st_ctime_ns) != expected:
+        if (
+            expected is not None
+            and current_slot_identity(home, slot, include_default=True) != expected
+        ):
             raise SlotDeleteError("slot_stale")
         yield directory
 
@@ -281,12 +359,31 @@ def _clear_slot_state(home: Path, slot: str) -> None:
         raise OSError(msg) from exc
 
 
+def remove_slot_directory(directory: Path) -> None:
+    """Remove the slot and its ID while excluding identity creation."""
+    path = _identity_path(directory)
+    with exclusive_file_lock(path):
+        content = _read_identity_file(path)
+        path.unlink(missing_ok=True)
+        try:
+            if directory.is_symlink():
+                directory.unlink()
+            elif directory.is_dir():
+                shutil.rmtree(directory)
+        except OSError:
+            if content is not None:
+                try:
+                    status = _lstat_if_present(directory)
+                    if status is not None and _matching_identity(content, status) is not None:
+                        atomic_bytes_save(path, content)
+                except OSError:
+                    logger.warning("Could not restore the Claude slot ID: %s", directory.name)
+            raise
+
+
 def _remove_directory(directory: Path, *, unregistered: bool) -> None:
     try:
-        if directory.is_symlink():
-            directory.unlink()
-        elif directory.is_dir():
-            shutil.rmtree(directory)
+        remove_slot_directory(directory)
     except OSError as exc:
         if unregistered:
             logger.warning(

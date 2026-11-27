@@ -112,9 +112,8 @@ def _login_slot_rows(
     for name in names:
         if identities is not None:
             # Capture the identity before reading the slot data shown to the user.
-            with contextlib.suppress(FileNotFoundError, claude_slots.SlotDeleteError):
-                identity = claude_slots.slot_identity(home, name, include_default=True)
-                identities[name] = ":".join(map(str, identity))
+            with contextlib.suppress(OSError, claude_slots.SlotDeleteError):
+                identities[name] = claude_slots.slot_identity(home, name, include_default=True)
         directory = host_slot_config_dir(home, name)
         rows.append(
             {
@@ -1281,16 +1280,11 @@ def _register_cli_login_routes(app: web.Application, bot: TelegramBot) -> None: 
     async def mutate_slot(request: web.Request) -> web.Response:
         if not request.headers.get("X-Dtw-Owner", ""):
             return _error("forbidden", 403)
-        value = (await _body(request)).get("expected")
-        identity = (
-            re.fullmatch(r"([0-9]{1,20}):([0-9]{1,20}):(-?[0-9]{1,20})", value)
-            if isinstance(value, str)
-            else None
-        )
-        if identity is None:
+        expected = (await _body(request)).get("expected")
+        if not isinstance(expected, str) or not re.fullmatch(
+            r"id:[0-9a-f]{32}|cfg:[0-9]{1,20}:[0-9]{1,20}:-?[0-9]{1,20}", expected
+        ):
             return _error("bad_request", 400)
-        device, inode, changed = identity.groups()
-        expected = (int(device), int(inode), int(changed))
         action = request.match_info.get("action", "delete")
         operation, failure = {
             "delete": (claude_slots.remove, "slot_delete_error"),

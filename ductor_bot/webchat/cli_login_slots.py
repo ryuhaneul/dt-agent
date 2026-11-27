@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
@@ -18,7 +17,7 @@ from ductor_bot.cli.claude_accounts import (
     slot_is_authenticated,
     slot_kind,
 )
-from ductor_bot.cli.claude_slots import is_slot_name
+from ductor_bot.cli.claude_slots import is_slot_name, remove_slot_directory
 from ductor_bot.cli.slot_rotation import slot_use_lock
 from ductor_bot.config import transform_config_file
 from ductor_bot.infra.json_store import atomic_json_save
@@ -191,7 +190,7 @@ class ClaudeLoginSlots:
         """Never remove pre-existing slots, credentials or targets of shared symlinks."""
         if not prepared.created:
             return
-        if prepared.path.is_symlink():
-            prepared.path.unlink()
-        elif prepared.path.is_dir() and not slot_is_authenticated(prepared.path):
-            shutil.rmtree(prepared.path)
+        if prepared.path.is_symlink() or (
+            prepared.path.is_dir() and not slot_is_authenticated(prepared.path)
+        ):
+            remove_slot_directory(prepared.path)

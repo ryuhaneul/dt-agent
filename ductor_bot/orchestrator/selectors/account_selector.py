@@ -139,11 +139,7 @@ def _auth_change_identity(home: Path, name: str, action: str) -> claude_slots.Sl
         raise claude_slots.SlotDeleteError("api_key_slot")
     elif not slot_is_authenticated(directory):
         raise claude_slots.SlotDeleteError("slot_stale")
-    try:
-        status = directory.lstat()
-    except FileNotFoundError as exc:
-        raise claude_slots.SlotDeleteError("slot_not_found") from exc
-    return status.st_dev, status.st_ino, status.st_ctime_ns
+    return claude_slots.slot_identity(home, name, include_default=True)
 
 
 def _apply_slot_change(

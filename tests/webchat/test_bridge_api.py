@@ -4163,7 +4163,7 @@ async def test_cli_status_returns_ordered_slots_and_cache_without_auth_wait(cli_
         result = await response.json()
         identities = result.pop("claude_slot_identities")
         assert set(identities) == {"claude-work", "claude", "claude-orphan"}
-        assert all(re.fullmatch(r"\d+:\d+:-?\d+", value) for value in identities.values())
+        assert all(re.fullmatch(r"id:[0-9a-f]{32}", value) for value in identities.values())
         assert result == {
             "providers": dict.fromkeys(("claude", "codex", "grok")),
             "running": False,
