@@ -15,6 +15,7 @@ from ductor_bot.chat_log.outbox import Outbox, OutboxItem
 from ductor_bot.chat_log.prune import RetentionPruner
 from ductor_bot.chat_log.settings import chat_log_active, validate_chat_log
 from ductor_bot.config import AgentConfig
+from ductor_bot.home import require_main_home
 from ductor_bot.i18n import init, t_rich
 from ductor_bot.infra.atomic_io import atomic_text_save
 from ductor_bot.infra.file_lock import exclusive_file_lock
@@ -121,6 +122,8 @@ def _undo_import(paths: DuctorPaths, history: HistoryStore) -> int:
 
 
 def cmd_chat_log(args: list[str]) -> None:
+    paths = resolve_paths()
+    require_main_home()
     if "chat-log" in args:
         args = args[args.index("chat-log") + 1 :]
     status = args == ["status"]
@@ -134,7 +137,6 @@ def cmd_chat_log(args: list[str]) -> None:
     if not status and not valid_import and prune is None:
         _console.print(t_rich("chat_log.usage"))
         raise SystemExit(2)
-    paths = resolve_paths()
     raw = (
         json.loads(paths.config_path.read_text(encoding="utf-8"))
         if paths.config_path.is_file()

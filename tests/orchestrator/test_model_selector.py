@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 from contextlib import contextmanager
@@ -15,7 +16,8 @@ from ductor_bot.cli.auth import AuthResult, AuthStatus
 from ductor_bot.cli.codex_cache import CodexModelCache
 from ductor_bot.cli.codex_discovery import CodexModelInfo
 from ductor_bot.cli.types import AgentResponse
-from ductor_bot.config import reset_gemini_models, set_gemini_models
+from ductor_bot.config import AgentConfig, reset_gemini_models, set_gemini_models
+from ductor_bot.i18n import t
 from ductor_bot.orchestrator.core import Orchestrator
 from ductor_bot.orchestrator.flows import normal
 from ductor_bot.orchestrator.selectors.model_selector import (
@@ -26,6 +28,7 @@ from ductor_bot.orchestrator.selectors.model_selector import (
 )
 from ductor_bot.session.key import SessionKey
 from ductor_bot.session.manager import ProviderSessionData
+from ductor_bot.workspace.paths import DuctorPaths
 
 _AUTHED_CLAUDE = AuthResult("claude", AuthStatus.AUTHENTICATED)
 _AUTHED_CODEX = AuthResult("codex", AuthStatus.AUTHENTICATED)
@@ -1103,6 +1106,97 @@ async def test_session_effort_reset_does_not_overwrite_valid_config(
     synced = await orch._sessions.get_active(main)
     assert synced is not None
     assert synced.reasoning_effort == "medium"  # session reset (max invalid)
+
+
+@pytest.mark.parametrize("write_fails", [False, True])
+async def test_sub_model_switch_saves_registry_before_changing_runtime(
+    tmp_path, monkeypatch, write_fails,
+):
+    from ductor_bot.infra import json_store
+
+    home = tmp_path / "agents" / "worker"
+    target = tmp_path / "physical-home"
+    target.mkdir()
+    home.parent.mkdir()
+    home.symlink_to(target, target_is_directory=True)
+    paths = DuctorPaths(ductor_home=home.resolve())
+    config = AgentConfig(ductor_home=str(home), model="opus", provider="claude")
+    config._main_home = tmp_path
+    orch = Orchestrator(config, paths, agent_name="worker")
+    key = SessionKey(chat_id=1)
+    await orch._sessions.resolve_session(key, model="opus", provider="claude")
+    registry = tmp_path / "agents.json"
+    original = [{"name": "worker", "model": "opus", "provider": "claude"}]
+    registry.write_text(json.dumps(original))
+
+    if write_fails:
+        def fail_write(path, _content):
+            assert path == registry
+            raise OSError("synthetic")
+        monkeypatch.setattr(json_store, "atomic_text_save", fail_write)
+
+    response = await handle_model_callback(orch, key, "ms:r:max:sonnet")
+    expected_model = "opus" if write_fails else "sonnet"
+    assert orch.config.model == expected_model
+    assert orch._cli_service._config.default_model == expected_model
+    assert (await orch._sessions.get_active(key)).model == expected_model
+    assert not paths.config_path.exists()
+    if write_fails:
+        assert response.text == t("autocompact.save_error")
+        assert json.loads(registry.read_text()) == original
+    else:
+        assert response.text != t("autocompact.save_error")
+        assert json.loads(registry.read_text()) == [
+            {**original[0], "model": "sonnet", "reasoning_effort": "max"}
+        ]
+
+
+async def test_main_model_in_agents_directory_saves_its_own_config(tmp_path):
+    home = tmp_path / "agents" / "standalone"
+    paths = DuctorPaths(ductor_home=home)
+    paths.config_path.parent.mkdir(parents=True)
+    paths.config_path.write_text('{"model": "opus"}')
+    orch = Orchestrator(AgentConfig(ductor_home=str(home)), paths)
+    await switch_model(orch, SessionKey(chat_id=1), "sonnet")
+    assert json.loads(paths.config_path.read_text())["model"] == "sonnet"
+
+
+async def test_concurrent_sub_global_model_switches_keep_runtime_and_registry_in_sync(
+    tmp_path, monkeypatch,
+):
+    from ductor_bot.orchestrator.selectors import model_selector
+
+    paths = DuctorPaths(ductor_home=tmp_path / "agents" / "worker")
+    config = AgentConfig(ductor_home=str(paths.ductor_home), model="opus")
+    config._main_home = tmp_path
+    orch = Orchestrator(config, paths, agent_name="worker")
+    registry = tmp_path / "agents.json"
+    registry.write_text('[{"name": "worker", "model": "opus"}]')
+    first_saved = asyncio.Event()
+    release = asyncio.Event()
+
+    async def save_session(_orch, key, _session, _context):
+        if key.chat_id == 1:
+            first_saved.set()
+            await release.wait()
+        return "", 0
+
+    monkeypatch.setattr(model_selector, "_persist_switch_target", save_session)
+    first = asyncio.create_task(switch_model(orch, SessionKey(chat_id=1), "sonnet"))
+    second = None
+    try:
+        await asyncio.wait_for(first_saved.wait(), timeout=2)
+        assert json.loads(registry.read_text())[0]["model"] == "sonnet"
+        second = asyncio.create_task(switch_model(orch, SessionKey(chat_id=2), "haiku"))
+        done, _ = await asyncio.wait({second}, timeout=0.2)
+        assert not done
+        assert json.loads(registry.read_text())[0]["model"] == "sonnet"
+    finally:
+        release.set()
+        await asyncio.gather(first, *([second] if second else []))
+
+    assert orch.config.model == orch._cli_service._config.default_model == "haiku"
+    assert json.loads(registry.read_text())[0]["model"] == "haiku"
 
 
 async def test_main_model_explicit_effort_sets_config(orch: Orchestrator) -> None:

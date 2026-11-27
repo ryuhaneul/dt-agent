@@ -940,3 +940,28 @@ def test_sync_skills_skipped_when_globally_disabled(tmp_path: Path) -> None:
     with patch("ductor_bot.workspace.skill_sync._cli_skill_dirs") as mock_dirs:
         sync_skills(paths)
     mock_dirs.assert_not_called()
+
+
+def test_sub_skill_sync_uses_main_toggle(tmp_path: Path) -> None:
+    main = _make_paths(tmp_path)
+    target = tmp_path / "workspace-home"
+    target.mkdir()
+    link = main.ductor_home / "agents" / "worker"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(target, target_is_directory=True)
+    sub = DuctorPaths(ductor_home=link.resolve())
+    for paths, enabled in ((main, False), (sub, True)):
+        paths.config_path.parent.mkdir(parents=True)
+        paths.config_path.write_text(json.dumps({"skills": {"sync_enabled": enabled}}))
+
+    with patch("ductor_bot.workspace.skill_sync._cli_skill_dirs") as mock_dirs:
+        sync_skills(sub, main_home=main.ductor_home)
+
+    mock_dirs.assert_not_called()
+
+    standalone = DuctorPaths(ductor_home=tmp_path / "standalone" / "agents" / "main")
+    standalone.config_path.parent.mkdir(parents=True)
+    standalone.config_path.write_text(json.dumps({"skills": {"sync_enabled": False}}))
+    with patch("ductor_bot.workspace.skill_sync._cli_skill_dirs") as mock_dirs:
+        sync_skills(standalone)
+    mock_dirs.assert_not_called()

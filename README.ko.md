@@ -359,7 +359,7 @@ $DUCTOR_HOME/                     # host; mounted as /ductor
 
 ## 7. 멀티 에이전트 설정과 위임
 
-main과 서브는 같은 supervisor·컨테이너에서 실행됩니다. `$DUCTOR_HOME/agents.json`에는 JSON **배열**을 넣으십시오. 아래 예시는 봇 없는 helper와 자기 Telegram 봇을 가진 messenger입니다. messenger 토큰은 비공개로 교체해야 하며 예시 값은 동작하는 토큰이 아닙니다. 파일 권한은 0600으로 설정하십시오. 서브는 main 기본 설정에 null이 아닌 registry override를 적용하지만 자격·허용 목록은 자기 것을 사용하며 main의 Telegram 접근 권한을 물려받지 않습니다. 생성된 `agents/<name>/config/config.json`은 실행 결과물이므로 원본인 `agents.json`을 수정하십시오.
+main과 서브는 같은 supervisor·컨테이너에서 실행됩니다. `$DUCTOR_HOME/agents.json`에는 JSON **배열**을 넣으십시오. 아래 예시는 봇 없는 helper와 자기 Telegram 봇을 가진 messenger입니다. messenger 토큰은 비공개로 교체해야 하며 예시 값은 동작하는 토큰이 아닙니다. 파일 권한은 0600으로 설정하십시오. 서브는 main 기본 설정에 null이 아닌 registry override를 적용하지만 자격·허용 목록은 자기 것을 사용하며 main의 Telegram 접근 권한을 물려받지 않습니다. 서브 에이전트 설정은 `agents.json`에서 수정하십시오. 서브 홈에서는 `config.json`을 생성하거나 읽지 않습니다. 변경 사항은 메인의 `/agent_restart <name>` 또는 봇 재시작으로 적용하십시오.
 
 ```json
 [

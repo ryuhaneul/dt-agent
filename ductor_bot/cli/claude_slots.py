@@ -35,6 +35,7 @@ from ductor_bot.cli.claude_accounts import (
 from ductor_bot.cli.claude_usage import UsageStore, usage_file_path
 from ductor_bot.cli.slot_rotation import slot_use_lock
 from ductor_bot.config import AgentConfig, transform_config_file
+from ductor_bot.home import require_main_home
 from ductor_bot.infra.atomic_io import atomic_text_save
 from ductor_bot.infra.file_lock import exclusive_file_lock
 from ductor_bot.infra.json_store import atomic_json_save
@@ -559,8 +560,9 @@ def overview(home: Path, config: AgentConfig) -> Overview:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the JSON-only command interface against DUCTOR_HOME."""
-    args = list(sys.argv[1:] if argv is None else argv)
     home = Path(os.environ.get("DUCTOR_HOME", CONTAINER_DUCTOR_MOUNT)).expanduser()
+    require_main_home(home)
+    args = list(sys.argv[1:] if argv is None else argv)
     try:
         if args == ["show"]:
             pass

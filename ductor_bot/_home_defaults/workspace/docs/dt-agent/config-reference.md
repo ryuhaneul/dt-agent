@@ -93,14 +93,14 @@ top-level key.
 | `webhooks.enabled` | `bool` | `false` | restart | Master toggle |
 | `webhooks.host` | `str` | `"127.0.0.1"` | restart | Bind address (localhost by default) |
 | `webhooks.port` | `int` | `8742` | restart | HTTP server port |
-| `webhooks.token` | `str` | `""` | restart | Global bearer fallback token (auto-generated when webhooks start) |
+| `webhooks.token` | `str` | `""` | restart | Global bearer fallback token (auto-generated when the main agent starts webhooks) |
 | `webhooks.max_body_bytes` | `int` | `262144` | restart | Max request body size |
 | `webhooks.rate_limit_per_minute` | `int` | `30` | restart | Sliding-window rate limit |
 | `api` | `ApiConfig` | `(nested keys below)` | restart | Direct WebSocket API server config |
 | `api.enabled` | `bool` | `false` | restart | Master toggle |
 | `api.host` | `str` | `"0.0.0.0"` | restart | Bind address |
 | `api.port` | `int` | `8741` | restart | API HTTP/WebSocket port |
-| `api.token` | `str` | `""` | restart | Bearer/WebSocket auth token (generated and persisted at API startup when empty) |
+| `api.token` | `str` | `""` | restart | Bearer/WebSocket auth token (generated and saved at main API startup when empty) |
 | `api.chat_id` | `int` | `0` | restart | Default API session chat (`0` means fallback to first `allowed_user_ids` entry, else `1`) |
 | `api.allow_public` | `bool` | `false` | restart | Suppresses Tailscale-not-detected warning |
 | `chat_log` | `ChatLogConfig` | `(nested keys below)` | restart | Independent conversation history and outage queue; restart-required |
@@ -188,7 +188,7 @@ top-level key.
 | `interagent.max_parallel_sessions` | `int` | `4` | restart | How many inter-agent sessions (lanes) of one **receiving** agent run at the same time; further sessions wait for a slot |
 | `interagent.max_queue_wait_seconds` | `float` | `3600.0` | restart | Longest wait of one request (queue + preparation + wait for a restarting recipient) before it ends without starting; the execution limit (3600 s for async) counts separately from admission. Sync requests keep their ow... |
 | `claude_system_prompt_snapshot` | `"off" or "on"` | `"off"` | restart | `"off"`: Claude renders its system prompt anew every turn (`--system-prompt-snapshot off`) and MAINMEMORY, roster and file blocks are assembled every turn; `"on"`: no flag, MAINMEMORY only on new sessions. Needs a Cla... |
-| `autocompact` | `"default" or "off" or Annotated[int, annotation=NoneType required=True metadata=[Strict(strict=True), Ge(ge=100000), Le(le=1000000)]]` | `"default"` | hot | Agent-local automatic compaction value, hot-reloaded for the next request. `"default"` preserves CLI/slot settings; `"off"` disables automatic compaction on Claude; integer token windows must be 100000–1000000. An exp... |
+| `autocompact` | `"default" or "off" or Annotated[int, annotation=NoneType required=True metadata=[Strict(strict=True), Ge(ge=100000), Le(le=1000000)]]` | `"default"` | hot | Agent-local automatic compaction value. The main agent hot-reloads it for the next request. `"default"` preserves CLI/slot settings; `"off"` disables automatic compaction on Claude; integer token windows must be 10000... |
 | `transport` | `str` | `"telegram"` | restart | Main messaging transport: `"telegram"`, `"matrix"`, or `"slack"`; `"headless"` is sub-agent only |
 | `transports` | `list[str]` | `[]` | restart | List of transports to run in parallel (e.g. `["telegram", "matrix"]`). When empty, falls back to single `transport` value. |
 | `telegram_token` | `str` | `""` | restart | Telegram bot token (required when `transport=telegram`). Onboarding trims surrounding whitespace and rejects internal whitespace or a token outside ASCII digits:letters/digits/underscore/hyphen, without echoing the va... |

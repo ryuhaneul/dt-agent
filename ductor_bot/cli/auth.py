@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from ductor_bot.cli.gemini_utils import find_gemini_cli
 from ductor_bot.config import NULLISH_TEXT_VALUES
+from ductor_bot.home import subprocess_settings_home
 from ductor_bot.i18n import t
 from ductor_bot.infra.platform import CREATION_FLAGS as _CREATION_FLAGS
 
@@ -437,7 +438,8 @@ def gemini_uses_api_key_mode() -> bool:
 def _ductor_config_path() -> Path:
     from ductor_bot.workspace.paths import resolve_paths
 
-    return resolve_paths().config_path
+    home = resolve_paths().ductor_home
+    return resolve_paths(subprocess_settings_home(home)).config_path
 
 
 def _has_active_google_account(accounts_file: Path) -> bool:

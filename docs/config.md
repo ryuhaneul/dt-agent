@@ -179,13 +179,13 @@ Host paths written as `~/.ductor` below mean the default home; substitute the co
 | `permission_mode` | `str` | `"bypassPermissions"` | Provider sandbox/approval mode |
 | `cli_timeout` | `float` | `1800.0` | Legacy/global timeout. Still used by cron/webhook `cron_task`, inter-agent turns, stale-process heartbeat cleanup, and as fallback for unknown timeout paths |
 | `reasoning_effort` | `str` | `"medium"` | Default reasoning level for providers that support effort |
-| `autocompact` | `"default"` or `"off"` or `int` | `"default"` | Agent-local automatic compaction value, hot-reloaded for the next request. `"default"` preserves CLI/slot settings; `"off"` disables automatic compaction on Claude; integer token windows must be 100000–1000000. An explicit topic value wins; a topic with no value follows this agent's global value. Sub-agents never inherit the main agent's value: an absent sub-agent override means `"default"`. Claude supports tokens and off; Codex supports tokens on new and resumed sessions, but not off; Grok and Gemini receive no compaction override. DT merges command-line settings over lower CLI settings; managed policy still wins. Disabling automatic compaction also prevents its boundary-triggered memory flush. |
+| `autocompact` | `"default"` or `"off"` or `int` | `"default"` | Agent-local automatic compaction value. The main agent hot-reloads it for the next request. `"default"` preserves CLI/slot settings; `"off"` disables automatic compaction on Claude; integer token windows must be 100000–1000000. An explicit topic value wins; a topic with no value follows this agent's global value. Sub-agents never inherit the main agent's value: an absent sub-agent override means `"default"`. Claude supports tokens and off; Codex supports tokens on new and resumed sessions, but not off; Grok and Gemini receive no compaction override. DT merges command-line settings over lower CLI settings; managed policy still wins. Disabling automatic compaction also prevents its boundary-triggered memory flush. |
 | `file_access` | `str` | `"all"` | File access scope (`all`, `home`, `workspace`) for file sends and API `GET /files`; unknown values fall back to workspace-only |
 | `gemini_api_key` | `str \| None` | `None` | Config fallback key injected for Gemini API-key mode |
 | `transport` | `str` | `"telegram"` | Main messaging transport: `"telegram"`, `"matrix"`, or `"slack"`; `"headless"` is sub-agent only |
 | `transports` | `list[str]` | `[]` | List of transports to run in parallel (e.g. `["telegram", "matrix"]`). When empty, falls back to single `transport` value. |
 | `telegram_token` | `str` | `""` | Telegram bot token (required when `transport=telegram`). Onboarding trims surrounding whitespace and rejects internal whitespace or a token outside ASCII digits:letters/digits/underscore/hyphen, without echoing the value. |
-| `telegram_dm_topic_auto_name` | `bool` | `true` | Telegram-only once-per-topic naming of confirmed implicit DM topics from received user messages, alongside the conversation; main and bot-backed subs. Subject-only output; a null or rejected model title names the topic from the start of the message at once, while a plain greeting or a failed rename shares up to three message opportunities. Hot-reloaded; no onboarding question. User-edited/custom, group and unknown-origin topics are excluded. |
+| `telegram_dm_topic_auto_name` | `bool` | `true` | Telegram-only once-per-topic naming of confirmed implicit DM topics from received user messages, alongside the conversation; main and bot-backed subs. Subject-only output; a null or rejected model title names the topic from the start of the message at once, while a plain greeting or a failed rename shares up to three message opportunities. Hot-reloaded on main. Subs inherit it after the main agent's `/agent_restart <name>` or a bot restart. No onboarding question. User-edited/custom, group and unknown-origin topics are excluded. |
 | `allowed_user_ids` | `list[int]` | `[]` | Telegram user allowlist (applies in both private and group chats) |
 | `allowed_group_ids` | `list[int]` | `[]` | Telegram group allowlist (which groups the bot can operate in; default `[]` = no groups, fail-closed). In groups, both the group and the user must be allowlisted |
 | `allowed_channel_ids` | `list[int]` | `[]` | Telegram channel allowlist for join/audit behavior; unauthorized channels are auto-left |
@@ -581,7 +581,7 @@ Cleanup implementation detail:
 | `enabled` | `bool` | `false` | Master toggle |
 | `host` | `str` | `"127.0.0.1"` | Bind address (localhost by default) |
 | `port` | `int` | `8742` | HTTP server port |
-| `token` | `str` | `""` | Global bearer fallback token (auto-generated when webhooks start) |
+| `token` | `str` | `""` | Global bearer fallback token (auto-generated when the main agent starts webhooks) |
 | `max_body_bytes` | `int` | `262144` | Max request body size |
 | `rate_limit_per_minute` | `int` | `30` | Sliding-window rate limit |
 
@@ -592,7 +592,7 @@ Cleanup implementation detail:
 | `enabled` | `bool` | `false` | Master toggle |
 | `host` | `str` | `"0.0.0.0"` | Bind address |
 | `port` | `int` | `8741` | API HTTP/WebSocket port |
-| `token` | `str` | `""` | Bearer/WebSocket auth token (generated and persisted at API startup when empty) |
+| `token` | `str` | `""` | Bearer/WebSocket auth token (generated and saved at main API startup when empty) |
 | `chat_id` | `int` | `0` | Default API session chat (`0` means fallback to first `allowed_user_ids` entry, else `1`) |
 | `allow_public` | `bool` | `false` | Suppresses Tailscale-not-detected warning |
 
@@ -730,11 +730,11 @@ configuration creates no directories and performs no network access.
 | `gemini` | `bool` | `true` | Include `~/.gemini/skills` in cross-tool sync |
 | `grok` | `bool` | `true` | Include `$GROK_HOME/skills` (default `~/.grok/skills`) in cross-tool sync |
 
-Toggles are read live from `config.json` on each skill-sync tick (independent of `ConfigReloader`), so changes take effect within one sync interval without restart. A disabled provider is dropped from the sync, so its skill dir is neither linked into nor used as a source; existing DT Agent-created links are not actively removed (cleared on shutdown cleanup or manually).
+Toggles are read live from the main home's `config.json` on each skill-sync tick (independent of `ConfigReloader`), so changes take effect within one sync interval without restart. A disabled provider is dropped from the sync, so its skill dir is neither linked into nor used as a source; existing DT Agent-created links are not actively removed (cleared on shutdown cleanup or manually).
 
 ## Runtime hot-reload (`config_reload.py`)
 
-`Orchestrator.create()` starts `ConfigReloader`, which polls `config.json` every 5 seconds, validates it with `AgentConfig`, diffs top-level fields, and applies safe changes without restart.
+The main agent's `Orchestrator.create()` starts `ConfigReloader`, which polls its `config.json` every 5 seconds, validates it with `AgentConfig`, diffs top-level fields, and applies safe changes without restart.
 
 Hot-reloadable top-level fields:
 
@@ -839,7 +839,11 @@ current agent home and refreshed by `GrokCacheObserver`.
 
 Path: `~/.ductor/agents.json`.
 
-Top-level JSON array of `SubAgentConfig` objects. Each entry defines a sub-agent that runs alongside the main agent.
+Top-level JSON array of `SubAgentConfig` objects. Each entry defines a sub-agent that runs alongside the main agent. Edit sub-agent settings only in `agents.json`. The runtime never creates or reads `config.json` in a sub-agent home.
+
+Only fields accepted by `SubAgentConfig` can be overridden. Sub-agents use the main values for `project_roots`, `claude_accounts`, `scene`, `image`, `language`, `telegram_dm_topic_auto_name`, `persona_setup_prompt`, and `skills`. To enable the API or webhooks for a sub-agent, set `api.token` or `webhooks.token` in its `agents.json` entry.
+
+Run management commands and the login, logout, and onboarding scripts from the main agent home.
 
 Managed via:
 
@@ -881,8 +885,8 @@ Managed via:
 | `cli_parameters` | `CLIParametersConfig` | no | inherited | |
 | `user_timezone` | `str` | no | inherited | |
 | `interagent_notify_received` | `bool` | no | inherited (`false` on main by default) | Async task receipt notices; `--silent` always suppresses |
-| `interagent` | [`InteragentConfig`](#interagentconfig), partial | no | inherited from main, key by key | Only the keys given here differ from main's values; the effective values are written into the sub's own `config.json` (other keys are left as they are) |
-| `claude_system_prompt_snapshot` | `"off"` or `"on"` | no | inherited | Per-sub override of the Claude system prompt snapshot mode; mirrored into the sub's `config.json` |
+| `interagent` | [`InteragentConfig`](#interagentconfig), partial | no | inherited from main, key by key | Only the keys given here differ from main's values |
+| `claude_system_prompt_snapshot` | `"off"` or `"on"` | no | inherited | Per-sub override of the Claude system prompt snapshot mode |
 | `memory_lint` | [`MemoryLintConfig`](#memorylintconfig), partial | no | **not inherited**: framework defaults (`mode: "structure"`) | Periodic memory lint of this sub's own workspace; only the keys given here differ from the defaults |
 
 "inherited" means the value comes from the main agent's `config.json` when omitted.
@@ -943,9 +947,9 @@ A headless entry has no direct chat or bot credentials. Users ask main to delega
 1. main agent config (`config.json`) as base
 2. explicit non-null overrides from `agents.json` (highest priority)
 
-`interagent` is merged key by key over main's value, and `claude_system_prompt_snapshot` is inherited or overridden as a whole. Both take effect after a restart; like other non-token fields, a changed value in `agents.json` does not restart a running sub (use `/agent_restart <name>`).
+`interagent` is merged key by key over main's value, and `claude_system_prompt_snapshot` is inherited or overridden as a whole. Apply manual changes to these fields with the main agent's `/agent_restart <name>` or a bot restart.
 
-**Exception: `memory_lint` is never taken from main.** A sub's effective `memory_lint` is the framework default plus the keys given in its own `agents.json` entry (all optional, partial), so a main set to `full`, `off`, a `schedule` or a `model` does not reach any sub: a sub without the field runs the default `structure` lint (an agent turn only when the check finds problems). Example: `{"name": "coder", "telegram_token": "SET_IN_PRIVATE_REGISTRY", "allowed_user_ids": [12345678], "memory_lint": {"mode": "full", "schedule": "0 9 * * 1"}}`. Values are validated like any other `agents.json` field (an invalid `mode` excludes that entry with a diagnostic); `schedule`, `model` and the like follow the rules of [`MemoryLintConfig`](#memorylintconfig). The supervisor also writes the effective value into the sub's own `config.json` (next to provider, model and effort) so that a later change of that file does not revert it. Like other non-token fields, a changed `memory_lint` in `agents.json` does not restart a running sub; use `/agent_restart <name>` (or restart the bot) to apply it.
+**Exception: `memory_lint` is never taken from main.** A sub's effective `memory_lint` is the framework default plus the keys given in its own `agents.json` entry (all optional, partial), so a main set to `full`, `off`, a `schedule` or a `model` does not reach any sub: a sub without the field runs the default `structure` lint (an agent turn only when the check finds problems). Example: `{"name": "coder", "telegram_token": "SET_IN_PRIVATE_REGISTRY", "allowed_user_ids": [12345678], "memory_lint": {"mode": "full", "schedule": "0 9 * * 1"}}`. Values are validated like any other `agents.json` field (an invalid `mode` excludes that entry with a diagnostic); `schedule`, `model` and the like follow the rules of [`MemoryLintConfig`](#memorylintconfig).
 
 Then it always forces:
 
@@ -955,8 +959,7 @@ Then it always forces:
 
 Notes:
 
-- there is no extra persisted runtime config layer for sub-agents in merge order
-- `/model` changes in a sub-agent chat are written back to `agents.json`, so restart/reload uses the updated values from that registry file
+- `/model` and agent-wide `/autocompact` changes in a sub-agent chat are saved to `agents.json` and take effect immediately after a successful save
 
 ### `agents.json` watcher behavior
 
@@ -970,7 +973,7 @@ Notes:
   - Matrix identity changed (`homeserver`, `user_id`, `password`, `access_token`, `device_id`, or `store_path`)
 - other field changes currently do not auto-restart running agents
 
-For non-token field updates on a running agent, use `/agent_restart <name>` (or restart the bot) to apply them immediately.
+For other manual edits, run `/agent_restart <name>` on the main agent or restart the bot to apply the updated values.
 
 Source of the schema/default tables: [config.py](../ductor_bot/config.py).
 Sub-agent merge and transport rules: [models.py](../ductor_bot/multiagent/models.py);

@@ -370,23 +370,28 @@ def test_sub_without_override_serializes_without_memory_lint() -> None:
     assert "memory_lint" not in SubAgentConfig(name="worker").model_dump(exclude_none=True)
 
 
-async def test_the_sub_override_survives_a_change_of_its_config_file(tmp_path: Path) -> None:
-    """The supervisor persists the effective value; a later file change must not revert it."""
-    import json
+async def test_sub_orchestrator_does_not_reload_legacy_config(tmp_path: Path) -> None:
+    from unittest.mock import AsyncMock, patch
 
-    from ductor_bot.config import update_config_file
-    from ductor_bot.config_reload import ConfigReloader
+    from ductor_bot.cli.auth import AuthResult, AuthStatus
+    from ductor_bot.orchestrator.core import Orchestrator
 
     main = AgentConfig(memory_lint={"mode": "off"})
     merged = _merged(main, tmp_path, memory_lint={"mode": "full"})
-    config_path = tmp_path / "config.json"
-    config_path.write_text(json.dumps(AgentConfig().model_dump(mode="json")))
-    update_config_file(config_path, memory_lint=merged.memory_lint.model_dump(mode="json"))
-    reloader = ConfigReloader(config_path, merged)
-    reloader._last_mtime = 0.0  # the file changes after the reloader started
-    update_config_file(config_path, model="haiku")  # e.g. a /model change in the sub chat
-    await reloader._check()
-    assert merged.memory_lint.mode == "full"
+    config_path = tmp_path / "worker" / "config" / "config.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text('{"memory_lint": {"mode": "off"}}')
+    auth = {"claude": AuthResult("claude", AuthStatus.AUTHENTICATED)}
+    with (
+        patch("ductor_bot.cli.auth.check_all_auth", return_value=auth),
+        patch("ductor_bot.orchestrator.observers.ObserverManager.start_all", new=AsyncMock()),
+    ):
+        orch = await Orchestrator.create(merged, agent_name="worker")
+    try:
+        assert orch._observers._config_reloader is None
+        assert orch.config.memory_lint.mode == "full"
+    finally:
+        await orch.shutdown()
 
 
 @pytest.mark.parametrize("main_value", ["off", 300000])

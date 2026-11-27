@@ -13,7 +13,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from ductor_bot.cli.process_registry import ProcessRegistry
-from ductor_bot.config import AgentConfig, update_config_file_async
+from ductor_bot.config import AgentConfig
 from ductor_bot.i18n import t
 from ductor_bot.infra.agent_diagnostics import (
     Reason,
@@ -784,6 +784,14 @@ class AgentSupervisor:
 
         logger.debug("Task hub wired for agent '%s'", name)
 
+    def _sub_config(self, sub_cfg: SubAgentConfig) -> AgentConfig:
+        main_home = self._main_paths.ductor_home
+        config = merge_sub_agent_config(
+            self._main_config, sub_cfg, main_home / "agents" / sub_cfg.name
+        )
+        config._main_home = main_home
+        return config
+
     async def _rebuild_stack(self, name: str, old_stack: AgentStack) -> AgentStack:
         """Rebuild an AgentStack from its config."""
         new_stack = await AgentStack.create(
@@ -856,7 +864,7 @@ class AgentSupervisor:
 
         agent_home = self._main_paths.ductor_home / "agents" / name
         try:
-            config = merge_sub_agent_config(self._main_config, sub_cfg, agent_home)
+            config = self._sub_config(sub_cfg)
         except Exception as exc:
             reason = safe_error(self._registry.index_for(name), exc)
             return await self._exclude_sub(name, reason)
@@ -872,21 +880,6 @@ class AgentSupervisor:
             return await self._exclude_sub(name, create_error(exc))
 
         try:
-            # Workspace init creates config.json from config.example (main defaults).
-            # Overwrite model/provider/effort so the on-disk config matches agents.json.
-            config_path = agent_home / "config" / "config.json"
-            if config_path.exists():
-                await update_config_file_async(
-                    config_path,
-                    provider=config.provider,
-                    model=config.model,
-                    reasoning_effort=config.reasoning_effort,
-                    memory_lint=config.memory_lint.model_dump(mode="json"),
-                    interagent=config.interagent.model_dump(mode="json"),
-                    claude_system_prompt_snapshot=config.claude_system_prompt_snapshot,
-                    autocompact=config.autocompact,
-                )
-
             self._stacks[name] = stack
             self._health[name] = AgentHealth(name=name)
             if self._bus:
@@ -1091,7 +1084,10 @@ class AgentSupervisor:
     async def _on_agents_changed(self) -> None:
         """Called when agents.json mtime changes. Sync running agents."""
         async with self._agents_lock:
-            desired = {a.name: a for a in self._registry.load()}
+            try:
+                desired = {a.name: a for a in self._registry.load(strict=True)}
+            except FileNotFoundError:
+                return
             current_sub = set(self._stacks.keys()) - {"main"}
             desired_names = set(desired.keys())
             self._declared = set(desired_names)

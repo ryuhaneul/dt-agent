@@ -15,7 +15,7 @@ Read in this order:
 ## Top-Level Layout
 
 - `workspace/` - agent working area (tools, memory, cron tasks, skills, files)
-- `config/config.json` - runtime configuration
+- `config/config.json` - main runtime configuration
 - `sessions.json` - per-chat session state
 - `cron_jobs.json` - cron registry
 - `webhooks.json` - webhook registry
@@ -27,11 +27,9 @@ You are one agent in a multi-agent system managed by a central Supervisor.
 
 ### Token Management
 
-- `~/.ductor/agents.json` is the single source of truth for all sub-agent
-  bot tokens, allowed users, and model settings.
-- The Supervisor reads `agents.json` at startup and merges each agent's
-  token into its runtime config. **Your Telegram bot token comes from
-  `agents.json`, not from `config/config.json`.**
+- The main home's `agents.json` is the single source for sub-agent settings, including
+  bot tokens, allowed users, and model overrides. The supervisor merges these settings
+  at startup and on main's `/agent_restart`. Sub-agent homes never create or read `config/config.json`.
 - Never hardcode or copy bot tokens from other agents. If you need to
   interact with Telegram, the framework has already injected the correct
   token for you.
@@ -65,8 +63,9 @@ synced into every agent's `MAINMEMORY.md` by the Supervisor.
 
 - Use tool scripts in `workspace/tools/` for cron/webhook lifecycle changes.
 Do not manually edit `cron_jobs.json` or `webhooks.json` for normal operations.
-- When config changes are requested, edit only requested keys in `config/config.json`.
-If the change needs a restart, follow **Bot Restart** in the `workspace/` rules file (`CLAUDE.md`, `AGENTS.md` or `GEMINI.md`).
+- Edit requested keys in the main home's `config/config.json` for main or `agents.json` for subs.
+Apply sub-agent file edits with main's `/agent_restart` or a bot restart. For main, follow
+**Bot Restart** in the workspace rules if a restart is required.
 - Save user-facing generated files in `workspace/output_to_user/` and send with
 `<file:/absolute/path/to/output_to_user/...>`.
 - Update `workspace/memory_system/MAINMEMORY.md` when durable user facts

@@ -11,6 +11,7 @@ from rich.console import Console
 
 from ductor_bot.chat_log.settings import validate_chat_log
 from ductor_bot.config import AgentConfig
+from ductor_bot.home import require_main_home
 from ductor_bot.i18n import init, t_rich
 from ductor_bot.infra.atomic_io import atomic_bytes_save
 from ductor_bot.infra.env_secrets import _parse_dotenv, clear_cache
@@ -94,6 +95,8 @@ def _edit_credentials(
 
 
 def cmd_webchat(args: list[str]) -> None:  # noqa: C901
+    paths = resolve_paths()
+    require_main_home()
     if "webchat" in args:
         args = args[args.index("webchat") + 1 :]
     if args not in (
@@ -105,7 +108,6 @@ def cmd_webchat(args: list[str]) -> None:  # noqa: C901
     ):
         _console.print(t_rich("webchat.usage"))
         raise SystemExit(2)
-    paths = resolve_paths()
     raw = (
         json.loads(paths.config_path.read_text(encoding="utf-8"))
         if paths.config_path.is_file()

@@ -77,8 +77,13 @@ class WebhookObserver(BaseTaskObserver):
             logger.info("Webhooks disabled in config")
             return
 
-        # Auto-generate token if empty
         if not self._config.webhooks.token:
+            if self._agent_name != "main":
+                logger.error(
+                    "Sub-agent webhooks require a token in agents.json; webhook server skipped"
+                )
+                return
+
             from ductor_bot.config import update_config_file_async
 
             token = secrets.token_urlsafe(32)

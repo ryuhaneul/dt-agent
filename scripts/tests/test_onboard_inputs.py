@@ -79,6 +79,8 @@ class OnboardInputTests(unittest.TestCase):
         shutil.copy2(ROOT / 'scripts/onboard.py', repo / 'scripts/onboard.py')
         shutil.copy2(ROOT / 'config.example.json', repo / 'config.example.json')
         shutil.copytree(ROOT / 'ductor_bot/i18n', repo / 'ductor_bot/i18n')
+        for filename in ('__init__.py', 'home.py'):
+            shutil.copy2(ROOT / 'ductor_bot' / filename, repo / 'ductor_bot' / filename)
         shutil.copytree(ROOT / 'scripts/onboard_i18n', repo / 'scripts/onboard_i18n')
         home = self.root / 'home'
         command = [sys.executable, str(repo / 'scripts/onboard.py'), '--no-prompt',

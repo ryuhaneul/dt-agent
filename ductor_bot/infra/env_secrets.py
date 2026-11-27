@@ -22,17 +22,16 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from ductor_bot.home import (
+    main_home_of as main_home_of,  # noqa: PLC0414 -- preserve existing imports
+)
+
 logger = logging.getLogger(__name__)
 
 SECRETS_FILE_VARIABLE = "DUCTOR_SECRETS_FILE"
 """Environment variable that names the shared secrets store read by ``tools/_secrets.py``."""
 
 SECRETS_FILE_NAME = "secrets.env"
-
-
-def main_home_of(ductor_home: Path) -> Path:
-    """The main agent's home for any agent home (a sub-agent lives in ``<main>/agents/<name>``)."""
-    return ductor_home.parent.parent if ductor_home.parent.name == "agents" else ductor_home
 
 
 _cache: dict[str, str] | None = None

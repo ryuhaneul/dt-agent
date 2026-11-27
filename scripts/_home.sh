@@ -8,6 +8,40 @@ supported_language() {
     case "$1" in de | en | es | fr | id | ko | nl | pt | ru) return 0 ;; *) return 1 ;; esac
 }
 
+# Reject sub-agent homes before looking for a config or running preflight checks.
+require_main_home() {
+    local requested="${1:-${DUCTOR_HOME:-${HOME-}/.ductor}}" path home part resolved parent physical
+    requested="${requested/#\~/${HOME-}}"
+    [[ $requested == /* ]] || requested="$PWD/$requested"
+    # Check both the supplied layout and the physical layout, even during preflight without tools.
+    for physical in false true; do
+        path="$requested"
+        home=""
+        while [[ -n $path ]]; do
+            part="${path%%/*}"
+            case "$path" in
+                */*) path="${path#*/}" ;;
+                *) path="" ;;
+            esac
+            case "$part" in
+                "" | .) ;;
+                ..) home="${home%/*}" ;;
+                *)
+                    home="${home%/}/$part"
+                    if [[ $physical == true && -d $home ]] && resolved="$(CDPATH= cd -P -- "$home" 2>/dev/null && pwd -P)"; then
+                        home="$resolved"
+                    fi
+                    ;;
+            esac
+        done
+        parent="${home%/*}"
+        if [[ ${parent##*/} == agents && -f ${parent%/*}/agents.json ]]; then
+            printf '%s\n' 'Run this command from the main agent home.' >&2
+            return 2
+        fi
+    done
+}
+
 saved_language() {
     local home="${1:-${DUCTOR_HOME-}}" file content
     home="${home:-${HOME-}/.ductor}"

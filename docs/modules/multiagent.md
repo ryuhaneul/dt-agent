@@ -51,7 +51,7 @@ Watcher polls `agents.json` every 5s.
   - `transport` or `transports` changed
   - Telegram identity changed (`telegram_token`)
   - Matrix identity changed (`homeserver`, `user_id`, `password`, `access_token`, `device_id`, or `store_path`)
-- other field changes do not auto-restart running agent
+- other manual field changes take effect after the main agent's `/agent_restart <name>` or a bot restart
 
 ## Crash/restart policy
 
@@ -60,11 +60,15 @@ Per agent `_supervised_run` behavior:
 - clean exit -> stop
 - exit code `42`:
   - main -> propagate full process/service restart
-  - sub-agent -> in-process hot-reload
+  - sub-agent -> rebuild its stack in-process
 - main fatal crash -> terminate supervisor; transient connection/timeout or Telegram network/server errors -> retry indefinitely with 5/10/20/40/60-second capped backoff
 - sub-agent crash -> up to 5 retries with exponential backoff, then leave health `crashed` until manual action
 
+A sub-agent that restarts itself or recovers from a crash uses its previous runtime settings.
+
 ## Sub-agent config (`agents.json`)
+
+Edit sub-agent settings only in the main home's `agents.json`. The runtime never creates or reads `config.json` in a sub-agent home.
 
 Minimal entry:
 
@@ -85,7 +89,7 @@ Merge behavior:
 - override: non-null `SubAgentConfig` fields (nested blocks replace, rather than deep-merge, the main block)
 - `exclude_none=True` retains the default non-null sub-agent heartbeat block, so it replaces main heartbeat settings even when omitted from the entry.
 - Sub-agent heartbeat defaults to disabled. When enabled, its default interval is 20 minutes. The recipient inherits `interagent_notify_received` unless explicitly overridden.
-- `memory_lint` is the exception to inheritance: a sub never takes main's value; it gets the framework defaults (`mode: "structure"`) plus the optional partial `memory_lint` object of its own `agents.json` entry (for example `"memory_lint": {"mode": "full"}`), and the supervisor mirrors the effective value into the sub's `config.json`. Applying a changed value to a running sub needs `/agent_restart <name>`. See [MemoryLintConfig](../config.md#memorylintconfig)
+- `memory_lint` is the exception to inheritance: a sub never takes main's value; it gets the framework defaults (`mode: "structure"`) plus the optional partial `memory_lint` object of its own `agents.json` entry (for example `"memory_lint": {"mode": "full"}`). See [MemoryLintConfig](../config.md#memorylintconfig)
 - always forced:
   - `ductor_home=<main_home>/agents/<name>/` (default host main home `~/.ductor`)
   - sub-agent `telegram_token`, `allowed_user_ids`, `allowed_group_ids`

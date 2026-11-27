@@ -1,7 +1,9 @@
 # Config Directory
 
-Runtime config lives here: `config.json`.
-Edit only when the user asks for behavior changes.
+The main agent's runtime config is `config.json` in this directory.
+For sub-agent settings, edit `agents.json` in the main home and apply file edits with
+main's `/agent_restart` or a bot restart. Sub-agent homes never create or read
+`config.json`. Edit only when the user asks for behavior changes.
 
 ## Safe Edit Workflow
 

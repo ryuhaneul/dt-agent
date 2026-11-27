@@ -329,7 +329,7 @@ def test_sub_agent_inherits_and_overrides(
     assert merged.claude_system_prompt_snapshot == expected
 
 
-async def test_effective_value_is_mirrored_into_the_sub_config_file(tmp_path: Path) -> None:
+async def test_effective_snapshot_policy_ignores_legacy_sub_config(tmp_path: Path) -> None:
     supervisor = AgentSupervisor(
         AgentConfig(
             ductor_home=str(tmp_path), interagent_port=0, claude_system_prompt_snapshot="on"
@@ -340,7 +340,8 @@ async def test_effective_value_is_mirrored_into_the_sub_config_file(tmp_path: Pa
     )
     config_path = tmp_path / "agents" / "sub1" / "config" / "config.json"
     config_path.parent.mkdir(parents=True)
-    config_path.write_text("{}")
+    legacy = '{"claude_system_prompt_snapshot": "off"}'
+    config_path.write_text(legacy)
     supervisor._stacks["main"] = MagicMock()
     supervisor._notify_main_agent = AsyncMock()  # type: ignore[method-assign]
     with (
@@ -348,15 +349,16 @@ async def test_effective_value_is_mirrored_into_the_sub_config_file(tmp_path: Pa
             "ductor_bot.multiagent.supervisor.AgentStack.create",
             new_callable=AsyncMock,
             return_value=MagicMock(shutdown=AsyncMock()),
-        ),
-        patch(
-            "ductor_bot.multiagent.supervisor.update_config_file_async",
-            new_callable=AsyncMock,
-            side_effect=OSError("synthetic"),
-        ) as update,
+        ) as create,
+        patch.object(supervisor, "_supervised_run", new=AsyncMock(return_value=0)),
     ):
-        await supervisor.start_agent_by_name("sub1")
-    assert update.await_args.kwargs["claude_system_prompt_snapshot"] == "on"
+        result = await supervisor.start_agent_by_name("sub1")
+
+    assert result == "Agent 'sub1' started."
+    config = create.await_args.args[1]
+    assert config.claude_system_prompt_snapshot == "on"
+    assert config_path.read_text() == legacy
+    await supervisor.stop_agent("sub1")
 
 
 async def test_supervisor_hands_the_task_hub_each_agents_mode() -> None:

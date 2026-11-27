@@ -147,6 +147,7 @@ class CLIConfig:
     # External transcription hooks (#66) — empty strings keep built-in strategies.
     transcribe_command: str = ""
     video_transcribe_command: str = ""
+    main_home: Path | None = None
 
 
 def write_private_temp_file(

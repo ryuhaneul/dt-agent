@@ -8,6 +8,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from ductor_bot.home import require_main_home
 from ductor_bot.i18n import t_rich
 from ductor_bot.text.response_format import show_crash_error, show_uptime
 from ductor_bot.workspace.paths import DuctorPaths, resolve_paths
@@ -314,6 +315,7 @@ def agents_remove(rest: list[str]) -> None:
 
 def cmd_agents(args: list[str]) -> None:
     """Handle 'ductor agents [subcommand]'."""
+    require_main_home()
     sub, rest = _parse_agents_subcommand(args)
     if sub is None:
         print_agents_help()

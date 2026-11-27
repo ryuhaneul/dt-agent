@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+import pytest
 
 from ductor_bot.cli.auth import (
     AuthResult,
@@ -14,9 +14,7 @@ from ductor_bot.cli.auth import (
     format_age,
     gemini_uses_api_key_mode,
 )
-
-if TYPE_CHECKING:
-    import pytest
+from ductor_bot.home import subprocess_settings_home
 
 
 def test_auth_status_values() -> None:
@@ -434,8 +432,19 @@ def test_check_gemini_auth_selected_type_gemini_api_key(
     assert result.auth_file == settings
 
 
-def test_check_gemini_auth_ductor_config_key(
+def test_subprocess_settings_home_derives_main_home_if_env_is_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "agents" / "worker"
+    monkeypatch.setenv("DUCTOR_AGENT_ROLE", "sub")
+    monkeypatch.delenv("DUCTOR_MAIN_HOME", raising=False)
+
+    assert subprocess_settings_home(home) == tmp_path
+
+
+@pytest.mark.parametrize("sub_agent", [False, True])
+def test_check_gemini_auth_ductor_config_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sub_agent: bool
 ) -> None:
     import ductor_bot.cli.auth as _auth_mod
 
@@ -449,6 +458,21 @@ def test_check_gemini_auth_ductor_config_key(
     ductor_config = tmp_path / ".ductor" / "config" / "config.json"
     ductor_config.parent.mkdir(parents=True)
     ductor_config.write_text('{"gemini_api_key":"from-ductor-config"}')
+
+    if sub_agent:
+        main_home = tmp_path / ".ductor"
+        sub_home = tmp_path / "physical-home"
+        sub_home.mkdir()
+        link = main_home / "agents" / "worker"
+        link.parent.mkdir()
+        link.symlink_to(sub_home, target_is_directory=True)
+        monkeypatch.setenv("DUCTOR_HOME", str(link.resolve()))
+        monkeypatch.setenv("DUCTOR_AGENT_ROLE", "sub")
+        monkeypatch.setenv("DUCTOR_AGENT_NAME", "worker")
+        monkeypatch.setenv("DUCTOR_MAIN_HOME", str(main_home))
+        sub_config = sub_home / "config" / "config.json"
+        sub_config.parent.mkdir(parents=True)
+        sub_config.write_text('{"gemini_api_key":"null"}')
 
     result = check_gemini_auth()
 
