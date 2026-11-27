@@ -138,7 +138,7 @@ async def test_totp_concurrent_replay(service):
     assert sum(result == {"ok": True} for result in results) == 1
 
 
-async def test_ip_and_global_lock_expire(service):
+async def test_ip_lock_expires_and_other_addresses_do_not_lock_login(service):
     instance, clock = service
     for _ in range(5):
         await invalid(instance, "password", {"password": "wrong", "client_ip": _IP})
@@ -153,9 +153,76 @@ async def test_ip_and_global_lock_expire(service):
         await invalid(
             instance, "password", {"password": "wrong", "client_ip": f"203.0.113.{index + 1}"}
         )
-    await invalid(instance, "password", {"password": _PASSWORD, "client_ip": _IP}, "locked")
-    clock.mono += 901
     await password_login(service)
+
+
+async def test_second_factor_failures_trigger_global_lock(service):
+    instance, clock = service
+    set_secret(instance.store, TOTP_KEY, _SEED)
+    login = await password_login(service)
+    assert login["preauth"] in instance._preauth
+    for index in range(1, 21):
+        ip = f"203.0.113.{index}"
+        pending = await password_login(service, ip)
+        await invalid(
+            instance, "totp", {"preauth": pending["preauth"], "code": "bad", "client_ip": ip}
+        )
+    locked = await invalid(
+        instance,
+        "password",
+        {"password": _PASSWORD, "client_ip": "198.51.100.8"},
+        "locked",
+    )
+    assert 0 < locked["retry_after"] <= 900
+    assert not instance._preauth
+    assert not instance._preauth_timers
+    clock.mono += 900
+    await password_login(service, "198.51.100.8")
+
+
+async def test_expired_ip_entries_are_swept_at_most_once_per_minute(service):
+    instance, clock = service
+    first_ip, second_ip = "203.0.113.1", "203.0.113.2"
+    for ip in (first_ip, second_ip):
+        for _ in range(5):
+            await invalid(instance, "password", {"password": "wrong", "client_ip": ip})
+    clock.mono += 899
+    await password_login(service)
+    assert instance._ip_failures.keys() == instance._ip_locked.keys() == {first_ip, second_ip}
+
+    clock.mono += 1
+    await password_login(service, first_ip)
+    assert instance._ip_failures.keys() == instance._ip_locked.keys() == {second_ip}
+    clock.mono += 58
+    await password_login(service)
+    assert instance._ip_failures.keys() == instance._ip_locked.keys() == {second_ip}
+
+    clock.mono += 1
+    await password_login(service)
+    assert not instance._ip_failures
+    assert not instance._ip_locked
+
+
+@pytest.mark.parametrize(
+    ("action", "data"),
+    [
+        ("password", {"password": "wrong"}),
+        ("setup/confirm", {"code": "bad"}),
+        ("password-change", {"current_password": "wrong", "code": "bad"}),
+        ("totp", {"code": "bad"}),
+    ],
+    ids=["wrong-password", "no-preauth", "wrong-current-password", "wrong-preauth-ip"],
+)
+async def test_failures_without_password_proof_do_not_trigger_global_lock(service, action, data):
+    instance, _ = service
+    if action != "setup/confirm":
+        set_secret(instance.store, TOTP_KEY, _SEED)
+    if action == "totp":
+        pending = await password_login(service)
+        data = {**data, "preauth": pending["preauth"]}
+    for index in range(1, 22):
+        await invalid(instance, action, {**data, "client_ip": f"203.0.113.{index}"})
+    await password_login(service, "198.51.100.8")
 
 
 async def test_failures_combined_across_auth_stages(service):
@@ -173,7 +240,7 @@ async def test_failures_combined_across_auth_stages(service):
     await invalid(instance, "password", {"password": _PASSWORD, "client_ip": _IP}, "locked")
 
 
-async def test_success_resets_ip_but_retains_global_failures(service):
+async def test_success_resets_ip_failures(service):
     instance, clock = service
     set_secret(instance.store, TOTP_KEY, _SEED)
     for index in range(4):
@@ -193,9 +260,6 @@ async def test_success_resets_ip_but_retains_global_failures(service):
         )
         assert ip not in instance._ip_failures
         clock.wall += 30
-    for _ in range(4):
-        await invalid(instance, "password", {"password": "wrong", "client_ip": _IP})
-    await invalid(instance, "password", {"password": _PASSWORD, "client_ip": _IP}, "locked")
 
 
 async def test_setup_new_paste_confirm_and_read_only_state(service):
