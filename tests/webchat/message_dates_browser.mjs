@@ -1321,6 +1321,90 @@ async function reconnectHistoryRetryWithEntries(browser) {
   }
 }
 
+async function taskBusyIndicator(browser) {
+  const strings = config.locales.ko;
+  for (const [device, width, height] of [['pc', 1440, 900], ['mobile', 390, 844]]) {
+    for (const theme of ['light', 'dark']) {
+      const context = await browser.newContext({ viewport: { width, height }, colorScheme: theme });
+      try {
+        const page = await context.newPage();
+        const row = { ...topic, name: 'Deployment review', busy: true, busy_kind: 'task' };
+        let held, release, socket;
+        await mockChat(page, messages.slice(0, 2), row, peer => { socket = peer; });
+        await page.route('**/api/topics', async route => {
+          const snapshot = { ...row };
+          if (held) {
+            held.resolve();
+            await release.promise;
+          }
+          await route.fulfill({ json: { topics: [snapshot] } });
+        });
+        await page.goto(origin);
+        await page.locator('[data-entry-seq="2"]').waitFor();
+        const busy = page.locator('#thread [data-thread-key="busy"]');
+        const task = busy.filter({ hasText: strings['chat.task_running'] });
+        const answering = busy.filter({ hasText: strings['chat.answering'] });
+        const refresh = () => page.evaluate(async () => (await import('/static/js/topics.js')).refreshTopics());
+        const send = busy => socket.send(JSON.stringify({ tid: topic.tid, type: 'busy', busy }));
+        async function checkLayout(indicator) {
+          await indicator.waitFor();
+          const geometry = await indicator.evaluate(node => {
+            const bounds = node.getBoundingClientRect();
+            const thread = document.querySelector('#thread').getBoundingClientRect();
+            const composer = document.querySelector('.composer').getBoundingClientRect();
+            const lastMessage = document.querySelector('[data-entry-seq="2"]').getBoundingClientRect();
+            return {
+              horizontalOverflow: document.documentElement.scrollWidth - innerWidth,
+              fits: bounds.left >= thread.left && bounds.right <= thread.right &&
+                bounds.top >= Math.max(thread.top, lastMessage.bottom) &&
+                bounds.bottom <= Math.min(thread.bottom, composer.top),
+            };
+          });
+          assert.deepEqual(geometry, { horizontalOverflow: 0, fits: true });
+        }
+        await checkLayout(task);
+        assert.equal(await page.locator('html').getAttribute('data-theme'), theme);
+        assert.equal(await task.getAttribute('role'), 'status');
+        assert.equal(await task.locator('.typing').count(), 0);
+        assert.equal(await task.locator('.task-clock').count(), 1);
+        await page.evaluate(() => document.fonts.ready);
+        await page.screenshot({ path: path.join(config.shots, 'webbusy-impl-' + device + '-' + theme + '.png') });
+
+        row.busy_kind = 'answering';
+        await refresh();
+        await checkLayout(answering);
+        const dots = answering.locator('.typing i');
+        assert.equal(await dots.count(), 3);
+        assert.equal(await dots.first().evaluate(node => getComputedStyle(node).animationName), 'bob');
+        row.busy_kind = 'task';
+        await refresh();
+        await task.waitFor();
+
+        held = Promise.withResolvers();
+        release = Promise.withResolvers();
+        const refreshing = refresh();
+        try {
+          await held.promise;
+          send(true);
+          await answering.waitFor();
+        } finally {
+          held = null;
+          release.resolve();
+        }
+        await refreshing;
+        assert.equal(await answering.isVisible(), true, 'a delayed task snapshot must preserve a live reply');
+        send(false);
+        await busy.waitFor({ state: 'hidden' });
+        await refresh();
+        await task.waitFor();
+        console.log(device, theme, width, height, 'task and answering fit, with no horizontal overflow');
+      } finally {
+        await context.close();
+      }
+    }
+  }
+}
+
 async function busyIndicator(browser, scenario) {
   const context = await browser.newContext();
   try {
@@ -1713,7 +1797,8 @@ async function toolActivity(browser) {
   }
 }
 
-const browser = await chromium.launch();
+const browser = await chromium.launch(config.chromium
+  ? { executablePath: config.chromium, args: ['--headless=new'] } : {});
 try {
   await fs.mkdir(config.shots, { recursive: true });
   const scenarios = { dates: messageDates, window: preserveOldestGroup, focus: chatFocus, 'code-copy': codeCopy, 'telegram-code': telegramCode, 'telegram-code-boundaries': telegramCodeBoundaries, 'user-line-breaks': userLineBreaks, 'tool-activity': toolActivity, 'unread-badges': unreadBadges };
@@ -1723,6 +1808,7 @@ try {
   else if (scenario === 'reconnect-history-retry-with-entries') await reconnectHistoryRetryWithEntries(browser);
   else if (scenario.startsWith('reconnect-history-')) await reconnectHistory(browser, scenario);
   else if (scenario.startsWith('busy-resume-scroll-')) await busyResumeScroll(browser, Number(scenario.split('-').at(-1)));
+  else if (scenario === 'task-busy') await taskBusyIndicator(browser);
   else if (scenario.startsWith('busy-')) await busyIndicator(browser, scenario);
   else await scenarios[scenario](browser);
 } finally {

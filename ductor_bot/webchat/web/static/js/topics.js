@@ -18,12 +18,14 @@ let pendingSnapshot = null;
 export function getTopics() { return topics; }
 export function getTopic() { return topics.find(topic => topic.tid === selected) || null; }
 export function noteTopicBusy(tid, value) {
-  const event = { value };
+  const busyKind = value ? 'answering' : null;
+  const event = { value, busyKind };
   busyEvents.set(tid, event);
   const topic = topics.find(item => item.tid === tid);
   if (!topic) return false;
-  const changed = topic.busy !== value || topic.busyFromSnapshot;
+  const changed = topic.busy !== value || topic.busy_kind !== busyKind || topic.busyFromSnapshot;
   topic.busy = value;
+  topic.busy_kind = busyKind;
   topic.busyFromSnapshot = false;
   return changed;
 }
@@ -265,7 +267,10 @@ export async function refreshTopics({ badgeRequest = false, onSnapshot } = {}) {
       // Each busy event has a new identity, even if its value did not change.
       const event = busyEvents.get(topic.tid);
       topic.busyFromSnapshot = event === observedBusy.get(topic.tid);
-      if (!topic.busyFromSnapshot) topic.busy = event.value;
+      if (!topic.busyFromSnapshot) {
+        topic.busy = event.value;
+        topic.busy_kind = event.busyKind;
+      }
       mergeSeen(topic.tid, topic.seen);
 
       if (topic.name_key) topic.name = t(topic.name_key);
@@ -282,7 +287,8 @@ export async function refreshTopics({ badgeRequest = false, onSnapshot } = {}) {
     if (!current) selectTopic(topics[0]?.tid, null, false);
     else {
       document.dispatchEvent(new CustomEvent('topic-updated', { detail: current }));
-      if (current.busy !== previous?.busy || (current.busy && current.busyFromSnapshot !== previous?.busyFromSnapshot)) {
+      if (current.busy !== previous?.busy || current.busy_kind !== previous?.busy_kind
+          || (current.busy && current.busyFromSnapshot !== previous?.busyFromSnapshot)) {
         document.dispatchEvent(new CustomEvent('topic-busy-updated'));
       }
     }

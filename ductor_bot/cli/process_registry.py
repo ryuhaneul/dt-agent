@@ -206,6 +206,15 @@ class ProcessRegistry:
             for e in self._processes.get(chat_id, [])
         )
 
+    def has_only_tasks_in_topic(self, chat_id: int, topic_id: int | None) -> bool:
+        """Check whether the exact topic has running subprocesses and all are tasks."""
+        active = [
+            e
+            for e in self._processes.get(chat_id, [])
+            if e.process.returncode is None and e.topic_id == topic_id
+        ]
+        return bool(active) and all(e.label.startswith("task:") for e in active)
+
     async def kill_by_label(self, chat_id: int, label: str) -> int:
         """Kill processes matching *label* for *chat_id*. Returns count killed."""
         async with self._kill_lock:

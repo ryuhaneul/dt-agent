@@ -549,6 +549,9 @@ function itemMarkup(item) {
   if (kind === 'entry') return entryMarkup(entry);
   if (kind === 'queue') return queuedMarkup(turn);
   if (kind === 'stream') return streamMarkup(turn);
+  if (item.busyKind === 'task') {
+    return `<div class="task-status" data-thread-key="busy" role="status"><span class="task-clock" aria-hidden="true"></span>${esc(t('chat.task_running'))}</div>`;
+  }
   return `<div class="meta" data-thread-key="busy">${esc(t('chat.answering'))}<span class="typing" aria-hidden="true"><i></i><i></i><i></i></span></div>`;
 }
 function threadRows(thread) {
@@ -613,7 +616,8 @@ function patchThread(thread, groups, changes) {
       let node = existing.get(item.key);
       const dirty = !changes || changes.zoneChanged || (item.kind === 'entry'
         ? changes.entries?.has(entry.id) || changes.turns?.has(entry.turn_id)
-        : turn && changes.turns?.has(turn.id));
+        : turn && changes.turns?.has(turn.id))
+        || (item.kind === 'busy' && node?.classList.contains('task-status') !== (item.busyKind === 'task'));
       if (!node || dirty) {
         if (node) rememberActivity(node);
         template.innerHTML = itemMarkup(item);
@@ -650,7 +654,7 @@ function cancelHistoryRender() {
 function loadWindowAttachments(tid, rows) {
   attachmentView?.load(tid, rows.filter(row => row.kind === 'entry').map(row => row.entry));
 }
-function scheduleHistoryRender(topic, rows, start, limit, end, showBusy) {
+function scheduleHistoryRender(topic, rows, start, limit, end, busyKind) {
   const state = history(topic.tid), thread = document.querySelector('#thread');
   const job = { tid: topic.tid, start, idle: typeof requestIdleCallback === 'function', id: null };
   historyRender = job;
@@ -664,7 +668,7 @@ function scheduleHistoryRender(topic, rows, start, limit, end, showBusy) {
     const top = thread.scrollTop, height = thread.scrollHeight;
     const pinned = !state.range.newer && height - thread.clientHeight - top < LATEST_GAP;
     const viewport = pinned ? null : viewportMessages(thread);
-    patchThread(thread, threadGroups(mountedRows(rows, next, end, showBusy)), {});
+    patchThread(thread, threadGroups(mountedRows(rows, next, end, busyKind)), {});
     if (pinned) thread.scrollTop = thread.scrollHeight;
     else restoreViewport(thread, viewport, top, null);
     loadWindowAttachments(topic.tid, batch);
@@ -785,9 +789,9 @@ function messageRange(state, rows, { seq, bottom, move, viewport, keepReading })
   state.range = { first: rows[start]?.key, last: rows[end - 1]?.key, older: start > 0, newer: end < length };
   return { start, end };
 }
-function mountedRows(rows, start, end, showBusy) {
+function mountedRows(rows, start, end, busyKind) {
   const mounted = rows.slice(start, end);
-  if (showBusy) mounted.push({ kind: 'busy', key: 'busy' });
+  if (busyKind) mounted.push({ kind: 'busy', key: 'busy', busyKind });
   return mounted;
 }
 function watchSnapshotBusy(tid = null) {
@@ -849,7 +853,8 @@ export function renderThread({
   if (!sameTopic || bottom || seq !== null || move === 'top') threadOffset(thread)?.remove();
   const showBusy = !state.range.newer && topic.busy && !liveTurns.length;
   watchSnapshotBusy(active && visibleChat() && showBusy && topic.busyFromSnapshot ? topic.tid : null);
-  const mounted = mountedRows(rows, start, end, showBusy), groups = threadGroups(mounted);
+  const busyKind = showBusy ? (topic.busy_kind ?? 'answering') : null;
+  const mounted = mountedRows(rows, start, end, busyKind), groups = threadGroups(mounted);
   if (changes || sameTopic) patchThread(thread, groups, changes);
   else {
     thread.innerHTML = groups.map(group => groupStart(group) + group.rows.map(itemMarkup).join('') + '</div>').join('');
@@ -866,7 +871,7 @@ export function renderThread({
   if (visibleChat() && pinned && entries.length) markSeen(topic.tid, entries.at(-1).seq);
   if (start > limit) {
     state.renderStart = rows[start].key;
-    scheduleHistoryRender(topic, rows, start, limit, end, showBusy);
+    scheduleHistoryRender(topic, rows, start, limit, end, busyKind);
   } else if (rows.length) { state.rendered = true; state.renderStart = null; }
 }
 async function loadHistory(tid, { older = false, target = null, turnId = null } = {}) {

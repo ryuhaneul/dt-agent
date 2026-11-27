@@ -924,6 +924,14 @@ class Orchestrator:
             self._lock_pool is not None and self._lock_pool.is_locked(key.lock_key)
         )
 
+    def topic_busy_kind(self, key: SessionKey) -> Literal["task", "answering"]:
+        """Classify a busy topic when there is no live web turn."""
+        if self._lock_pool is not None and self._lock_pool.is_locked(key.lock_key):
+            return "answering"
+        if self._process_registry.has_only_tasks_in_topic(key.chat_id, key.topic_id):
+            return "task"
+        return "answering"
+
     def set_config_hot_reload_handler(
         self,
         handler: Callable[[AgentConfig, dict[str, object]], None],
