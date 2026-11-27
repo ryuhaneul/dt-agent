@@ -199,6 +199,13 @@ def current_slot_identity(
     return _matching_identity(_read_identity_file(_identity_path(directory)), status)
 
 
+def invalidate_slot_identity(directory: Path) -> None:
+    """Invalidate confirmations issued before a slot's login completed."""
+    path = _identity_path(directory)
+    with exclusive_file_lock(path):
+        path.unlink(missing_ok=True)
+
+
 def remove(home: Path, slot: str, *, expected: SlotIdentity | None = None) -> None:
     """Remove a named slot while excluding turn execution and web login."""
     if slot == DEFAULT_SLOT:

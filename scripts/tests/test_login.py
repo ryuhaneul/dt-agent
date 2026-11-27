@@ -663,6 +663,47 @@ os.execv(sys.executable, [sys.executable] + args)
             self.assertTrue(self.value not in self.log.read_text(), 'Docker log exposed a value')
         return result
 
+    def test_oauth_and_api_login_invalidate_only_the_target_slot(self):
+        import hashlib
+
+        def id_file(slot):
+            key = hashlib.sha256(slot.name.encode()).hexdigest()
+            return slot.with_name(f'.slot-{key}.id')
+
+        oauth = self.default.with_name('claude-alt')
+        for slot in (self.default, oauth, self.slot):
+            slot.mkdir(exist_ok=True)
+            info = slot.stat()
+            id_file(slot).write_text(f"{'a' * 32} {info.st_dev} {info.st_ino}\n")
+
+        docker = self.root / 'bin/docker'
+        docker.write_text(docker.read_text().replace(
+            "elif args[:3] == ['exec', '-T', 'ductor-bot']:",
+            """elif args[0] == 'exec' and args[-2:] == ['claude', '/login']:
+    slot = Path(os.environ['FAKE_HOME']) / '.cli-auth' / 'claude-alt'
+    marker = slot.with_name(os.environ['FAKE_OAUTH_ID'])
+    assert not marker.exists()
+    (slot / '.credentials.json').write_text('fixture account')
+    marker.write_text('issued during login')
+elif args[:3] == ['exec', '-T', 'ductor-bot']:""",
+        ))
+        self.env['FAKE_OAUTH_ID'] = id_file(oauth).name
+        default_id = id_file(self.default).read_bytes()
+        api_id = id_file(self.slot).read_bytes()
+
+        result = self.run_login('claude', 'alt')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((oauth / '.credentials.json').read_text(), 'fixture account')
+        self.assertFalse(id_file(oauth).exists())
+        self.assertEqual(id_file(self.default).read_bytes(), default_id)
+        self.assertEqual(id_file(self.slot).read_bytes(), api_id)
+
+        result = self.run_login('claude-api')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.slot / 'settings.json').is_file())
+        self.assertFalse(id_file(self.slot).exists())
+        self.assertEqual(id_file(self.default).read_bytes(), default_id)
+
     def test_api_registration_order_modes_files_and_idempotence(self):
         for current, expected in (([], ['claude', 'claude-api']),
                                   (['claude-sub', 'claude'], ['claude-sub', 'claude', 'claude-api']),

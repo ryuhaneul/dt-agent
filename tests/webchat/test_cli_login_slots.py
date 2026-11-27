@@ -1406,3 +1406,56 @@ async def test_delete_rejects_reregistered_slot_without_directory(cli_bridge):
     assert (response.status, await response.json()) == (409, {"error": "slot_stale"})
     assert json.loads(config.read_text())["claude_accounts"] == [name]
     assert not (paths.ductor_home / ".cli-auth" / name).exists()
+
+
+@pytest.mark.parametrize("succeeded", [True, False])
+async def test_web_relogin_invalidates_web_and_telegram_logout_confirmations(cli_bridge, succeeded):
+    from ductor_bot.cli import claude_slots
+    from ductor_bot.i18n import t
+    from ductor_bot.orchestrator.selectors.account_selector import handle_account_callback
+    from tests.webchat.test_bridge_api import cli_poll
+
+    client, bot, _, paths, manager = cli_bridge
+    home = paths.ductor_home
+    folder = home / ".cli-auth" / "claude"
+    credentials = folder / ".credentials.json"
+    credentials.write_text("original account")
+    original_inode = folder.stat().st_ino
+    payload = await slot_mutation_payload(client, folder.name)
+    prompt = await handle_account_callback(home, bot.config, "acs:l:claude")
+    confirm = prompt.buttons.rows[0][1].callback_data
+    assert confirm.startswith("acs:y:")
+
+    executable = Path(manager._env["PATH"]) / "claude"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import os\n"
+        "from pathlib import Path\n"
+        "slot = Path(os.environ['CLAUDE_CONFIG_DIR'])\n"
+        "replacement = slot / 'replacement'\n"
+        "replacement.write_text('different account')\n"
+        "replacement.replace(slot / '.credentials.json')\n"
+        + ("print('Login successful')\n" if succeeded else "raise SystemExit(1)\n")
+    )
+    response = await client.post(
+        f"{_PREFIX}/cli-login/jobs", headers=cli_headers(),
+        json={"provider": "claude", "slot": folder.name},
+    )
+    assert response.status == 202
+    job = (await response.json())["job_id"]
+    result = await cli_poll(client, job, finished=True)
+    assert result["state"] == ("succeeded" if succeeded else "failed")
+    assert folder.stat().st_ino == original_inode
+    assert not _slot_id_file(folder).exists()
+    assert credentials.read_text() == "different account"
+
+    with patch.object(claude_slots.subprocess, "run") as logout_cli:
+        response = await client.post(
+            f"{_PREFIX}/cli-login/slots/{folder.name}/logout", headers=cli_headers(), json=payload
+        )
+        assert (response.status, await response.json()) == (409, {"error": "slot_stale"})
+        result = await handle_account_callback(home, bot.config, confirm)
+        assert t("accounts.stale") in result.text
+    logout_cli.assert_not_called()
+    assert credentials.read_text() == "different account"
+    assert await slot_mutation_payload(client, folder.name) != payload

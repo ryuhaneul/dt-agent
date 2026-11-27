@@ -612,6 +612,7 @@ The browser app relays bridge JSON statuses and error codes. Bridge routes use
 | Unapproved, missing or unsafe file path | 404 `not_found` |
 
 Slot directories use an `id:` identity stored alongside the slot directories. Registered slots without a directory use a `cfg:` identity based on the config file revision.
+Finishing a web login job or running the host login script invalidates earlier confirmations for that slot. A login run directly through the CLI can change credentials without invalidating those confirmations.
 Deleting and recreating a slot outside the bot can preserve its identity if the filesystem reuses the same device and inode numbers.
 
 `ductor webchat check-config --json` prints exactly this structure, with every

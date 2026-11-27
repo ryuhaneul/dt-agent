@@ -17,7 +17,11 @@ from ductor_bot.cli.claude_accounts import (
     slot_is_authenticated,
     slot_kind,
 )
-from ductor_bot.cli.claude_slots import is_slot_name, remove_slot_directory
+from ductor_bot.cli.claude_slots import (
+    invalidate_slot_identity,
+    is_slot_name,
+    remove_slot_directory,
+)
 from ductor_bot.cli.slot_rotation import slot_use_lock
 from ductor_bot.config import transform_config_file
 from ductor_bot.infra.json_store import atomic_json_save
@@ -160,7 +164,8 @@ class ClaudeLoginSlots:
         return prepared
 
     def finish(self, prepared: PreparedClaudeSlot, *, succeeded: bool) -> None:
-        """Share settings and append config only on success; otherwise remove new empties."""
+        """Invalidate the ID, then share and register on success or clean up on failure."""
+        invalidate_slot_identity(prepared.path)
         if not succeeded:
             self.cleanup(prepared)
             return
