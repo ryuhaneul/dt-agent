@@ -37,6 +37,7 @@ PASSWORD_KEY, TOTP_KEY = LEGACY_WEB_AUTH_KEYS
 MIN_PASSWORD_LENGTH = 12
 _HASH = re.compile(r"scrypt:32768:8:1:([0-9a-f]{32}):([0-9a-f]{64})")
 _WINDOW = 900
+_SWEEP_SECONDS = 60
 _PREAUTH_SECONDS = 300
 logger = logging.getLogger(__name__)
 
@@ -112,6 +113,11 @@ class AuthError(Exception):
             self.payload["retry_after"] = retry_after
 
 
+class _CodeError(AuthError):
+    def __init__(self) -> None:
+        super().__init__()
+
+
 @dataclass(slots=True, repr=False)
 class _Preauth:
     expires: float
@@ -133,8 +139,11 @@ class BridgeAuth:
         self._lock = asyncio.Lock()
         self._preauth: dict[str, _Preauth] = {}
         self._preauth_timers: dict[str, asyncio.TimerHandle] = {}
+        self._failures: list[float] = []
         self._ip_failures: dict[str, list[float]] = {}
         self._ip_locked: dict[str, float] = {}
+        self._global_locked = 0.0
+        self._swept = 0.0
 
     def _read_new_credentials(self) -> WebCredentials | None:
         try:
@@ -214,21 +223,39 @@ class BridgeAuth:
             self._discard_all_preauth()
 
     def _check_lock(self, ip: str, now: float) -> None:
-        self._ip_failures = {
-            addr: recent
-            for addr, timestamps in self._ip_failures.items()
-            if (recent := [ts for ts in timestamps if ts > now - _WINDOW])
-        }
-        self._ip_locked = {addr: end for addr, end in self._ip_locked.items() if end > now}
-        until = self._ip_locked.get(ip, 0)
+        self._failures = [ts for ts in self._failures if ts > now - _WINDOW]
+        if now - self._swept >= _SWEEP_SECONDS:
+            self._ip_failures = {
+                addr: recent
+                for addr, timestamps in self._ip_failures.items()
+                if (recent := [ts for ts in timestamps if ts > now - _WINDOW])
+            }
+            self._ip_locked = {addr: end for addr, end in self._ip_locked.items() if end > now}
+            self._swept = now
+        else:
+            if ip in self._ip_failures:
+                recent = [ts for ts in self._ip_failures[ip] if ts > now - _WINDOW]
+                if recent:
+                    self._ip_failures[ip] = recent
+                else:
+                    del self._ip_failures[ip]
+            if self._ip_locked.get(ip, 0) <= now:
+                self._ip_locked.pop(ip, None)
+        until = max(self._global_locked, self._ip_locked.get(ip, 0))
         if until > now:
             raise AuthError("locked", retry_after=math.ceil(until - now))
 
-    def _failed(self, ip: str, now: float) -> None:
+    def _failed(self, ip: str, now: float, *, second_factor: bool) -> None:
         self._ip_failures.setdefault(ip, []).append(now)
         if len(self._ip_failures[ip]) >= 5:
             self._ip_locked[ip] = now + _WINDOW
-        if self._ip_locked.get(ip, 0) > now:
+        if second_factor:
+            self._failures.append(now)
+            if len(self._failures) >= 20:
+                self._global_locked = now + _WINDOW
+        if self._global_locked > now:
+            self._discard_all_preauth()
+        elif self._ip_locked.get(ip, 0) > now:
             for token, pre in list(self._preauth.items()):
                 if pre.client_ip == ip:
                     self._discard_preauth(token)
@@ -324,7 +351,7 @@ class BridgeAuth:
                     "setup/confirm",
                     "password-change",
                 } and exc.payload["error"] not in {"code_reused", "password_too_short"}:
-                    self._failed(ip, now)
+                    self._failed(ip, now, second_factor=isinstance(exc, _CodeError))
                 raise
             if action in {"totp", "setup/confirm", "password-change"}:
                 self._succeeded(ip)
@@ -422,7 +449,7 @@ class BridgeAuth:
         if ip != pre.client_ip or not candidate or not isinstance(code, str):
             raise AuthError
         if not self._verify_code(candidate, code, setup=action == "setup/confirm"):
-            raise AuthError
+            raise _CodeError
         if action == "setup/confirm":
             if pre.seed_key is None or pre.seed_salt is None:
                 raise AuthError
@@ -456,7 +483,7 @@ class BridgeAuth:
         seed, _, _ = await asyncio.to_thread(decrypt_seed, current.totp, password)
         code = data.get("code")
         if not isinstance(code, str) or not self._verify_code(seed, code):
-            raise AuthError
+            raise _CodeError
         new = data.get("new_password")
         if not isinstance(new, str) or len(new) < MIN_PASSWORD_LENGTH:
             raise AuthError("password_too_short")
@@ -522,7 +549,7 @@ class BridgeAuth:
                 raise AuthError("totp_required")
             code = data.get("code")
             if not isinstance(code, str) or not self._verify_code(seed, code):
-                raise AuthError
+                raise _CodeError
             new = data.get("new_password")
             if not isinstance(new, str) or len(new) < MIN_PASSWORD_LENGTH:
                 raise AuthError("password_too_short")
@@ -580,7 +607,7 @@ class BridgeAuth:
         if ip != pre.client_ip or not candidate or not isinstance(code, str):
             raise AuthError
         if not self._verify_code(candidate, code, setup=action == "setup/confirm"):
-            raise AuthError
+            raise _CodeError
         migrated = await self._migrate_legacy(pre, values.get(PASSWORD_KEY, ""), candidate, seed)
         if action == "setup/confirm" and not migrated:
             raise AuthError("credentials_unavailable")

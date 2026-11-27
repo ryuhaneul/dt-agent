@@ -83,6 +83,11 @@ to the credential generation at issuance. Credential changes invalidate it.
 First setup accepts a new QR code or an existing Base32 seed; confirmation saves it.
 TOTP uses six digits, a 30-second period, a one-step clock window and replay checks.
 Five failed attempts from one client IP within 15 minutes lock login for that IP.
+Incorrect authentication codes submitted after the password is accepted count across
+all client IPs. This applies to the login code step and to password changes after the
+current password is accepted. Twenty such failures within 15 minutes lock login for
+all client IPs. Password verification failures count only toward the per-IP lock.
+The login page is meant to be reachable only from the gateway allowlist or a trusted proxy.
 Browser sessions have a 12-hour absolute lifetime and a two-hour idle timeout.
 Cookies are Secure, HttpOnly and SameSite=Strict. Mutations use `X-Dtw-Client`
 and `X-Dtw-Csrf`; authentication failures return 403.
