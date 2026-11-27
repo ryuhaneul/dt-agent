@@ -82,9 +82,7 @@ After password verification, a preauthentication token lasts 300 seconds and is 
 to the credential generation at issuance. Credential changes invalidate it.
 First setup accepts a new QR code or an existing Base32 seed; confirmation saves it.
 TOTP uses six digits, a 30-second period, a one-step clock window and replay checks.
-Five failed attempts per client IP or 20 globally within 15 minutes lock login.
-The global lock also blocks correct credentials until it expires, so the login
-page is meant to be reachable only from the gateway allowlist or a trusted proxy.
+Five failed attempts from one client IP within 15 minutes lock login for that IP.
 Browser sessions have a 12-hour absolute lifetime and a two-hour idle timeout.
 Cookies are Secure, HttpOnly and SameSite=Strict. Mutations use `X-Dtw-Client`
 and `X-Dtw-Csrf`; authentication failures return 403.

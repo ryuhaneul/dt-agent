@@ -133,10 +133,8 @@ class BridgeAuth:
         self._lock = asyncio.Lock()
         self._preauth: dict[str, _Preauth] = {}
         self._preauth_timers: dict[str, asyncio.TimerHandle] = {}
-        self._failures: list[tuple[float, str]] = []
         self._ip_failures: dict[str, list[float]] = {}
         self._ip_locked: dict[str, float] = {}
-        self._global_locked = 0.0
 
     def _read_new_credentials(self) -> WebCredentials | None:
         try:
@@ -216,27 +214,21 @@ class BridgeAuth:
             self._discard_all_preauth()
 
     def _check_lock(self, ip: str, now: float) -> None:
-        self._failures = [(ts, addr) for ts, addr in self._failures if ts > now - _WINDOW]
         self._ip_failures = {
             addr: recent
             for addr, timestamps in self._ip_failures.items()
             if (recent := [ts for ts in timestamps if ts > now - _WINDOW])
         }
         self._ip_locked = {addr: end for addr, end in self._ip_locked.items() if end > now}
-        until = max(self._global_locked, self._ip_locked.get(ip, 0))
+        until = self._ip_locked.get(ip, 0)
         if until > now:
             raise AuthError("locked", retry_after=math.ceil(until - now))
 
     def _failed(self, ip: str, now: float) -> None:
-        self._failures.append((now, ip))
         self._ip_failures.setdefault(ip, []).append(now)
         if len(self._ip_failures[ip]) >= 5:
             self._ip_locked[ip] = now + _WINDOW
-        if len(self._failures) >= 20:
-            self._global_locked = now + _WINDOW
-        if self._global_locked > now:
-            self._discard_all_preauth()
-        elif self._ip_locked.get(ip, 0) > now:
+        if self._ip_locked.get(ip, 0) > now:
             for token, pre in list(self._preauth.items()):
                 if pre.client_ip == ip:
                     self._discard_preauth(token)

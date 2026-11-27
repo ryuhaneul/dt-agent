@@ -138,7 +138,7 @@ async def test_totp_concurrent_replay(service):
     assert sum(result == {"ok": True} for result in results) == 1
 
 
-async def test_ip_and_global_lock_expire(service):
+async def test_ip_lock_expires_and_other_addresses_do_not_lock_login(service):
     instance, clock = service
     for _ in range(5):
         await invalid(instance, "password", {"password": "wrong", "client_ip": _IP})
@@ -153,8 +153,6 @@ async def test_ip_and_global_lock_expire(service):
         await invalid(
             instance, "password", {"password": "wrong", "client_ip": f"203.0.113.{index + 1}"}
         )
-    await invalid(instance, "password", {"password": _PASSWORD, "client_ip": _IP}, "locked")
-    clock.mono += 901
     await password_login(service)
 
 
@@ -173,7 +171,7 @@ async def test_failures_combined_across_auth_stages(service):
     await invalid(instance, "password", {"password": _PASSWORD, "client_ip": _IP}, "locked")
 
 
-async def test_success_resets_ip_but_retains_global_failures(service):
+async def test_success_resets_ip_failures(service):
     instance, clock = service
     set_secret(instance.store, TOTP_KEY, _SEED)
     for index in range(4):
@@ -193,9 +191,6 @@ async def test_success_resets_ip_but_retains_global_failures(service):
         )
         assert ip not in instance._ip_failures
         clock.wall += 30
-    for _ in range(4):
-        await invalid(instance, "password", {"password": "wrong", "client_ip": _IP})
-    await invalid(instance, "password", {"password": _PASSWORD, "client_ip": _IP}, "locked")
 
 
 async def test_setup_new_paste_confirm_and_read_only_state(service):
