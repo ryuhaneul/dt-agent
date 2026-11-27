@@ -263,7 +263,7 @@ def current_slot_identity(
 def _lock_slot_removal(root: Path, slot: str) -> Iterator[None]:
     with ExitStack() as locks:
         try:
-            locks.enter_context(exclusive_file_lock(root / ".slot-identity"))
+            locks.enter_context(exclusive_file_lock(root / ".slot-identity", timeout=0))
         except LockTimeoutError as exc:
             raise SlotDeleteError("slot_busy") from exc
         except OSError as exc:
