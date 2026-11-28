@@ -95,6 +95,8 @@ def _load_agents_for_update(agents_path: Path) -> list[dict[str, object]]:
     raw = json.loads(agents_path.read_text(encoding="utf-8"))
     if not isinstance(raw, list):
         raise ValueError("agents.json must be a JSON array")  # noqa: TRY004 -- malformed JSON
+    if any(not isinstance(entry, dict) for entry in raw):
+        raise ValueError("agents.json entries must be JSON objects")
     return raw
 
 
@@ -106,11 +108,9 @@ def _exit_registry_update_error(error: Exception) -> NoReturn:
 
 def _load_agents_for_prompt(paths: DuctorPaths) -> list[dict[str, object]]:
     try:
-        if _agents_file_is_regular(paths.ductor_home / "agents.json"):
-            return load_agents_registry(paths)
-    except (OSError, RecursionError) as exc:
+        return _load_agents_for_update(paths.ductor_home / "agents.json")
+    except (OSError, RecursionError, ValueError) as exc:
         _exit_registry_update_error(exc)
-    return []
 
 
 def fetch_live_health() -> dict[str, dict[str, object]]:
