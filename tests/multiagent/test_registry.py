@@ -376,28 +376,37 @@ def test_list_tool_rejects_invalid_registry(agents_path, monkeypatch, capsys, or
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO unavailable")
+@pytest.mark.parametrize("tool", ["remove", "list"])
 @pytest.mark.parametrize("kind", ["directory", "fifo-link"])
-def test_remove_tool_reports_unreadable_registry_path(
-    agents_path, tmp_path, monkeypatch, capsys, kind
-):
+def test_tools_report_unreadable_registry_path(tmp_path, monkeypatch, capsys, tool, kind):
+    upper = tmp_path / "agents.json"
+    original = b'[{"name":"sub1"}]'
+    upper.write_bytes(original)
+    home = tmp_path / "profiles" / "current"
+    home.mkdir(parents=True)
+    agents_path = home / "agents.json"
     if kind == "directory":
         agents_path.mkdir()
     else:
         fifo = tmp_path / "registry.fifo"
         os.mkfifo(fifo)
         agents_path.symlink_to(fifo)
-    monkeypatch.setenv("DUCTOR_HOME", str(agents_path.parent))
-    script = (
-        Path(__file__).resolve().parents[2]
-        / "ductor_bot/_home_defaults/workspace/tools/agent_tools/remove_agent.py"
-    )
-    monkeypatch.setattr(sys, "argv", [str(script), "sub1"])
+    monkeypatch.setenv("DUCTOR_HOME", str(home))
+    tools = Path(__file__).resolve().parents[2] / "ductor_bot/_home_defaults/workspace/tools"
+    if tool == "remove":
+        script, args = tools / "agent_tools/remove_agent.py", ["sub1"]
+    else:
+        script, args = tools / "agent_tools/list_agents.py", []
+    monkeypatch.setattr(sys, "argv", [str(script), *args])
 
     with pytest.raises(SystemExit) as exit_info:
         runpy.run_path(str(script), run_name="__main__")
 
     assert exit_info.value.code == 1
-    assert capsys.readouterr().err == "Error: Failed to read agents.json\n"
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "Error: Failed to read agents.json\n"
+    assert upper.read_bytes() == original
 
 
 @pytest.mark.parametrize("command", ["add", "remove"])

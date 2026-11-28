@@ -30,11 +30,11 @@ def _agents_path() -> Path:
 
     home = Path(os.environ.get("DUCTOR_HOME", str(Path.home() / ".ductor")))
     direct = home / "agents.json"
-    if direct.is_file():
+    if direct.exists() or direct.is_symlink():
         return direct
     main_home = home.parent.parent
     main_path = main_home / "agents.json"
-    if main_path.is_file() or (main_home / "config").is_dir():
+    if main_path.exists() or main_path.is_symlink() or (main_home / "config").is_dir():
         return main_path
     return direct
 
