@@ -2910,23 +2910,12 @@ async def test_response_button_named_destination_and_selector_rejection(conversa
     assert not await h.runtime.history.is_answered("-123.7", selector.id)
 
 
-async def test_response_button_busy_does_not_claim_and_legacy_remains_immutable(
-    conversation, monkeypatch
-):
+async def test_response_button_legacy_remains_immutable(conversation, monkeypatch):
     h = conversation
     h.bot.bot_instance = SimpleNamespace(
         edit_message_text=AsyncMock(), edit_message_reply_markup=AsyncMock()
     )
     entry = await h.runtime.history.append(h.key, Entry("bot", "telegram", "Pick [button:Yes]"))
-    monkeypatch.setattr(WebTurns, "busy", lambda _self, _tid: True)
-    response = await h.client.post(
-        f"{_PREFIX}/topics/-123.7/buttons",
-        json={"entry_id": entry.id, "label": "Yes"},
-        headers=headers(),
-    )
-    assert response.status == 409
-    assert not await h.runtime.history.is_answered("-123.7", entry.id)
-    monkeypatch.setattr(WebTurns, "busy", lambda _self, _tid: False)
     monkeypatch.setattr(WebTurns, "submit", AsyncMock(return_value="legacy-turn"))
     path = h.runtime.history._path("-123.7")
     h.runtime.history._metadata_path("-123.7").unlink()
@@ -3038,15 +3027,14 @@ async def test_response_button_bridge_token_forbidden(conversation):
         assert "WWW-Authenticate" not in response.headers
 
 
-async def test_response_button_waits_for_telegram_busy_and_rejects_web_busy(
-    conversation, monkeypatch
-):
+async def test_response_buttons_queue_behind_telegram_lock_in_fifo_order(conversation, monkeypatch):
     h = conversation
     h.bot.bot_instance = SimpleNamespace(
         edit_message_text=AsyncMock(), edit_message_reply_markup=AsyncMock()
     )
     first = await h.runtime.history.append(h.key, Entry("bot", "telegram", "Pick [button:Yes]"))
-    second = await h.runtime.history.append(h.key, Entry("bot", "telegram", "Other [button:Yes]"))
+    second = await h.runtime.history.append(h.key, Entry("bot", "telegram", "Other [button:No]"))
+    await h.runtime.history.bind_telegram_message("-123.7", second.id, 42, html_text="Other")
     tasks = []
     original = WebTurns.submit
 
@@ -3059,24 +3047,72 @@ async def test_response_button_waits_for_telegram_busy_and_rejects_web_busy(
     lock = h.pool.get(h.key.lock_key)
     await lock.acquire()
     try:
-        response = await h.client.post(
-            f"{_PREFIX}/topics/-123.7/buttons",
-            json={"entry_id": first.id, "label": "Yes"},
-            headers=headers(),
-        )
-        assert response.status == 202
-        assert not h.calls
-        busy = await h.client.post(
-            f"{_PREFIX}/topics/-123.7/buttons",
-            json={"entry_id": second.id, "label": "Yes"},
-            headers=headers(),
-        )
-        assert busy.status == 409
-        assert not await h.runtime.history.is_answered("-123.7", second.id)
+        async with h.runtime.outbox.delivery_lock:
+            turn_ids = []
+            for entry, label in [(first, "Yes"), (second, "No")]:
+                response = await h.client.post(
+                    f"{_PREFIX}/topics/-123.7/buttons",
+                    json={"entry_id": entry.id, "label": label},
+                    headers=headers(),
+                )
+                assert response.status == 202
+                result = await response.json()
+                turn_ids.append(result["turn_id"])
+                assert result == {"turn_id": turn_ids[-1], "entry_id": entry.id, "answered": label}
+                assert (await h.runtime.history.metadata("-123.7"))[entry.id]["answered"] == label
+            topic = (await (await h.client.get(f"{_PREFIX}/topics", headers=headers())).json())[
+                "topics"
+            ][0]
+            assert [(turn["turn_id"], turn["phase"], turn["text"]) for turn in topic["turns"]] == [
+                (turn_ids[0], "queued", "Yes"),
+                (turn_ids[1], "queued", "No"),
+            ]
+            assert not h.calls
+            h.bot.bot_instance.edit_message_text.assert_awaited_once()
     finally:
         lock.release()
         await asyncio.wait_for(asyncio.gather(*tasks), 5)
-    assert h.calls[0][1] == "Yes"
+    assert [call[1] for call in h.calls] == ["Yes", "No"]
+
+
+async def test_response_button_queues_while_web_turn_is_running(conversation):
+    h = conversation
+    h.bot.bot_instance = SimpleNamespace()
+    entry = await h.runtime.history.append(h.key, Entry("bot", "telegram", "Pick [button:Yes]"))
+    entered, release = asyncio.Event(), asyncio.Event()
+    handle = h.bot._orch.handle_message_streaming.side_effect
+
+    async def hold_first_turn(key, text, **callbacks):
+        if text == "active":
+            entered.set()
+            await release.wait()
+        return await handle(key, text, **callbacks)
+
+    h.bot._orch.handle_message_streaming.side_effect = hold_first_turn
+    async with h.client.ws_connect(f"{_PREFIX}/events", headers=headers()) as ws:
+        try:
+            active = (await (await post_message(h, text="active")).json())["turn_id"]
+            await asyncio.wait_for(entered.wait(), 3)
+            response = await h.client.post(
+                f"{_PREFIX}/topics/-123.7/buttons",
+                json={"entry_id": entry.id, "label": "Yes"},
+                headers=headers(),
+            )
+            assert response.status == 202
+            queued = (await response.json())["turn_id"]
+            topic = (await (await h.client.get(f"{_PREFIX}/topics", headers=headers())).json())[
+                "topics"
+            ][0]
+            assert [(turn["turn_id"], turn["phase"]) for turn in topic["turns"]] == [
+                (active, "started"),
+                (queued, "queued"),
+            ]
+        finally:
+            release.set()
+        await receive_until(
+            ws, lambda event: event.get("turn_id") == queued and event.get("phase") == "done"
+        )
+    assert [call[1] for call in h.calls] == ["active", "Yes"]
 
 
 async def test_response_button_stop_bypasses_slow_command_gate(conversation, monkeypatch):

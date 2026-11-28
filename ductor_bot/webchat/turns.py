@@ -303,6 +303,7 @@ class WebTurns:
         self._turns: dict[str, _QueuedTurn] = {}
         self._memory_activity: OrderedDict[tuple[str, str], list[dict[str, Any]]] = OrderedDict()
         self._queues: dict[str, list[str]] = {}
+        self._preparation_locks: dict[str, asyncio.Lock] = {}
         self._fifo_locks: dict[str, asyncio.Lock] = {}
         self._admission_lock = asyncio.Lock()
         self._strings = TranslationStore(bot.config.language)
@@ -397,6 +398,7 @@ class WebTurns:
                 await complete_write(self._journal.retire, {turn["turn_id"]})
                 raise OSError("Topic no longer accepts turns")
             queue = self._queues.setdefault(tid, [])
+            self._preparation_locks.setdefault(tid, asyncio.Lock())
             self._fifo_locks.setdefault(tid, asyncio.Lock())
             turn_id = turn["turn_id"]
             self._turns[turn_id] = state
@@ -420,6 +422,7 @@ class WebTurns:
                 queue.remove(turn_id)
             if not queue:
                 self._queues.pop(state.tid, None)
+                self._preparation_locks.pop(state.tid, None)
                 self._fifo_locks.pop(state.tid, None)
             if state.phase != "cancelled":
                 self._turns.pop(turn_id, None)
@@ -778,8 +781,10 @@ class WebTurns:
         try:
             if tid in self.blocked:
                 return
-            if state.mirror_user:
-                await self._mirror_user(tid, text, turn, attachments)
+            # A turn that skips mirroring must take its place behind earlier admissions.
+            async with self._preparation_locks[tid]:
+                if state.mirror_user:
+                    await self._mirror_user(tid, text, turn, attachments)
             state.prepared.set()
             if state.phase == "cancelled":
                 return
