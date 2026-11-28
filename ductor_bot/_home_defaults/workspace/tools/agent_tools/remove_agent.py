@@ -66,7 +66,10 @@ def main() -> None:
     try:
         with exclusive_file_lock(path):
             if not path.is_file():
-                print(f"Error: No agents.json found at {path}", file=sys.stderr)
+                if path.exists() or path.is_symlink():
+                    print("Error: Failed to read agents.json", file=sys.stderr)
+                else:
+                    print(f"Error: No agents.json found at {path}", file=sys.stderr)
                 sys.exit(1)
 
             try:

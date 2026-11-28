@@ -39,7 +39,9 @@ def main() -> None:
 
     try:
         agents = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (OSError, RecursionError, ValueError):
+        agents = None
+    if not isinstance(agents, list) or any(not isinstance(row, dict) for row in agents):
         print("Error: Failed to read agents.json", file=sys.stderr)
         sys.exit(1)
 
