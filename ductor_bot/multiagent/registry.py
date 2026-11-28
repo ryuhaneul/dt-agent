@@ -28,7 +28,7 @@ class AgentRegistry:
             return []
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
-        except (ValueError, OSError):
+        except (ValueError, OSError, RecursionError):
             if strict:
                 raise
             logger.exception("Failed to read agents.json at %s", self._path)

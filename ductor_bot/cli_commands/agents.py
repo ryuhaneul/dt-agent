@@ -145,7 +145,7 @@ def fetch_live_health() -> dict[str, dict[str, object]]:
 
 def _inherited_or_value(value: object) -> str:
     """A sub-agent's own provider or model; a missing or null field is inherited from main."""
-    return t_rich("agents.inherited") if value is None else str(value)
+    return t_rich("agents.inherited") if value is None else escape(str(value))
 
 
 def print_agents_status(agents: list[dict[str, object]], *, bot_running: bool = False) -> None:
@@ -179,14 +179,14 @@ def print_agents_status(agents: list[dict[str, object]], *, bot_running: bool = 
         crash_info = ""
         if status == "crashed" and health.get("last_crash_error"):
             error = show_crash_error(str(health["last_crash_error"]))[:80]
-            crash_info = f"\n  [dim red]{error}[/dim red]"
+            crash_info = f"\n  [dim red]{escape(error)}[/dim red]"
 
         restart_count = health.get("restart_count", 0) if health else 0
         uptime_display = uptime
         if restart_count:
             uptime_display += " " + t_rich("agents.restarts", count=restart_count)
 
-        table.add_row(name, status_display + crash_info, uptime_display, prov, mdl)
+        table.add_row(escape(name), status_display + crash_info, uptime_display, prov, mdl)
 
     _console.print(
         Panel(

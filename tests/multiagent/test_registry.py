@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import runpy
@@ -12,10 +13,11 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from pathlib import Path
 from threading import Event
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 import questionary
+from rich.console import Console
 
 from ductor_bot.__main__ import main as cli_main
 from ductor_bot.cli_commands import agents as agents_cli
@@ -53,6 +55,13 @@ class TestRegistryLoad:
         reg = AgentRegistry(agents_path)
         assert reg.load() == []
 
+    def test_deeply_nested_json_respects_strict_mode(self, agents_path: Path) -> None:
+        agents_path.write_text("[" * 100_000 + "]" * 100_000)
+        reg = AgentRegistry(agents_path)
+        assert reg.load() == []
+        with pytest.raises(RecursionError):
+            reg.load(strict=True)
+
     def test_non_array_json_returns_empty(self, agents_path: Path) -> None:
         agents_path.write_text('{"name": "sub1"}')
         reg = AgentRegistry(agents_path)
@@ -75,6 +84,29 @@ class TestRegistryLoad:
         assert len(agents) == 2
         assert agents[0].name == "sub1"
         assert agents[1].name == "sub3"
+
+
+def test_agents_status_displays_registry_values_literally() -> None:
+    console = Console(file=io.StringIO(), width=400, record=True)
+    with patch.object(agents_cli, "_console", console):
+        agents_cli.print_agents_status([{"name": "[/x]", "provider": "p[/y]", "model": "opus[beta]"}])
+    shown = console.export_text()
+    assert "[/x]" in shown
+    assert "p[/y]" in shown
+    assert "opus[beta]" in shown
+
+
+def test_agents_status_displays_crash_error_literally() -> None:
+    name = "sub[beta]"
+    error = "ConnectionError: [/x] [note]"
+    live = {name: {"status": "crashed", "last_crash_error": error}}
+    console = Console(file=io.StringIO(), width=400, record=True)
+    with (
+        patch.object(agents_cli, "fetch_live_health", return_value=live),
+        patch.object(agents_cli, "_console", console),
+    ):
+        agents_cli.print_agents_status([{"name": name}], bot_running=True)
+    assert error in console.export_text()
 
 
 @pytest.mark.skipif(file_lock.fcntl is None, reason="flock unavailable")
