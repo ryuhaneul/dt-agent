@@ -325,6 +325,106 @@ def test_tool_rejects_invalid_registry(agents_path, monkeypatch, capsys, command
     assert not (agents_path.parent / "agents" / "sub3").exists()
 
 
+@pytest.mark.parametrize(
+    ("original", "expected"),
+    [
+        pytest.param(b'[{"name":"sub1"}, "oops"]', "Sub-Agents (1)", id="mixed"),
+        pytest.param(b"\xff", "No sub-agents configured.", id="utf8"),
+        pytest.param(
+            b"[" * 100_000 + b"]" * 100_000, "No sub-agents configured.", id="deeply-nested"
+        ),
+    ],
+)
+def test_cli_list_shows_usable_entries_of_invalid_registry(
+    agents_path, monkeypatch, capsys, original, expected
+):
+    agents_path.write_bytes(original)
+    monkeypatch.setenv("DUCTOR_HOME", str(agents_path.parent))
+    monkeypatch.setattr(sys, "argv", ["ductor", "agents", "list"])
+
+    cli_main()
+
+    assert expected in capsys.readouterr().out
+    assert agents_path.read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    "original",
+    [
+        pytest.param(b'{"name":"sub1"}', id="object"),
+        pytest.param(b'[{"name":"sub1"}, "oops"]', id="mixed"),
+        pytest.param(b"\xff", id="utf8"),
+        pytest.param(b"[" * 100_000 + b"]" * 100_000, id="deeply-nested"),
+    ],
+)
+def test_list_tool_rejects_invalid_registry(agents_path, monkeypatch, capsys, original):
+    agents_path.write_bytes(original)
+    monkeypatch.setenv("DUCTOR_HOME", str(agents_path.parent))
+    script = (
+        Path(__file__).resolve().parents[2]
+        / "ductor_bot/_home_defaults/workspace/tools/agent_tools/list_agents.py"
+    )
+    monkeypatch.setattr(sys, "argv", [str(script)])
+
+    with pytest.raises(SystemExit) as exit_info:
+        runpy.run_path(str(script), run_name="__main__")
+
+    assert exit_info.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "Error: Failed to read agents.json\n"
+
+
+def test_list_tool_shows_entry_with_non_string_name(agents_path, monkeypatch, capsys):
+    agents_path.write_bytes(b'[{"name":5}]')
+    monkeypatch.setenv("DUCTOR_HOME", str(agents_path.parent))
+    script = (
+        Path(__file__).resolve().parents[2]
+        / "ductor_bot/_home_defaults/workspace/tools/agent_tools/list_agents.py"
+    )
+    monkeypatch.setattr(sys, "argv", [str(script)])
+
+    runpy.run_path(str(script), run_name="__main__")
+
+    captured = capsys.readouterr()
+    assert "\n  5\n" in captured.out
+    assert captured.err == ""
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO unavailable")
+@pytest.mark.parametrize("tool", ["remove", "list"])
+@pytest.mark.parametrize("kind", ["directory", "fifo-link"])
+def test_tools_report_unreadable_registry_path(tmp_path, monkeypatch, capsys, tool, kind):
+    upper = tmp_path / "agents.json"
+    original = b'[{"name":"sub1"}]'
+    upper.write_bytes(original)
+    home = tmp_path / "profiles" / "current"
+    home.mkdir(parents=True)
+    agents_path = home / "agents.json"
+    if kind == "directory":
+        agents_path.mkdir()
+    else:
+        fifo = tmp_path / "registry.fifo"
+        os.mkfifo(fifo)
+        agents_path.symlink_to(fifo)
+    monkeypatch.setenv("DUCTOR_HOME", str(home))
+    tools = Path(__file__).resolve().parents[2] / "ductor_bot/_home_defaults/workspace/tools"
+    if tool == "remove":
+        script, args = tools / "agent_tools/remove_agent.py", ["sub1"]
+    else:
+        script, args = tools / "agent_tools/list_agents.py", []
+    monkeypatch.setattr(sys, "argv", [str(script), *args])
+
+    with pytest.raises(SystemExit) as exit_info:
+        runpy.run_path(str(script), run_name="__main__")
+
+    assert exit_info.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "Error: Failed to read agents.json\n"
+    assert upper.read_bytes() == original
+
+
 @pytest.mark.parametrize("command", ["add", "remove"])
 def test_cli_rejects_registry_invalidated_during_prompts(agents_path, monkeypatch, capsys, command):
     agents_path.write_bytes(b'[{"name":"sub1"}]')

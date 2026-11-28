@@ -76,9 +76,11 @@ def load_agents_registry(paths: DuctorPaths) -> list[dict[str, object]]:
         return []
     try:
         raw = json.loads(agents_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (OSError, RecursionError, ValueError):
         return []
-    return raw if isinstance(raw, list) else []
+    if not isinstance(raw, list):
+        return []
+    return [entry for entry in raw if isinstance(entry, dict)]
 
 
 def _agents_file_is_regular(agents_path: Path) -> bool:

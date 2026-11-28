@@ -22,24 +22,26 @@ def _agents_path() -> Path:
 
     home = Path(os.environ.get("DUCTOR_HOME", str(Path.home() / ".ductor")))
     direct = home / "agents.json"
-    if direct.is_file():
+    if direct.exists() or direct.is_symlink():
         return direct
     main_home = home.parent.parent
     main_path = main_home / "agents.json"
-    if main_path.is_file() or (main_home / "config").is_dir():
+    if main_path.exists() or main_path.is_symlink() or (main_home / "config").is_dir():
         return main_path
     return direct
 
 
 def main() -> None:
     path = _agents_path()
-    if not path.is_file():
+    if not (path.exists() or path.is_symlink()):
         print("No agents.json found. No sub-agents configured.")
         return
 
     try:
-        agents = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+        agents = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+    except (OSError, RecursionError, ValueError):
+        agents = None
+    if not isinstance(agents, list) or any(not isinstance(row, dict) for row in agents):
         print("Error: Failed to read agents.json", file=sys.stderr)
         sys.exit(1)
 
@@ -49,7 +51,7 @@ def main() -> None:
 
     print(f"Registered sub-agents ({len(agents)}):\n")
     for agent in agents:
-        name = agent.get("name", "?")
+        name = str(agent.get("name", "?"))
         users = agent.get("allowed_user_ids", [])
         provider = agent.get("provider", "(inherited)")
         model = agent.get("model", "(inherited)")
