@@ -88,17 +88,18 @@ class TestRegistryLoad:
 
 def test_agents_status_displays_registry_values_literally() -> None:
     console = Console(file=io.StringIO(), width=400, record=True)
+    row = {"name": "[/x]\\", "provider": "p[/y]\\\\", "model": "opus[beta]"}
     with patch.object(agents_cli, "_console", console):
-        agents_cli.print_agents_status([{"name": "[/x]", "provider": "p[/y]", "model": "opus[beta]"}])
+        agents_cli.print_agents_status([row])
     shown = console.export_text()
-    assert "[/x]" in shown
-    assert "p[/y]" in shown
-    assert "opus[beta]" in shown
+    for value in row.values():
+        assert value in shown
+        assert value + "\\" not in shown
 
 
 def test_agents_status_displays_crash_error_literally() -> None:
     name = "sub[beta]"
-    error = "ConnectionError: [/x] [note]"
+    error = "ConnectionError: [/x] [note] :warning: " + "\\" * 3
     live = {name: {"status": "crashed", "last_crash_error": error}}
     console = Console(file=io.StringIO(), width=400, record=True)
     with (
@@ -106,7 +107,10 @@ def test_agents_status_displays_crash_error_literally() -> None:
         patch.object(agents_cli, "_console", console),
     ):
         agents_cli.print_agents_status([{"name": name}], bot_running=True)
-    assert error in console.export_text()
+    shown = console.export_text()
+    assert error in shown
+    assert error + "\\" not in shown
+    assert "[/dim red]" not in shown
 
 
 @pytest.mark.skipif(file_lock.fcntl is None, reason="flock unavailable")
