@@ -227,6 +227,137 @@ def test_cli_add_keeps_invalid_registry(agents_path, monkeypatch, capsys, origin
     assert agents_path.read_text() == original
 
 
+@pytest.mark.parametrize(
+    ("command", "original"),
+    [
+        pytest.param("add", b'[{"name":"sub1"', id="v1-add-malformed"),
+        pytest.param("add", b'{"name":"sub1"}', id="v1-add-object"),
+        pytest.param("remove", b'[{"name":"sub1"', id="v2-remove-malformed"),
+        pytest.param("remove", b'{"name":"sub1"}', id="v2-remove-object"),
+        pytest.param("remove", b"null", id="v2-remove-null"),
+        pytest.param("add", b"\xff", id="v3-add-utf8"),
+        pytest.param("remove", b"\xff", id="v3-remove-utf8"),
+        pytest.param("add", b'[{"name":"sub1"}, "oops"]', id="v4-add-mixed"),
+        pytest.param("remove", b'[{"name":"sub1"}, "oops"]', id="v4-remove-mixed"),
+    ],
+)
+def test_cli_rejects_invalid_registry_before_prompts(
+    agents_path, monkeypatch, capsys, command, original
+):
+    agents_path.write_bytes(original)
+    monkeypatch.setenv("DUCTOR_HOME", str(agents_path.parent))
+    name = "sub3" if command == "add" else "sub1"
+    monkeypatch.setattr(sys, "argv", ["ductor", "agents", command, name])
+    answers = iter(["test-token", "1", "", "sonnet"])
+    text = Mock(return_value=Mock(ask=lambda: next(answers)))
+    select = Mock(return_value=Mock(ask=lambda: "claude"))
+    confirm = Mock(return_value=Mock(ask=lambda: True))
+    monkeypatch.setattr(questionary, "text", text)
+    monkeypatch.setattr(questionary, "select", select)
+    monkeypatch.setattr(questionary, "confirm", confirm)
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli_main()
+
+    assert exit_info.value.code == 1
+    text.assert_not_called()
+    select.assert_not_called()
+    confirm.assert_not_called()
+    captured = capsys.readouterr()
+    lines = captured.out.strip().splitlines()
+    assert len(lines) == 1
+    assert lines[0].startswith("Could not update agents.json:")
+    assert captured.err == ""
+    assert agents_path.read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        pytest.param([], "Usage: ductor agents add <name>", id="missing-name"),
+        pytest.param(["main"], "Name 'main' is reserved.", id="reserved-name"),
+    ],
+)
+def test_cli_add_name_guidance_ignores_invalid_registry(
+    agents_path, monkeypatch, capsys, args, expected
+):
+    original = b'[{"name":"sub1"}, "oops"]'
+    agents_path.write_bytes(original)
+    monkeypatch.setenv("DUCTOR_HOME", str(agents_path.parent))
+    monkeypatch.setattr(sys, "argv", ["ductor", "agents", "add", *args])
+
+    cli_main()
+
+    assert capsys.readouterr().out.strip() == expected
+    assert agents_path.read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    ("command", "original"),
+    [
+        pytest.param("create", b'[{"name":"sub1"}, "oops"]', id="v4-create-mixed"),
+        pytest.param("remove", b'{"name":"sub1"}', id="v5-remove-object"),
+        pytest.param("remove", b"null", id="v5-remove-null"),
+        pytest.param("remove", b'[{"name":"sub1"}, "oops"]', id="v5-remove-mixed"),
+        pytest.param("remove", b"\xff", id="v5-remove-utf8"),
+        pytest.param("remove", b"[" * 100_000 + b"]" * 100_000, id="v5-remove-deeply-nested"),
+    ],
+)
+def test_tool_rejects_invalid_registry(agents_path, monkeypatch, capsys, command, original):
+    agents_path.write_bytes(original)
+    monkeypatch.setenv("DUCTOR_HOME", str(agents_path.parent))
+    script = (
+        Path(__file__).resolve().parents[2]
+        / f"ductor_bot/_home_defaults/workspace/tools/agent_tools/{command}_agent.py"
+    )
+    if command == "create":
+        args = ["--name", "sub3", "--transport", "headless", "--persona", "New persona"]
+    else:
+        args = ["sub1"]
+    monkeypatch.setattr(sys, "argv", [str(script), *args])
+
+    with pytest.raises(SystemExit) as exit_info:
+        runpy.run_path(str(script), run_name="__main__")
+
+    assert exit_info.value.code == 1
+    assert capsys.readouterr().err == "Error: Failed to read agents.json\n"
+    assert agents_path.read_bytes() == original
+    assert not (agents_path.parent / "agents" / "sub3").exists()
+
+
+@pytest.mark.parametrize("command", ["add", "remove"])
+def test_cli_rejects_registry_invalidated_during_prompts(agents_path, monkeypatch, capsys, command):
+    agents_path.write_bytes(b'[{"name":"sub1"}]')
+    invalid = b'[{"name":"sub1"}, "oops"]'
+    monkeypatch.setenv("DUCTOR_HOME", str(agents_path.parent))
+    name = "sub3" if command == "add" else "sub1"
+    monkeypatch.setattr(sys, "argv", ["ductor", "agents", command, name])
+
+    def select_provider():
+        agents_path.write_bytes(invalid)
+        return "claude"
+
+    def confirm_removal():
+        agents_path.write_bytes(invalid)
+        return True
+
+    answers = iter(["test-token", "1", "", "sonnet"])
+    monkeypatch.setattr(questionary, "text", Mock(return_value=Mock(ask=lambda: next(answers))))
+    monkeypatch.setattr(questionary, "select", Mock(return_value=Mock(ask=select_provider)))
+    monkeypatch.setattr(questionary, "confirm", Mock(return_value=Mock(ask=confirm_removal)))
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli_main()
+
+    assert exit_info.value.code == 1
+    captured = capsys.readouterr()
+    lines = captured.out.strip().splitlines()
+    assert len(lines) == 1
+    assert lines[0].startswith("Could not update agents.json:")
+    assert captured.err == ""
+    assert agents_path.read_bytes() == invalid
+
+
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO unavailable")
 @pytest.mark.parametrize("command", ["create_script", "cli_add"])
 def test_registry_update_rejects_fifo(agents_path, command):

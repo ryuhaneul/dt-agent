@@ -478,8 +478,8 @@ def main() -> None:
                     agents = json.loads(path.read_text(encoding="utf-8"))
                 elif path.exists() or path.is_symlink():
                     raise ValueError("agents.json must be a regular file")
-                if not isinstance(agents, list):
-                    raise ValueError("agents.json must be a JSON array")
+                if not isinstance(agents, list) or any(not isinstance(row, dict) for row in agents):
+                    raise ValueError("agents.json must be a JSON array of objects")
             except (OSError, RecursionError, ValueError):
                 print("Error: Failed to read agents.json", file=sys.stderr)
                 sys.exit(1)
