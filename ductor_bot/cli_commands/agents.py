@@ -10,6 +10,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from ductor_bot.home import require_main_home
 from ductor_bot.i18n import t_rich
@@ -143,9 +144,10 @@ def fetch_live_health() -> dict[str, dict[str, object]]:
         return result
 
 
-def _inherited_or_value(value: object) -> str:
+def _inherited_or_value(value: object) -> str | Text:
     """A sub-agent's own provider or model; a missing or null field is inherited from main."""
-    return t_rich("agents.inherited") if value is None else str(value)
+    # Registry values are plain text, never markup.
+    return t_rich("agents.inherited") if value is None else Text(str(value))
 
 
 def print_agents_status(agents: list[dict[str, object]], *, bot_running: bool = False) -> None:
@@ -176,17 +178,20 @@ def print_agents_status(agents: list[dict[str, object]], *, bot_running: bool = 
         uptime = show_uptime(str(health.get("uptime", ""))) if health else ""
         status_display = status_style.get(status, f"[dim]{status}[/dim]")
 
-        crash_info = ""
+        status_cell: str | Text = status_display
         if status == "crashed" and health.get("last_crash_error"):
             error = show_crash_error(str(health["last_crash_error"]))[:80]
-            crash_info = f"\n  [dim red]{error}[/dim red]"
+            # The crash text is appended as plain text, never markup.
+            status_cell = Text.from_markup(status_display)
+            status_cell.append("\n  ")
+            status_cell.append(error, style="dim red")
 
         restart_count = health.get("restart_count", 0) if health else 0
         uptime_display = uptime
         if restart_count:
             uptime_display += " " + t_rich("agents.restarts", count=restart_count)
 
-        table.add_row(name, status_display + crash_info, uptime_display, prov, mdl)
+        table.add_row(Text(name), status_cell, uptime_display, prov, mdl)
 
     _console.print(
         Panel(
