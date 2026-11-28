@@ -77,7 +77,12 @@ async def test_list_create_detail_defaults_and_server_routing(api):
     state = await response.json()
     assert state == {
         "jobs": [],
-        "defaults": {"timezone": "Asia/Seoul", "delivery_mode": "inject", "autocompact": 300000},
+        "defaults": {
+            "timezone": "Asia/Seoul",
+            "delivery_mode": "inject",
+            "autocompact": 300000,
+            "content_limit": 1024 * 1024,
+        },
     }
     job = await add(api, chat_id=999, topic_id=99, transport="mx")
     assert job["target"] == {
@@ -106,6 +111,177 @@ async def test_list_create_detail_defaults_and_server_routing(api):
         & listed["jobs"][0].keys()
     )
     api.bot._orch._observers.cron.request_reschedule.assert_called_once()
+
+
+async def test_detail_includes_read_only_content_above_edit_limit(api):
+    await add(api)
+    content = 'load_secrets("BODY_TOKEN")\r\n# Read only.'.ljust(1024 * 1024 + 1)
+    body = api.paths.cron_tasks_dir / "daily/TASK_DESCRIPTION.md"
+    body.write_text(content, encoding="utf-8")
+
+    view = await detail(api)
+
+    assert view["content"] == content
+    assert view["content_size"] == len(content.encode())
+    assert view["content_editable"] is False
+    assert view["sha256"] == definitions.body_sha256(content)
+    assert view["secret_warning"]["keys"] == ["BODY_TOKEN"]
+
+
+async def test_detail_omits_content_above_view_limit(api, monkeypatch):
+    job = await add(api)
+    folder = api.paths.cron_tasks_dir / "daily"
+    size = 8 * 1024 * 1024 + 1
+    body = folder / "TASK_DESCRIPTION.md"
+    with body.open("wb") as stream:
+        stream.write(b'load_secrets("BODY_TOKEN")\n')
+        stream.truncate(size)
+    (folder / "scripts/job.py").write_text('load_secrets("SCRIPT_TOKEN")\n')
+
+    with monkeypatch.context() as patch:
+        forbid_opening_description(patch, body)
+        view = await detail(api)
+
+    assert view["content_size"] == size
+    assert view["content_editable"] is False
+    assert {"content", "sha256"}.isdisjoint(view)
+    assert view["scripts"] == ["job.py"]
+    assert view["secret_warning"]["keys"] == ["SCRIPT_TOKEN"]
+    assert view["secret_warning"]["skipped_files"] == 1
+    assert view["secret_warning"]["skipped_file_reasons"] == {"TASK_DESCRIPTION.md": "too_large"}
+    assert view["title"] == job["title"]
+    assert view["schedule"] == job["schedule"]
+
+
+async def test_detail_scan_uses_snapshot_even_if_oversized_body_shrinks(api, monkeypatch):
+    await add(api)
+    body = api.paths.cron_tasks_dir / "daily/TASK_DESCRIPTION.md"
+    size = 8 * 1024 * 1024 + 1
+    with body.open("wb") as stream:
+        stream.truncate(size)
+    read_description = definitions.read_description
+    reads = []
+
+    def shrink_after_first_read(path, limit):
+        result = read_description(path, limit)
+        if path == body:
+            reads.append(result[0])
+            if len(reads) == 1:
+                body.write_text('load_secrets("BODY_TOKEN")', encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(definitions, "read_description", shrink_after_first_read)
+    view = await detail(api)
+
+    assert view["content_size"] == size
+    assert {"content", "sha256"}.isdisjoint(view)
+    assert view["secret_warning"]["keys"] == []
+    assert view["secret_warning"]["skipped_files"] == 1
+    assert view["secret_warning"]["skipped_file_reasons"] == {"TASK_DESCRIPTION.md": "too_large"}
+    assert reads == [size]
+
+
+async def test_toggle_skips_oversized_description_without_opening_it(api, monkeypatch):
+    await add(api)
+    body = api.paths.cron_tasks_dir / "daily/TASK_DESCRIPTION.md"
+    with body.open("wb") as stream:
+        stream.write(b'load_secrets("BODY_TOKEN")\n')
+        stream.truncate(8 * 1024 * 1024 + 1)
+    (body.parent / "scripts/job.py").write_text('load_secrets("SCRIPT_TOKEN")\n')
+
+    forbid_opening_description(monkeypatch, body)
+    response = await api.client.post(
+        PATH + "/daily/toggle", json={"enabled": False}, headers=headers()
+    )
+
+    assert response.status == 200, await response.text()
+    result = await response.json()
+    assert result["job"]["enabled"] is False
+    assert result["secret_warning"]["keys"] == ["SCRIPT_TOKEN"]
+    assert result["secret_warning"]["skipped_files"] == 1
+    assert result["secret_warning"]["skipped_file_reasons"] == {"TASK_DESCRIPTION.md": "too_large"}
+
+
+def forbid_opening_description(monkeypatch, body):
+    original_open = Path.open
+
+    def open_other_paths(path, *args, **kwargs):
+        assert path != body, "Oversized task description must not be opened"
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_other_paths)
+
+
+@pytest.mark.parametrize("size", [1024 * 1024 + 1, 8 * 1024 * 1024 + 1])
+async def test_update_metadata_preserves_large_content(api, monkeypatch, size):
+    await add(api)
+    body = api.paths.cron_tasks_dir / "daily/TASK_DESCRIPTION.md"
+    original = b'load_secrets("BODY_TOKEN")\n#'.ljust(size)
+    body.write_bytes(original)
+    (body.parent / "scripts/job.py").write_text('load_secrets("SCRIPT_TOKEN")\n')
+
+    with monkeypatch.context() as patch:
+        if size > 8 * 1024 * 1024:
+            forbid_opening_description(patch, body)
+        response = await api.client.put(
+            PATH + "/daily", json={"title": "Updated"}, headers=headers()
+        )
+
+    assert response.status == 200, await response.text()
+    data = await response.json()
+    job = data["job"]
+    assert job["title"] == "Updated"
+    assert job["content_size"] == size
+    assert job["content_editable"] is False
+    if size <= 8 * 1024 * 1024:
+        assert job["content"].encode() == original
+        assert job["sha256"] == definitions.body_sha256(original.decode())
+    else:
+        assert {"content", "sha256"}.isdisjoint(job)
+    for warning in (data["secret_warning"], job["secret_warning"]):
+        if size <= 8 * 1024 * 1024:
+            assert warning["keys"] == ["BODY_TOKEN", "SCRIPT_TOKEN"]
+            assert warning["skipped_files"] == 0
+        else:
+            assert warning["keys"] == ["SCRIPT_TOKEN"]
+            assert warning["skipped_files"] == 1
+            assert warning["skipped_file_reasons"] == {"TASK_DESCRIPTION.md": "too_large"}
+    assert body.read_bytes() == original
+
+
+async def test_update_metadata_reads_and_scans_description_once(api, monkeypatch):
+    content = 'load_secrets("BODY_TOKEN")'
+    await add(api, content=content)
+    read_description = definitions.read_description
+    commands = definitions._commands
+    reads = []
+    scans = []
+
+    def count_reads(path, limit):
+        reads.append(path)
+        return read_description(path, limit)
+
+    def count_scans(source):
+        scans.append(source)
+        return commands(source)
+
+    monkeypatch.setattr(definitions, "read_description", count_reads)
+    monkeypatch.setattr(definitions, "_commands", count_scans)
+    response = await api.client.put(PATH + "/daily", json={"title": "Updated"}, headers=headers())
+
+    assert response.status == 200, await response.text()
+    result = await response.json()
+    assert result["job"]["content"] == content
+    assert result["secret_warning"] == result["job"]["secret_warning"]
+    assert reads == [api.paths.cron_tasks_dir / "daily/TASK_DESCRIPTION.md"]
+    assert scans == [content]
+
+
+async def test_list_advertises_content_edit_limit(api):
+    response = await api.client.get(PATH, headers=headers())
+
+    assert response.status == 200
+    assert (await response.json())["defaults"]["content_limit"] == 1024 * 1024
 
 
 async def test_cron_list_resolves_topic_names_once(api, monkeypatch):
@@ -823,6 +999,38 @@ async def test_escaped_json_accepts_content_at_exact_utf8_limit(api, public_api,
     response = await client.post(path, json=payload(content=content), headers=auth)
     assert response.status == 201, await response.text()
     assert (api.paths.cron_tasks_dir / "daily/TASK_DESCRIPTION.md").read_bytes() == content.encode()
+
+
+async def test_put_enforces_utf8_limit_after_sixfold_json_escaping(api, public_api):
+    await add(api)
+    public, auth = public_api
+    base = definitions.body_sha256(payload()["content"])
+    limit = 1024 * 1024
+    # Separate short lines while escaping each byte as six JSON bytes.
+    content = (chr(0) * 63 + chr(28)) * (limit // 64)
+
+    for client, path, request_headers in [
+        (api.client, PATH, headers()),
+        (public, BROWSER, auth),
+    ]:
+        data = {"content": content, "base_sha256": base}
+        # A successful request larger than six times the edit limit exercises each HTTP cap.
+        assert len(json.dumps(data).encode()) > 6 * limit
+        response = await client.put(path + "/daily", json=data, headers=request_headers)
+        assert response.status == 200, (path, response.status)
+        job = (await response.json())["job"]
+        assert job["content"] == content
+        assert job["content_size"] == limit
+        assert job["content_editable"] is True
+        base = job["sha256"]
+
+        data = {"content": content + "x", "base_sha256": base}
+        response = await client.put(path + "/daily", json=data, headers=request_headers)
+        assert response.status == 413
+        assert (await response.json()) == {
+            "error": "validation",
+            "fields": {"content": "too_large"},
+        }
 
 
 @pytest.mark.skipif(file_lock.fcntl is None, reason="requires flock")

@@ -10,7 +10,7 @@ import shlex
 import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -26,7 +26,7 @@ DEFAULT_INSTRUCTION = (
     "Read through TASK_DESCRIPTION.md and carry it out. Stay focused and complete the task neatly."
 )
 RULE_FILENAMES = ("CLAUDE.md", "AGENTS.md", "GEMINI.md")
-BODY_LIMIT = 256 * 1024
+BODY_LIMIT = 1024 * 1024
 
 
 _MODE_MEANING = {
@@ -325,10 +325,13 @@ def _python(source: str) -> set[str]:
 def _commands(source: str) -> set[str]:  # noqa: C901, PLR0912 -- moved CLI scanner
     names: set[str] = set()
     for line in source.splitlines():
-        try:
-            words = shlex.split(line, comments=True)
-        except ValueError:
-            continue
+        # shlex is quadratic in token length; long lines only get the reference check.
+        words = []
+        if len(line) <= 4096:
+            try:
+                words = shlex.split(line, comments=True)
+            except ValueError:
+                continue
         initial = (
             words[1:] if words and words[0] in {"export", "readonly", "local", "declare"} else words
         )
@@ -358,22 +361,38 @@ def _commands(source: str) -> set[str]:  # noqa: C901, PLR0912 -- moved CLI scan
     return names
 
 
+def read_description(path: Path, limit: int) -> tuple[int, bytes | None]:
+    """Return the byte size and read the description only within the limit."""
+    size = path.stat().st_size
+    if size > limit:
+        return size, None
+    with path.open("rb") as stream:
+        original = stream.read(limit)
+        if len(original) == limit:
+            size = os.fstat(stream.fileno()).st_size
+            if size > limit:
+                return size, None
+    return len(original), original
+
+
 def scan_secrets(  # noqa: C901 -- moved CLI scanner
     folder: Path,
     declared: set[str],
     inventory: set[str] | None,
     *,
     body: str | None = None,
+    body_skip_reason: Literal["too_large", "unreadable"] | None = None,
 ) -> dict[str, object]:
-    """Inspect task/scripts, optionally substituting an unsaved assignment body.
+    """Inspect scripts and an on-disk, proposed, or already read assignment.
 
-    The override lets web clients check a proposed create/edit before saving it.
+    Web callers can supply the description text or the reason it was skipped.
     No inventory values or source excerpts are returned.
     """
     names: set[str] = set()
     indicators: set[str] = set()
-    skipped = 0
-    files = [folder / "TASK_DESCRIPTION.md"]
+    description = folder / "TASK_DESCRIPTION.md"
+    skipped = int(body_skip_reason is not None)
+    files = [description] if body_skip_reason is None else []
     for directory, dirs, children in os.walk(folder / "scripts", followlinks=False):
         skipped += sum(name not in _SKIP and (Path(directory) / name).is_symlink() for name in dirs)
         dirs[:] = [
@@ -383,15 +402,13 @@ def scan_secrets(  # noqa: C901 -- moved CLI scanner
             Path(directory) / name for name in children if Path(name).suffix in _EXTENSIONS
         )
     for file in files:
-        if file.is_symlink() or not file.resolve().is_relative_to(folder):
+        source = body if file == description else None
+        if source is None and (file.is_symlink() or not file.resolve().is_relative_to(folder)):
             skipped += 1
             continue
         try:
-            source = (
-                body
-                if file.name == "TASK_DESCRIPTION.md" and body is not None
-                else file.read_text(encoding="utf-8")
-            )
+            if source is None:
+                source = file.read_text(encoding="utf-8")
             indicators.update(
                 marker for marker in ("load_secrets", "fill_secret") if marker in source
             )
@@ -417,6 +434,8 @@ def scan_secrets(  # noqa: C901 -- moved CLI scanner
         "warning": _WARNING if names or indicators else None,
         "limitations": [_LIMITATION],
     }
+    if body_skip_reason == "too_large":
+        result["skipped_file_reasons"] = {description.name: body_skip_reason}
     if inventory is not None:
         result.update(known=sorted(names & inventory), unknown=sorted(names - inventory))
     return result
@@ -433,7 +452,7 @@ def body_sha256(body: str) -> str:
 
 def _validate_body(body: str) -> None:
     if len(body.encode("utf-8")) > BODY_LIMIT:
-        raise ValueError("Task description exceeds 256 KiB")
+        raise ValueError(f"Task description exceeds {BODY_LIMIT // 1024} KiB")
 
 
 def _validate_job(job: dict[str, Any]) -> None:

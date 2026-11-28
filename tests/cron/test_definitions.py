@@ -207,7 +207,7 @@ def test_update_rolls_back_body_when_json_save_fails(paths, monkeypatch):
 
 def test_body_size_checked_before_changes(paths):
     jobs, tasks = paths
-    with pytest.raises(ValueError, match="256 KiB"):
+    with pytest.raises(ValueError, match="1024 KiB"):
         defs.create_job(
             jobs,
             tasks,
@@ -217,7 +217,7 @@ def test_body_size_checked_before_changes(paths):
         )
     assert not tasks.exists()
     create(paths)
-    with pytest.raises(ValueError, match="256 KiB"):
+    with pytest.raises(ValueError, match="1024 KiB"):
         defs.update_job(jobs, tasks, "daily", {}, body="a" * (defs.BODY_LIMIT + 1))
     assert not (tasks / "daily/.history").exists()
 
@@ -295,6 +295,17 @@ def test_shared_static_checker_names_only(paths):
     assert result["keys"] == ["CUSTOM_NAME", "SERVICE_TOKEN"]
     assert result["requires_secrets"] is True
     assert "SECRETS_LOCKED" in result["warning"]
+
+
+def test_commands_skips_long_lines_but_keeps_variable_references():
+    prefix = "SERVICE_TOKEN="
+    reference = " $CUSTOM_TOKEN"
+    token = "x" * (4096 - len(prefix) - len(reference))
+    quoted = "'" + "ab " * 2000 + "'"
+
+    assert defs._commands(prefix + token + reference) == {"SERVICE_TOKEN", "CUSTOM_TOKEN"}
+    assert defs._commands(prefix + token + "x" + reference) == {"CUSTOM_TOKEN"}
+    assert defs._commands(prefix + quoted + reference) == {"CUSTOM_TOKEN"}
 
 
 def test_body_backup_and_rollback_preserve_original_bytes(paths):

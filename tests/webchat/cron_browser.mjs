@@ -226,6 +226,97 @@ try {
   console.log(JSON.stringify({width,theme,pageerror:0,overflow:false,crud:'passed',archive:'verified',missingFolderDelete:'passed'}));
   await context.close();
  }
+
+ const desktop = await browser.newContext({
+  ignoreHTTPSErrors: true, storageState, viewport: { width: 1440, height: 900 },
+  deviceScaleFactor: 2, colorScheme: 'light',
+ });
+ await desktop.addInitScript(() => localStorage.setItem('dtw-theme', 'light'));
+ const largePage = await desktop.newPage();
+ const largeErrors = [];
+ largePage.on('pageerror', error => largeErrors.push(error.message));
+ await largePage.goto(origin + '/#chat');
+ await largePage.click('#headerCron');
+ await largePage.locator('[data-cron-action=create]').click();
+ const initialTitle = 'Large instruction fixture';
+ const openingLine = 'Read the public weather report.';
+ await largePage.fill('#cronName', initialTitle);
+ await largePage.fill('#cronInstruction', openingLine);
+ await largePage.locator('#cronForm button[type=submit]').click();
+ await largePage.locator('.cron-instruction').waitFor();
+ const [largeJob] = await definitions();
+ assert.equal(largeJob.title, initialTitle);
+ const description = path.join(tasks, largeJob.id, 'TASK_DESCRIPTION.md');
+ const readOnly = `${openingLine}\n# ${'Public weather notes. '.repeat(50000)}`.slice(0, 1024 ** 2 + 1);
+ assert.equal(Buffer.byteLength(readOnly), 1024 ** 2 + 1);
+ await fs.writeFile(description, readOnly);
+ await largePage.click('#cronClose');
+ await largePage.click('#headerCron'); // Desktop selects the first cron automatically.
+
+ const readOnlyText = await largePage.evaluate(async () => (
+  (await import('/static/js/i18n.js')).t('cron.readonly_notice', { size: '1.0 MiB', limit: '1.0 MiB' })
+ ));
+ assert.ok(readOnlyText);
+ const readOnlyNotice = largePage.locator('.cron-detail .cron-limit').filter({ hasText: readOnlyText });
+ await readOnlyNotice.waitFor();
+ assert.equal(await largePage.locator('.cron-detail-title h3').textContent(), initialTitle);
+ assert.equal(await largePage.locator('#cronError').isVisible(), false);
+ assert.equal(await largePage.locator('.cron-instruction').evaluate(el => el.textContent.length), readOnly.length);
+ assert.equal(await largePage.locator('.cron-instruction').evaluate(el => el.textContent.split('\n')[0]), openingLine);
+ await largePage.screenshot({ path: path.join(output, 'large-cron-1440-readonly.png') });
+
+ await largePage.click('[data-cron-action=edit]');
+ await readOnlyNotice.waitFor();
+ assert.equal(await largePage.locator('#cronInstruction').count(), 0);
+ const updatedTitle = 'Large instruction renamed';
+ await largePage.fill('#cronName', updatedTitle);
+ const saved = largePage.waitForResponse(response => response.url().endsWith('/cron/' + largeJob.id) &&
+  response.request().method() === 'PUT');
+ await largePage.locator('#cronForm button[type=submit]').click();
+ const savedResponse = await saved;
+ assert.equal(savedResponse.status(), 200);
+ const savedPayload = savedResponse.request().postDataJSON();
+ assert.equal(savedPayload.title, updatedTitle);
+ assert.equal(Object.hasOwn(savedPayload, 'content'), false);
+ assert.equal(Object.hasOwn(savedPayload, 'base_sha256'), false);
+ await largePage.locator('.cron-detail-title h3').filter({ hasText: updatedTitle }).waitFor();
+ assert.equal((await definitions())[0].title, updatedTitle);
+ assert.equal(await fs.readFile(description, 'utf8'), readOnly);
+
+ const hiddenSize = 8 * 1024 ** 2 + 1;
+ await fs.truncate(description, hiddenSize);
+ await largePage.click('#cronClose');
+ await largePage.click('#headerCron');
+ const hiddenText = await largePage.evaluate(async () => (
+  (await import('/static/js/i18n.js')).t('cron.hidden_notice', { size: '8.0 MiB' })
+ ));
+ assert.ok(hiddenText);
+ const hiddenNotice = largePage.locator('.cron-detail .cron-limit').filter({ hasText: hiddenText });
+ await hiddenNotice.waitFor();
+ assert.equal(await largePage.locator('.cron-instruction').count(), 0);
+ assert.equal(await largePage.locator('#cronError').isVisible(), false);
+ await largePage.screenshot({ path: path.join(output, 'large-cron-1440-hidden.png') });
+ await largePage.click('[data-cron-action=edit]');
+ await hiddenNotice.waitFor();
+ assert.equal(await largePage.locator('#cronInstruction').count(), 0);
+ assert.deepEqual(largeErrors, []);
+ await desktop.close();
+
+ const mobile = await browser.newContext({
+  ignoreHTTPSErrors: true, storageState, viewport: { width: 390, height: 844 },
+  deviceScaleFactor: 2, colorScheme: 'light',
+ });
+ await mobile.addInitScript(() => localStorage.setItem('dtw-theme', 'light'));
+ const mobilePage = await mobile.newPage();
+ await mobilePage.goto(origin + '/#chat');
+ await mobilePage.click('#headerCron');
+ await mobilePage.locator(`[data-cron-id="${largeJob.id}"]`).click();
+ await mobilePage.locator('.cron-detail .cron-limit').filter({ hasText: hiddenText }).waitFor();
+ assert.equal(await mobilePage.locator('#cronError').isVisible(), false);
+ await mobilePage.screenshot({ path: path.join(output, 'large-cron-390-hidden.png') });
+ await mobile.close();
+ const largeInstruction = { desktop: [1440, 900], mobile: [390, 844], readOnly: 'passed', hidden: 'passed', metadataSave: 'passed' };
+ console.log(JSON.stringify(largeInstruction));
  const reference=process.env.DTW_CRON_REFERENCE;
  if(reference){
   const comparisons=[];
@@ -251,7 +342,7 @@ try {
   const rows=comparisons.map(item=>`<section><h2>${item.width} ${item.theme} ${item.state} ${item.region}</h2><div><figure><figcaption>Approved A</figcaption><img src="${item.reference}"></figure><figure><figcaption>Current</figcaption><img src="${item.current}"></figure></div></section>`).join('');
   await fs.writeFile(path.join(output,'comparison.html'),`<!doctype html><meta charset="utf-8"><title>Cron region comparisons</title><style>body{font-family:sans-serif}section>div{display:flex;gap:16px}figure{margin:0;max-width:48%}img{width:100%;height:auto;border:1px solid #aaa}</style>${rows}`);
  }
- await fs.writeFile(path.join(output,'results.json'),JSON.stringify({home,results},null,2));
+ await fs.writeFile(path.join(output,'results.json'),JSON.stringify({home,results,largeInstruction},null,2));
 } catch(error) {console.error(error);throw error;} finally {
  if(browser)await browser.close();
  child.stdin.end();await new Promise(resolve=>{if(child.exitCode!==null)return resolve();child.once('exit',resolve);setTimeout(()=>child.kill('SIGTERM'),5000).unref();});
