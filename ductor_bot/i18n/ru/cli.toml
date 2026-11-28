@@ -33,6 +33,7 @@ onboarding_hint = " Выполни [bold]scripts/onboard.sh[/bold] для пер
 # -- Жизненный цикл -----------------------------------------------------------
 
 [agents]
+update_failed = "[bold red]Не удалось обновить agents.json: {reason}[/bold red]"
 inherited = "наследуется"
 restarts = "[dim](перезапусков: {count})[/dim]"
 title = "[bold]Суб-агенты ({count})[/bold]"

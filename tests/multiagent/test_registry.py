@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import runpy
+import stat
+import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
@@ -15,6 +18,7 @@ import pytest
 import questionary
 
 from ductor_bot.__main__ import main as cli_main
+from ductor_bot.cli_commands import agents as agents_cli
 from ductor_bot.infra import file_lock
 from ductor_bot.multiagent import registry
 from ductor_bot.multiagent.registry import AgentRegistry
@@ -167,3 +171,125 @@ def test_create_script_keeps_registry_it_cannot_read(agents_path, monkeypatch):
     assert exit_info.value.code == 1
     assert read_text(agents_path) == original
     assert not (agents_path.parent / "agents" / "sub3").exists()
+
+
+@pytest.mark.parametrize(
+    "original",
+    [
+        '[{"name":"sub1"},{"name":"sub2"',
+        '{"name":"sub1"}',
+        pytest.param("[" * 100_000 + "]" * 100_000, id="deeply-nested"),
+    ],
+)
+def test_create_script_keeps_invalid_registry(agents_path, monkeypatch, capsys, original):
+    agents_path.write_text(original)
+    monkeypatch.setenv("DUCTOR_HOME", str(agents_path.parent))
+    script = (
+        Path(__file__).resolve().parents[2]
+        / "ductor_bot/_home_defaults/workspace/tools/agent_tools/create_agent.py"
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(script), "--name", "sub3", "--transport", "headless", "--persona", "New persona"],
+    )
+    with pytest.raises(SystemExit) as exit_info:
+        runpy.run_path(str(script), run_name="__main__")
+
+    assert exit_info.value.code == 1
+    assert capsys.readouterr().err == "Error: Failed to read agents.json\n"
+    assert agents_path.read_text() == original
+    assert not (agents_path.parent / "agents" / "sub3").exists()
+
+
+@pytest.mark.parametrize(
+    "original",
+    [
+        '[{"name":"sub1"},{"name":"sub2"',
+        pytest.param("[" * 100_000 + "]" * 100_000, id="deeply-nested"),
+    ],
+)
+def test_cli_add_keeps_invalid_registry(agents_path, monkeypatch, capsys, original):
+    agents_path.write_text(original)
+    monkeypatch.setenv("DUCTOR_HOME", str(agents_path.parent))
+    monkeypatch.setattr(sys, "argv", ["ductor", "agents", "add", "sub3"])
+    answers = iter(["test-token", "1", "", "sonnet"])
+    monkeypatch.setattr(questionary, "text", Mock(return_value=Mock(ask=lambda: next(answers))))
+    monkeypatch.setattr(questionary, "select", Mock(return_value=Mock(ask=lambda: "claude")))
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli_main()
+
+    assert exit_info.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.out.strip().startswith("Could not update agents.json:")
+    assert captured.err == ""
+    assert agents_path.read_text() == original
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO unavailable")
+@pytest.mark.parametrize("command", ["create_script", "cli_add"])
+def test_registry_update_rejects_fifo(agents_path, command):
+    os.mkfifo(agents_path)
+    if command == "create_script":
+        script = (
+            Path(__file__).resolve().parents[2]
+            / "ductor_bot/_home_defaults/workspace/tools/agent_tools/create_agent.py"
+        )
+        args = [str(script), "--name", "sub3", "--transport", "headless"]
+    else:
+        args = [
+            "-c",
+            """
+import runpy
+import sys
+from unittest.mock import Mock
+
+import questionary
+
+answers = iter(["test-token", "1", "", "sonnet"])
+questionary.text = Mock(return_value=Mock(ask=lambda: next(answers)))
+questionary.select = Mock(return_value=Mock(ask=lambda: "claude"))
+sys.argv = ["ductor", "agents", "add", "sub3"]
+runpy.run_module("ductor_bot", run_name="__main__")
+""",
+        ]
+
+    result = subprocess.run(
+        [sys.executable, *args],
+        env={**os.environ, "DUCTOR_HOME": str(agents_path.parent)},
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    if command == "create_script":
+        assert result.stderr == "Error: Failed to read agents.json\n"
+    else:
+        assert result.stdout.strip().startswith("Could not update agents.json:")
+        assert result.stderr == ""
+    assert stat.S_ISFIFO(agents_path.stat().st_mode)
+
+
+@pytest.mark.skipif(file_lock.fcntl is None, reason="flock unavailable")
+def test_cli_remove_reports_lock_timeout(agents_path, monkeypatch, capsys):
+    original = '[{"name":"sub1"}]'
+    agents_path.write_text(original)
+    monkeypatch.setenv("DUCTOR_HOME", str(agents_path.parent))
+    monkeypatch.setattr(sys, "argv", ["ductor", "agents", "remove", "sub1"])
+    monkeypatch.setattr(questionary, "confirm", Mock(return_value=Mock(ask=lambda: True)))
+    lock = file_lock.exclusive_file_lock
+    monkeypatch.setattr(agents_cli, "exclusive_file_lock", partial(lock, timeout=0))
+
+    with lock(agents_path), pytest.raises(SystemExit) as exit_info:
+        cli_main()
+
+    assert exit_info.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out.strip() == (
+        "Could not update agents.json: agents.json.lock is locked by another writer"
+    )
+    assert agents_path.read_text() == original

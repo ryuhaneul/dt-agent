@@ -33,6 +33,7 @@ onboarding_hint = " Run [bold]scripts/onboard.sh[/bold] to reconfigure."
 # -- Agent management ----------------------------------------------------------
 
 [agents]
+update_failed = "[bold red]Could not update agents.json: {reason}[/bold red]"
 inherited = "inherited"
 restarts = "[dim](restarts: {count})[/dim]"
 title = "[bold]Sub-Agents ({count})[/bold]"

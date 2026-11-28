@@ -33,6 +33,7 @@ onboarding_hint = " Ejecuta [bold]scripts/onboard.sh[/bold] para reconfigurar."
 # -- Ciclo de vida -------------------------------------------------------------
 
 [agents]
+update_failed = "[bold red]No se pudo actualizar agents.json: {reason}[/bold red]"
 inherited = "heredado"
 restarts = "[dim](reinicios: {count})[/dim]"
 title = "[bold]Sub-agentes ({count})[/bold]"

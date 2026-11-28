@@ -33,6 +33,7 @@ onboarding_hint = " 재구성하려면 [bold]scripts/onboard.sh[/bold]을 실행
 # -- Agent management ----------------------------------------------------------
 
 [agents]
+update_failed = "[bold red]agents.json을 업데이트하지 못했어요: {reason}[/bold red]"
 inherited = "상속"
 restarts = "[dim](재시작: {count}회)[/dim]"
 title = "[bold]서브 에이전트 ({count})[/bold]"

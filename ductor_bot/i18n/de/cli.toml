@@ -33,6 +33,7 @@ onboarding_hint = " Führe [bold]scripts/onboard.sh[/bold] aus, um neu zu konfig
 # -- Agent management ----------------------------------------------------------
 
 [agents]
+update_failed = "[bold red]agents.json konnte nicht aktualisiert werden: {reason}[/bold red]"
 inherited = "übernommen"
 restarts = "[dim](Neustarts: {count})[/dim]"
 title = "[bold]Sub-Agents ({count})[/bold]"
