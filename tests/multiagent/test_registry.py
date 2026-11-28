@@ -15,7 +15,8 @@ import pytest
 import questionary
 
 from ductor_bot.__main__ import main as cli_main
-from ductor_bot.infra import file_lock
+from ductor_bot.cli_commands import agents as agents_cli
+from ductor_bot.infra import file_lock, json_store
 from ductor_bot.multiagent import registry
 from ductor_bot.multiagent.registry import AgentRegistry
 
@@ -167,3 +168,109 @@ def test_create_script_keeps_registry_it_cannot_read(agents_path, monkeypatch):
     assert exit_info.value.code == 1
     assert read_text(agents_path) == original
     assert not (agents_path.parent / "agents" / "sub3").exists()
+
+
+@pytest.mark.parametrize("original", ['[{"name":"sub1"},{"name":"sub2"', '{"name":"sub1"}'])
+def test_create_script_keeps_invalid_registry(agents_path, monkeypatch, capsys, original):
+    agents_path.write_text(original)
+    monkeypatch.setenv("DUCTOR_HOME", str(agents_path.parent))
+    script = (
+        Path(__file__).resolve().parents[2]
+        / "ductor_bot/_home_defaults/workspace/tools/agent_tools/create_agent.py"
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(script), "--name", "sub3", "--transport", "headless", "--persona", "New persona"],
+    )
+    with pytest.raises(SystemExit) as exit_info:
+        runpy.run_path(str(script), run_name="__main__")
+
+    assert exit_info.value.code == 1
+    assert capsys.readouterr().err == "Error: Failed to read agents.json\n"
+    assert agents_path.read_text() == original
+    assert not (agents_path.parent / "agents" / "sub3").exists()
+
+
+def test_cli_add_keeps_invalid_registry(agents_path, monkeypatch, capsys):
+    original = '[{"name":"sub1"},{"name":"sub2"'
+    agents_path.write_text(original)
+    monkeypatch.setenv("DUCTOR_HOME", str(agents_path.parent))
+    monkeypatch.setattr(sys, "argv", ["ductor", "agents", "add", "sub3"])
+    answers = iter(["test-token", "1", "", "sonnet"])
+    monkeypatch.setattr(questionary, "text", Mock(return_value=Mock(ask=lambda: next(answers))))
+    monkeypatch.setattr(questionary, "select", Mock(return_value=Mock(ask=lambda: "claude")))
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli_main()
+
+    assert exit_info.value.code == 1
+    assert "Could not update agents.json" in capsys.readouterr().out
+    assert agents_path.read_text() == original
+
+
+@pytest.mark.skipif(file_lock.fcntl is None, reason="flock unavailable")
+def test_cli_remove_reports_lock_timeout(agents_path, monkeypatch, capsys):
+    original = '[{"name":"sub1"}]'
+    agents_path.write_text(original)
+    monkeypatch.setenv("DUCTOR_HOME", str(agents_path.parent))
+    monkeypatch.setattr(sys, "argv", ["ductor", "agents", "remove", "sub1"])
+    monkeypatch.setattr(questionary, "confirm", Mock(return_value=Mock(ask=lambda: True)))
+    lock = file_lock.exclusive_file_lock
+    monkeypatch.setattr(agents_cli, "exclusive_file_lock", partial(lock, timeout=0))
+
+    with lock(agents_path), pytest.raises(SystemExit) as exit_info:
+        cli_main()
+
+    assert exit_info.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out.strip() == (
+        "Could not update agents.json: agents.json.lock is locked by another writer"
+    )
+    assert agents_path.read_text() == original
+
+
+def test_create_script_rolls_back_only_new_persona_on_save_failure(
+    agents_path, monkeypatch, capsys
+):
+    original = '[{"name":"sub1"}]'
+    agents_path.write_text(original)
+    monkeypatch.setenv("DUCTOR_HOME", str(agents_path.parent))
+    workspace = agents_path.parent / "agents" / "sub3" / "workspace"
+    workspace.mkdir(parents=True)
+    behavior = workspace / "BEHAVIOR.md"
+    behavior.write_text("Existing behavior\n")
+    script = (
+        Path(__file__).resolve().parents[2]
+        / "ductor_bot/_home_defaults/workspace/tools/agent_tools/create_agent.py"
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(script),
+            "--name",
+            "sub3",
+            "--transport",
+            "headless",
+            "--persona",
+            "New persona",
+            "--behavior",
+            "New behavior",
+        ],
+    )
+
+    def fail_save(path, data):
+        assert (workspace / "PERSONA.md").read_text() == "New persona\n"
+        raise OSError("simulated save failure")
+
+    monkeypatch.setattr(json_store, "atomic_json_save", fail_save)
+    with pytest.raises(SystemExit) as exit_info:
+        runpy.run_path(str(script), run_name="__main__")
+
+    assert exit_info.value.code == 1
+    assert capsys.readouterr().err == "Error: simulated save failure\n"
+    assert agents_path.read_text() == original
+    assert behavior.read_text() == "Existing behavior\n"
+    assert not (workspace / "PERSONA.md").exists()

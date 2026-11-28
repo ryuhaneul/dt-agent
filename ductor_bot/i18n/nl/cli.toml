@@ -33,6 +33,7 @@ onboarding_hint = " Voer [bold]scripts/onboard.sh[/bold] uit om opnieuw te confi
 # -- Levenscyclus -----------------------------------------------------------------
 
 [agents]
+update_failed = "[bold red]Kon agents.json niet bijwerken: {reason}[/bold red]"
 inherited = "overgenomen"
 restarts = "[dim](herstarts: {count})[/dim]"
 title = "[bold]Sub-agents ({count})[/bold]"

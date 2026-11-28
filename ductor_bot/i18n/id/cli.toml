@@ -33,6 +33,7 @@ onboarding_hint = " Jalankan [bold]scripts/onboard.sh[/bold] untuk mengonfiguras
 # -- Agent management ----------------------------------------------------------
 
 [agents]
+update_failed = "[bold red]Gagal memperbarui agents.json: {reason}[/bold red]"
 inherited = "diwariskan"
 restarts = "[dim](restart: {count})[/dim]"
 title = "[bold]Sub-agen ({count})[/bold]"

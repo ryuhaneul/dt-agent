@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+from typing import NoReturn
 
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -76,6 +79,24 @@ def load_agents_registry(paths: DuctorPaths) -> list[dict[str, object]]:
     except (json.JSONDecodeError, OSError):
         return []
     return raw if isinstance(raw, list) else []
+
+
+def _load_agents_for_update(agents_path: Path) -> list[dict[str, object]]:
+    try:
+        raw = json.loads(agents_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        if agents_path.is_symlink():
+            raise
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("agents.json must be a JSON array")  # noqa: TRY004 -- malformed JSON
+    return raw
+
+
+def _exit_registry_update_error(error: Exception) -> NoReturn:
+    reason = escape(" ".join(str(error).splitlines()))
+    _console.print(t_rich("agents.update_failed", reason=reason), soft_wrap=True)
+    raise SystemExit(1) from None
 
 
 def fetch_live_health() -> dict[str, dict[str, object]]:
@@ -271,12 +292,15 @@ def agents_add(rest: list[str]) -> None:
         "model": model.strip(),
     }
     agents_path = paths.ductor_home / "agents.json"
-    with exclusive_file_lock(agents_path):
-        agents = load_agents_registry(paths)
-        duplicate = any(str(a.get("name", "")).lower() == name for a in agents)
-        if not duplicate:
-            agents.append(new_agent)
-            atomic_json_save(agents_path, agents)
+    try:
+        with exclusive_file_lock(agents_path):
+            agents = _load_agents_for_update(agents_path)
+            duplicate = any(str(a.get("name", "")).lower() == name for a in agents)
+            if not duplicate:
+                agents.append(new_agent)
+                atomic_json_save(agents_path, agents)
+    except (OSError, ValueError) as exc:
+        _exit_registry_update_error(exc)
 
     if duplicate:
         _console.print(t_rich("agents.add.exists", name=name))
@@ -311,12 +335,15 @@ def agents_remove(rest: list[str]) -> None:
         return
 
     agents_path = paths.ductor_home / "agents.json"
-    with exclusive_file_lock(agents_path):
-        agents = load_agents_registry(paths)
-        remaining = [a for a in agents if str(a.get("name", "")).lower() != name]
-        removed = len(remaining) != len(agents)
-        if removed:
-            atomic_json_save(agents_path, remaining)
+    try:
+        with exclusive_file_lock(agents_path):
+            agents = _load_agents_for_update(agents_path)
+            remaining = [a for a in agents if str(a.get("name", "")).lower() != name]
+            removed = len(remaining) != len(agents)
+            if removed:
+                atomic_json_save(agents_path, remaining)
+    except (OSError, ValueError) as exc:
+        _exit_registry_update_error(exc)
 
     if not removed:
         _console.print(t_rich("agents.remove.not_found", name=name))
