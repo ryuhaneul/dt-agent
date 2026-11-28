@@ -207,7 +207,7 @@ def test_update_rolls_back_body_when_json_save_fails(paths, monkeypatch):
 
 def test_body_size_checked_before_changes(paths):
     jobs, tasks = paths
-    with pytest.raises(ValueError, match="256 KiB"):
+    with pytest.raises(ValueError, match="1024 KiB"):
         defs.create_job(
             jobs,
             tasks,
@@ -217,7 +217,7 @@ def test_body_size_checked_before_changes(paths):
         )
     assert not tasks.exists()
     create(paths)
-    with pytest.raises(ValueError, match="256 KiB"):
+    with pytest.raises(ValueError, match="1024 KiB"):
         defs.update_job(jobs, tasks, "daily", {}, body="a" * (defs.BODY_LIMIT + 1))
     assert not (tasks / "daily/.history").exists()
 

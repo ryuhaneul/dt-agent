@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 _PREFIX = "/webchat/v1/topics/{tid}/cron"
 _EDITABLE = {"title", "schedule", "timezone", "delivery_mode", "autocompact", "enabled"}
 _ROUTING = {"chat_id", "topic_id", "transport"}
+VIEW_LIMIT = 8 * 1024 * 1024
 
 
 class _InvalidError(ValueError):
@@ -131,10 +132,14 @@ def _folder(tasks: Path, job: dict[str, Any]) -> Path:
 
 def _detail(tasks: Path, job: dict[str, Any], inventory: set[str] | None) -> dict[str, Any]:
     folder = _folder(tasks, job)
-    with (folder / "TASK_DESCRIPTION.md").open("rb") as stream:
-        original = stream.read(definitions.BODY_LIMIT + 1)
-    if len(original) > definitions.BODY_LIMIT:
-        raise _InvalidError("content", "too_large", 413)
+    size, original = definitions.read_description(folder / "TASK_DESCRIPTION.md", VIEW_LIMIT)
+    detail: dict[str, Any] = {
+        "content_size": size,
+        "content_editable": size <= definitions.BODY_LIMIT,
+    }
+    content = original.decode("utf-8") if original is not None else None
+    if original is not None:
+        detail.update(content=content, sha256=hashlib.sha256(original).hexdigest())
     scripts: list[str] = []
     walk = (
         () if (folder / "scripts").is_symlink() else os.walk(folder / "scripts", followlinks=False)
@@ -146,12 +151,15 @@ def _detail(tasks: Path, job: dict[str, Any], inventory: set[str] | None) -> dic
             for name in files
             if not (Path(directory) / name).is_symlink()
         )
-    return {
-        "content": original.decode("utf-8"),
-        "sha256": hashlib.sha256(original).hexdigest(),
-        "scripts": sorted(scripts),
-        "secret_warning": definitions.scan_secrets(folder, set(), inventory),
-    }
+    detail["scripts"] = sorted(scripts)
+    detail["secret_warning"] = definitions.scan_secrets(
+        folder,
+        set(),
+        inventory,
+        body=content.replace("\r\n", "\n").replace("\r", "\n") if content is not None else None,
+        body_limit=VIEW_LIMIT,
+    )
+    return detail
 
 
 def _stored_schedule_summary(schedule: str) -> str | None:
@@ -287,7 +295,12 @@ class _CronAPI:
         paths = self.bot._orch.paths
         folder = _folder(paths.cron_tasks_dir, job)
         warning = await asyncio.to_thread(
-            definitions.scan_secrets, folder, set(), await self.inventory(), body=content
+            definitions.scan_secrets,
+            folder,
+            set(),
+            await self.inventory(),
+            body=content,
+            body_limit=VIEW_LIMIT,
         )
         saved = await complete_write(
             definitions.update_job,
@@ -338,7 +351,10 @@ class _CronAPI:
                 return _response(
                     {
                         "jobs": [await self.metadata(job, topic_names) for job in jobs],
-                        "defaults": await self.defaults(key),
+                        "defaults": {
+                            **await self.defaults(key),
+                            "content_limit": definitions.BODY_LIMIT,
+                        },
                     }
                 )
             job = _job(jobs, request.match_info["id"])
@@ -380,8 +396,8 @@ class _CronAPI:
         if tid == "unknown":
             return _response({"error": "read_only"}, 409)
         try:
-            # A 256 KiB UTF-8 body can occupy six times as much escaped JSON.
-            request = request.clone(client_max_size=2 * 1024 * 1024)
+            # A UTF-8 body can occupy six times as much escaped JSON.
+            request = request.clone(client_max_size=8 * 1024 * 1024)
             data = await _body(request)
             async with self.topics.gate(tid):
                 if tid in self.turns.blocked or await self.topics.lookup(tid) is None:

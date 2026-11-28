@@ -49,13 +49,14 @@ class BridgeClient:
             method == "POST"
             and re.fullmatch(r"/cli-login/slots/[^/]+/(?:logout|disconnect)", resource) is not None
         )
+        cron = re.fullmatch(r"/topics/[^/]+/cron(?:/[^/]+(?:/toggle)?)?", resource)
         upload = re.fullmatch(r"/topics/[^/]+/uploads(?:/[^/]+(?:/complete)?)?", resource)
         timeout = (
             aiohttp.ClientTimeout(total=120, sock_connect=5, sock_read=30)
             if upload
             else (
                 aiohttp.ClientTimeout(total=45)
-                if topic_mutation or abort or history_read or slot_auth_change
+                if topic_mutation or abort or history_read or slot_auth_change or cron
                 else self._client.timeout
             )
         )

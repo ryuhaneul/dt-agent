@@ -26,7 +26,7 @@ DEFAULT_INSTRUCTION = (
     "Read through TASK_DESCRIPTION.md and carry it out. Stay focused and complete the task neatly."
 )
 RULE_FILENAMES = ("CLAUDE.md", "AGENTS.md", "GEMINI.md")
-BODY_LIMIT = 256 * 1024
+BODY_LIMIT = 1024 * 1024
 
 
 _MODE_MEANING = {
@@ -358,21 +358,38 @@ def _commands(source: str) -> set[str]:  # noqa: C901, PLR0912 -- moved CLI scan
     return names
 
 
-def scan_secrets(  # noqa: C901 -- moved CLI scanner
+def read_description(path: Path, limit: int) -> tuple[int, bytes | None]:
+    """Return the byte size and read the description only within the limit."""
+    size = path.stat().st_size
+    if size > limit:
+        return size, None
+    with path.open("rb") as stream:
+        original = stream.read(limit)
+        if len(original) == limit:
+            size = os.fstat(stream.fileno()).st_size
+            if size > limit:
+                return size, None
+    return len(original), original
+
+
+def scan_secrets(  # noqa: C901, PLR0912 -- moved CLI scanner
     folder: Path,
     declared: set[str],
     inventory: set[str] | None,
     *,
     body: str | None = None,
+    body_limit: int | None = None,
 ) -> dict[str, object]:
     """Inspect task/scripts, optionally substituting an unsaved assignment body.
 
     The override lets web clients check a proposed create/edit before saving it.
+    A byte limit can be applied to the stored description alone.
     No inventory values or source excerpts are returned.
     """
     names: set[str] = set()
     indicators: set[str] = set()
     skipped = 0
+    skipped_file_reasons: dict[str, str] = {}
     files = [folder / "TASK_DESCRIPTION.md"]
     for directory, dirs, children in os.walk(folder / "scripts", followlinks=False):
         skipped += sum(name not in _SKIP and (Path(directory) / name).is_symlink() for name in dirs)
@@ -387,11 +404,18 @@ def scan_secrets(  # noqa: C901 -- moved CLI scanner
             skipped += 1
             continue
         try:
-            source = (
-                body
-                if file.name == "TASK_DESCRIPTION.md" and body is not None
-                else file.read_text(encoding="utf-8")
-            )
+            is_description = file.name == "TASK_DESCRIPTION.md"
+            if is_description and body is not None:
+                source = body
+            elif is_description and body_limit is not None:
+                _, description = read_description(file, body_limit)
+                if description is None:
+                    skipped += 1
+                    skipped_file_reasons[file.name] = "too_large"
+                    continue
+                source = description.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+            else:
+                source = file.read_text(encoding="utf-8")
             indicators.update(
                 marker for marker in ("load_secrets", "fill_secret") if marker in source
             )
@@ -417,6 +441,8 @@ def scan_secrets(  # noqa: C901 -- moved CLI scanner
         "warning": _WARNING if names or indicators else None,
         "limitations": [_LIMITATION],
     }
+    if skipped_file_reasons:
+        result["skipped_file_reasons"] = skipped_file_reasons
     if inventory is not None:
         result.update(known=sorted(names & inventory), unknown=sorted(names - inventory))
     return result
@@ -433,7 +459,7 @@ def body_sha256(body: str) -> str:
 
 def _validate_body(body: str) -> None:
     if len(body.encode("utf-8")) > BODY_LIMIT:
-        raise ValueError("Task description exceeds 256 KiB")
+        raise ValueError(f"Task description exceeds {BODY_LIMIT // 1024} KiB")
 
 
 def _validate_job(job: dict[str, Any]) -> None:
