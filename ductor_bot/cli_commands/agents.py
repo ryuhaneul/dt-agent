@@ -10,6 +10,8 @@ from rich.table import Table
 
 from ductor_bot.home import require_main_home
 from ductor_bot.i18n import t_rich
+from ductor_bot.infra.file_lock import exclusive_file_lock
+from ductor_bot.infra.json_store import atomic_json_save
 from ductor_bot.text.response_format import show_crash_error, show_uptime
 from ductor_bot.workspace.paths import DuctorPaths, resolve_paths
 
@@ -268,15 +270,19 @@ def agents_add(rest: list[str]) -> None:
         "provider": provider,
         "model": model.strip(),
     }
-    agents.append(new_agent)
-
-    from ductor_bot.infra.json_store import atomic_json_save
-
     agents_path = paths.ductor_home / "agents.json"
-    atomic_json_save(agents_path, agents)
+    with exclusive_file_lock(agents_path):
+        agents = load_agents_registry(paths)
+        duplicate = any(str(a.get("name", "")).lower() == name for a in agents)
+        if not duplicate:
+            agents.append(new_agent)
+            atomic_json_save(agents_path, agents)
 
-    _console.print(t_rich("agents.add.done", name=name))
-    _console.print(t_rich("agents.add.auto_start"))
+    if duplicate:
+        _console.print(t_rich("agents.add.exists", name=name))
+    else:
+        _console.print(t_rich("agents.add.done", name=name))
+        _console.print(t_rich("agents.add.auto_start"))
 
 
 def agents_remove(rest: list[str]) -> None:
@@ -304,11 +310,17 @@ def agents_remove(rest: list[str]) -> None:
         _console.print(t_rich("agents.add.cancelled"))
         return
 
-    from ductor_bot.infra.json_store import atomic_json_save
-
-    remaining = [a for a in agents if str(a.get("name", "")).lower() != name]
     agents_path = paths.ductor_home / "agents.json"
-    atomic_json_save(agents_path, remaining)
+    with exclusive_file_lock(agents_path):
+        agents = load_agents_registry(paths)
+        remaining = [a for a in agents if str(a.get("name", "")).lower() != name]
+        removed = len(remaining) != len(agents)
+        if removed:
+            atomic_json_save(agents_path, remaining)
+
+    if not removed:
+        _console.print(t_rich("agents.remove.not_found", name=name))
+        return
     _console.print(t_rich("agents.remove.done", name=name))
     _console.print(t_rich("agents.remove.data_hint", path=paths.ductor_home / "agents" / name))
 

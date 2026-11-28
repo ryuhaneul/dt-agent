@@ -16,6 +16,9 @@ import sys
 from pathlib import Path
 from collections.abc import Callable
 
+from ductor_bot.infra.file_lock import exclusive_file_lock
+from ductor_bot.infra.json_store import atomic_json_save
+
 
 def _agents_path() -> Path:
     """Resolve agents.json path (always in main agent home).
@@ -60,22 +63,28 @@ def main() -> None:
         sys.exit(1)
 
     path = _agents_path()
-    if not path.is_file():
-        print(f"Error: No agents.json found at {path}", file=sys.stderr)
-        sys.exit(1)
-
     try:
-        agents = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        print("Error: Failed to read agents.json", file=sys.stderr)
+        with exclusive_file_lock(path):
+            if not path.is_file():
+                print(f"Error: No agents.json found at {path}", file=sys.stderr)
+                sys.exit(1)
+
+            try:
+                agents = json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                print("Error: Failed to read agents.json", file=sys.stderr)
+                sys.exit(1)
+
+            remaining = [a for a in agents if a.get("name") != name]
+            if len(remaining) == len(agents):
+                print(f"Error: Agent '{name}' not found.", file=sys.stderr)
+                sys.exit(1)
+
+            atomic_json_save(path, remaining)
+    except OSError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    remaining = [a for a in agents if a.get("name") != name]
-    if len(remaining) == len(agents):
-        print(f"Error: Agent '{name}' not found.", file=sys.stderr)
-        sys.exit(1)
-
-    path.write_text(json.dumps(remaining, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(f"Agent '{name}' removed from registry.")
     print("The agent will stop automatically within a few seconds.")
     print(f"Note: The workspace at agents/{name}/ is preserved.")
