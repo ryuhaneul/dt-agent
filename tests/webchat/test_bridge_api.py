@@ -4055,7 +4055,10 @@ async def cli_bridge(bridge, tmp_path, monkeypatch):
             "print('https://fake.invalid/login?secret=terminal-output-canary',flush=True)\n"
             "print('Paste code here if prompted >',flush=True)\n"
             "data=os.read(0,4096)\n"
-            "Path(os.environ['FAKE_INPUT']).write_bytes(data)\n"
+            "target = Path(os.environ['FAKE_INPUT'])\n"
+            "staged = target.with_suffix('.tmp')\n"
+            "staged.write_bytes(data)\n"
+            "staged.replace(target)\n"
             "while True: time.sleep(.05)\n"
         )
         executable.chmod(0o700)

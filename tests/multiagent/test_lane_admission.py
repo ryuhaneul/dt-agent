@@ -385,12 +385,46 @@ async def test_execution_limit_starts_at_admission(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(bus_module, "_ASYNC_TIMEOUT", 0.25)
-    bus, rec, _, results = _make(tmp_path)
-    rec.delay = 0.15
+    bus, rec, orchs, results = _make(tmp_path)
+    first, second = rec.gate("1"), rec.gate("2")
+    started: asyncio.Queue[None] = asyncio.Queue()
+
+    async def execute(request):
+        started.put_nowait(None)
+        return await rec.execute(request)
+
+    monkeypatch.setattr(orchs["worker"]._cli_service, "execute", execute)
+    loop = asyncio.get_running_loop()
+    real_time = loop.time
+    accepted_at = now = real_time()
+    watchdog = now + 5
+    # Freeze the clock for the test phases, with a real-time escape for stalled tests.
+    monkeypatch.setattr(loop, "time", lambda: now + max(0.0, real_time() - watchdog))
+
     _send(bus, "1", lane="x")
-    _send(bus, "2", lane="x")  # waits 0.15 s, then runs 0.15 s: 0.3 s in total > 0.25 s
-    await _all_done(bus)
-    assert [r.success for r in results] == [True, True]
+    queued = _send(bus, "2", lane="x")
+    try:
+        await asyncio.wait_for(started.get(), 5)
+        assert rec.events == ["start:1"]
+        assert bus.admission_info(queued) == (True, 1)
+
+        now = accepted_at + 0.15
+        first.set()
+        await asyncio.wait_for(started.get(), 5)
+        assert rec.events == ["start:1", "end:1", "start:2"]
+
+        now = accepted_at + 0.30
+        # Let any execution deadline that predates this clock tick fire before release.
+        clock_advanced = asyncio.Event()
+        loop.call_at(now, clock_advanced.set)
+        await clock_advanced.wait()
+        second.set()
+        await _all_done(bus)
+        assert [r.success for r in results] == [True, True]
+    finally:
+        first.set()
+        second.set()
+        await _all_done(bus)
 
 
 async def test_queue_wait_limit_gives_a_distinct_result_with_the_session_name(

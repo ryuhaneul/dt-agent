@@ -1162,6 +1162,27 @@ if trigger.exists():
 
     loop = asyncio.get_running_loop()
     reader = asyncio.create_task(consume())
+    timeout_ready = loop.create_future()
+    stderr_waiting = asyncio.Event()
+    real_timeout = asyncio.timeout
+    real_shield = asyncio.shield
+
+    def controlled_timeout(seconds):
+        if asyncio.current_task() is reader and seconds == 1:
+            timer = real_timeout(None)
+            timeout_ready.set_result(timer)
+            return timer
+        return real_timeout(seconds)
+
+    def observe_stderr_wait(future):
+        if asyncio.current_task() is reader:
+            stderr_waiting.set()
+        return real_shield(future)
+
+    if mode == "managed-timeout" and sent_result:
+        monkeypatch.setattr(asyncio, "timeout", controlled_timeout)
+        monkeypatch.setattr(asyncio, "shield", observe_stderr_wait)
+
     route = f"{_PREFIX}/cli-login/slots/{slot}"
     try:
         await asyncio.wait_for(initialized.wait(), 5)
@@ -1183,6 +1204,11 @@ if trigger.exists():
             with pytest.raises(asyncio.CancelledError):
                 await reader
         else:
+            if mode == "managed-timeout" and sent_result:
+                timer = await asyncio.wait_for(timeout_ready, 5)
+                await asyncio.wait_for(stderr_waiting.wait(), 5)
+                timer.reschedule(loop.time())
+                deadline = loop.time() + 1.25
             done, _ = await asyncio.wait({reader}, timeout=max(0, deadline - loop.time()))
             assert reader in done, "timeout waited for a detached writer"
             result = (await reader)[-1]
