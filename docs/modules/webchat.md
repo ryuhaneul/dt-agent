@@ -382,16 +382,21 @@ changes. Choose global inheritance, the provider default, off, or 100k–1M toke
 a blank token input uses 500k. Existing provider, model and effort overrides remain
 unchanged when editing a job.
 
-**Edit cron** changes the instruction, schedule, timezone, delivery mode and
-autocompact. The instruction is limited to 256 KiB. A concurrent instruction edit
-returns 409: reload the job before saving again. Successful or rolled-back body
-updates retain the ten most recent instruction backups in the task's `.history/`.
+**Edit cron** changes the name, instruction, schedule, timezone, delivery mode
+and autocompact. You can save instructions up to 1 MiB and read instructions up to
+8 MiB. Above the edit limit, the instruction becomes read-only. Above the viewing
+limit, the detail still shows job settings and script names. You can edit the
+other job settings in both cases. If a concurrent instruction edit returns 409,
+reload the job before saving again. Successful or rolled-back body updates retain
+the ten most recent instruction backups in the task's `.history/`.
 The list switch enables or disables scheduling. **Delete** asks for confirmation,
 moves the task folder into `cron_tasks/.archive/<id>-<timestamp>`, then removes the
 registry entry. If the registry write fails, the folder is restored.
 
 Creation, editing and detail responses include a static secret-use check of the
-instruction and scripts. A warning lists key names only and does not block saving.
+instruction and scripts. The web detail and edits to job settings skip instructions
+above 8 MiB and still check scripts. A warning lists key names only and does not
+block saving.
 Secret-dependent runs can fail while an encrypted secret store is locked; unlock
 it before execution. Static checks can miss dynamic names, imports and external
 commands, and comments can produce false positives. No warning does not guarantee

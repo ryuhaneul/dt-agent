@@ -3131,7 +3131,13 @@ def test_cron_modal_and_header_contract(markup):
 
 def test_cron_locale_keys_and_placeholders_match():
     reference = {key: value for key, value in load_web_strings("en").items() if key.startswith("cron.")}
-    assert reference
+    expected_placeholders = {
+        "cron.too_large": {"limit"},
+        "cron.readonly_notice": {"size", "limit"},
+        "cron.hidden_notice": {"size"},
+    }
+    for key, placeholders in expected_placeholders.items():
+        assert set(re.findall(r"\{(\w+)\}", reference[key])) == placeholders
     for language in ("de", "es", "fr", "id", "ko", "nl", "pt", "ru"):
         actual = {key: value for key, value in load_web_strings(language).items() if key.startswith("cron.")}
         assert actual.keys() == reference.keys()
