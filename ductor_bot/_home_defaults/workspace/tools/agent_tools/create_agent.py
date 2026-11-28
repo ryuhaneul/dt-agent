@@ -29,6 +29,9 @@ import re
 import sys
 from pathlib import Path
 
+from ductor_bot.infra.file_lock import exclusive_file_lock
+from ductor_bot.infra.json_store import atomic_json_save
+
 
 def _agents_path() -> Path:
     """Resolve agents.json path (always in main agent home).
@@ -402,20 +405,6 @@ def main() -> None:
                     sys.exit(1)
                 matrix_allowed_rooms.append(rid)
 
-    # --- Load existing agents ---
-    path = _agents_path()
-    agents: list[dict] = []
-    if path.is_file():
-        try:
-            agents = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            agents = []
-
-    # Check for duplicate
-    if any(a.get("name") == name for a in agents):
-        print(f"Error: Agent '{name}' already exists.", file=sys.stderr)
-        sys.exit(1)
-
     # Normalize provider name (codex -> openai)
     provider = args.provider
     if provider == "codex":
@@ -454,20 +443,38 @@ def main() -> None:
     if resolved_model:
         entry["model"] = resolved_model
 
-    agents.append(entry)
+    path = _agents_path()
+    try:
+        with exclusive_file_lock(path):
+            agents: list[dict] = []
+            if path.is_file():
+                try:
+                    agents = json.loads(path.read_text(encoding="utf-8"))
+                except json.JSONDecodeError:
+                    agents = []
 
-    # Persona files go in BEFORE agents.json: the FileWatcher starts the agent within
-    # seconds and its workspace init would otherwise seed the blank template first.
-    if args.description:
-        problem = _workspace_boundary_error(_main_home(), name, ["JOIN_NOTIFICATION.md"])
-        if problem:
-            print(f"Error: refusing to write JOIN_NOTIFICATION.md: {problem}", file=sys.stderr)
-            sys.exit(1)
-    persona_notes = _write_persona_files(_main_home(), name, persona_text, behavior_text)
+            if any(a.get("name") == name for a in agents):
+                print(f"Error: Agent '{name}' already exists.", file=sys.stderr)
+                sys.exit(1)
 
-    # Write
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(agents, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            agents.append(entry)
+
+            # Persona files go in BEFORE agents.json: the FileWatcher starts the agent within
+            # seconds and its workspace init would otherwise seed the blank template first.
+            if args.description:
+                problem = _workspace_boundary_error(_main_home(), name, ["JOIN_NOTIFICATION.md"])
+                if problem:
+                    print(
+                        f"Error: refusing to write JOIN_NOTIFICATION.md: {problem}",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+            persona_notes = _write_persona_files(_main_home(), name, persona_text, behavior_text)
+
+            atomic_json_save(path, agents)
+    except OSError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     # Write JOIN_NOTIFICATION.md if description provided
     if args.description:
