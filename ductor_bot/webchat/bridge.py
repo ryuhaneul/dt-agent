@@ -823,8 +823,6 @@ def _register_conversation_routes(  # noqa: C901, PLR0915
             if accept is not None:
                 await accept()
             return web.json_response(command)
-        if turns.busy(tid) and accept is not None:
-            raise WebCommandBusyError
         return await submit_turn()
 
     async def mirror_secret(
