@@ -27,10 +27,13 @@ import argparse
 import json
 import os
 import re
+import secrets
+import signal
 import sys
-import tempfile
-from contextlib import suppress
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext, suppress
 from pathlib import Path
+from types import FrameType
 
 from ductor_bot.infra.file_lock import exclusive_file_lock
 from ductor_bot.infra.json_store import atomic_json_save
@@ -211,22 +214,45 @@ def _write_persona_files(
 
 
 def _rollback_persona_file(target: Path, fd: int) -> None:
-    tmp_fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
-    temporary = Path(tmp_name)
+    created = os.fstat(fd)
+    # No placeholder file: a rename needs no free inode, so this also works on a full disk.
+    temporary = target.with_name(f".{target.name}.{secrets.token_hex(8)}")
     try:
-        os.close(tmp_fd)
+        if not os.path.samestat(target.lstat(), created):
+            return
         target.replace(temporary)
+    except FileNotFoundError:
+        return
     except OSError:
-        temporary.unlink(missing_ok=True)
-        raise
+        print(f"Error: could not clean up persona file; kept at {target}", file=sys.stderr)
+        return
 
     try:
-        if not os.path.samestat(temporary.lstat(), os.fstat(fd)):
+        if not os.path.samestat(temporary.lstat(), created):
             # Restore the displaced entry only if the original name is still free.
             os.link(temporary, target, follow_symlinks=False)
         temporary.unlink()
     except OSError:
         print(f"Error: could not clean up persona file; kept at {temporary}", file=sys.stderr)
+
+
+@contextmanager
+def _defer_sigint() -> Iterator[None]:
+    """Let registration or rollback finish before acting on Ctrl+C."""
+    interrupted = False
+
+    def record_sigint(_signum: int, _frame: FrameType | None) -> None:
+        nonlocal interrupted
+        interrupted = True
+
+    previous = signal.signal(signal.SIGINT, record_sigint)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous)
+    # A failure from the body propagates after restoring the handler.
+    if interrupted:
+        raise KeyboardInterrupt
 
 
 _MATRIX_USER_RE = re.compile(r"^@[a-z0-9._=/+-]+:[a-z0-9.-]+$", re.IGNORECASE)
@@ -500,21 +526,22 @@ def main() -> None:
                         file=sys.stderr,
                     )
                     sys.exit(1)
-            created: dict[Path, int] = {}
-            try:
-                persona_notes = _write_persona_files(
-                    _main_home(), name, persona_text, behavior_text, created
-                )
-                atomic_json_save(path, agents)
-            except BaseException:
-                for target, fd in created.items():
-                    with suppress(OSError):
-                        _rollback_persona_file(target, fd)
-                raise
-            finally:
-                for fd in created.values():
-                    with suppress(OSError):
-                        os.close(fd)
+            with _defer_sigint() if persona_text or behavior_text else nullcontext():
+                created: dict[Path, int] = {}
+                try:
+                    persona_notes = _write_persona_files(
+                        _main_home(), name, persona_text, behavior_text, created
+                    )
+                    atomic_json_save(path, agents)
+                except BaseException:
+                    for target, fd in created.items():
+                        with suppress(OSError):
+                            _rollback_persona_file(target, fd)
+                    raise
+                finally:
+                    for fd in created.values():
+                        with suppress(OSError):
+                            os.close(fd)
     except OSError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
