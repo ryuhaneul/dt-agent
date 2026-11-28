@@ -222,6 +222,14 @@ def validate_agent_name(name: str | None, agents: list[dict[str, object]]) -> st
     return name
 
 
+def _validate_new_agent_name(rest: list[str], paths: DuctorPaths) -> str | None:
+    """Validate the ``agents add`` name; only the duplicate check reads the registry."""
+    name = validate_agent_name(rest[0] if rest else None, [])
+    if name is None:
+        return None
+    return validate_agent_name(name, _load_agents_for_prompt(paths))
+
+
 def agents_list() -> None:
     """List all sub-agents from agents.json."""
     paths = resolve_paths()
@@ -249,8 +257,7 @@ def agents_add(rest: list[str]) -> None:
     import questionary
 
     paths = resolve_paths()
-    agents = _load_agents_for_prompt(paths)
-    name = validate_agent_name(rest[0] if rest else None, agents)
+    name = _validate_new_agent_name(rest, paths)
     if name is None:
         return
 

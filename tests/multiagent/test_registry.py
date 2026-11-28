@@ -272,6 +272,27 @@ def test_cli_rejects_invalid_registry_before_prompts(
 
 
 @pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        pytest.param([], "Usage: ductor agents add <name>", id="missing-name"),
+        pytest.param(["main"], "Name 'main' is reserved.", id="reserved-name"),
+    ],
+)
+def test_cli_add_name_guidance_ignores_invalid_registry(
+    agents_path, monkeypatch, capsys, args, expected
+):
+    original = b'[{"name":"sub1"}, "oops"]'
+    agents_path.write_bytes(original)
+    monkeypatch.setenv("DUCTOR_HOME", str(agents_path.parent))
+    monkeypatch.setattr(sys, "argv", ["ductor", "agents", "add", *args])
+
+    cli_main()
+
+    assert capsys.readouterr().out.strip() == expected
+    assert agents_path.read_bytes() == original
+
+
+@pytest.mark.parametrize(
     ("command", "original"),
     [
         pytest.param("create", b'[{"name":"sub1"}, "oops"]', id="v4-create-mixed"),
