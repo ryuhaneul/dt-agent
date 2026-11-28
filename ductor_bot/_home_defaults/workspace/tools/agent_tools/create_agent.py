@@ -25,8 +25,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
+import tempfile
+from contextlib import suppress
 from pathlib import Path
 
 from ductor_bot.infra.file_lock import exclusive_file_lock
@@ -39,8 +42,6 @@ def _agents_path() -> Path:
     Sub-agents have DUCTOR_HOME = ~/.ductor/agents/<name>/, so we navigate
     up to the main home. Main agent's DUCTOR_HOME points directly to ~/.ductor/.
     """
-    import os
-
     home = Path(os.environ.get("DUCTOR_HOME", str(Path.home() / ".ductor")))
     direct = home / "agents.json"
     if direct.exists() or direct.is_symlink():
@@ -59,8 +60,6 @@ _GROK_MODELS = ("grok-4.5", "grok-composer-2.5-fast")
 
 def _main_home() -> Path:
     """Resolve the main agent's DUCTOR_HOME."""
-    import os
-
     home = Path(os.environ.get("DUCTOR_HOME", str(Path.home() / ".ductor")))
     if home.name != ".ductor" and (home.parent.parent / "config").is_dir():
         return home.parent.parent
@@ -178,7 +177,7 @@ def _workspace_boundary_error(main_home: Path, name: str, filenames: list[str]) 
 
 
 def _write_persona_files(
-    main_home: Path, name: str, persona: str | None, behavior: str | None
+    main_home: Path, name: str, persona: str | None, behavior: str | None, created: dict[Path, int]
 ) -> list[str]:
     """Write PERSONA.md / BEHAVIOR.md into a new agent workspace, never overwriting."""
     notes: list[str] = []
@@ -198,9 +197,36 @@ def _write_persona_files(
             notes.append(f"  {filename} already exists - kept unchanged.")
             continue
         workspace.mkdir(parents=True, exist_ok=True)
-        target.write_text(text.rstrip("\n") + "\n", encoding="utf-8")
+        try:
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+        except FileExistsError:
+            notes.append(f"  {filename} already exists - kept unchanged.")
+            continue
+        # Keep the inode alive through registration, even if the path is replaced.
+        created[target] = fd
+        with os.fdopen(fd, "w", encoding="utf-8", closefd=False) as stream:
+            stream.write(text.rstrip("\n") + "\n")
         notes.append(f"  {filename} written.")
     return notes
+
+
+def _rollback_persona_file(target: Path, fd: int) -> None:
+    tmp_fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+    temporary = Path(tmp_name)
+    try:
+        os.close(tmp_fd)
+        target.replace(temporary)
+    except OSError:
+        temporary.unlink(missing_ok=True)
+        raise
+
+    try:
+        if not os.path.samestat(temporary.lstat(), os.fstat(fd)):
+            # Restore the displaced entry only if the original name is still free.
+            os.link(temporary, target, follow_symlinks=False)
+        temporary.unlink()
+    except OSError:
+        print(f"Error: could not clean up persona file; kept at {temporary}", file=sys.stderr)
 
 
 _MATRIX_USER_RE = re.compile(r"^@[a-z0-9._=/+-]+:[a-z0-9.-]+$", re.IGNORECASE)
@@ -474,9 +500,21 @@ def main() -> None:
                         file=sys.stderr,
                     )
                     sys.exit(1)
-            persona_notes = _write_persona_files(_main_home(), name, persona_text, behavior_text)
-
-            atomic_json_save(path, agents)
+            created: dict[Path, int] = {}
+            try:
+                persona_notes = _write_persona_files(
+                    _main_home(), name, persona_text, behavior_text, created
+                )
+                atomic_json_save(path, agents)
+            except BaseException:
+                for target, fd in created.items():
+                    with suppress(OSError):
+                        _rollback_persona_file(target, fd)
+                raise
+            finally:
+                for fd in created.values():
+                    with suppress(OSError):
+                        os.close(fd)
     except OSError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)

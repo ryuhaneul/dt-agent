@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
+import runpy
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+from ductor_bot.infra import json_store
 
 AGENT_TOOL = (
     Path(__file__).resolve().parents[2]
@@ -170,6 +174,137 @@ def test_existing_persona_file_is_kept(tmp_path: Path) -> None:
     assert result.returncode == 0
     assert (ws / "PERSONA.md").read_text() == "old persona\n"
     assert "already exists" in result.stdout
+
+
+def _run_create(monkeypatch: pytest.MonkeyPatch, home: Path, *args: str) -> None:
+    monkeypatch.setenv("DUCTOR_HOME", str(home))
+    monkeypatch.setattr(
+        sys, "argv", [str(AGENT_TOOL), "--name", "helper", "--transport", "headless", *args]
+    )
+    runpy.run_path(str(AGENT_TOOL), run_name="__main__")
+
+
+@pytest.mark.parametrize("existing_behavior", [False, True], ids=["new-files", "existing-behavior"])
+def test_registry_save_failure_rolls_back_persona_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    existing_behavior: bool,
+) -> None:
+    registry = tmp_path / "agents.json"
+    original = '[{"name":"other","transport":"headless"}]\n'
+    registry.write_text(original)
+    ws = _workspace(tmp_path)
+    expected_remaining = {}
+    if existing_behavior:
+        ws.mkdir(parents=True)
+        (ws / "BEHAVIOR.md").write_text("Existing behavior\n")
+        expected_remaining["BEHAVIOR.md"] = "Existing behavior\n"
+
+    def fail_save(path: Path, agents: list[dict]) -> None:
+        assert path == registry
+        assert agents[-1]["name"] == "helper"
+        assert (ws / "PERSONA.md").read_text() == "First persona\n"
+        assert (ws / "BEHAVIOR.md").read_text() == expected_remaining.get(
+            "BEHAVIOR.md", "First behavior\n"
+        )
+        raise OSError("cannot save registry")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(json_store, "atomic_json_save", fail_save)
+        with pytest.raises(SystemExit) as exc:
+            _run_create(
+                patch, tmp_path, "--persona", "First persona", "--behavior", "First behavior"
+            )
+
+    assert exc.value.code == 1
+    assert capsys.readouterr().err == "Error: cannot save registry\n"
+    assert registry.read_text() == original
+    remaining = {file.name: file.read_text() for file in ws.iterdir()}
+
+    result = _create(
+        tmp_path,
+        "--transport",
+        "headless",
+        "--persona",
+        "Retry persona",
+        "--behavior",
+        "Retry behavior",
+    )
+    assert result.returncode == 0, result.stderr
+    assert remaining == expected_remaining, result.stdout
+    assert (ws / "PERSONA.md").read_text() == "Retry persona\n"
+    assert (ws / "BEHAVIOR.md").read_text() == expected_remaining.get(
+        "BEHAVIOR.md", "Retry behavior\n"
+    )
+    assert [agent["name"] for agent in json.loads(registry.read_text())] == ["other", "helper"]
+
+
+def test_persona_write_failure_rolls_back_partial_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws = _workspace(tmp_path)
+    behavior = ws / "BEHAVIOR.md"
+    open_file = io.open
+
+    def open_with_partial_write(file, *args, **kwargs):
+        stream = open_file(file, *args, **kwargs)
+        if isinstance(file, int):
+            is_behavior = behavior.exists() and os.path.samestat(os.fstat(file), behavior.stat())
+        else:
+            is_behavior = Path(file) == behavior
+        if is_behavior:
+            write = stream.write
+
+            def fail_write(text: str) -> None:
+                assert (ws / "PERSONA.md").read_text() == "First persona\n"
+                write(text[:4])
+                stream.flush()
+                raise OSError("cannot finish behavior")
+
+            stream.write = fail_write
+        return stream
+
+    with monkeypatch.context() as patch:
+        patch.setattr(io, "open", open_with_partial_write)
+        with pytest.raises(SystemExit) as exc:
+            _run_create(
+                patch, tmp_path, "--persona", "First persona", "--behavior", "First behavior"
+            )
+
+    assert exc.value.code == 1
+    assert capsys.readouterr().err == "Error: cannot finish behavior\n"
+    assert not (tmp_path / "agents.json").exists()
+    assert {file.name: file.read_text() for file in ws.iterdir()} == {}
+
+
+@pytest.mark.parametrize("change", ["replace", "re-create"])
+def test_registry_save_failure_keeps_replaced_persona(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], change: str
+) -> None:
+    ws = _workspace(tmp_path)
+    persona = ws / "PERSONA.md"
+
+    def change_persona_and_fail_save(path: Path, agents: list[dict]) -> None:
+        assert persona.read_text() == "First persona\n"
+        if change == "replace":
+            replacement = tmp_path / "replacement"
+            replacement.write_text("Other persona\n")
+            replacement.replace(persona)
+        else:
+            persona.unlink()
+            persona.write_text("Other persona\n")
+        raise OSError("cannot save registry")
+
+    monkeypatch.setattr(json_store, "atomic_json_save", change_persona_and_fail_save)
+    with pytest.raises(SystemExit) as exc:
+        _run_create(monkeypatch, tmp_path, "--persona", "First persona")
+
+    assert exc.value.code == 1
+    assert capsys.readouterr().err == "Error: cannot save registry\n"
+    assert not (tmp_path / "agents.json").exists()
+    assert list(ws.iterdir()) == [persona]
+    assert persona.read_text() == "Other persona\n"
 
 
 def test_without_persona_options_nothing_is_written(tmp_path: Path) -> None:
