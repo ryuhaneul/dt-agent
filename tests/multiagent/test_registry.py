@@ -178,7 +178,7 @@ def test_create_script_keeps_registry_it_cannot_read(agents_path, monkeypatch):
     [
         '[{"name":"sub1"},{"name":"sub2"',
         '{"name":"sub1"}',
-        pytest.param("[" * 2000 + "]" * 2000, id="deeply-nested"),
+        pytest.param("[" * 100_000 + "]" * 100_000, id="deeply-nested"),
     ],
 )
 def test_create_script_keeps_invalid_registry(agents_path, monkeypatch, capsys, original):
@@ -206,7 +206,7 @@ def test_create_script_keeps_invalid_registry(agents_path, monkeypatch, capsys, 
     "original",
     [
         '[{"name":"sub1"},{"name":"sub2"',
-        pytest.param("[" * 2000 + "]" * 2000, id="deeply-nested"),
+        pytest.param("[" * 100_000 + "]" * 100_000, id="deeply-nested"),
     ],
 )
 def test_cli_add_keeps_invalid_registry(agents_path, monkeypatch, capsys, original):
