@@ -142,3 +142,28 @@ def test_registry_writes_preserve_concurrent_changes(agents_path, monkeypatch, c
         assert set(agents) == {"sub1", "sub2", "sub3"}
     else:
         assert set(agents) == {"sub1"}
+
+
+def test_create_script_keeps_registry_it_cannot_read(agents_path, monkeypatch):
+    original = json.dumps([{"name": "sub1"}, {"name": "sub2"}])
+    agents_path.write_text(original)
+    monkeypatch.setenv("DUCTOR_HOME", str(agents_path.parent))
+    script = (
+        Path(__file__).resolve().parents[2]
+        / "ductor_bot/_home_defaults/workspace/tools/agent_tools/create_agent.py"
+    )
+    read_text = Path.read_text
+
+    def fail_registry_read(self, *args, **kwargs):
+        if self.name == "agents.json":
+            raise PermissionError("unreadable")
+        return read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_registry_read)
+    monkeypatch.setattr(sys, "argv", [str(script), "--name", "sub3", "--transport", "headless"])
+    with pytest.raises(SystemExit) as exit_info:
+        runpy.run_path(str(script), run_name="__main__")
+
+    assert exit_info.value.code == 1
+    assert read_text(agents_path) == original
+    assert not (agents_path.parent / "agents" / "sub3").exists()

@@ -450,7 +450,7 @@ def main() -> None:
             if path.is_file():
                 try:
                     agents = json.loads(path.read_text(encoding="utf-8"))
-                except (json.JSONDecodeError, OSError):
+                except json.JSONDecodeError:
                     agents = []
 
             if any(a.get("name") == name for a in agents):
