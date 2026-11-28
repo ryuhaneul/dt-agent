@@ -375,6 +375,22 @@ def test_list_tool_rejects_invalid_registry(agents_path, monkeypatch, capsys, or
     assert captured.err == "Error: Failed to read agents.json\n"
 
 
+def test_list_tool_shows_entry_with_non_string_name(agents_path, monkeypatch, capsys):
+    agents_path.write_bytes(b'[{"name":5}]')
+    monkeypatch.setenv("DUCTOR_HOME", str(agents_path.parent))
+    script = (
+        Path(__file__).resolve().parents[2]
+        / "ductor_bot/_home_defaults/workspace/tools/agent_tools/list_agents.py"
+    )
+    monkeypatch.setattr(sys, "argv", [str(script)])
+
+    runpy.run_path(str(script), run_name="__main__")
+
+    captured = capsys.readouterr()
+    assert "\n  5\n" in captured.out
+    assert captured.err == ""
+
+
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO unavailable")
 @pytest.mark.parametrize("tool", ["remove", "list"])
 @pytest.mark.parametrize("kind", ["directory", "fifo-link"])

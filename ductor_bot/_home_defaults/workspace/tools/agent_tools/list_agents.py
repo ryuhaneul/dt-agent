@@ -51,7 +51,7 @@ def main() -> None:
 
     print(f"Registered sub-agents ({len(agents)}):\n")
     for agent in agents:
-        name = agent.get("name", "?")
+        name = str(agent.get("name", "?"))
         users = agent.get("allowed_user_ids", [])
         provider = agent.get("provider", "(inherited)")
         model = agent.get("model", "(inherited)")
