@@ -128,7 +128,10 @@ def test_import_supplied_by_any_extra_is_accepted(
     ) == {}
 
 
-@pytest.mark.parametrize("contents", [None, "{broken"])
+@pytest.mark.parametrize(
+    "contents",
+    [None, "{broken", pytest.param("[" * 100_000 + "]" * 100_000, id="nested")],
+)
 def test_missing_or_broken_agents_file_checks_main_only(
     tmp_path: Path, contents: str | None,
 ) -> None:

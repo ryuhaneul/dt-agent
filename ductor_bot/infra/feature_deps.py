@@ -72,7 +72,7 @@ def check_feature_deps(main_config: AgentConfig, paths: DuctorPaths) -> dict[str
         raw = json.loads(agents_path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
-    except (OSError, ValueError) as exc:
+    except (OSError, RecursionError, ValueError) as exc:
         logger.warning("Cannot read agents.json for dependency check: %s", type(exc).__name__)
         return {}
     if not isinstance(raw, list):
