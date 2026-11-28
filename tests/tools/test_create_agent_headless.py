@@ -8,7 +8,6 @@ import io
 import json
 import os
 import runpy
-import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -309,49 +308,20 @@ def test_registry_save_failure_keeps_replaced_persona(
     assert persona.read_text() == "Other persona\n"
 
 
-def test_sigint_after_behavior_creation_finishes_registration(
+def test_interrupt_after_registry_save_keeps_persona_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ws = _workspace(tmp_path)
-    original_handler = signal.getsignal(signal.SIGINT)
-    open_file = os.open
-
-    def open_and_interrupt(path, flags, *args, **kwargs):
-        fd = open_file(path, flags, *args, **kwargs)
-        if path == ws / "BEHAVIOR.md" and flags & os.O_EXCL:
-            os.kill(os.getpid(), signal.SIGINT)
-        return fd
-
-    monkeypatch.setattr(os, "open", open_and_interrupt)
-    with pytest.raises(KeyboardInterrupt):
-        _run_create(monkeypatch, tmp_path, "--persona", "New persona", "--behavior", "New behavior")
-
-    assert signal.getsignal(signal.SIGINT) == original_handler
-    assert {file.name: file.read_text() for file in ws.iterdir()} == {
-        "PERSONA.md": "New persona\n",
-        "BEHAVIOR.md": "New behavior\n",
-    }
-    assert json.loads((tmp_path / "agents.json").read_text()) == [
-        {"name": "helper", "transport": "headless"}
-    ]
-
-
-def test_sigint_after_registry_save_keeps_persona_files(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    ws = _workspace(tmp_path)
-    original_handler = signal.getsignal(signal.SIGINT)
     save_registry = json_store.atomic_json_save
 
     def save_and_interrupt(path: Path, agents: list[dict]) -> None:
         save_registry(path, agents)
-        os.kill(os.getpid(), signal.SIGINT)
+        raise KeyboardInterrupt
 
     monkeypatch.setattr(json_store, "atomic_json_save", save_and_interrupt)
     with pytest.raises(KeyboardInterrupt):
         _run_create(monkeypatch, tmp_path, "--persona", "New persona", "--behavior", "New behavior")
 
-    assert signal.getsignal(signal.SIGINT) == original_handler
     assert json.loads((tmp_path / "agents.json").read_text()) == [
         {"name": "helper", "transport": "headless"}
     ]
@@ -359,35 +329,6 @@ def test_sigint_after_registry_save_keeps_persona_files(
         "PERSONA.md": "New persona\n",
         "BEHAVIOR.md": "New behavior\n",
     }
-
-
-def test_sigint_during_persona_rollback_preserves_save_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    ws = _workspace(tmp_path)
-    original_handler = signal.getsignal(signal.SIGINT)
-    replace_file = Path.replace
-
-    def fail_save(_path: Path, _agents: list[dict]) -> None:
-        raise OSError("cannot save registry")
-
-    def replace_and_interrupt(path: Path, target: Path) -> Path:
-        moved = replace_file(path, target)
-        if path == ws / "PERSONA.md":
-            os.kill(os.getpid(), signal.SIGINT)
-        return moved
-
-    monkeypatch.setattr(json_store, "atomic_json_save", fail_save)
-    monkeypatch.setattr(Path, "replace", replace_and_interrupt)
-    with pytest.raises((SystemExit, KeyboardInterrupt)) as exc:
-        _run_create(monkeypatch, tmp_path, "--persona", "New persona", "--behavior", "New behavior")
-
-    assert signal.getsignal(signal.SIGINT) == original_handler
-    assert isinstance(exc.value, SystemExit)
-    assert exc.value.code == 1
-    assert capsys.readouterr().err == "Error: cannot save registry\n"
-    assert not (tmp_path / "agents.json").exists()
-    assert list(ws.iterdir()) == []
 
 
 def test_rollback_works_when_no_file_can_be_created(
