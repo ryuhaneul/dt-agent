@@ -363,32 +363,47 @@ async def test_cancellation_releases_only_our_acquisition_and_does_not_replay(wi
         lock.release()
 
 
-async def test_outer_sync_deadline_cancels_active_execution_and_releases_lock(wired):
+async def test_outer_sync_deadline_cancels_active_execution_and_releases_lock(wired, monkeypatch):
     bus, main, _, messages, _ = wired
     key, _ = await seed_topic(main)
+    lock = messages.lock_pool.get(key.lock_key)
     started = asyncio.Event()
+    cancelled = asyncio.Event()
 
     async def execute(_request):
         started.set()
-        await asyncio.Event().wait()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
 
     main._cli_service.execute.side_effect = execute
     bus._delegations["test-task"] = context()
-    result = await asyncio.wait_for(
-        bus.send(
-            "worker",
-            "main",
-            "Question",
-            delegation_id="test-task",
-            send_timeout=0.03,
-        ),
-        1,
+    loop = asyncio.get_running_loop()
+    real_time = loop.time
+    now = real_time()
+    watchdog = now + 5
+    # Freeze the clock for the test phases, with a real-time escape for stalled tests.
+    monkeypatch.setattr(loop, "time", lambda: now + max(0.0, real_time() - watchdog))
+    pending = asyncio.create_task(
+        bus.send("worker", "main", "Question", delegation_id="test-task", send_timeout=0.03)
     )
-    assert started.is_set()
-    assert not result.success
-    assert "Timeout" in result.error
-    assert not messages.lock_pool.get(key.lock_key).locked()
-    assert main._named_sessions.list_active(12345) == []
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        assert lock.locked()
+        now += 0.04
+        result = await asyncio.wait_for(pending, 1)
+        assert started.is_set()
+        assert cancelled.is_set()
+        assert not result.success
+        assert "Timeout" in result.error
+        assert not lock.locked()
+        assert main._named_sessions.list_active(12345) == []
+    finally:
+        if not pending.done():
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
 
 
 async def test_active_cli_exception_returns_error_without_duplicate_named_execution(wired):

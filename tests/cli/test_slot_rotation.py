@@ -1117,7 +1117,10 @@ async def test_stream_handles_child_after_leader_exits(deletion_home, monkeypatc
         "    print(json.dumps({'type':'system','subtype':'init','session_id':'fixture'}), flush=True)\n"
         + (result_line if mode == "normal" else "")
         + "    os._exit(0)\n"
-        f"Path({str(pid_file)!r}).write_text(str(os.getpid()))\n"
+        f"pid_file = Path({str(pid_file)!r})\n"
+        "staged_pid = pid_file.with_suffix('.tmp')\n"
+        "staged_pid.write_text(str(os.getpid()))\n"
+        "staged_pid.replace(pid_file)\n"
         f"release = Path({str(release_pipes)!r})\n"
         f"write = Path({str(write_slot)!r})\n"
         "deadline = time.monotonic() + 15\n"
@@ -1166,13 +1169,39 @@ async def test_stream_handles_child_after_leader_exits(deletion_home, monkeypatc
 
     stream = cli.send_streaming("fixture", timeout_seconds=2 if mode == "timeout" else 10)
     reader = None
+    loop = asyncio.get_running_loop()
+    timeout_ready = loop.create_future()
+    initialized = asyncio.Event()
+    real_timeout = asyncio.timeout
+
+    def controlled_timeout(seconds):
+        if asyncio.current_task() is reader and seconds == 2:
+            timer = real_timeout(None)
+            timeout_ready.set_result(timer)
+            return timer
+        return real_timeout(seconds)
+
+    async def consume_timeout():
+        await anext(stream)
+        initialized.set()
+        result = await anext(stream)
+        with pytest.raises(StopAsyncIteration):
+            await anext(stream)
+        return result
+
     try:
-        await asyncio.wait_for(anext(stream), 5)
+        if mode == "timeout":
+            monkeypatch.setattr(asyncio, "timeout", controlled_timeout)
+            reader = asyncio.create_task(consume_timeout())
+            await asyncio.wait_for(initialized.wait(), 5)
+        else:
+            await asyncio.wait_for(anext(stream), 5)
         await until(lambda: pid_file.exists() and not alive(int(leader_file.read_text())))
         pid = int(pid_file.read_text())
         assert alive(pid)
-        reader = asyncio.create_task(anext(stream))
-        await asyncio.sleep(0)
+        if reader is None:
+            reader = asyncio.create_task(anext(stream))
+            await asyncio.sleep(0)
         assert not reader.done()
         with pytest.raises(ValueError, match="slot_busy"):
             remove(deletion_home, "claude-a")
@@ -1191,10 +1220,10 @@ async def test_stream_handles_child_after_leader_exits(deletion_home, monkeypatc
             with pytest.raises(asyncio.CancelledError):
                 await asyncio.wait_for(reader, 5)
         else:
+            timer = await asyncio.wait_for(timeout_ready, 5)
+            timer.reschedule(loop.time())
             result = await asyncio.wait_for(reader, 5)
             assert result.is_error and result.result.startswith("__TIMEOUT__")
-            with pytest.raises(StopAsyncIteration):
-                await anext(stream)
 
         if mode != "normal":
             assert not alive(pid)
