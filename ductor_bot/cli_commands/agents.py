@@ -81,13 +81,18 @@ def load_agents_registry(paths: DuctorPaths) -> list[dict[str, object]]:
     return raw if isinstance(raw, list) else []
 
 
+def _agents_file_is_regular(agents_path: Path) -> bool:
+    if agents_path.is_file():
+        return True
+    if agents_path.exists() or agents_path.is_symlink():
+        raise OSError("agents.json must be a regular file")
+    return False
+
+
 def _load_agents_for_update(agents_path: Path) -> list[dict[str, object]]:
-    try:
-        raw = json.loads(agents_path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        if agents_path.is_symlink():
-            raise
+    if not _agents_file_is_regular(agents_path):
         return []
+    raw = json.loads(agents_path.read_text(encoding="utf-8"))
     if not isinstance(raw, list):
         raise ValueError("agents.json must be a JSON array")  # noqa: TRY004 -- malformed JSON
     return raw
@@ -95,8 +100,17 @@ def _load_agents_for_update(agents_path: Path) -> list[dict[str, object]]:
 
 def _exit_registry_update_error(error: Exception) -> NoReturn:
     reason = escape(" ".join(str(error).splitlines()))
-    _console.print(t_rich("agents.update_failed", reason=reason), soft_wrap=True)
+    _console.print(t_rich("agents.update_failed", reason=reason), emoji=False, soft_wrap=True)
     raise SystemExit(1) from None
+
+
+def _load_agents_for_prompt(paths: DuctorPaths) -> list[dict[str, object]]:
+    try:
+        if _agents_file_is_regular(paths.ductor_home / "agents.json"):
+            return load_agents_registry(paths)
+    except (OSError, RecursionError) as exc:
+        _exit_registry_update_error(exc)
+    return []
 
 
 def fetch_live_health() -> dict[str, dict[str, object]]:
@@ -235,7 +249,7 @@ def agents_add(rest: list[str]) -> None:
     import questionary
 
     paths = resolve_paths()
-    agents = load_agents_registry(paths)
+    agents = _load_agents_for_prompt(paths)
     name = validate_agent_name(rest[0] if rest else None, agents)
     if name is None:
         return
@@ -299,7 +313,7 @@ def agents_add(rest: list[str]) -> None:
             if not duplicate:
                 agents.append(new_agent)
                 atomic_json_save(agents_path, agents)
-    except (OSError, ValueError) as exc:
+    except (OSError, RecursionError, ValueError) as exc:
         _exit_registry_update_error(exc)
 
     if duplicate:
@@ -320,7 +334,7 @@ def agents_remove(rest: list[str]) -> None:
 
     name = name.lower().strip()
     paths = resolve_paths()
-    agents = load_agents_registry(paths)
+    agents = _load_agents_for_prompt(paths)
     match = [a for a in agents if str(a.get("name", "")).lower() == name]
     if not match:
         _console.print(t_rich("agents.remove.not_found", name=name))
@@ -342,7 +356,7 @@ def agents_remove(rest: list[str]) -> None:
             removed = len(remaining) != len(agents)
             if removed:
                 atomic_json_save(agents_path, remaining)
-    except (OSError, ValueError) as exc:
+    except (OSError, RecursionError, ValueError) as exc:
         _exit_registry_update_error(exc)
 
     if not removed:

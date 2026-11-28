@@ -43,12 +43,12 @@ def _agents_path() -> Path:
 
     home = Path(os.environ.get("DUCTOR_HOME", str(Path.home() / ".ductor")))
     direct = home / "agents.json"
-    if direct.is_file():
+    if direct.exists() or direct.is_symlink():
         return direct
     # Sub-agent: navigate up from agents/<name>/ to main home
     main_home = home.parent.parent
     main_path = main_home / "agents.json"
-    if main_path.is_file() or (main_home / "config").is_dir():
+    if main_path.exists() or main_path.is_symlink() or (main_home / "config").is_dir():
         return main_path
     return direct
 
@@ -179,13 +179,12 @@ def _workspace_boundary_error(main_home: Path, name: str, filenames: list[str]) 
 
 def _write_persona_files(
     main_home: Path, name: str, persona: str | None, behavior: str | None
-) -> tuple[list[str], list[Path]]:
-    """Write persona files without overwriting and return notes and newly written paths."""
+) -> list[str]:
+    """Write PERSONA.md / BEHAVIOR.md into a new agent workspace, never overwriting."""
     notes: list[str] = []
-    written: list[Path] = []
     wanted = [f for f, text in (("PERSONA.md", persona), ("BEHAVIOR.md", behavior)) if text]
     if not wanted:
-        return notes, written
+        return notes
     problem = _workspace_boundary_error(main_home, name, wanted)
     if problem:
         print(f"Error: refusing to write persona files: {problem}", file=sys.stderr)
@@ -195,16 +194,13 @@ def _write_persona_files(
         if text is None:
             continue
         target = workspace / filename
-        workspace.mkdir(parents=True, exist_ok=True)
-        try:
-            with target.open("x", encoding="utf-8") as file:
-                file.write(text.rstrip("\n") + "\n")
-        except FileExistsError:
+        if target.exists():
             notes.append(f"  {filename} already exists - kept unchanged.")
             continue
-        written.append(target)
+        workspace.mkdir(parents=True, exist_ok=True)
+        target.write_text(text.rstrip("\n") + "\n", encoding="utf-8")
         notes.append(f"  {filename} written.")
-    return notes, written
+    return notes
 
 
 _MATRIX_USER_RE = re.compile(r"^@[a-z0-9._=/+-]+:[a-z0-9.-]+$", re.IGNORECASE)
@@ -452,11 +448,13 @@ def main() -> None:
         with exclusive_file_lock(path):
             try:
                 agents: list[dict] = []
-                if path.exists() or path.is_symlink():
+                if path.is_file():
                     agents = json.loads(path.read_text(encoding="utf-8"))
+                elif path.exists() or path.is_symlink():
+                    raise ValueError("agents.json must be a regular file")
                 if not isinstance(agents, list):
                     raise ValueError("agents.json must be a JSON array")
-            except (OSError, ValueError):
+            except (OSError, RecursionError, ValueError):
                 print("Error: Failed to read agents.json", file=sys.stderr)
                 sys.exit(1)
 
@@ -476,19 +474,9 @@ def main() -> None:
                         file=sys.stderr,
                     )
                     sys.exit(1)
-            persona_notes, written = _write_persona_files(
-                _main_home(), name, persona_text, behavior_text
-            )
+            persona_notes = _write_persona_files(_main_home(), name, persona_text, behavior_text)
 
-            try:
-                atomic_json_save(path, agents)
-            except Exception:
-                for target in written:
-                    try:
-                        target.unlink(missing_ok=True)
-                    except OSError as exc:
-                        print(f"Error: {exc}", file=sys.stderr)
-                raise
+            atomic_json_save(path, agents)
     except OSError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
