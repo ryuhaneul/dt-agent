@@ -297,6 +297,17 @@ def test_shared_static_checker_names_only(paths):
     assert "SECRETS_LOCKED" in result["warning"]
 
 
+def test_commands_skips_long_lines_but_keeps_variable_references():
+    prefix = "SERVICE_TOKEN="
+    reference = " $CUSTOM_TOKEN"
+    token = "x" * (4096 - len(prefix) - len(reference))
+    quoted = "'" + "ab " * 2000 + "'"
+
+    assert defs._commands(prefix + token + reference) == {"SERVICE_TOKEN", "CUSTOM_TOKEN"}
+    assert defs._commands(prefix + token + "x" + reference) == {"CUSTOM_TOKEN"}
+    assert defs._commands(prefix + quoted + reference) == {"CUSTOM_TOKEN"}
+
+
 def test_body_backup_and_rollback_preserve_original_bytes(paths):
     jobs, tasks = paths
     create(paths)

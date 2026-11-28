@@ -395,7 +395,8 @@ registry entry. If the registry write fails, the folder is restored.
 
 Creation, editing and detail responses include a static secret-use check of the
 instruction and scripts. The web detail and edits to job settings skip instructions
-above 8 MiB and still check scripts. A warning lists key names only and does not
+above 8 MiB and still check scripts. On lines longer than 4,096 characters, the check
+skips shell assignments and commands while still looking for `$NAME` references. A warning lists key names only and does not
 block saving.
 Secret-dependent runs can fail while an encrypted secret store is locked; unlock
 it before execution. Static checks can miss dynamic names, imports and external

@@ -130,6 +130,27 @@ def _folder(tasks: Path, job: dict[str, Any]) -> Path:
     return folder
 
 
+def _scan_description(
+    folder: Path, inventory: set[str] | None, content: str | None
+) -> dict[str, object]:
+    return definitions.scan_secrets(
+        folder,
+        set(),
+        inventory,
+        body=content.replace("\r\n", "\n").replace("\r", "\n") if content is not None else None,
+        body_skip_reason="too_large" if content is None else None,
+    )
+
+
+def _toggle_warning(folder: Path, inventory: set[str] | None) -> dict[str, object]:
+    try:
+        _, original = definitions.read_description(folder / "TASK_DESCRIPTION.md", VIEW_LIMIT)
+        content = original.decode("utf-8") if original is not None else None
+    except (OSError, UnicodeError):
+        return definitions.scan_secrets(folder, set(), inventory, body_skip_reason="unreadable")
+    return _scan_description(folder, inventory, content)
+
+
 def _detail(tasks: Path, job: dict[str, Any], inventory: set[str] | None) -> dict[str, Any]:
     folder = _folder(tasks, job)
     size, original = definitions.read_description(folder / "TASK_DESCRIPTION.md", VIEW_LIMIT)
@@ -152,13 +173,7 @@ def _detail(tasks: Path, job: dict[str, Any], inventory: set[str] | None) -> dic
             if not (Path(directory) / name).is_symlink()
         )
     detail["scripts"] = sorted(scripts)
-    detail["secret_warning"] = definitions.scan_secrets(
-        folder,
-        set(),
-        inventory,
-        body=content.replace("\r\n", "\n").replace("\r", "\n") if content is not None else None,
-        body_limit=VIEW_LIMIT,
-    )
+    detail["secret_warning"] = _scan_description(folder, inventory, content)
     return detail
 
 
@@ -294,14 +309,11 @@ class _CronAPI:
         base = _text(data, "base_sha256") if content is not None else None
         paths = self.bot._orch.paths
         folder = _folder(paths.cron_tasks_dir, job)
-        warning = await asyncio.to_thread(
-            definitions.scan_secrets,
-            folder,
-            set(),
-            await self.inventory(),
-            body=content,
-            body_limit=VIEW_LIMIT,
-        )
+        warning = None
+        if content is not None:
+            warning = await asyncio.to_thread(
+                definitions.scan_secrets, folder, set(), await self.inventory(), body=content
+            )
         saved = await complete_write(
             definitions.update_job,
             paths.cron_jobs_path,
@@ -311,7 +323,10 @@ class _CronAPI:
             body=content,
             expected_sha256=base,
         )
-        return {"job": saved, "secret_warning": warning}
+        result = {"job": saved}
+        if warning is not None:
+            result["secret_warning"] = warning
+        return result
 
     async def toggle(self, job: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
         if data.keys() - {"enabled"}:
@@ -324,9 +339,7 @@ class _CronAPI:
         except KeyError:
             pass  # A broken workspace must still be possible to disable.
         else:
-            warning = await asyncio.to_thread(
-                definitions.scan_secrets, folder, set(), await self.inventory()
-            )
+            warning = await asyncio.to_thread(_toggle_warning, folder, await self.inventory())
         saved = await complete_write(
             definitions.update_job,
             paths.cron_jobs_path,
@@ -384,11 +397,11 @@ class _CronAPI:
             saved = result["job"]
             result["job"] = await self.metadata(saved)
             if request.method == "PUT":
-                result["job"].update(
-                    await asyncio.to_thread(
-                        _detail, paths.cron_tasks_dir, saved, await self.inventory()
-                    )
+                detail = await asyncio.to_thread(
+                    _detail, paths.cron_tasks_dir, saved, await self.inventory()
                 )
+                result["job"].update(detail)
+                result.setdefault("secret_warning", detail["secret_warning"])
         return _response(result, status)
 
     async def handle(self, request: web.Request) -> web.Response:  # noqa: PLR0911

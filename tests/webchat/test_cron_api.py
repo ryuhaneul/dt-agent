@@ -153,6 +153,55 @@ async def test_detail_omits_content_above_view_limit(api, monkeypatch):
     assert view["schedule"] == job["schedule"]
 
 
+async def test_detail_scan_uses_snapshot_even_if_oversized_body_shrinks(api, monkeypatch):
+    await add(api)
+    body = api.paths.cron_tasks_dir / "daily/TASK_DESCRIPTION.md"
+    size = 8 * 1024 * 1024 + 1
+    with body.open("wb") as stream:
+        stream.truncate(size)
+    read_description = definitions.read_description
+    reads = []
+
+    def shrink_after_first_read(path, limit):
+        result = read_description(path, limit)
+        if path == body:
+            reads.append(result[0])
+            if len(reads) == 1:
+                body.write_text('load_secrets("BODY_TOKEN")', encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(definitions, "read_description", shrink_after_first_read)
+    view = await detail(api)
+
+    assert view["content_size"] == size
+    assert {"content", "sha256"}.isdisjoint(view)
+    assert view["secret_warning"]["keys"] == []
+    assert view["secret_warning"]["skipped_files"] == 1
+    assert view["secret_warning"]["skipped_file_reasons"] == {"TASK_DESCRIPTION.md": "too_large"}
+    assert reads == [size]
+
+
+async def test_toggle_skips_oversized_description_without_opening_it(api, monkeypatch):
+    await add(api)
+    body = api.paths.cron_tasks_dir / "daily/TASK_DESCRIPTION.md"
+    with body.open("wb") as stream:
+        stream.write(b'load_secrets("BODY_TOKEN")\n')
+        stream.truncate(8 * 1024 * 1024 + 1)
+    (body.parent / "scripts/job.py").write_text('load_secrets("SCRIPT_TOKEN")\n')
+
+    forbid_opening_description(monkeypatch, body)
+    response = await api.client.post(
+        PATH + "/daily/toggle", json={"enabled": False}, headers=headers()
+    )
+
+    assert response.status == 200, await response.text()
+    result = await response.json()
+    assert result["job"]["enabled"] is False
+    assert result["secret_warning"]["keys"] == ["SCRIPT_TOKEN"]
+    assert result["secret_warning"]["skipped_files"] == 1
+    assert result["secret_warning"]["skipped_file_reasons"] == {"TASK_DESCRIPTION.md": "too_large"}
+
+
 def forbid_opening_description(monkeypatch, body):
     original_open = Path.open
 
@@ -198,6 +247,34 @@ async def test_update_metadata_preserves_large_content(api, monkeypatch, size):
             assert warning["skipped_files"] == 1
             assert warning["skipped_file_reasons"] == {"TASK_DESCRIPTION.md": "too_large"}
     assert body.read_bytes() == original
+
+
+async def test_update_metadata_reads_and_scans_description_once(api, monkeypatch):
+    content = 'load_secrets("BODY_TOKEN")'
+    await add(api, content=content)
+    read_description = definitions.read_description
+    commands = definitions._commands
+    reads = []
+    scans = []
+
+    def count_reads(path, limit):
+        reads.append(path)
+        return read_description(path, limit)
+
+    def count_scans(source):
+        scans.append(source)
+        return commands(source)
+
+    monkeypatch.setattr(definitions, "read_description", count_reads)
+    monkeypatch.setattr(definitions, "_commands", count_scans)
+    response = await api.client.put(PATH + "/daily", json={"title": "Updated"}, headers=headers())
+
+    assert response.status == 200, await response.text()
+    result = await response.json()
+    assert result["job"]["content"] == content
+    assert result["secret_warning"] == result["job"]["secret_warning"]
+    assert reads == [api.paths.cron_tasks_dir / "daily/TASK_DESCRIPTION.md"]
+    assert scans == [content]
 
 
 async def test_list_advertises_content_edit_limit(api):
